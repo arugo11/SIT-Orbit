@@ -1,0 +1,14 @@
+{
+  "name": "@sit-orbit/api-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "pnpm exec openapi-typescript openapi.json --output src/generated/schema.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3"
+  }
+}

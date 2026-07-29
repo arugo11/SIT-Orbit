@@ -1,0 +1,44 @@
+[project]
+name = "sit-orbit"
+version = "0.1.0"
+description = "Personal Campus Agent for Shibaura Institute of Technology"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastapi",
+  "openai",
+  "pydantic-settings",
+  "uvicorn[standard]",
+  "weave",
+]
+
+[dependency-groups]
+dev = [
+  "httpx",
+  "pyright",
+  "pytest",
+  "pytest-asyncio",
+  "ruff",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+addopts = "-q"
+asyncio_mode = "auto"
+pythonpath = ["services/api", "."]
+testpaths = ["services/api/tests", "evals"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "standard"
+extraPaths = ["services/api"]
+include = ["services/api", "evals", "scripts"]

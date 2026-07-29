@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.13
+
+      - name: Sync Python dependencies
+        run: uv sync --frozen
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Node dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Python checks
+        run: |
+          uv run ruff check .
+          uv run pyright
+          uv run pytest
+          PYTHONPATH=services/api uv run python -m evals.run_eval
+          uv run python scripts/check_secrets.py
+
+      - name: Generate API client
+        run: pnpm generate:api
+
+      - name: Check generated API client
+        run: git diff --exit-code -- packages/api-client
+
+      - name: TypeScript checks
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm build
