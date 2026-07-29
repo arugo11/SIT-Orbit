@@ -1,28 +1,29 @@
 # SIT ORBIT
 
-> Two Campuses. Four Years. One Orbit.
+> 二つのキャンパス、四年間、一つの軌道。
 
-SIT ORBIT is a Personal Campus Agent for Shibaura Institute of Technology.
-It turns campus events into a concrete next action, records the result, and
-connects daily learning to long-term evidence.
+芝浦工業大学向けの個人用キャンパスエージェントです。
 
-This repository is an early foundation for the AI Innovators Cup 2026 demo.
-It contains:
+キャンパスで起きる出来事を次の行動に変え、その結果を記録し、日々の学びを長期的な成長の証拠へつなげます。
 
-- a FastAPI agent API,
-- a Next.js web application,
-- an Expo mobile application,
-- deterministic fixtures that do not call an external model,
-- optional OpenAI and W&B Weave adapters for synthetic demo data.
+このリポジトリは、AI Innovators Cup 2026のデモに向けた初期基盤です。
 
-## Requirements
+次の構成要素を含みます。
+
+- FastAPIで実装したエージェントAPI
+- Next.jsのWebアプリケーション
+- Expoのモバイルアプリケーション
+- 外部モデルを呼び出さない決定論的なfixture
+- 合成デモデータ向けのOpenAIおよびW&B Weaveのオプションアダプター
+
+## 環境要件
 
 - Python 3.13
 - uv
 - Node.js 24 LTS
 - pnpm 11.9.0
 
-## Setup
+## セットアップ
 
 ```bash
 uv sync
@@ -30,10 +31,11 @@ pnpm install
 pnpm generate:api
 ```
 
-Copy `.env.example` to `.env` only when you need the API demo or W&B traces.
-The default configuration uses the deterministic fixture backend.
+APIデモまたはW&Bのトレースを使う場合だけ、`.env.example`を`.env`へコピーしてください。
 
-## Run
+標準設定では、決定論的なfixtureバックエンドを使用します。
+
+## 起動
 
 ```bash
 uv run uvicorn orbit_api.main:app --app-dir services/api --reload
@@ -41,7 +43,7 @@ pnpm --filter @sit-orbit/web dev
 pnpm --filter @sit-orbit/mobile start
 ```
 
-## Verify
+## 検証
 
 ```bash
 uv run ruff check .
@@ -54,12 +56,12 @@ pnpm test
 pnpm build
 ```
 
-## Data policy
+## データポリシー
 
-W&B Weave and OpenAI are disabled by default.
-Only public or synthetic demonstration data may be sent to either service.
-Do not add student records, grades, private course materials, unpublished
-research, API keys, or OAuth tokens to this repository.
+W&B WeaveとOpenAIは、標準では無効になっています。
 
-See `docs/data-policy.md` for the full MVP policy.
-Personal Campus Agent for Shibaura Institute of Technology
+どちらのサービスにも、公開データまたは合成デモデータだけを送信できます。
+
+このリポジトリに、学生の記録、成績、非公開の授業資料、未公開の研究、APIキー、OAuthトークンを追加しないでください。
+
+MVPのデータポリシーについては、[`docs/data-policy.md`](docs/data-policy.md)を参照してください。
