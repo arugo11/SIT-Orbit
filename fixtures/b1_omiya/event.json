@@ -1,0 +1,12 @@
+{
+  "event_id": "evt-b1-omiya-campus-entry",
+  "event_type": "campus_entered",
+  "scenario_id": "b1-omiya-calculus",
+  "occurred_at": "2026-08-12T14:24:00+09:00",
+  "campus": "omiya",
+  "data_classification": "synthetic",
+  "payload": {
+    "minutes_until_next_class": 31,
+    "available_minutes": 18
+  }
+}
