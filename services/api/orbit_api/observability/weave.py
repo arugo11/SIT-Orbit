@@ -88,7 +88,7 @@ def init_observability() -> bool:
 
     weave.init(
         f"{entity}/{project}",
-        global_attributes={
+        attributes={
             "application": "sit-orbit",
             "data_policy": "synthetic-public-only",
             "agent_backend": os.getenv("ORBIT_AGENT_BACKEND", "fixture"),

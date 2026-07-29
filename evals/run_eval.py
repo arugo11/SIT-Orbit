@@ -50,7 +50,7 @@ async def run_wandb() -> int:
 
     weave.init(
         f"{entity}/{project}",
-        global_attributes={"application": "sit-orbit", "dataset": "synthetic"},
+        attributes={"application": "sit-orbit", "dataset": "synthetic"},
     )
     traced_predict = weave.op(name="agent.fixture_eval", kind="agent")(predict)
     traced_scorers: list[Any] = [
