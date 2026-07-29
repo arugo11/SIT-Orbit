@@ -9,6 +9,7 @@ __pycache__/
 .mypy_cache/
 .pyright/
 *.py[cod]
+*.tsbuildinfo
 node_modules/
 .next/
 dist/
