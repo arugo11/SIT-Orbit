@@ -54,6 +54,16 @@ describe("runtime page-context message boundaries", () => {
     ).toBe(false);
   });
 
+  it("rejects an alternate ScombZ port as a different origin", () => {
+    expect(
+      isPageContext({
+        title: "ScombZ",
+        url: "https://scombz.shibaura-it.ac.jp:8443/portal/home",
+        kind: "scombz",
+      }),
+    ).toBe(false);
+  });
+
   it("rejects unsafe nested URLs through the actual runtime message guard", () => {
     const unsafeValues = [
       "javascript:alert(1)",

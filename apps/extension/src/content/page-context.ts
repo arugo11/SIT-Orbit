@@ -66,9 +66,7 @@ export function isScombzUrl(value: string | undefined): boolean {
 
   try {
     const url = new URL(value);
-    return (
-      url.protocol === "https:" && url.hostname === "scombz.shibaura-it.ac.jp"
-    );
+    return url.origin === SCOMBZ_ORIGIN;
   } catch {
     return false;
   }
