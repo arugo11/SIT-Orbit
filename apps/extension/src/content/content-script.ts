@@ -1,0 +1,31 @@
+import { isRequestPageContextMessage, MESSAGE_TYPES } from "../shared/messages";
+import { mapPageContext } from "./page-context";
+
+function readPageContext() {
+  return mapPageContext({
+    title: document.title,
+    url: window.location.href,
+  });
+}
+
+function reportPageContext(): void {
+  const message = {
+    type: MESSAGE_TYPES.pageContextUpdated,
+    context: readPageContext(),
+  } as const;
+
+  void chrome.runtime.sendMessage(message).catch(() => undefined);
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!isRequestPageContextMessage(message)) {
+    return;
+  }
+
+  sendResponse(readPageContext());
+});
+
+reportPageContext();
+
+window.addEventListener("hashchange", reportPageContext);
+window.addEventListener("popstate", reportPageContext);
