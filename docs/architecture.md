@@ -228,8 +228,8 @@ OAuth token、Cookie、パスワードをFastAPIへ送信しない。
 ### Branch 4 Google Calendar読み取りの実装境界
 
 ExtensionのSide Panelから、利用者が明示的に接続、更新、再認証、切断を押した場合だけ、Chrome Identity APIでGoogle Calendarの予定を読み取る。
-予定取得は`primary`カレンダーの今日00:00から7日後00:00までに限定し、認証トークンはExtension内の単一リクエストのAuthorizationヘッダーにだけ使用する。
-トークンをFastAPI、DOM、Extension storage、ログへ渡さず、予定の書き込みも行わない。
+予定取得は`primary`カレンダーの今日00:00から7日後00:00までに限定する。認証トークンはService Worker内に閉じ込め、通常の予定取得ではAuthorizationヘッダーにだけ使用する。利用者が切断を明示した場合に限り、同じService WorkerからGoogleのOAuth失効エンドポイントへ送信し、ローカルのキャッシュも削除する。
+トークンをFastAPI、DOM、Extension storage、ログへ渡さず、予定の書き込みも行わない。OAuth失効以外の外部エンドポイントへトークンを送信しない。
 
 通常のfixture CIにはGoogle OAuth client IDを含めない。
 登録済みChrome拡張OAuth client IDは`ORBIT_GOOGLE_OAUTH_CLIENT_ID`のbuild-time設定として後から注入できるが、Calendar API有効化、同意設定、demo accountを含むProvider acceptanceが成立するまでは、実Google連携を成功済みとは扱わない。

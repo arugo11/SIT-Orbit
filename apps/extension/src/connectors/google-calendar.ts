@@ -270,6 +270,15 @@ export class GoogleCalendarConnector implements CalendarConnector {
       }
 
       response = await this.fetchEvents(replacementToken, window);
+      if (response.kind === "http" && response.failure.status === 401) {
+        try {
+          await this.identity.removeCachedAuthToken({
+            token: replacementToken,
+          });
+        } catch {
+          // The UI still needs an explicit reauthentication state.
+        }
+      }
     }
 
     if (response.kind === "http") {

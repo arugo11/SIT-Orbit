@@ -349,7 +349,10 @@ describe("Google Calendar connector adversarial boundaries", () => {
     expect(result).toMatchObject({ status: "reauth_required" });
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(identity.getAuthToken).toHaveBeenCalledTimes(2);
-    expect(identity.removeCachedAuthToken).toHaveBeenCalledTimes(1);
+    expect(identity.removeCachedAuthToken).toHaveBeenCalledTimes(2);
+    expect(identity.removeCachedAuthToken).toHaveBeenNthCalledWith(2, {
+      token: "fresh-token",
+    });
   });
 
   it("[CAL-009] does not broaden scope after a permission 403", async () => {
