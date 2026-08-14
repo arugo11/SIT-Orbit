@@ -51,3 +51,21 @@ Data Sharingを有効にするProjectには、公開・合成データ以外を�
 `.env`、秘密鍵、API key、個人資料、提出フォームの原本はGitへ追加しない。
 
 公開へ切り替える前に、履歴を含めた秘密情報と個人情報の確認を別途行う。
+
+## Browser extension and connectors
+
+Chrome拡張機能は、初期版ではScombZの表示中ページから必要な情報だけを読み取る。
+
+ページのHTML全体、Cookie、OAuth token、パスワード、ブラウザ履歴をAgent APIへ送信しない。
+
+ScombZ以外のサービスは、サービスごとのOAuth同意、正式API、または利用者が明示的に開いたページの読み取りを必要とする。
+
+ScombZへのログイン状態を、Google Drive、Google Calendar、Microsoft Graph、SIT Portfolio、CAST、OPACの認証として扱わない。
+
+Connectorは、`not_connected`、`connected`、`reauth_required`、`unavailable`の状態を表示する。
+
+外部サービスへの書き込みは、Agentが候補を作成した後、利用者が確認した場合だけ実行する。
+
+拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
+
+実データを扱うConnectorを追加する場合は、送信先、保存期間、削除方法、利用目的、大学の許可範囲を個別に確認する。
