@@ -1,6 +1,7 @@
 import { isScombzUrl, type PageContext } from "../content/page-context";
 import {
   isGetPageContextMessage,
+  isPageContext,
   isPageContextUpdatedMessage,
   MESSAGE_TYPES,
 } from "../shared/messages";
@@ -34,17 +35,16 @@ async function updateTabPanel(tabId: number, url?: string): Promise<void> {
   }
 }
 
-async function requestActivePageContext(): Promise<PageContext | null> {
+async function requestPageContextForTab(
+  tabId: number,
+): Promise<PageContext | null> {
   try {
-    const [activeTab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-    if (activeTab?.id === undefined || !isScombzUrl(activeTab.url)) {
+    const tab = await chrome.tabs.get(tabId);
+    if (!isScombzUrl(tab.url)) {
       return null;
     }
 
-    const context = await chrome.tabs.sendMessage(activeTab.id, {
+    const context = await chrome.tabs.sendMessage(tabId, {
       type: MESSAGE_TYPES.requestPageContext,
     });
     return isPageContext(context) ? context : null;
@@ -53,17 +53,42 @@ async function requestActivePageContext(): Promise<PageContext | null> {
   }
 }
 
-function isPageContext(value: unknown): value is PageContext {
-  if (typeof value !== "object" || value === null) {
-    return false;
-  }
+async function requestActivePageContext(): Promise<PageContext | null> {
+  try {
+    const [activeTab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    if (activeTab?.id === undefined) {
+      return null;
+    }
 
-  const candidate = value as Record<string, unknown>;
-  return (
-    typeof candidate.title === "string" &&
-    typeof candidate.url === "string" &&
-    typeof candidate.kind === "string"
-  );
+    return requestPageContextForTab(activeTab.id);
+  } catch {
+    return null;
+  }
+}
+
+async function broadcastActivePageContext(
+  tabId: number,
+  context: PageContext | null,
+): Promise<void> {
+  try {
+    const [activeTab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    if (activeTab?.id !== tabId) {
+      return;
+    }
+
+    await chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.pageContextUpdated,
+      context,
+    });
+  } catch {
+    // The active tab or side panel can disappear while Chrome is switching.
+  }
 }
 
 function configureActionClick(): void {
@@ -84,6 +109,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   void updateTabPanel(tabId);
+  void requestPageContextForTab(tabId).then((context) =>
+    broadcastActivePageContext(tabId, context),
+  );
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -93,6 +121,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (isPageContextUpdatedMessage(message) && sender.tab !== undefined) {
-    void chrome.runtime.sendMessage(message).catch(() => undefined);
+    void broadcastActivePageContext(sender.tab.id ?? -1, message.context);
   }
 });

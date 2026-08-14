@@ -9,7 +9,10 @@ export const MESSAGE_TYPES = {
 export type ExtensionMessage =
   | { type: typeof MESSAGE_TYPES.getPageContext }
   | { type: typeof MESSAGE_TYPES.requestPageContext }
-  | { type: typeof MESSAGE_TYPES.pageContextUpdated; context: PageContext };
+  | {
+      type: typeof MESSAGE_TYPES.pageContextUpdated;
+      context: PageContext | null;
+    };
 
 export function isGetPageContextMessage(message: unknown): message is {
   type: typeof MESSAGE_TYPES.getPageContext;
@@ -25,13 +28,13 @@ export function isRequestPageContextMessage(message: unknown): message is {
 
 export function isPageContextUpdatedMessage(message: unknown): message is {
   type: typeof MESSAGE_TYPES.pageContextUpdated;
-  context: PageContext;
+  context: PageContext | null;
 } {
   if (!isRecord(message) || message.type !== MESSAGE_TYPES.pageContextUpdated) {
     return false;
   }
 
-  return isPageContext(message.context);
+  return message.context === null || isPageContext(message.context);
 }
 
 export function isPageContext(value: unknown): value is PageContext {
