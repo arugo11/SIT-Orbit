@@ -18,6 +18,7 @@ describe("production extension contract", () => {
     expect(manifest.permissions).toEqual(["sidePanel"]);
     expect(manifest.host_permissions).toEqual([
       "https://scombz.shibaura-it.ac.jp/*",
+      "http://localhost:8000/*",
     ]);
     expect(manifest.background.service_worker).toBe("service-worker.js");
     expect(manifest.side_panel).toBeUndefined();
