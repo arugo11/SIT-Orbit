@@ -310,7 +310,7 @@ export function App() {
           {loopState.status === "proposed" ? (
             <div className="approval-controls">
               <label htmlFor="change-note">
-                変更メモ（任意）
+                完了時に添えるメモ（任意）
                 <textarea
                   id="change-note"
                   value={loopState.changeNote}
@@ -323,6 +323,9 @@ export function App() {
                   }
                   rows={3}
                 />
+                <small>
+                  提案内容は変更せず、完了イベントのnotesにだけ添付します。
+                </small>
               </label>
               <div className="button-row">
                 <button

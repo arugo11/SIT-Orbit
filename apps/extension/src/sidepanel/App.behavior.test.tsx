@@ -222,6 +222,9 @@ describe("Side Panel B1 agent loop behavior", () => {
       jsonResponse(validCompletionEvent),
     ]);
     mounted = await openProposal(fetcher);
+    expect(mounted.document.body.textContent).toContain(
+      "完了時に添えるメモ（任意）",
+    );
     await click(buttonByName(mounted.document, "提案を承認する"));
     expect(fetcher).toHaveBeenCalledTimes(1);
 
