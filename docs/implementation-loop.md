@@ -14,6 +14,12 @@ merge後の`main` CIがgreenになるまで、最初の実装branchを作成し�
 
 実装branchは常に最新の`origin/main`から作成する。
 
+Branch 1〜6はユーザーが承認した段階的なroadmapである。
+
+roadmapを実装することは、ScombZ、Google、Azureなどの正式連携が既に許可されていることを意味しない。
+
+providerを使うbranchでは、その時点の要件、利用者の同意、外部サービスの権限を別々に確認し、条件が満たせなければ`BLOCKED`とする。
+
 Repositoryのauto-merge設定や新しいRulesetは追加しない。
 
 Codexは`main`へ直接pushせず、PRの最新HEADに対するrequired CIの成功を確認してから手動でmergeする。
@@ -157,6 +163,10 @@ timeout、retry、version、OAuth scopeなどの重要値は、公式仕様、�
 ## Agentの役割
 
 同一branch上でwrite-heavy Agentを並列実行しない。
+
+以下のAgent分担はproduction codeを変更するroadmap branchに適用する。
+
+docsだけを変更するbranchでは、親Codexがdiffと検証結果を確認すればよく、実装Agentや独立Test Agentを追加しない。
 
 ### Implementation Agent
 
@@ -370,7 +380,10 @@ docs PRがmainへmergeされ、main CIがgreenになった後、token budgetを�
 
 ```text
 docs/implementation-plan.mdとdocs/implementation-loop.mdに従い、
-SIT ORBITのBranches 1〜6を順番に完成させる。
+SIT ORBITのroadmap Branches 1〜6を順番に評価し、現在の要件と権限が成立するbranchを完成させる。
+
+provider権限や具体的な利用要件が成立しないbranchは、実装を続けず、根拠を記録してBLOCKEDとする。
+
 Branch 7は文書の導入条件を現在の証拠が満たす場合だけ実装し、
 満たさない場合は理由を記録してskipする。将来branchは対象外とする。
 
@@ -414,6 +427,7 @@ merge後のmain CIがgreenになるまで次branchへ進まない。
 指定model/effort利用不能、Reviewerのread-only違反、破壊的操作、
 current MVPを越えるmaterial expansionが必要な場合はfallbackせずBLOCKEDとする。
 
-完了条件はBranches 1〜6のmerge、各main CIのgreen、Branch 7の実施またはskip判断、
+完了条件は、実装対象として承認されたroadmap branchのmerge、各main CIのgreen、
+未承認または権限不足branchのBLOCKED記録、Branch 7の実施またはskip判断、
 各PR本文への調査・判断・テスト・レビュー・CI記録である。
 ```

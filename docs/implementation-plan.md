@@ -31,13 +31,17 @@ codex/scombz-context-adapter
         ▼
 codex/sidepanel-agent-loop
         │
-        ├── codex/google-calendar-readonly
+        ▼
+codex/google-calendar-readonly
         │
-        ├── codex/google-drive-picker
+        ▼
+codex/google-drive-picker
         │
-        ├── codex/azure-demo-runtime
+        ▼
+codex/azure-demo-runtime
         │
-        └── codex/pydantic-ai-adapter（導入条件を満たした場合）
+        ▼
+codex/pydantic-ai-adapter（導入条件を満たした場合）
 ```
 
 `codex/document-agent-architecture`は、設計文書を保存するための現在のブランチである。
@@ -318,6 +322,12 @@ Azure AI Searchは、このブランチの必須条件に含めない。
 - 変更範囲をPR本文で説明できる
 
 ブランチは長期間保持せず、PRをマージした後に次のブランチを`main`から作成する。
+
+Branch 1〜6は、現在のMVPへ無条件に組み込む機能一覧ではなく、ユーザーが承認した段階的なroadmapである。
+
+Google、Azureなどのprovider branchは、各段階で現在の要件、利用者の同意、外部サービスの権限を確認する。
+
+条件を満たせない場合は、fixtureによる成功を実連携成功と扱わず、当該branchを`BLOCKED`として停止する。
 
 通常開発では、次のコマンドを最小確認として利用する。
 
