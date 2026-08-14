@@ -1,10 +1,45 @@
+import {
+  type CalendarConnectorResult,
+  GoogleCalendarConnector,
+} from "../connectors/google-calendar";
 import { isScombzUrl, type PageContext } from "../content/page-context";
 import {
+  type CalendarCommandMessage,
+  isCalendarCommandMessage,
   isGetPageContextMessage,
   isPageContext,
   isPageContextUpdatedMessage,
   MESSAGE_TYPES,
 } from "../shared/messages";
+
+const googleCalendarConnector = new GoogleCalendarConnector();
+
+function unavailableCalendarResult(): CalendarConnectorResult {
+  return {
+    status: "unavailable",
+    message:
+      "Google Calendarを利用できません。時間をおいて再試行してください。",
+  };
+}
+
+async function handleCalendarCommand(
+  message: CalendarCommandMessage,
+): Promise<CalendarConnectorResult> {
+  try {
+    switch (message.type) {
+      case MESSAGE_TYPES.calendarConnect:
+        return await googleCalendarConnector.connect();
+      case MESSAGE_TYPES.calendarRefresh:
+        return await googleCalendarConnector.refresh();
+      case MESSAGE_TYPES.calendarReauthenticate:
+        return await googleCalendarConnector.reauthenticate();
+      case MESSAGE_TYPES.calendarDisconnect:
+        return await googleCalendarConnector.disconnect();
+    }
+  } catch {
+    return unavailableCalendarResult();
+  }
+}
 
 async function setTabPanelEnabled(
   tabId: number,
@@ -115,6 +150,15 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (isCalendarCommandMessage(message)) {
+    if (sender.tab !== undefined) {
+      sendResponse(unavailableCalendarResult());
+      return true;
+    }
+    void handleCalendarCommand(message).then(sendResponse);
+    return true;
+  }
+
   if (isGetPageContextMessage(message)) {
     void requestActivePageContext().then(sendResponse);
     return true;

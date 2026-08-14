@@ -1,4 +1,13 @@
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { MESSAGE_TYPES } from "../shared/messages";
 
 type EventCallback = (...args: never[]) => void;
 
@@ -26,6 +35,10 @@ const sendMessage = vi.fn(async (_message: unknown) => undefined);
 const queryTabs = vi.fn(
   async (_query: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]> => [],
 );
+const getAuthToken = vi.fn(async () => "calendar-worker-token");
+const removeCachedAuthToken = vi.fn(
+  async (_details: { token: string }) => undefined,
+);
 
 const chromeMock = {
   runtime: {
@@ -47,6 +60,10 @@ const chromeMock = {
     query: queryTabs,
     sendMessage: vi.fn(async (_tabId: number, _message: unknown) => undefined),
   },
+  identity: {
+    getAuthToken,
+    removeCachedAuthToken,
+  },
 } as unknown as typeof chrome;
 
 Object.defineProperty(globalThis, "chrome", {
@@ -60,12 +77,18 @@ afterAll(() => {
   Reflect.deleteProperty(globalThis, "chrome");
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 describe("service worker side panel contract", () => {
   beforeEach(() => {
     setOptions.mockClear();
     setPanelBehavior.mockClear();
     sendMessage.mockClear();
     queryTabs.mockClear();
+    getAuthToken.mockClear();
+    removeCachedAuthToken.mockClear();
   });
 
   it("enables the panel per tab and preserves its path for ScombZ and other origins", async () => {
@@ -115,5 +138,33 @@ describe("service worker side panel contract", () => {
 
     await vi.waitFor(() => expect(chromeMock.tabs.query).toHaveBeenCalled());
     expect(sendMessage).not.toHaveBeenCalledWith(message);
+  });
+
+  it("[SW-001] rejects every calendar command from a content-script sender before identity or fetch", async () => {
+    const token = "calendar-worker-token";
+    const liveFetch = vi.fn(async () => {
+      throw new Error("live Google fetch must not run for content scripts");
+    });
+    vi.stubGlobal("fetch", liveFetch);
+
+    const commandTypes = [
+      MESSAGE_TYPES.calendarConnect,
+      MESSAGE_TYPES.calendarRefresh,
+      MESSAGE_TYPES.calendarReauthenticate,
+      MESSAGE_TYPES.calendarDisconnect,
+    ] as const;
+    for (const type of commandTypes) {
+      const response = vi.fn();
+      onMessage.dispatch({ type }, { tab: { id: 77 } }, response);
+      await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+      expect(response).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "unavailable" }),
+      );
+      expect(JSON.stringify(response.mock.calls)).not.toContain(token);
+    }
+
+    expect(getAuthToken).not.toHaveBeenCalled();
+    expect(removeCachedAuthToken).not.toHaveBeenCalled();
+    expect(liveFetch).not.toHaveBeenCalled();
   });
 });

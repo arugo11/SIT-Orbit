@@ -14,7 +14,23 @@ export const MESSAGE_TYPES = {
   getPageContext: "get-page-context",
   requestPageContext: "request-page-context",
   pageContextUpdated: "page-context-updated",
+  calendarConnect: "calendar-connect",
+  calendarRefresh: "calendar-refresh",
+  calendarReauthenticate: "calendar-reauthenticate",
+  calendarDisconnect: "calendar-disconnect",
 } as const;
+
+export type CalendarCommand =
+  | "connect"
+  | "refresh"
+  | "reauthenticate"
+  | "disconnect";
+
+export type CalendarCommandMessage =
+  | { type: typeof MESSAGE_TYPES.calendarConnect }
+  | { type: typeof MESSAGE_TYPES.calendarRefresh }
+  | { type: typeof MESSAGE_TYPES.calendarReauthenticate }
+  | { type: typeof MESSAGE_TYPES.calendarDisconnect };
 
 export type ExtensionMessage =
   | { type: typeof MESSAGE_TYPES.getPageContext }
@@ -22,7 +38,8 @@ export type ExtensionMessage =
   | {
       type: typeof MESSAGE_TYPES.pageContextUpdated;
       context: PageContext | null;
-    };
+    }
+  | CalendarCommandMessage;
 
 export function isGetPageContextMessage(message: unknown): message is {
   type: typeof MESSAGE_TYPES.getPageContext;
@@ -45,6 +62,33 @@ export function isPageContextUpdatedMessage(message: unknown): message is {
   }
 
   return message.context === null || isPageContext(message.context);
+}
+
+export function isCalendarCommandMessage(
+  message: unknown,
+): message is CalendarCommandMessage {
+  return (
+    isRecord(message) &&
+    (message.type === MESSAGE_TYPES.calendarConnect ||
+      message.type === MESSAGE_TYPES.calendarRefresh ||
+      message.type === MESSAGE_TYPES.calendarReauthenticate ||
+      message.type === MESSAGE_TYPES.calendarDisconnect)
+  );
+}
+
+export function calendarCommandMessage(
+  command: CalendarCommand,
+): CalendarCommandMessage {
+  switch (command) {
+    case "connect":
+      return { type: MESSAGE_TYPES.calendarConnect };
+    case "refresh":
+      return { type: MESSAGE_TYPES.calendarRefresh };
+    case "reauthenticate":
+      return { type: MESSAGE_TYPES.calendarReauthenticate };
+    case "disconnect":
+      return { type: MESSAGE_TYPES.calendarDisconnect };
+  }
 }
 
 export function isPageContext(value: unknown): value is PageContext {
