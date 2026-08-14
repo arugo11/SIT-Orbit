@@ -3,7 +3,7 @@
   "private": true,
   "packageManager": "pnpm@11.9.0",
   "scripts": {
-    "build": "pnpm --filter @sit-orbit/web build && pnpm --filter @sit-orbit/mobile build",
+    "build": "pnpm --filter @sit-orbit/web build && pnpm --filter @sit-orbit/mobile build && pnpm --filter @sit-orbit/extension build",
     "generate:api": "PYTHONPATH=services/api uv run python scripts/export_openapi.py && pnpm --filter @sit-orbit/api-client generate",
     "lint": "biome check .",
     "lint:fix": "biome check --write .",

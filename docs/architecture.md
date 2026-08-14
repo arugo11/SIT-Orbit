@@ -75,18 +75,15 @@ Chromeの設定によってパネルの左右が変わるため、UIは右側に
 {
   "manifest_version": 3,
   "permissions": [
-    "sidePanel",
-    "storage",
-    "alarms"
+    "sidePanel"
   ],
   "host_permissions": [
     "https://scombz.shibaura-it.ac.jp/*"
-  ],
-  "side_panel": {
-    "default_path": "sidepanel.html"
-  }
+  ]
 }
 ```
+
+Side Panelのパスは、ScombZのタブを検出したService Workerが`sidePanel.setOptions()`へ渡す。全サイト共通の`default_path`は宣言しない。
 
 `identity`はGoogle連携を実装するときに追加する。
 
@@ -100,9 +97,7 @@ Content ScriptはScombZのDOMを読み取り、ページと拡張機能の間で
 
 Content ScriptはページのJavaScript環境から分離されたIsolated Worldで動作し、Chrome APIの多くはService Workerとのメッセージ交換を経由して利用する。[Content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)
 
-Service Workerのメモリを長期状態の正本にしない。
-
-タブの現在状態はページから再取得できる形にし、短期キャッシュは`chrome.storage.local`へ保存する。
+Service Workerのメモリを長期状態の正本にしない。Branch 1ではタブの現在状態をContent Scriptから再取得できるため、`chrome.storage`によるキャッシュも持たない。
 
 ## ScombZ Adapter
 
@@ -298,7 +293,7 @@ W&Bへ送るデータは`synthetic`または`public`だけとする。
 - `apps/extension`を追加する
 - Side Panel、Content Script、Service Workerを起動する
 - 現在ページのタイトル、URL、ページ種別を表示する
-- FixtureAgentへ接続する
+- ローカルの静的fixtureを表示する（FastAPIやFixtureAgentへは接続しない）
 
 ### Phase 2：ScombZのB1シナリオ
 
