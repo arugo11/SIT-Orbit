@@ -1,4 +1,14 @@
-import type { PageContext } from "../content/page-context";
+import {
+  classifyPageKind,
+  type PageContext,
+  type ScombzAnnouncement,
+  type ScombzCalendar,
+  type ScombzCourse,
+  type ScombzLink,
+  type ScombzPageData,
+  type ScombzRoute,
+  type ScombzTask,
+} from "../content/page-context";
 
 export const MESSAGE_TYPES = {
   getPageContext: "get-page-context",
@@ -42,11 +52,110 @@ export function isPageContext(value: unknown): value is PageContext {
     return false;
   }
 
-  return (
+  if (
     typeof value.title === "string" &&
     typeof value.url === "string" &&
-    typeof value.kind === "string"
+    (value.kind === "scombz" || value.kind === "other")
+  ) {
+    if (classifyPageKind(value.url) !== value.kind) {
+      return false;
+    }
+
+    return (
+      !("scombz" in value) ||
+      (value.kind === "scombz" && isScombzPageData(value.scombz))
+    );
+  }
+
+  return false;
+}
+
+function isScombzPageData(value: unknown): value is ScombzPageData {
+  if (!isRecord(value) || !isScombzRoute(value.route)) {
+    return false;
+  }
+
+  return (
+    Array.isArray(value.tasks) &&
+    value.tasks.every(isScombzTask) &&
+    Array.isArray(value.announcements) &&
+    value.announcements.every(isScombzAnnouncement) &&
+    isScombzCalendar(value.calendar) &&
+    (value.currentCourse === null || isScombzCourse(value.currentCourse)) &&
+    Array.isArray(value.relatedLinks) &&
+    value.relatedLinks.every(isScombzLink)
   );
+}
+
+function isScombzRoute(value: unknown): value is ScombzRoute {
+  return (
+    value === "home" ||
+    value === "tasks" ||
+    value === "timetable" ||
+    value === "announcements" ||
+    value === "calendar" ||
+    value === "course" ||
+    value === "other"
+  );
+}
+
+function isScombzTask(value: unknown): value is ScombzTask {
+  return (
+    isRecord(value) &&
+    typeof value.course === "string" &&
+    typeof value.title === "string" &&
+    typeof value.deadline === "string" &&
+    isNullableSafeHttpUrl(value.url)
+  );
+}
+
+function isScombzAnnouncement(value: unknown): value is ScombzAnnouncement {
+  return (
+    isRecord(value) &&
+    typeof value.title === "string" &&
+    isNullableSafeHttpUrl(value.url)
+  );
+}
+
+function isScombzCalendar(value: unknown): value is ScombzCalendar {
+  return (
+    isRecord(value) &&
+    isNullableSafeHttpUrl(value.googleCalendarUrl) &&
+    isNullableSafeHttpUrl(value.icsUrl)
+  );
+}
+
+function isScombzCourse(value: unknown): value is ScombzCourse {
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    isSafeHttpUrl(value.url)
+  );
+}
+
+function isScombzLink(value: unknown): value is ScombzLink {
+  return (
+    isRecord(value) &&
+    typeof value.label === "string" &&
+    isSafeHttpUrl(value.url)
+  );
+}
+
+function isNullableSafeHttpUrl(value: unknown): value is string | null {
+  return value === null || isSafeHttpUrl(value);
+}
+
+function isSafeHttpUrl(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function isMessageType(

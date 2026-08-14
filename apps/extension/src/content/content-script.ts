@@ -1,11 +1,14 @@
 import { isRequestPageContextMessage, MESSAGE_TYPES } from "../shared/messages";
-import { mapPageContext } from "./page-context";
+import { parseScombzPageContext } from "./page-context";
 
 function readPageContext() {
-  return mapPageContext({
-    title: document.title,
-    url: window.location.href,
-  });
+  return parseScombzPageContext(
+    {
+      title: document.title,
+      url: window.location.href,
+    },
+    document,
+  );
 }
 
 function reportPageContext(): void {

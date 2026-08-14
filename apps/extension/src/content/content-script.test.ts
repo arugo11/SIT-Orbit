@@ -25,6 +25,8 @@ const windowMock = {
 
 const documentMock = {
   title: "ScombZ",
+  querySelector: vi.fn(() => null),
+  querySelectorAll: vi.fn(() => []),
 } as unknown as Document;
 
 const chromeMock = {
@@ -78,6 +80,17 @@ describe("content script navigation contract", () => {
         title: "課題一覧",
         url: nextUrl,
         kind: "scombz",
+        scombz: {
+          route: "course",
+          tasks: [],
+          announcements: [],
+          calendar: {
+            googleCalendarUrl: null,
+            icsUrl: null,
+          },
+          currentCourse: null,
+          relatedLinks: [],
+        },
       },
     });
   });

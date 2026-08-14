@@ -87,6 +87,26 @@ export function App() {
               <dt>URL</dt>
               <dd className="url-value">{pageContext.url}</dd>
             </div>
+            {pageContext.scombz ? (
+              <>
+                <div>
+                  <dt>ルート</dt>
+                  <dd>{pageContext.scombz.route}</dd>
+                </div>
+                <div>
+                  <dt>課題</dt>
+                  <dd>{pageContext.scombz.tasks.length}件</dd>
+                </div>
+                <div>
+                  <dt>お知らせ</dt>
+                  <dd>{pageContext.scombz.announcements.length}件</dd>
+                </div>
+                <div>
+                  <dt>関連リンク</dt>
+                  <dd>{pageContext.scombz.relatedLinks.length}件</dd>
+                </div>
+              </>
+            ) : null}
           </dl>
         ) : (
           <p className="empty-state">ScombZページの情報を待っています。</p>
