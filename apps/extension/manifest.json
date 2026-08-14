@@ -5,7 +5,10 @@
   "version": "0.1.0",
   "minimum_chrome_version": "116",
   "permissions": ["sidePanel"],
-  "host_permissions": ["https://scombz.shibaura-it.ac.jp/*"],
+  "host_permissions": [
+    "https://scombz.shibaura-it.ac.jp/*",
+    "http://localhost:8000/*"
+  ],
   "background": {
     "service_worker": "service-worker.js"
   },

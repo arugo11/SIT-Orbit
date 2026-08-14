@@ -67,7 +67,10 @@ if (
   manifest.manifest_version !== 3 ||
   JSON.stringify(manifest.permissions) !== JSON.stringify(["sidePanel"]) ||
   JSON.stringify(manifest.host_permissions) !==
-    JSON.stringify(["https://scombz.shibaura-it.ac.jp/*"]) ||
+    JSON.stringify([
+      "https://scombz.shibaura-it.ac.jp/*",
+      "http://localhost:8000/*",
+    ]) ||
   manifest.side_panel !== undefined ||
   manifest.background?.service_worker !== "service-worker.js"
 ) {
