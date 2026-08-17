@@ -18,6 +18,19 @@ def test_health() -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_MODEL", raising=False)
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_propose_and_verify_action(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")

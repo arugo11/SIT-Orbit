@@ -11,9 +11,22 @@ PROMPT_VERSION = "openai-next-action-v1"
 class OpenAIAgent:
     """Demo-only OpenAI backend using the Responses API and structured output."""
 
-    def __init__(self, *, api_key: str, model: str) -> None:
-        self.client = AsyncOpenAI(api_key=api_key)
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        provider_name: str = "OpenAI",
+        action_id_prefix: str = "act-openai",
+    ) -> None:
+        if base_url is None:
+            self.client = AsyncOpenAI(api_key=api_key)
+        else:
+            self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
+        self.provider_name = provider_name
+        self.action_id_prefix = action_id_prefix
 
     async def propose_action(
         self,
@@ -23,7 +36,9 @@ class OpenAIAgent:
         classifications = {event.data_classification}
         classifications.update(item.data_classification for item in context)
         if not classifications.issubset({"synthetic", "public"}):
-            raise ValueError("The OpenAI demo backend accepts only synthetic or public data.")
+            raise ValueError(
+                f"The {self.provider_name} demo backend accepts only synthetic or public data."
+            )
 
         evidence_text = "\n".join(
             f"- {item.evidence_id}: {item.title} ({item.source_type}, {item.locator})"
@@ -55,8 +70,8 @@ class OpenAIAgent:
         )
         proposal = response.output_parsed
         if proposal is None:
-            raise RuntimeError("OpenAI returned no structured action proposal.")
-        return proposal.model_copy(update={"action_id": f"act-openai-{uuid4()}"})
+            raise RuntimeError(f"{self.provider_name} returned no structured action proposal.")
+        return proposal.model_copy(update={"action_id": f"{self.action_id_prefix}-{uuid4()}"})
 
 
 def build_openai_agent() -> OpenAIAgent:
