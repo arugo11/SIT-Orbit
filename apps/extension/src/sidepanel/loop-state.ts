@@ -3,6 +3,9 @@ import type { ActionProposal, OrbitEvent } from "../api/client";
 export type AgentLoopStatus =
   | "idle"
   | "proposing"
+  | "tool-running"
+  | "reauth_required"
+  | "resuming"
   | "proposed"
   | "approved"
   | "rejected"
@@ -16,6 +19,8 @@ export interface AgentLoopState {
   completionEvent: OrbitEvent | null;
   changeNote: string;
   error: string | null;
+  pendingRunId: string | null;
+  pendingToolCallId: string | null;
 }
 
 export const initialAgentLoopState: AgentLoopState = {
@@ -24,10 +29,15 @@ export const initialAgentLoopState: AgentLoopState = {
   completionEvent: null,
   changeNote: "",
   error: null,
+  pendingRunId: null,
+  pendingToolCallId: null,
 };
 
 export type AgentLoopAction =
   | { type: "propose-started" }
+  | { type: "tool-started"; runId: string; toolCallId: string }
+  | { type: "reauth-required"; error: string }
+  | { type: "resume-started" }
   | { type: "proposal-received"; proposal: ActionProposal }
   | { type: "proposal-failed"; error: string }
   | { type: "note-changed"; note: string }
@@ -53,6 +63,28 @@ export function agentLoopReducer(
         status: "proposed",
         proposal: action.proposal,
         completionEvent: null,
+        error: null,
+        pendingRunId: null,
+        pendingToolCallId: null,
+      };
+    case "tool-started":
+      return {
+        ...state,
+        status: "tool-running",
+        pendingRunId: action.runId,
+        pendingToolCallId: action.toolCallId,
+        error: null,
+      };
+    case "reauth-required":
+      return {
+        ...state,
+        status: "reauth_required",
+        error: action.error,
+      };
+    case "resume-started":
+      return {
+        ...state,
+        status: "resuming",
         error: null,
       };
     case "proposal-failed":

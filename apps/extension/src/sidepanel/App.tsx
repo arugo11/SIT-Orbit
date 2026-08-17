@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useState } from "react";
 import {
   type ActionProposal,
+  type AgentRunResponse,
   AgentApiClient,
   DEFAULT_AGENT_API_BASE,
   type OrbitEvent,
@@ -10,6 +11,7 @@ import {
   type CalendarConnectorResult,
   type CalendarEventView,
   formatAvailabilitySummary,
+  projectCalendarAvailability,
 } from "../connectors/google-calendar";
 import type {
   DriveConnector,
@@ -842,13 +844,57 @@ export function App({
         .filter((evidence): evidence is NonNullable<typeof evidence> =>
           Boolean(evidence),
         );
-      const proposal = await agentApiClient.propose({
+      let runResponse: AgentRunResponse = await agentApiClient.startRun({
         event: B1_OMIYA_EVENT,
         context: [...B1_OMIYA_CONTEXT, ...fixtureEvidence],
+        client_tools:
+          calendarState.status === "connected" && calendarState.snapshot
+            ? [{ name: "google_calendar_availability", version: 1 }]
+            : [],
       });
+      if (runResponse.status === "tool_required") {
+        const [call] = runResponse.calls;
+        if (!call) {
+          throw new Error("Calendar tool call was missing.");
+        }
+        dispatch({
+          type: "tool-started",
+          runId: runResponse.run_id,
+          toolCallId: call.tool_call_id,
+        });
+        const refreshed = calendarConnector
+          ? await calendarConnector.refresh()
+          : await calendarRequest("refresh");
+        setCalendarState(refreshed);
+        if (refreshed.status === "reauth_required") {
+          dispatch({
+            type: "reauth-required",
+            error: refreshed.message ?? "Google Calendarの再認証が必要です。",
+          });
+          return;
+        }
+        if (refreshed.status !== "connected" || !refreshed.snapshot) {
+          throw new Error(
+            refreshed.message ??
+              "Google Calendarの空き時間を取得できなかったため、提案を続行できません。",
+          );
+        }
+        dispatch({ type: "resume-started" });
+        runResponse = await agentApiClient.submitToolResult(
+          runResponse.run_id,
+          {
+            tool_call_id: call.tool_call_id,
+            result: projectCalendarAvailability(refreshed.snapshot),
+          },
+        );
+      }
+      if (runResponse.status !== "completed") {
+        throw new Error("Calendar toolを1回で完了できませんでした。");
+      }
+      const proposal = runResponse.proposal;
       if (!isSafeB1Proposal(proposal)) {
         throw new Error(
-          "synthetic または public の根拠だけを表示できる提案ではありません。",
+          "synthetic/public または導出済みCalendar空き時間だけを表示できます。",
         );
       }
       dispatch({ type: "proposal-received", proposal });
@@ -1011,11 +1057,17 @@ export function App({
             onClick={() => void requestProposal()}
             disabled={
               loopState.status === "proposing" ||
+              loopState.status === "tool-running" ||
+              loopState.status === "resuming" ||
               loopState.status === "verifying"
             }
           >
             {loopState.status === "proposing"
               ? "提案を取得中…"
+              : loopState.status === "tool-running"
+                ? "Calendarを更新中…"
+                : loopState.status === "resuming"
+                  ? "提案を再開中…"
               : loopState.proposal
                 ? "B1 大宮の提案を再取得"
                 : "B1 大宮の提案を作成"}
@@ -1023,6 +1075,21 @@ export function App({
           <p className="action-note">
             ボタンを押したときだけ、合成データをローカル Agent API に送ります。
           </p>
+          {loopState.status === "tool-running" ? (
+            <p className="state-message" data-agent-status="tool-running">
+              Google Calendarを非対話で更新しています。認証画面は自動では開きません。
+            </p>
+          ) : null}
+          {loopState.status === "resuming" ? (
+            <p className="state-message" data-agent-status="resuming">
+              Calendarの導出結果をAgentへ渡して提案を再開しています。
+            </p>
+          ) : null}
+          {loopState.status === "reauth_required" ? (
+            <p className="state-message" data-agent-status="reauth-required">
+              Calendarの再認証が必要です。明示的に再認証してから、提案ボタンを押してください。
+            </p>
+          ) : null}
         </div>
       </section>
 

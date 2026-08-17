@@ -5,6 +5,14 @@ export type OrbitEvent = components["schemas"]["OrbitEvent"];
 export type ProposeActionRequest =
   components["schemas"]["ProposeActionRequest"];
 export type VerifyActionRequest = components["schemas"]["VerifyActionRequest"];
+export type AgentRunRequest = components["schemas"]["AgentRunRequest"];
+export type AgentRunResponse =
+  | components["schemas"]["AgentRunCompleted"]
+  | components["schemas"]["AgentRunToolRequired"];
+export type AgentToolResultRequest =
+  components["schemas"]["AgentToolResultRequest"];
+export type CalendarAvailabilityResult =
+  components["schemas"]["CalendarAvailabilityResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 
@@ -34,6 +42,15 @@ type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasExactlyKeys(value: JsonRecord, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -107,6 +124,88 @@ export function isActionProposal(value: unknown): value is ActionProposal {
   );
 }
 
+function isCalendarAvailabilityInterval(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    hasExactlyKeys(value, ["start", "end"]) &&
+    isNonEmptyString(value.start) &&
+    isNonEmptyString(value.end)
+  );
+}
+
+export function isCalendarAvailabilityResult(
+  value: unknown,
+): value is CalendarAvailabilityResult {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "time_zone",
+      "window_start",
+      "window_end",
+      "available_minutes",
+      "busy_minutes",
+      "free_intervals",
+      "reason_code",
+    ]) ||
+    value.schema_version !== "v1" ||
+    (value.status !== "known" &&
+      value.status !== "unknown" &&
+      value.status !== "reauth_required" &&
+      value.status !== "unavailable") ||
+    !isNonEmptyString(value.time_zone) ||
+    !isNonEmptyString(value.window_start) ||
+    !isNonEmptyString(value.window_end) ||
+    !Array.isArray(value.free_intervals) ||
+    !value.free_intervals.every(isCalendarAvailabilityInterval) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string")
+  ) {
+    return false;
+  }
+  const available = value.available_minutes;
+  const busy = value.busy_minutes;
+  if (
+    (available !== null && !isIntegerInRange(available, 0, 10080)) ||
+    (busy !== null && !isIntegerInRange(busy, 0, 10080))
+  ) {
+    return false;
+  }
+  return value.status === "known"
+    ? available !== null && busy !== null
+    : available === null &&
+      busy === null &&
+      value.free_intervals.length === 0;
+}
+
+export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
+  if (!isRecord(value) || typeof value.status !== "string") {
+    return false;
+  }
+  if (value.status === "completed") {
+    return (
+      hasExactlyKeys(value, ["status", "proposal"]) &&
+      isActionProposal(value.proposal)
+    );
+  }
+  return (
+    value.status === "tool_required" &&
+    hasExactlyKeys(value, ["status", "run_id", "calls"]) &&
+    isNonEmptyString(value.run_id) &&
+    Array.isArray(value.calls) &&
+    value.calls.length === 1 &&
+    isRecord(value.calls[0]) &&
+    hasExactlyKeys(value.calls[0], ["tool_call_id", "name", "version"]) &&
+    isNonEmptyString(value.calls[0].tool_call_id) &&
+    value.calls[0].name === "google_calendar_availability" &&
+    value.calls[0].version === 1
+  );
+}
+
 export function isOrbitEvent(value: unknown): value is OrbitEvent {
   return (
     isRecord(value) &&
@@ -175,6 +274,30 @@ export class AgentApiClient {
       request,
       isActionProposal,
       "proposal",
+    );
+  }
+
+  startRun(request: AgentRunRequest): Promise<AgentRunResponse> {
+    return this.post(
+      "/v1/agent/runs",
+      request,
+      isAgentRunResponse,
+      "agent run",
+    );
+  }
+
+  submitToolResult(
+    runId: string,
+    request: AgentToolResultRequest,
+  ): Promise<AgentRunResponse> {
+    if (!runId.trim()) {
+      throw new TypeError("Agent run ID must not be empty.");
+    }
+    return this.post(
+      `/v1/agent/runs/${encodeURIComponent(runId)}/tool-results`,
+      request,
+      isAgentRunResponse,
+      "agent run",
     );
   }
 
