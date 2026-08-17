@@ -21,6 +21,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/agent/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Agent Run */
+        post: operations["start_agent_run_v1_agent_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent/runs/{run_id}/tool-results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Agent Tool Result */
+        post: operations["submit_agent_tool_result_v1_agent_runs__run_id__tool_results_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/actions/propose": {
         parameters: {
             query?: never;
@@ -87,6 +121,126 @@ export interface components {
             requires_confirmation: boolean;
             /** Prompt Version */
             prompt_version: string;
+        };
+        /** AgentRunCompleted */
+        AgentRunCompleted: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "completed";
+            proposal: components["schemas"]["ActionProposal"];
+        };
+        /**
+         * AgentRunRequest
+         * @description Start one explicit proposal run.
+         *
+         *     ``client_tools`` is only a capability advertisement.  The server never
+         *     uses it to access Google; a connected extension must complete the deferred
+         *     tool call and send the minimized derived result back.
+         */
+        AgentRunRequest: {
+            event: components["schemas"]["OrbitEvent"];
+            /** Context */
+            context: components["schemas"]["EvidenceLink"][];
+            /** Client Tools */
+            client_tools?: components["schemas"]["ClientTool"][];
+        };
+        /** AgentRunToolRequired */
+        AgentRunToolRequired: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "tool_required";
+            /** Run Id */
+            run_id: string;
+            /** Calls */
+            calls: components["schemas"]["AgentToolCall"][];
+        };
+        /** AgentToolCall */
+        AgentToolCall: {
+            /** Tool Call Id */
+            tool_call_id: string;
+            /**
+             * Name
+             * @constant
+             */
+            name: "google_calendar_availability";
+            /**
+             * Version
+             * @constant
+             */
+            version: 1;
+        };
+        /**
+         * AgentToolResultRequest
+         * @description Result for the one registered external tool.
+         */
+        AgentToolResultRequest: {
+            /** Tool Call Id */
+            tool_call_id: string;
+            result: components["schemas"]["CalendarAvailabilityResult"];
+        };
+        /**
+         * CalendarAvailabilityInterval
+         * @description One derived free-time interval, without calendar event details.
+         */
+        CalendarAvailabilityInterval: {
+            /** Start */
+            start: string;
+            /** End */
+            end: string;
+        };
+        /**
+         * CalendarAvailabilityResult
+         * @description Minimal v1 result accepted from the extension's Calendar connector.
+         *
+         *     Event IDs, titles, attendees, locations, descriptions, and raw Google
+         *     responses deliberately have no representation in this model.
+         */
+        CalendarAvailabilityResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unknown" | "reauth_required" | "unavailable";
+            /** Time Zone */
+            time_zone: string;
+            /** Window Start */
+            window_start: string;
+            /** Window End */
+            window_end: string;
+            /** Available Minutes */
+            available_minutes?: number | null;
+            /** Busy Minutes */
+            busy_minutes?: number | null;
+            /** Free Intervals */
+            free_intervals?: components["schemas"]["CalendarAvailabilityInterval"][];
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
+         * ClientTool
+         * @description A capability explicitly advertised by the client for one run.
+         */
+        ClientTool: {
+            /**
+             * Name
+             * @constant
+             */
+            name: "google_calendar_availability";
+            /**
+             * Version
+             * @constant
+             */
+            version: 1;
         };
         /**
          * EvidenceLink
@@ -216,6 +370,74 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    start_agent_run_v1_agent_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunCompleted"] | components["schemas"]["AgentRunToolRequired"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_agent_tool_result_v1_agent_runs__run_id__tool_results_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentToolResultRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRunCompleted"] | components["schemas"]["AgentRunToolRequired"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
