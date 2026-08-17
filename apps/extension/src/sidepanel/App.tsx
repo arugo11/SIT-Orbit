@@ -1,8 +1,8 @@
 import { useEffect, useReducer, useState } from "react";
 import {
   type ActionProposal,
-  type AgentRunResponse,
   AgentApiClient,
+  type AgentRunResponse,
   DEFAULT_AGENT_API_BASE,
   type OrbitEvent,
 } from "../api/client";
@@ -1068,16 +1068,17 @@ export function App({
                 ? "Calendarを更新中…"
                 : loopState.status === "resuming"
                   ? "提案を再開中…"
-              : loopState.proposal
-                ? "B1 大宮の提案を再取得"
-                : "B1 大宮の提案を作成"}
+                  : loopState.proposal
+                    ? "B1 大宮の提案を再取得"
+                    : "B1 大宮の提案を作成"}
           </button>
           <p className="action-note">
             ボタンを押したときだけ、合成データをローカル Agent API に送ります。
           </p>
           {loopState.status === "tool-running" ? (
             <p className="state-message" data-agent-status="tool-running">
-              Google Calendarを非対話で更新しています。認証画面は自動では開きません。
+              Google
+              Calendarを非対話で更新しています。認証画面は自動では開きません。
             </p>
           ) : null}
           {loopState.status === "resuming" ? (

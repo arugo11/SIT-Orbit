@@ -177,9 +177,7 @@ export function isCalendarAvailabilityResult(
   }
   return value.status === "known"
     ? available !== null && busy !== null
-    : available === null &&
-      busy === null &&
-      value.free_intervals.length === 0;
+    : available === null && busy === null && value.free_intervals.length === 0;
 }
 
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
