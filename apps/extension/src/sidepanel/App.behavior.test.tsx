@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionProposal, OrbitEvent } from "../api/client";
+import type {
+  CalendarConnector,
+  CalendarConnectorResult,
+} from "../connectors/google-calendar";
 import {
   isCalendarCommandMessage,
   isDriveCommandMessage,
@@ -34,6 +38,11 @@ const validProposal: ActionProposal = {
   external_action: "checklist_update",
   requires_confirmation: true,
   prompt_version: "fixture-b1-omiya-v1",
+};
+
+const completedRun = {
+  status: "completed" as const,
+  proposal: validProposal,
 };
 
 const validCompletionEvent: OrbitEvent = {
@@ -92,6 +101,35 @@ function requestBody(fetcher: ReturnType<typeof vi.fn>, index: number) {
   return JSON.parse(init.body) as Record<string, unknown>;
 }
 
+function connectedCalendarResult(): CalendarConnectorResult {
+  return {
+    status: "connected",
+    snapshot: {
+      timeZone: "Asia/Tokyo",
+      timeMin: "2026-08-15T00:00:00+09:00",
+      timeMax: "2026-08-22T00:00:00+09:00",
+      events: [],
+      availability: {
+        status: "known",
+        availableMinutes: 10080,
+        busyMinutes: 0,
+        intervals: [],
+      },
+      truncated: false,
+      fetchedAt: "2026-08-15T03:00:00.000Z",
+    },
+  };
+}
+
+function unavailableDriveRequest() {
+  return vi.fn(async () => ({
+    status: "unavailable" as const,
+    selections: [],
+    message: "Google Driveのファイル選択はまだ利用できません。",
+    retryable: false,
+  }));
+}
+
 async function openProposal(
   fetcher: ReturnType<typeof vi.fn>,
 ): Promise<MountedSidePanel> {
@@ -121,17 +159,18 @@ describe("Side Panel B1 agent loop behavior", () => {
   afterEach(cleanup);
 
   it("requests the synthetic campus_entered proposal once, only after an explicit click", async () => {
-    const fetcher = responseSequence([jsonResponse(validProposal)]);
+    const fetcher = responseSequence([jsonResponse(completedRun)]);
     mounted = await openProposal(fetcher);
 
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(fetcher.mock.calls[0]?.[0]).toBe(`${API_BASE}/v1/actions/propose`);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(`${API_BASE}/v1/agent/runs`);
     expect(requestBody(fetcher, 0)).toMatchObject({
       event: {
         event_type: "campus_entered",
         campus: "omiya",
         data_classification: "synthetic",
       },
+      client_tools: [],
     });
     expect(
       (requestBody(fetcher, 0).context as Array<Record<string, unknown>>).every(
@@ -141,6 +180,144 @@ describe("Side Panel B1 agent loop behavior", () => {
       ),
     ).toBe(true);
   });
+
+  it("advertises the Calendar tool only after an explicit connected state", async () => {
+    const fetcher = responseSequence([jsonResponse(completedRun)]);
+    const calendarResult = connectedCalendarResult();
+    const calendarConnector: CalendarConnector = {
+      connect: vi.fn(async () => calendarResult),
+      refresh: vi.fn(async () => calendarResult),
+      reauthenticate: vi.fn(async () => calendarResult),
+      disconnect: vi.fn(async () => ({ status: "not_connected" as const })),
+    };
+    vi.stubGlobal("fetch", fetcher);
+    mounted = await mountSidePanel(() => (
+      <App
+        calendarConnector={calendarConnector}
+        driveRequest={unavailableDriveRequest()}
+      />
+    ));
+
+    await click(buttonByName(mounted.document, "Google Calendarを接続"));
+    await waitFor(
+      () =>
+        mounted?.document.querySelector(
+          '[data-calendar-status="connected"]',
+        ) !== null,
+    );
+    expect(mounted.document.body.textContent).toContain(
+      "予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。",
+    );
+    await click(buttonByName(mounted.document, "B1 大宮の提案を作成"));
+    await waitFor(
+      () =>
+        mounted?.document.querySelector(
+          '[aria-labelledby="proposal-title"]',
+        ) !== null,
+    );
+
+    expect(requestBody(fetcher, 0).client_tools).toEqual([
+      { name: "google_calendar_availability", version: 1 },
+    ]);
+  });
+
+  it("labels proposals that include personal Calendar availability evidence", async () => {
+    const calendarProposal: ActionProposal = {
+      ...validProposal,
+      evidence: [
+        ...validProposal.evidence,
+        {
+          evidence_id: "calendar-availability-v1-run-1",
+          title: "Calendarから導出した空き時間",
+          source_type: "calendar",
+          locator: "orbit-calendar://availability/run-1",
+          data_classification: "personal",
+        },
+      ],
+    };
+    const fetcher = responseSequence([
+      jsonResponse({ status: "completed", proposal: calendarProposal }),
+    ]);
+    mounted = await openProposal(fetcher);
+
+    const proposalCard = mounted.document.querySelector(
+      '[aria-labelledby="proposal-title"]',
+    );
+    expect(proposalCard?.textContent).toContain("合成＋Calendar空き時間");
+  });
+
+  it.each([
+    ["reauth_required", "再認証が必要です。"],
+    ["unavailable", "Calendar unavailable"],
+  ] as const)(
+    "does not resume or complete a run when Calendar is %s",
+    async (status, message) => {
+      const toolRequired = {
+        status: "tool_required" as const,
+        run_id: "run-calendar-1",
+        calls: [
+          {
+            tool_call_id: "calendar-call-1",
+            name: "google_calendar_availability" as const,
+            version: 1 as const,
+          },
+        ],
+      };
+      const connected = connectedCalendarResult();
+      const failure: CalendarConnectorResult =
+        status === "reauth_required"
+          ? { status, message }
+          : { status, message, retryable: false };
+      const calendarConnector: CalendarConnector = {
+        connect: vi.fn(async () => connected),
+        refresh: vi.fn(async () => failure),
+        reauthenticate: vi.fn(async () => connected),
+        disconnect: vi.fn(async () => ({ status: "not_connected" as const })),
+      };
+      const fetcher = responseSequence([jsonResponse(toolRequired)]);
+      vi.stubGlobal("fetch", fetcher);
+      mounted = await mountSidePanel(() => (
+        <App
+          calendarConnector={calendarConnector}
+          driveRequest={unavailableDriveRequest()}
+        />
+      ));
+
+      await click(buttonByName(mounted.document, "Google Calendarを接続"));
+      await waitFor(
+        () =>
+          mounted?.document.querySelector(
+            '[data-calendar-status="connected"]',
+          ) !== null,
+      );
+      await click(buttonByName(mounted.document, "B1 大宮の提案を作成"));
+      await waitFor(
+        () =>
+          mounted?.document.querySelector('[role="alert"]') !== null ||
+          mounted?.document.querySelector(
+            '[data-agent-status="reauth-required"]',
+          ) !== null,
+      );
+
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher.mock.calls[0]?.[0]).toBe(`${API_BASE}/v1/agent/runs`);
+      expect(
+        mounted.document.querySelector('[aria-labelledby="proposal-title"]'),
+      ).toBeNull();
+      expect(
+        fetcher.mock.calls.some(([input]) =>
+          String(input).includes("tool-results"),
+        ),
+      ).toBe(false);
+      if (status === "reauth_required") {
+        expect(
+          mounted.document.querySelector(
+            '[data-agent-status="reauth-required"]',
+          ),
+        ).not.toBeNull();
+      }
+    },
+  );
 
   it("renders evidence and accepts public evidence while excluding unsafe or empty evidence proposals", async () => {
     const publicProposal: ActionProposal = {
@@ -153,7 +330,9 @@ describe("Side Panel B1 agent loop behavior", () => {
         },
       ],
     };
-    const fetcher = responseSequence([jsonResponse(publicProposal)]);
+    const fetcher = responseSequence([
+      jsonResponse({ status: "completed", proposal: publicProposal }),
+    ]);
     mounted = await openProposal(fetcher);
 
     expect(mounted.document.body.textContent).toContain(
@@ -169,7 +348,9 @@ describe("Side Panel B1 agent loop behavior", () => {
           { ...validEvidence, data_classification: dataClassification },
         ],
       };
-      const unsafeFetcher = responseSequence([jsonResponse(unsafeProposal)]);
+      const unsafeFetcher = responseSequence([
+        jsonResponse({ status: "completed", proposal: unsafeProposal }),
+      ]);
       vi.stubGlobal("fetch", unsafeFetcher);
       mounted = await mountSidePanel(() => <App />);
       await click(buttonByName(mounted.document, "B1 大宮の提案を作成"));
@@ -184,7 +365,10 @@ describe("Side Panel B1 agent loop behavior", () => {
     }
 
     const emptyEvidenceFetcher = responseSequence([
-      jsonResponse({ ...validProposal, evidence: [] }),
+      jsonResponse({
+        status: "completed",
+        proposal: { ...validProposal, evidence: [] },
+      }),
     ]);
     vi.stubGlobal("fetch", emptyEvidenceFetcher);
     mounted = await mountSidePanel(() => <App />);
@@ -202,7 +386,7 @@ describe("Side Panel B1 agent loop behavior", () => {
   });
 
   it("does not verify on approval alone and does not verify after rejection", async () => {
-    const approveFetcher = responseSequence([jsonResponse(validProposal)]);
+    const approveFetcher = responseSequence([jsonResponse(completedRun)]);
     mounted = await openProposal(approveFetcher);
     await click(buttonByName(mounted.document, "提案を承認する"));
     expect(approveFetcher).toHaveBeenCalledTimes(1);
@@ -211,7 +395,7 @@ describe("Side Panel B1 agent loop behavior", () => {
     );
     await cleanup();
 
-    const rejectFetcher = responseSequence([jsonResponse(validProposal)]);
+    const rejectFetcher = responseSequence([jsonResponse(completedRun)]);
     mounted = await openProposal(rejectFetcher);
     await click(buttonByName(mounted.document, "却下（APIに送信しない）"));
     expect(rejectFetcher).toHaveBeenCalledTimes(1);
@@ -223,7 +407,7 @@ describe("Side Panel B1 agent loop behavior", () => {
 
   it("verifies only after explicit completion and displays the returned completion event", async () => {
     const fetcher = responseSequence([
-      jsonResponse(validProposal),
+      jsonResponse(completedRun),
       jsonResponse(validCompletionEvent),
     ]);
     mounted = await openProposal(fetcher);
@@ -267,7 +451,7 @@ describe("Side Panel B1 agent loop behavior", () => {
       },
     };
     const fetcher = responseSequence([
-      jsonResponse(validProposal),
+      jsonResponse(completedRun),
       jsonResponse(mismatchedCompletion),
     ]);
     mounted = await openProposal(fetcher);
@@ -288,7 +472,7 @@ describe("Side Panel B1 agent loop behavior", () => {
   it.each([
     [
       "network failure",
-      [new Error("connection refused"), jsonResponse(validProposal)] as Array<
+      [new Error("connection refused"), jsonResponse(completedRun)] as Array<
         Response | Error
       >,
     ],
@@ -296,25 +480,25 @@ describe("Side Panel B1 agent loop behavior", () => {
       "HTTP failure with string detail",
       [
         jsonResponse({ detail: "validation failed" }, 422),
-        jsonResponse(validProposal),
+        jsonResponse(completedRun),
       ] as Array<Response | Error>,
     ],
     [
       "HTTP failure with object detail",
       [
         jsonResponse({ detail: [{ loc: ["body"], msg: "invalid" }] }, 422),
-        jsonResponse(validProposal),
+        jsonResponse(completedRun),
       ] as Array<Response | Error>,
     ],
     [
       "non-JSON failure",
-      [nonJsonResponse(502), jsonResponse(validProposal)] as Array<
+      [nonJsonResponse(502), jsonResponse(completedRun)] as Array<
         Response | Error
       >,
     ],
     [
       "empty JSON failure",
-      [jsonResponse(undefined), jsonResponse(validProposal)] as Array<
+      [jsonResponse(undefined), jsonResponse(completedRun)] as Array<
         Response | Error
       >,
     ],
@@ -395,6 +579,12 @@ describe("Side Panel B1 agent loop behavior", () => {
     expect(calendarMessages).toEqual([]);
     expect(apiFetcher).not.toHaveBeenCalled();
     expect(mounted.document.body.textContent).toContain("未接続");
+    expect(mounted.document.body.textContent).toContain(
+      "ボタンを押したときだけ、合成データをローカル Agent API に送ります。",
+    );
+    expect(mounted.document.body.textContent).not.toContain(
+      "予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。",
+    );
     expect(mounted.document.body.textContent).not.toContain(token);
   });
 
@@ -541,7 +731,7 @@ describe("Side Panel B1 agent loop behavior", () => {
   });
 
   it("[UI-DRIVE-003] includes the read synthetic Drive EvidenceLink in the B1 proposal context", async () => {
-    const apiFetcher = responseSequence([jsonResponse(validProposal)]);
+    const apiFetcher = responseSequence([jsonResponse(completedRun)]);
     vi.stubGlobal("fetch", apiFetcher);
     const driveRequest = vi.fn(async (command: string) => {
       if (command !== "refresh") {

@@ -271,25 +271,18 @@ Azure AI Searchは、このブランチの必須条件に含めない。
 
 ### 位置づけ
 
-このブランチは条件付きで作成する。
-
-単一の提案生成であれば、既存の`AgentBackend`とProvider Adapterで足りるため、最初からPydanticAIへ移行しない。
-
-### 作成条件
-
-- 複数の読み取りToolを順序付きで呼ぶ
-- Tool結果を構造化出力へ統合する
-- 会話状態を複数ターン保持する
-- Tool呼び出しをTestModelで再現する
-- 現在のAdapter実装が複雑になった
+CalendarのDeferred Toolと構造化出力を導入する要件が成立したため、既存の`AgentBackend`境界を保ったままPydanticAIへ移行する。
 
 ### 実装範囲
 
 - PydanticAIの依存追加
-- `AgentBackend`内部へのAdapter実装
-- 構造化出力
-- Tool呼び出しのテスト
-- FixtureAgentとの比較
+- `AgentBackend`内部の共有PydanticAI Agent
+- `OpenAIResponsesModel`、OpenAI/Azure Provider、`openai_store=False`
+- 内部`ActionDraft`とサーバー側のID/Evidence正規化
+- `google_calendar_availability` v1のDeferred Tool
+- 600秒TTLのプロセスメモリrun storeと再開API
+- 厳格なdiscriminated API envelopeと最小Calendar availability schema
+- Extensionの明示クリック、非対話refresh、Tool結果の再開表示
 
 ### 実装しない範囲
 
@@ -297,6 +290,8 @@ Azure AI Searchは、このブランチの必須条件に含めない。
 - マルチエージェント化
 - LangGraphの同時導入
 - Microsoft Agent Frameworkとの二重実装
+- Google Drive Tool登録
+- OAuth token、raw Calendar event、永続run store
 
 ## 将来ブランチ
 

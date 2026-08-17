@@ -1,12 +1,12 @@
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-
 import pytest
 from orbit_api.agent.azure_openai_backend import AzureOpenAIAgent
 from orbit_api.agent.factory import get_agent_backend
 from orbit_api.agent.fixture import FixtureAgent
-from orbit_api.models import ActionProposal, EvidenceLink, OrbitEvent
+from orbit_api.agent.pydantic_ai_backend import ActionDraft
+from orbit_api.models import EvidenceLink, OrbitEvent
 from orbit_api.models.domain import DataClassification
+from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai.models.test import TestModel
 
 
 def make_event(*, data_classification: DataClassification = "synthetic") -> OrbitEvent:
@@ -71,18 +71,13 @@ async def test_azure_backend_rejects_non_demo_data_before_network(
         model="demo-deployment",
         endpoint="https://example.openai.azure.com",
     )
-    parse = AsyncMock()
-    monkeypatch.setattr(agent.client.responses, "parse", parse)
-
     event = make_event(data_classification="personal" if location == "event" else "synthetic")
     context = [
         make_evidence(data_classification="restricted" if location == "context" else "synthetic")
     ]
 
-    with pytest.raises(ValueError, match="synthetic or public"):
+    with pytest.raises(ValueError, match="(accepts only|agent backend rejects)"):
         await agent.propose_action(event, context)
-
-    parse.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -93,18 +88,26 @@ async def test_azure_backend_preserves_structured_action_boundary(monkeypatch) -
         endpoint="https://example.openai.azure.com",
     )
     evidence = make_evidence()
-    parsed = ActionProposal(
-        action_id="provider-action-id",
-        title="合成データを確認する",
-        reason="次の一歩を確認するためです。",
-        duration_minutes=10,
-        evidence=[evidence],
-        external_action="calendar_draft",
-        requires_confirmation=True,
-        prompt_version="openai-next-action-v1",
+    model = TestModel(
+        custom_output_args={
+            "title": "合成データを確認する",
+            "reason": "次の一歩を確認するためです。",
+            "duration_minutes": 10,
+            "external_action": "calendar_draft",
+            "requires_confirmation": True,
+            "evidence_ids": [evidence.evidence_id],
+        }
     )
-    parse = AsyncMock(return_value=SimpleNamespace(output_parsed=parsed))
-    monkeypatch.setattr(agent.client.responses, "parse", parse)
+    agent_instance = Agent(
+        model,
+        output_type=[ActionDraft, DeferredToolRequests],
+        instructions="test",
+    )
+    monkeypatch.setattr(
+        agent,
+        "_agent",
+        lambda *, calendar_connected: agent_instance,
+    )
 
     proposal = await agent.propose_action(make_event(), [evidence])
 
@@ -112,22 +115,26 @@ async def test_azure_backend_preserves_structured_action_boundary(monkeypatch) -
     assert proposal.evidence == [evidence]
     assert proposal.external_action == "calendar_draft"
     assert proposal.requires_confirmation is True
-    call = parse.await_args
-    assert call is not None
-    assert call.kwargs["model"] == "demo-deployment"
-    assert call.kwargs["store"] is False
-    assert call.kwargs["text_format"] is ActionProposal
 
 
 @pytest.mark.asyncio
-async def test_azure_backend_rejects_missing_structured_output(monkeypatch) -> None:
+async def test_azure_backend_rejects_unstructured_output(monkeypatch) -> None:
     agent = AzureOpenAIAgent(
         api_key="synthetic-test-key",
         model="demo-deployment",
         endpoint="https://example.openai.azure.com",
     )
-    parse = AsyncMock(return_value=SimpleNamespace(output_parsed=None))
-    monkeypatch.setattr(agent.client.responses, "parse", parse)
+    model = TestModel(custom_output_text="not a structured action")
+    agent_instance = Agent(
+        model,
+        output_type=[ActionDraft, DeferredToolRequests],
+        instructions="test",
+    )
+    monkeypatch.setattr(
+        agent,
+        "_agent",
+        lambda *, calendar_connected: agent_instance,
+    )
 
-    with pytest.raises(RuntimeError, match="Azure OpenAI returned no structured action proposal"):
+    with pytest.raises(AssertionError, match="Plain response not allowed"):
         await agent.propose_action(make_event(), [make_evidence()])

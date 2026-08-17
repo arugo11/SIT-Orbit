@@ -28,6 +28,123 @@
         }
       }
     },
+    "/v1/agent/runs": {
+      "post": {
+        "summary": "Start Agent Run",
+        "operationId": "start_agent_run_v1_agent_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AgentRunCompleted"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AgentRunToolRequired"
+                    }
+                  ],
+                  "title": "Response Start Agent Run V1 Agent Runs Post",
+                  "discriminator": {
+                    "propertyName": "status",
+                    "mapping": {
+                      "completed": "#/components/schemas/AgentRunCompleted",
+                      "tool_required": "#/components/schemas/AgentRunToolRequired"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/agent/runs/{run_id}/tool-results": {
+      "post": {
+        "summary": "Submit Agent Tool Result",
+        "operationId": "submit_agent_tool_result_v1_agent_runs__run_id__tool_results_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentToolResultRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/AgentRunCompleted"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AgentRunToolRequired"
+                    }
+                  ],
+                  "discriminator": {
+                    "propertyName": "status",
+                    "mapping": {
+                      "completed": "#/components/schemas/AgentRunCompleted",
+                      "tool_required": "#/components/schemas/AgentRunToolRequired"
+                    }
+                  },
+                  "title": "Response Submit Agent Tool Result V1 Agent Runs  Run Id  Tool Results Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/actions/propose": {
       "post": {
         "summary": "Propose Action",
@@ -181,6 +298,278 @@
         ],
         "title": "ActionProposal",
         "description": "An evidence-backed next action that remains a proposal until approved."
+      },
+      "AgentRunCompleted": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "completed",
+            "title": "Status"
+          },
+          "proposal": {
+            "$ref": "#/components/schemas/ActionProposal"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "proposal"
+        ],
+        "title": "AgentRunCompleted"
+      },
+      "AgentRunRequest": {
+        "properties": {
+          "event": {
+            "$ref": "#/components/schemas/OrbitEvent"
+          },
+          "context": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceLink"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Context"
+          },
+          "client_tools": {
+            "items": {
+              "$ref": "#/components/schemas/ClientTool"
+            },
+            "type": "array",
+            "maxItems": 1,
+            "title": "Client Tools"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "event",
+          "context"
+        ],
+        "title": "AgentRunRequest",
+        "description": "Start one explicit proposal run.\n\n``client_tools`` is only a capability advertisement.  The server never\nuses it to access Google; a connected extension must complete the deferred\ntool call and send the minimized derived result back."
+      },
+      "AgentRunToolRequired": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "tool_required",
+            "title": "Status"
+          },
+          "run_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Run Id"
+          },
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/AgentToolCall"
+            },
+            "type": "array",
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Calls"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "run_id",
+          "calls"
+        ],
+        "title": "AgentRunToolRequired"
+      },
+      "AgentToolCall": {
+        "properties": {
+          "tool_call_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tool Call Id"
+          },
+          "name": {
+            "type": "string",
+            "const": "google_calendar_availability",
+            "title": "Name"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tool_call_id",
+          "name",
+          "version"
+        ],
+        "title": "AgentToolCall"
+      },
+      "AgentToolResultRequest": {
+        "properties": {
+          "tool_call_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tool Call Id"
+          },
+          "result": {
+            "$ref": "#/components/schemas/CalendarAvailabilityResult"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tool_call_id",
+          "result"
+        ],
+        "title": "AgentToolResultRequest",
+        "description": "Result for the one registered external tool."
+      },
+      "CalendarAvailabilityInterval": {
+        "properties": {
+          "start": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Start"
+          },
+          "end": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "End"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "start",
+          "end"
+        ],
+        "title": "CalendarAvailabilityInterval",
+        "description": "One derived free-time interval, without calendar event details."
+      },
+      "CalendarAvailabilityResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unknown",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "time_zone": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Time Zone"
+          },
+          "window_start": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Window Start"
+          },
+          "window_end": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Window End"
+          },
+          "available_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10080.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Available Minutes"
+          },
+          "busy_minutes": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10080.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Busy Minutes"
+          },
+          "free_intervals": {
+            "items": {
+              "$ref": "#/components/schemas/CalendarAvailabilityInterval"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Free Intervals"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "time_zone",
+          "window_start",
+          "window_end"
+        ],
+        "title": "CalendarAvailabilityResult",
+        "description": "Minimal v1 result accepted from the extension's Calendar connector.\n\nEvent IDs, titles, attendees, locations, descriptions, and raw Google\nresponses deliberately have no representation in this model."
+      },
+      "ClientTool": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "const": "google_calendar_availability",
+            "title": "Name"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "version"
+        ],
+        "title": "ClientTool",
+        "description": "A capability explicitly advertised by the client for one run."
       },
       "EvidenceLink": {
         "properties": {

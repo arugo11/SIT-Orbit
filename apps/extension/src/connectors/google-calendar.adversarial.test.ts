@@ -9,6 +9,7 @@ import {
   GoogleCalendarConnector,
   type IdentityAdapter,
   parseCalendarEvent,
+  projectCalendarAvailability,
 } from "./google-calendar";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -135,6 +136,59 @@ describe("Google Calendar connector adversarial boundaries", () => {
     expect(injectedFetcher).toHaveBeenCalledTimes(1);
     expect(globalFetch).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain(token);
+  });
+
+  it("[CAL-PRIVACY-001] projects only derived availability, never event details or OAuth tokens", () => {
+    const snapshot = {
+      timeZone: "Asia/Tokyo",
+      timeMin: "2026-08-15T00:00:00+09:00",
+      timeMax: "2026-08-22T00:00:00+09:00",
+      events: [
+        {
+          id: "private-event-id",
+          status: "confirmed",
+          summary: "private event title",
+          start: "2026-08-15T09:00:00+09:00",
+          end: "2026-08-15T10:00:00+09:00",
+          allDay: false,
+          endTimeUnspecified: false,
+          transparency: "opaque",
+          eventType: "default",
+        },
+      ],
+      availability: {
+        status: "known" as const,
+        availableMinutes: 10020,
+        busyMinutes: 60,
+        intervals: [
+          {
+            start: "2026-08-15T00:00:00+09:00",
+            end: "2026-08-15T09:00:00+09:00",
+          },
+        ],
+      },
+      truncated: false,
+      fetchedAt: "2026-08-15T03:00:00.000Z",
+    };
+
+    const projected = projectCalendarAvailability(snapshot);
+
+    expect(projected).toEqual({
+      schema_version: "v1",
+      status: "known",
+      time_zone: "Asia/Tokyo",
+      window_start: snapshot.timeMin,
+      window_end: snapshot.timeMax,
+      available_minutes: 10020,
+      busy_minutes: 60,
+      free_intervals: snapshot.availability.intervals,
+      reason_code: null,
+    });
+    const serialized = JSON.stringify(projected);
+    expect(serialized).not.toContain("private-event-id");
+    expect(serialized).not.toContain("private event title");
+    expect(serialized).not.toContain("oauth");
+    expect(serialized).not.toContain("token");
   });
 
   it("[CAL-003] parses timed and all-day events while failing closed on malformed intervals", async () => {

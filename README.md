@@ -67,3 +67,9 @@ W&B WeaveとOpenAIは、標準では無効になっています。
 このリポジトリに、学生の記録、成績、非公開の授業資料、未公開の研究、APIキー、OAuthトークンを追加しないでください。
 
 MVPのデータポリシーについては、[`docs/data-policy.md`](docs/data-policy.md)を参照してください。
+
+## Resumable Agent run
+
+Extensionの明示的な提案クリックは`POST /v1/agent/runs`から開始します。Google Calendar接続中だけ`google_calendar_availability` v1を広告し、要求された場合はService Workerの非対話refreshで得た導出済み空き時間だけを`POST /v1/agent/runs/{run_id}/tool-results`へ返します。
+
+runはAPIプロセスのメモリ内に600秒だけ保持し、完了・失敗・期限切れで削除します。OAuth token、予定の詳細、Google Drive情報はAPIやrun storeへ送信しません。

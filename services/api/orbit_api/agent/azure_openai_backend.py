@@ -1,22 +1,30 @@
+"""Azure OpenAI provider construction for the shared PydanticAI adapter."""
+
 import os
 
-from .openai_backend import OpenAIAgent
+from pydantic_ai.providers.azure import AzureProvider
+
+from .pydantic_ai_backend import PydanticAIAgentBackend
 
 
-def _v1_base_url(endpoint: str) -> str:
-    """Build the Azure OpenAI v1 base URL from the resource endpoint."""
+def _v1_endpoint(endpoint: str) -> str:
+    """Build the Azure OpenAI v1-compatible endpoint used by Responses API."""
 
-    return f"{endpoint.rstrip('/')}/openai/v1/"
+    normalized = endpoint.rstrip("/")
+    return normalized if normalized.endswith("/openai/v1") else f"{normalized}/openai/v1"
 
 
-class AzureOpenAIAgent(OpenAIAgent):
-    """Azure OpenAI v1 adapter sharing the existing structured-output boundary."""
+class AzureOpenAIAgent(PydanticAIAgentBackend):
+    """Azure OpenAI v1 backend sharing the OpenAI Responses adapter."""
 
     def __init__(self, *, api_key: str, model: str, endpoint: str) -> None:
-        super().__init__(
+        provider = AzureProvider(
+            azure_endpoint=_v1_endpoint(endpoint),
             api_key=api_key,
-            model=model,
-            base_url=_v1_base_url(endpoint),
+        )
+        super().__init__(
+            model_name=model,
+            provider=provider,
             provider_name="Azure OpenAI",
             action_id_prefix="act-azure-openai",
         )
@@ -39,3 +47,6 @@ def build_azure_openai_agent() -> AzureOpenAIAgent:
             "AZURE_OPENAI_MODEL is required for ORBIT_AGENT_BACKEND=azure_openai."
         )
     return AzureOpenAIAgent(api_key=api_key, model=model, endpoint=endpoint)
+
+
+__all__ = ["AzureOpenAIAgent", "build_azure_openai_agent"]

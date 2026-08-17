@@ -154,18 +154,16 @@ Azureモデルを追加する場合も、アプリケーションへモデル名
 
 APIキーやモデルが設定されていない場合に、別Backendへ暗黙に切り替えない。
 
-### Agent Frameworkの導入条件
+### Branch 7のAgent Framework
 
 PydanticAIは、Python、FastAPI、Pydantic、型付き出力、複数モデル対応の条件に合うため、最初に評価するAgent Frameworkである。[PydanticAI](https://github.com/pydantic/pydantic-ai)
 
-ただし、単一の提案生成だけなら現在のAdapterで足りる。
+Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、OpenAI Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`だけとし、`action_id`とEvidenceLinkはサーバーが正規化する。
+`OpenAIResponsesModel`には`OpenAIProvider`または`AzureProvider`を渡し、`openai_store=False`を固定する。
 
-次のいずれかが必要になった時点で導入する。
+外部Toolは引数なしの`google_calendar_availability` v1だけである。接続中のClientが明示広告したrunでのみDeferred Toolとして公開し、Tool結果を受けた後に同じメッセージ履歴を再開する。Driveは登録しない。
 
-- 複数の読み取りツールを順序付きで呼ぶ
-- ツール結果を構造化出力へ統合する
-- 同一利用者の会話状態を複数ターン保持する
-- Tool呼び出しをテスト用Modelで再現する
+run storeはAPIプロセスのメモリ内だけに置き、TTLは600秒、1 run 1 Tool call、完了・失敗・期限切れで削除する。未知・期限切れ・再利用済みrunは、プロセス再起動後も含めて410とする。
 
 Microsoft Agent Frameworkは、Agents、Harness、Workflows、セッション状態、Middleware、MCPクライアントを提供するAzure寄りの選択肢である。[Microsoft Agent Framework概要](https://learn.microsoft.com/en-us/agent-framework/overview/)
 

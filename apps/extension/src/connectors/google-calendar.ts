@@ -1,3 +1,5 @@
+import type { CalendarAvailabilityResult } from "../api/client";
+
 export const GOOGLE_CALENDAR_SCOPE =
   "https://www.googleapis.com/auth/calendar.events.owned.readonly";
 
@@ -518,6 +520,31 @@ export function formatAvailabilitySummary(
     return availability.reason ?? "空き時間を確定できません。";
   }
   return `空き時間 ${availability.availableMinutes ?? 0}分（取得範囲内）`;
+}
+
+/** Project a CalendarSnapshot to the v1 API shape without event details. */
+export function projectCalendarAvailability(
+  snapshot: CalendarSnapshot,
+): CalendarAvailabilityResult {
+  const availability = snapshot.availability;
+  const reasonCode = availability.reason
+    ? availability.reason.includes("上限")
+      ? "truncated"
+      : availability.reason.includes("形式")
+        ? "malformed"
+        : "unknown"
+    : null;
+  return {
+    schema_version: "v1",
+    status: availability.status,
+    time_zone: snapshot.timeZone,
+    window_start: snapshot.timeMin,
+    window_end: snapshot.timeMax,
+    available_minutes: availability.availableMinutes,
+    busy_minutes: availability.busyMinutes,
+    free_intervals: availability.intervals,
+    reason_code: reasonCode,
+  };
 }
 
 function buildCalendarSnapshot(

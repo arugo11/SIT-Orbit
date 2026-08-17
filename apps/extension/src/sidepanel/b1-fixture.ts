@@ -47,7 +47,11 @@ export function isSyntheticOrPublic(value: string): boolean {
 export function isSafeB1Proposal(
   proposal: components["schemas"]["ActionProposal"],
 ): boolean {
-  return proposal.evidence.every((evidence) =>
-    isSyntheticOrPublic(evidence.data_classification),
+  return proposal.evidence.every(
+    (evidence) =>
+      isSyntheticOrPublic(evidence.data_classification) ||
+      (evidence.source_type === "calendar" &&
+        evidence.data_classification === "personal" &&
+        evidence.locator.startsWith("orbit-calendar://availability/")),
   );
 }

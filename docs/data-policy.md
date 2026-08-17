@@ -36,7 +36,11 @@ MVPの`OrbitEvent`と`EvidenceLink`は次の区分を持つ。
 
 OpenAIへ送信できるのは`synthetic`と`public`だけである。
 
+ただし、Branch 7のAgent runでは、利用者のGoogle CalendarからConnectorが導出した空き時間だけを、`personal`の`calendar` EvidenceLinkとして扱える。予定名、ID、参加者、場所、説明、元レスポンスは送信しない。
+
 W&Bについても、初期版では同じ区分だけを対象とする。
+
+CalendarのライブToolを使うrunでは、個人データをW&Bへ送らないため、`ORBIT_OBSERVABILITY=off`を必須とする。`personal`または`restricted`の通常EvidenceLinkは、Agent APIで拒否する。
 
 ## Complimentary API usage
 
@@ -74,3 +78,11 @@ Google Driveの現行Connector境界は、利用者が明示的に選択した�
 選択中はopaqueな`selectionId`と、名前・MIME type・更新日時・読み取り状態などのメタデータを`chrome.storage.session`へ保持するが、Drive file IDは対応表の内部値としてのみ扱う。
 token、認証コード、ファイル内容、Drive一覧は保存・runtime message・Side Panel・Agent APIへ渡さない。
 ライブPicker/OAuth Providerは未実装であり、既定状態は`unavailable`とする。
+
+## Branch 7 resumable Agent run
+
+`POST /v1/agent/runs`は、Side Panelが明示的に提案ボタンを押した場合だけ開始する。
+Calendar接続中だけ`google_calendar_availability` v1を`client_tools`として広告し、Toolが要求された場合はService Workerの非対話refresh結果から、時間帯・分数・空き区間・理由コードだけを`/v1/agent/runs/{run_id}/tool-results`へ送る。
+runはAPIプロセス内メモリに600秒だけ保持し、完了・失敗・期限切れで削除する。OAuth token、raw event、Calendarのイベント詳細はAPI、ログ、run storeへ渡さない。
+
+Google DriveはToolとして登録しない。
