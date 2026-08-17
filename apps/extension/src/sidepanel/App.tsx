@@ -5,8 +5,16 @@ import {
   DEFAULT_AGENT_API_BASE,
   type OrbitEvent,
 } from "../api/client";
+import {
+  type CalendarConnector,
+  type CalendarConnectorResult,
+  type CalendarEventView,
+  formatAvailabilitySummary,
+} from "../connectors/google-calendar";
 import type { PageContext, PageKind } from "../content/page-context";
 import {
+  type CalendarCommand,
+  calendarCommandMessage,
   isPageContext,
   isPageContextUpdatedMessage,
   MESSAGE_TYPES,
@@ -50,6 +58,36 @@ function requestPageContext(): Promise<PageContext | null> {
   });
 }
 
+function requestCalendarCommand(
+  command: CalendarCommand,
+): Promise<CalendarConnectorResult> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      calendarCommandMessage(command),
+      (response: unknown) => {
+        if (chrome.runtime.lastError || !isCalendarResult(response)) {
+          reject(new Error("Calendar connector response was unavailable."));
+          return;
+        }
+        resolve(response);
+      },
+    );
+  });
+}
+
+function isCalendarResult(value: unknown): value is CalendarConnectorResult {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.status === "not_connected" ||
+    candidate.status === "connected" ||
+    candidate.status === "reauth_required" ||
+    candidate.status === "unavailable"
+  );
+}
+
 function describeError(error: unknown): string {
   return error instanceof Error
     ? error.message
@@ -89,12 +127,254 @@ function proposalEvidence(proposal: ActionProposal) {
   ));
 }
 
-export function App() {
+export interface AppProps {
+  /** Test-only seam; production uses the typed service-worker request below. */
+  calendarConnector?: CalendarConnector;
+  calendarRequest?: (
+    command: CalendarCommand,
+  ) => Promise<CalendarConnectorResult>;
+}
+
+function formatCalendarEventTime(
+  event: CalendarEventView,
+  timeZone: string,
+): string {
+  if (event.allDay) {
+    return `${event.start}〜${event.end}（終日）`;
+  }
+
+  const formatter = new Intl.DateTimeFormat("ja-JP", {
+    timeZone,
+    dateStyle: "short",
+    timeStyle: "short",
+  });
+  const start = new Date(event.start);
+  const end = new Date(event.end);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) {
+    return "時刻を表示できません";
+  }
+  if (event.endTimeUnspecified) {
+    return formatter.format(start);
+  }
+  return `${formatter.format(start)}〜${formatter.format(end)}`;
+}
+
+function CalendarCard({
+  state,
+  busy,
+  onConnect,
+  onRefresh,
+  onReauthenticate,
+  onDisconnect,
+}: {
+  state: CalendarConnectorResult;
+  busy: boolean;
+  onConnect: () => void;
+  onRefresh: () => void;
+  onReauthenticate: () => void;
+  onDisconnect: () => void;
+}) {
+  const snapshot = state.snapshot;
+  return (
+    <section
+      className="calendar-card"
+      aria-labelledby="calendar-title"
+      data-calendar-status={state.status}
+    >
+      <div className="section-heading">
+        <h2 id="calendar-title">Google Calendar</h2>
+        <span className="calendar-status-badge">
+          {state.status === "not_connected"
+            ? "未接続"
+            : state.status === "connected"
+              ? "接続済み"
+              : state.status === "reauth_required"
+                ? "再認証が必要"
+                : "利用できません"}
+        </span>
+      </div>
+
+      {state.status === "not_connected" ? (
+        <>
+          <p className="connector-description">
+            接続ボタンを押すまで、Google Calendarには接続しません。
+          </p>
+          <button
+            type="button"
+            className="primary-button"
+            data-testid="calendar-connect"
+            onClick={onConnect}
+            disabled={busy}
+          >
+            {busy ? "接続中…" : "Google Calendarを接続"}
+          </button>
+        </>
+      ) : null}
+
+      {state.status === "reauth_required" ? (
+        <>
+          <p className="connector-description">
+            {state.message ?? "Google Calendarの再認証が必要です。"}
+          </p>
+          <div className="button-row">
+            <button
+              type="button"
+              className="primary-button"
+              data-testid="calendar-reauth"
+              onClick={onReauthenticate}
+              disabled={busy}
+            >
+              {busy ? "再認証中…" : "再認証する"}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="calendar-disconnect"
+              onClick={onDisconnect}
+              disabled={busy}
+            >
+              切断
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {state.status === "unavailable" ? (
+        <>
+          <p className="connector-description" role="alert">
+            {state.message ?? "Google Calendarを利用できません。"}
+          </p>
+          <div className="button-row">
+            <button
+              type="button"
+              className="primary-button"
+              data-testid="calendar-connect"
+              onClick={onConnect}
+              disabled={busy}
+            >
+              {busy ? "再試行中…" : "再試行"}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="calendar-disconnect"
+              onClick={onDisconnect}
+              disabled={busy}
+            >
+              切断
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {state.status === "connected" && snapshot ? (
+        <>
+          <p className="connector-description">
+            {snapshot.timeZone} · 今日から7日間（終了時刻は含みません）
+          </p>
+          <div className="calendar-availability">
+            <strong>ローカルの空き時間</strong>
+            <span>{formatAvailabilitySummary(snapshot.availability)}</span>
+            {snapshot.truncated ? (
+              <small>
+                予定が上限に達したため、空き時間は確定していません。
+              </small>
+            ) : null}
+          </div>
+          <div className="calendar-events-block">
+            <h3>予定</h3>
+            {snapshot.events.length > 0 ? (
+              <ul className="calendar-event-list">
+                {snapshot.events.map((event) => (
+                  <li key={event.id}>
+                    <span>{event.summary}</span>
+                    <small>
+                      {formatCalendarEventTime(event, snapshot.timeZone)}
+                      {event.transparency === "transparent"
+                        ? " · 空き時間として扱います"
+                        : ""}
+                    </small>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="empty-state">範囲内の予定はありません。</p>
+            )}
+          </div>
+          <div className="button-row calendar-controls">
+            <button
+              type="button"
+              className="primary-button"
+              data-testid="calendar-refresh"
+              onClick={onRefresh}
+              disabled={busy}
+            >
+              {busy ? "更新中…" : "更新"}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="calendar-reauth"
+              onClick={onReauthenticate}
+              disabled={busy}
+            >
+              再認証
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="calendar-disconnect"
+              onClick={onDisconnect}
+              disabled={busy}
+            >
+              切断
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {state.message && state.status === "not_connected" ? (
+        <p className="connector-description">{state.message}</p>
+      ) : null}
+    </section>
+  );
+}
+
+export function App({
+  calendarConnector,
+  calendarRequest = requestCalendarCommand,
+}: AppProps) {
   const [pageContext, setPageContext] = useState<PageContext | null>(null);
   const [loopState, dispatch] = useReducer(
     agentLoopReducer,
     initialAgentLoopState,
   );
+  const [calendarState, setCalendarState] = useState<CalendarConnectorResult>({
+    status: "not_connected",
+  });
+  const [calendarBusy, setCalendarBusy] = useState(false);
+
+  const runCalendarAction = async (
+    action: "connect" | "refresh" | "reauthenticate" | "disconnect",
+  ): Promise<void> => {
+    setCalendarBusy(true);
+    try {
+      const result = calendarConnector
+        ? await calendarConnector[action]()
+        : await calendarRequest(action);
+      setCalendarState(result);
+    } catch {
+      setCalendarState({
+        status: action === "disconnect" ? "not_connected" : "unavailable",
+        message:
+          action === "disconnect"
+            ? "Google Calendarを切断しました。"
+            : "Google Calendarを利用できません。時間をおいて再試行してください。",
+      });
+    } finally {
+      setCalendarBusy(false);
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -224,6 +504,15 @@ export function App() {
           <p className="empty-state">ScombZページの情報を待っています。</p>
         )}
       </section>
+
+      <CalendarCard
+        state={calendarState}
+        busy={calendarBusy}
+        onConnect={() => void runCalendarAction("connect")}
+        onRefresh={() => void runCalendarAction("refresh")}
+        onReauthenticate={() => void runCalendarAction("reauthenticate")}
+        onDisconnect={() => void runCalendarAction("disconnect")}
+      />
 
       <section className="fixture-card" aria-labelledby="fixture-title">
         <div className="section-heading">

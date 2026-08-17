@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionProposal, OrbitEvent } from "../api/client";
+import { isCalendarCommandMessage, MESSAGE_TYPES } from "../shared/messages";
 import { App } from "./App";
 import {
   buttonByName,
@@ -374,4 +375,114 @@ describe("Side Panel B1 agent loop behavior", () => {
       );
     },
   );
+
+  it("[UI-001] does not call Google or Agent API on mount", async () => {
+    const token = "calendar-mount-secret";
+    const apiFetcher = vi.fn(async () => {
+      throw new Error("Agent API must not run on mount");
+    });
+    vi.stubGlobal("fetch", apiFetcher);
+
+    mounted = await mountSidePanel(() => <App />);
+
+    const calendarMessages = mounted.chromeRuntime.sendMessage.mock.calls
+      .map(([message]) => message)
+      .filter(isCalendarCommandMessage);
+    expect(calendarMessages).toEqual([]);
+    expect(apiFetcher).not.toHaveBeenCalled();
+    expect(mounted.document.body.textContent).toContain("未接続");
+    expect(mounted.document.body.textContent).not.toContain(token);
+  });
+
+  it("[UI-002] sends typed connect/disconnect commands and keeps token/API boundaries clean", async () => {
+    const token = "calendar-runtime-secret";
+    const apiFetcher = vi.fn(async () => {
+      throw new Error("Agent API must not run for calendar controls");
+    });
+    vi.stubGlobal("fetch", apiFetcher);
+    const connectedResult = {
+      status: "connected" as const,
+      snapshot: {
+        timeZone: "Asia/Tokyo",
+        timeMin: "2026-08-15T00:00:00+09:00",
+        timeMax: "2026-08-22T00:00:00+09:00",
+        events: [],
+        availability: {
+          status: "known" as const,
+          availableMinutes: 10080,
+          busyMinutes: 0,
+          intervals: [],
+        },
+        truncated: false,
+        fetchedAt: "2026-08-15T03:00:00.000Z",
+      },
+    };
+
+    mounted = await mountSidePanel(() => <App />);
+    mounted.chromeRuntime.sendMessage.mockImplementation(
+      (message: unknown, callback?: (response: unknown) => void): void => {
+        if (isCalendarCommandMessage(message)) {
+          callback?.(
+            message.type === MESSAGE_TYPES.calendarConnect
+              ? connectedResult
+              : { status: "not_connected" },
+          );
+          return;
+        }
+        callback?.(null);
+      },
+    );
+
+    await click(buttonByName(mounted.document, "Google Calendarを接続"));
+    await waitFor(
+      () =>
+        mounted?.document.querySelector(
+          '[data-calendar-status="connected"]',
+        ) !== null,
+    );
+    await click(buttonByName(mounted.document, "切断"));
+    await waitFor(
+      () =>
+        mounted?.document.querySelector(
+          '[data-calendar-status="not_connected"]',
+        ) !== null,
+    );
+
+    const calendarMessages = mounted.chromeRuntime.sendMessage.mock.calls
+      .map(([message]) => message)
+      .filter(isCalendarCommandMessage);
+    expect(calendarMessages).toEqual([
+      { type: MESSAGE_TYPES.calendarConnect },
+      { type: MESSAGE_TYPES.calendarDisconnect },
+    ]);
+    expect(JSON.stringify(calendarMessages)).not.toContain(token);
+    expect(mounted.document.body.textContent).not.toContain(token);
+    expect(apiFetcher).not.toHaveBeenCalled();
+  });
+
+  it("[UI-003] renders a generic calendar error without exposing a connector token", async () => {
+    const token = "calendar-error-secret";
+    const apiFetcher = vi.fn(async () => {
+      throw new Error("Agent API must not run for calendar errors");
+    });
+    vi.stubGlobal("fetch", apiFetcher);
+    const calendarRequest = vi.fn(async () => {
+      throw new Error(token);
+    });
+
+    mounted = await mountSidePanel(() => (
+      <App calendarRequest={calendarRequest} />
+    ));
+    await click(buttonByName(mounted.document, "Google Calendarを接続"));
+    await waitFor(
+      () => mounted?.document.querySelector('[role="alert"]') !== null,
+    );
+
+    expect(calendarRequest).toHaveBeenCalledWith("connect");
+    expect(mounted.document.body.textContent).not.toContain(token);
+    expect(mounted.document.body.textContent).toContain(
+      "Google Calendarを利用できません。",
+    );
+    expect(apiFetcher).not.toHaveBeenCalled();
+  });
 });

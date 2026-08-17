@@ -1,4 +1,11 @@
-import { copyFile, mkdir, readFile, rm, stat } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
@@ -54,6 +61,20 @@ await Promise.all([
 const manifest = JSON.parse(
   await readFile(resolve(outputDirectory, "manifest.json"), "utf8"),
 );
+
+const oauthClientId = process.env.ORBIT_GOOGLE_OAUTH_CLIENT_ID?.trim();
+if (oauthClientId) {
+  manifest.oauth2 = {
+    client_id: oauthClientId,
+    scopes: ["https://www.googleapis.com/auth/calendar.events.owned.readonly"],
+  };
+  await writeFile(
+    resolve(outputDirectory, "manifest.json"),
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
+  );
+}
+
 const requiredFiles = [
   "manifest.json",
   "service-worker.js",
@@ -65,11 +86,14 @@ const requiredFiles = [
 
 if (
   manifest.manifest_version !== 3 ||
-  JSON.stringify(manifest.permissions) !== JSON.stringify(["sidePanel"]) ||
+  JSON.stringify(manifest.permissions) !==
+    JSON.stringify(["sidePanel", "identity"]) ||
   JSON.stringify(manifest.host_permissions) !==
     JSON.stringify([
       "https://scombz.shibaura-it.ac.jp/*",
       "http://localhost:8000/*",
+      "https://www.googleapis.com/*",
+      "https://oauth2.googleapis.com/*",
     ]) ||
   manifest.side_panel !== undefined ||
   manifest.background?.service_worker !== "service-worker.js"

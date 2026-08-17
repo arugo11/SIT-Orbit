@@ -81,7 +81,8 @@ h2 {
 .context-card,
 .fixture-card,
 .proposal-card,
-.event-card {
+.event-card,
+.calendar-card {
   border: 1px solid #d9e1e8;
   border-radius: 12px;
   padding: 14px;
@@ -105,6 +106,89 @@ h2 {
 
 .event-card {
   border-color: #b8d6c0;
+}
+
+.calendar-card {
+  border-color: #c4cfe1;
+  background: #fbfcff;
+}
+
+.calendar-status-badge {
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #405979;
+  background: #e6edf8;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.connector-description {
+  margin: 12px 0 0;
+  color: #61717f;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.calendar-availability,
+.calendar-events-block {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+}
+
+.calendar-availability {
+  border-radius: 8px;
+  padding: 10px;
+  color: #2f4e42;
+  background: #eff8f1;
+  font-size: 12px;
+}
+
+.calendar-availability strong {
+  font-size: 12px;
+}
+
+.calendar-availability small {
+  color: #61717f;
+  line-height: 1.5;
+}
+
+.calendar-events-block h3 {
+  margin: 0;
+  color: #526575;
+  font-size: 12px;
+}
+
+.calendar-event-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.calendar-event-list li {
+  display: grid;
+  gap: 2px;
+  border-bottom: 1px solid #e2e8ef;
+  padding-bottom: 8px;
+  color: #263746;
+  font-size: 12px;
+}
+
+.calendar-event-list li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.calendar-event-list small {
+  color: #697785;
+  line-height: 1.5;
+}
+
+.calendar-controls {
+  margin-top: 16px;
 }
 
 .section-note {
