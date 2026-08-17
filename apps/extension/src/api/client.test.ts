@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { B1_OMIYA_CONTEXT, B1_OMIYA_EVENT } from "../sidepanel/b1-fixture";
-import { AgentApiClient, AgentApiError, type Fetcher } from "./client";
+import {
+  AgentApiClient,
+  AgentApiError,
+  type Fetcher,
+  isActionProposal,
+} from "./client";
 
 const proposal = {
   action_id: "act-b1-omiya",
@@ -64,6 +69,35 @@ describe("AgentApiClient", () => {
         }),
       },
     );
+  });
+
+  it("accepts a google_drive EvidenceLink with an opaque locator", async () => {
+    const driveProposal = {
+      ...proposal,
+      evidence: [
+        {
+          evidence_id: "ev-sel_api_01",
+          title: "選択した授業ノート",
+          source_type: "google_drive",
+          locator: "orbit-drive://sel_api_01",
+          data_classification: "personal",
+        },
+      ],
+    };
+    expect(isActionProposal(driveProposal)).toBe(true);
+
+    const fetcher = createFetcher(jsonResponse(driveProposal));
+    const client = new AgentApiClient({ fetcher });
+    await expect(
+      client.propose({ event: B1_OMIYA_EVENT, context: B1_OMIYA_CONTEXT }),
+    ).resolves.toMatchObject({
+      evidence: [
+        {
+          source_type: "google_drive",
+          locator: "orbit-drive://sel_api_01",
+        },
+      ],
+    });
   });
 
   it("encodes the action ID and posts completion verification", async () => {

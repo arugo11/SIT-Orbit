@@ -201,7 +201,8 @@
               "assignment",
               "learning_history",
               "calendar",
-              "library"
+              "library",
+              "google_drive"
             ],
             "title": "Source Type"
           },

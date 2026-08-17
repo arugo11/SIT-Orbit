@@ -11,10 +11,21 @@ import {
   type CalendarEventView,
   formatAvailabilitySummary,
 } from "../connectors/google-calendar";
+import type {
+  DriveConnector,
+  DriveConnectorResult,
+  DriveSelectionView,
+} from "../connectors/google-drive";
+import {
+  createFixtureDriveConnector,
+  type DriveSelectionCandidate,
+} from "../connectors/google-drive";
 import type { PageContext, PageKind } from "../content/page-context";
 import {
   type CalendarCommand,
   calendarCommandMessage,
+  type DriveCommand,
+  driveCommandMessage,
   isPageContext,
   isPageContextUpdatedMessage,
   MESSAGE_TYPES,
@@ -37,6 +48,19 @@ const LOCAL_FIXTURE = {
   event: "campus_entered",
   evidence: "微分積分学の課題は明日締切",
   available: "次の授業まで18分",
+};
+
+const DRIVE_FIXTURE_CANDIDATE: DriveSelectionCandidate = {
+  fileId: "fixture-drive-note",
+  name: "合成ノート.md",
+  mimeType: "text/markdown",
+  sizeBytes: 512,
+  modifiedTime: "2026-08-17T09:00:00+09:00",
+  trashed: false,
+  canDownload: true,
+  isFolder: false,
+  isShortcut: false,
+  dataClassification: "synthetic",
 };
 
 const agentApiClient = new AgentApiClient({
@@ -75,6 +99,28 @@ function requestCalendarCommand(
   });
 }
 
+export function requestDriveCommand(
+  command: DriveCommand,
+  selectionId?: string,
+): Promise<DriveConnectorResult> {
+  return new Promise((resolve, reject) => {
+    let message: ReturnType<typeof driveCommandMessage>;
+    try {
+      message = driveCommandMessage(command, selectionId);
+    } catch {
+      reject(new Error("Drive connector command was invalid."));
+      return;
+    }
+    chrome.runtime.sendMessage(message, (response: unknown) => {
+      if (chrome.runtime.lastError || !isDriveResult(response)) {
+        reject(new Error("Drive connector response was unavailable."));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
 function isCalendarResult(value: unknown): value is CalendarConnectorResult {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -85,6 +131,52 @@ function isCalendarResult(value: unknown): value is CalendarConnectorResult {
     candidate.status === "connected" ||
     candidate.status === "reauth_required" ||
     candidate.status === "unavailable"
+  );
+}
+
+function isDriveResult(value: unknown): value is DriveConnectorResult {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    (candidate.status === "not_connected" ||
+      candidate.status === "connected" ||
+      candidate.status === "reauth_required" ||
+      candidate.status === "unavailable") &&
+    Array.isArray(candidate.selections) &&
+    candidate.selections.every(isDriveSelectionView)
+  );
+}
+
+function isDriveSelectionView(value: unknown): value is DriveSelectionView {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.selectionId === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.mimeType === "string" &&
+    (candidate.sizeBytes === null || typeof candidate.sizeBytes === "number") &&
+    (candidate.modifiedTime === null ||
+      typeof candidate.modifiedTime === "string") &&
+    (candidate.status === "selected" || candidate.status === "read") &&
+    (candidate.evidence === undefined || isDriveEvidence(candidate.evidence))
+  );
+}
+
+function isDriveEvidence(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.evidence_id === "string" &&
+    typeof candidate.title === "string" &&
+    candidate.source_type === "google_drive" &&
+    typeof candidate.locator === "string" &&
+    typeof candidate.data_classification === "string"
   );
 }
 
@@ -133,6 +225,12 @@ export interface AppProps {
   calendarRequest?: (
     command: CalendarCommand,
   ) => Promise<CalendarConnectorResult>;
+  /** Test-only seam; production uses the typed service-worker request below. */
+  driveConnector?: DriveConnector;
+  driveRequest?: (
+    command: DriveCommand,
+    selectionId?: string,
+  ) => Promise<DriveConnectorResult>;
 }
 
 function formatCalendarEventTime(
@@ -340,9 +438,233 @@ function CalendarCard({
   );
 }
 
+function driveStatusLabel(status: DriveConnectorResult["status"]): string {
+  switch (status) {
+    case "not_connected":
+      return "未接続";
+    case "connected":
+      return "接続済み";
+    case "reauth_required":
+      return "再認証が必要";
+    case "unavailable":
+      return "利用できません";
+  }
+}
+
+function DriveCard({
+  state,
+  busy,
+  onSelect,
+  onRead,
+  onDeselect,
+}: {
+  state: DriveConnectorResult;
+  busy: boolean;
+  onSelect: () => void;
+  onRead: (selectionId: string) => void;
+  onDeselect: (selectionId: string) => void;
+}) {
+  return (
+    <section
+      className="drive-card"
+      aria-labelledby="drive-title"
+      data-drive-status={state.status}
+    >
+      <div className="section-heading">
+        <h2 id="drive-title">Google Drive</h2>
+        <span className="drive-status-badge">
+          {driveStatusLabel(state.status)}
+        </span>
+      </div>
+
+      <p className="connector-description">
+        選択したファイルのメタデータだけを、このブラウザのセッション中に扱います。
+      </p>
+
+      {state.status === "unavailable" ? (
+        <p className="connector-description" role="alert">
+          {state.message ?? "Google Driveのファイル選択は利用できません。"}
+        </p>
+      ) : null}
+
+      {state.status === "not_connected" ? (
+        <p className="connector-description">
+          ライブProviderには接続していません。選択操作を行ったときだけ確認します。
+        </p>
+      ) : null}
+
+      {state.selections.length > 0 ? (
+        <div className="drive-selection-block">
+          <h3>選択済みファイル</h3>
+          <ul className="drive-selection-list">
+            {state.selections.map((selection) => (
+              <li key={selection.selectionId}>
+                <div className="drive-selection-metadata">
+                  <strong>{selection.name}</strong>
+                  <small>
+                    {selection.mimeType} ·{" "}
+                    {selection.modifiedTime ?? "更新日時不明"}
+                    {" · "}
+                    {selection.sizeBytes === null
+                      ? "サイズ不明"
+                      : `${selection.sizeBytes.toLocaleString()} bytes`}
+                  </small>
+                  <small>
+                    {selection.status === "read"
+                      ? "読み取り済み"
+                      : "未読み取り"}
+                    {selection.evidence
+                      ? ` · ${selection.evidence.locator}`
+                      : ""}
+                  </small>
+                </div>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    data-testid={`drive-read-${selection.selectionId}`}
+                    onClick={() => onRead(selection.selectionId)}
+                    disabled={busy}
+                  >
+                    {busy ? "読み取り中…" : "読み取る"}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    data-testid={`drive-deselect-${selection.selectionId}`}
+                    onClick={() => onDeselect(selection.selectionId)}
+                    disabled={busy}
+                  >
+                    選択解除
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="button-row drive-controls">
+        <button
+          type="button"
+          className="primary-button"
+          data-testid="drive-select"
+          onClick={onSelect}
+          disabled={
+            busy ||
+            (state.status === "unavailable" && state.retryable === false)
+          }
+        >
+          {busy ? "確認中…" : "Google Driveから選ぶ"}
+        </button>
+      </div>
+
+      {state.message && state.status !== "unavailable" ? (
+        <p className="connector-description">{state.message}</p>
+      ) : null}
+    </section>
+  );
+}
+
+function DriveFixtureCard({
+  state,
+  busy,
+  onSelect,
+  onRead,
+  onDeselect,
+}: {
+  state: DriveConnectorResult;
+  busy: boolean;
+  onSelect: () => void;
+  onRead: (selectionId: string) => void;
+  onDeselect: (selectionId: string) => void;
+}) {
+  const selection = state.selections[0];
+  return (
+    <section
+      className="drive-fixture-card"
+      aria-labelledby="drive-fixture-title"
+      data-drive-fixture-status={state.status}
+    >
+      <div className="section-heading">
+        <h2 id="drive-fixture-title">合成Drive fixture</h2>
+        <span className="fixture-label">合成データ</span>
+      </div>
+      <p className="fixture-disclaimer">
+        Google Driveではありません。Agent
+        APIや外部サービスへ接続しない、ローカルの操作確認です。
+      </p>
+      {selection ? (
+        <dl className="drive-fixture-list">
+          <div>
+            <dt>ファイル</dt>
+            <dd>{selection.name}</dd>
+          </div>
+          <div>
+            <dt>形式</dt>
+            <dd>{selection.mimeType}</dd>
+          </div>
+          <div>
+            <dt>状態</dt>
+            <dd>
+              {selection.status === "read" ? "読み取り済み" : "未読み取り"}
+            </dd>
+          </div>
+          {selection.evidence ? (
+            <div>
+              <dt>EvidenceLink</dt>
+              <dd>{selection.evidence.locator}</dd>
+            </div>
+          ) : null}
+        </dl>
+      ) : (
+        <p className="empty-state">合成ファイルはまだ選択されていません。</p>
+      )}
+      <div className="button-row drive-fixture-controls">
+        <button
+          type="button"
+          className="primary-button"
+          data-testid="drive-fixture-select"
+          onClick={onSelect}
+          disabled={busy || selection !== undefined}
+        >
+          {busy ? "処理中…" : "合成ファイルを選ぶ"}
+        </button>
+        {selection ? (
+          <>
+            <button
+              type="button"
+              className="primary-button"
+              data-testid="drive-fixture-read"
+              onClick={() => onRead(selection.selectionId)}
+              disabled={busy}
+            >
+              読み取る
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="drive-fixture-deselect"
+              onClick={() => onDeselect(selection.selectionId)}
+              disabled={busy}
+            >
+              選択解除
+            </button>
+          </>
+        ) : null}
+      </div>
+      {state.message ? (
+        <p className="connector-description">{state.message}</p>
+      ) : null}
+    </section>
+  );
+}
+
 export function App({
   calendarConnector,
   calendarRequest = requestCalendarCommand,
+  driveConnector,
+  driveRequest = requestDriveCommand,
 }: AppProps) {
   const [pageContext, setPageContext] = useState<PageContext | null>(null);
   const [loopState, dispatch] = useReducer(
@@ -353,6 +675,26 @@ export function App({
     status: "not_connected",
   });
   const [calendarBusy, setCalendarBusy] = useState(false);
+  const [driveState, setDriveState] = useState<DriveConnectorResult>({
+    status: "unavailable",
+    selections: [],
+    message:
+      "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
+    retryable: false,
+  });
+  const [driveBusy, setDriveBusy] = useState(false);
+  const [driveFixtureConnector, setDriveFixtureConnector] = useState(() =>
+    createFixtureDriveConnector({
+      candidates: DRIVE_FIXTURE_CANDIDATE,
+      selectionIdFactory: () => "sel_fixture_drive_1",
+    }),
+  );
+  const [driveFixtureState, setDriveFixtureState] =
+    useState<DriveConnectorResult>({
+      status: "not_connected",
+      selections: [],
+    });
+  const [driveFixtureBusy, setDriveFixtureBusy] = useState(false);
 
   const runCalendarAction = async (
     action: "connect" | "refresh" | "reauthenticate" | "disconnect",
@@ -375,6 +717,94 @@ export function App({
       setCalendarBusy(false);
     }
   };
+
+  const runDriveAction = async (
+    action: "select" | "read" | "deselect",
+    selectionId?: string,
+  ): Promise<void> => {
+    setDriveBusy(true);
+    try {
+      const result = driveConnector
+        ? action === "select"
+          ? await driveConnector.select()
+          : action === "read"
+            ? await driveConnector.read(selectionId ?? "")
+            : await driveConnector.deselect(selectionId ?? "")
+        : await driveRequest(action, selectionId);
+      setDriveState(result);
+    } catch {
+      setDriveState((current) => ({
+        status: "unavailable",
+        selections: current.selections,
+        message:
+          "Google Driveを利用できません。時間をおいて再試行してください。",
+        retryable: true,
+      }));
+    } finally {
+      setDriveBusy(false);
+    }
+  };
+
+  const runDriveFixtureAction = async (
+    action: "select" | "read" | "deselect",
+    selectionId?: string,
+  ): Promise<void> => {
+    setDriveFixtureBusy(true);
+    try {
+      const result =
+        action === "select"
+          ? await driveFixtureConnector.select()
+          : action === "read"
+            ? await driveFixtureConnector.read(selectionId ?? "")
+            : await driveFixtureConnector.deselect(selectionId ?? "");
+      setDriveFixtureState(result);
+      if (action === "deselect" && result.status === "not_connected") {
+        setDriveFixtureConnector(
+          createFixtureDriveConnector({
+            candidates: DRIVE_FIXTURE_CANDIDATE,
+            selectionIdFactory: () => "sel_fixture_drive_1",
+          }),
+        );
+      }
+    } catch {
+      setDriveFixtureState((current) => ({
+        status: "unavailable",
+        selections: current.selections,
+        message: "合成Drive fixtureを利用できません。",
+        retryable: false,
+      }));
+    } finally {
+      setDriveFixtureBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    const hydrateDrive = async (): Promise<void> => {
+      try {
+        const result = driveConnector
+          ? await driveConnector.refresh()
+          : await driveRequest("refresh");
+        if (mounted) {
+          setDriveState(result);
+        }
+      } catch {
+        if (mounted) {
+          setDriveState((current) => ({
+            status: "unavailable",
+            selections: current.selections,
+            message:
+              "Google Driveのセッション状態を確認できません。時間をおいて再試行してください。",
+            retryable: true,
+          }));
+        }
+      }
+    };
+    void hydrateDrive();
+    return () => {
+      mounted = false;
+    };
+  }, [driveConnector, driveRequest]);
 
   useEffect(() => {
     let mounted = true;
@@ -401,9 +831,20 @@ export function App({
   const requestProposal = async (): Promise<void> => {
     dispatch({ type: "propose-started" });
     try {
+      const fixtureEvidence = driveFixtureState.selections
+        .filter(
+          (selection) =>
+            selection.status === "read" &&
+            selection.evidence !== undefined &&
+            isSyntheticOrPublic(selection.evidence.data_classification),
+        )
+        .map((selection) => selection.evidence)
+        .filter((evidence): evidence is NonNullable<typeof evidence> =>
+          Boolean(evidence),
+        );
       const proposal = await agentApiClient.propose({
         event: B1_OMIYA_EVENT,
-        context: B1_OMIYA_CONTEXT,
+        context: [...B1_OMIYA_CONTEXT, ...fixtureEvidence],
       });
       if (!isSafeB1Proposal(proposal)) {
         throw new Error(
@@ -512,6 +953,28 @@ export function App({
         onRefresh={() => void runCalendarAction("refresh")}
         onReauthenticate={() => void runCalendarAction("reauthenticate")}
         onDisconnect={() => void runCalendarAction("disconnect")}
+      />
+
+      <DriveCard
+        state={driveState}
+        busy={driveBusy}
+        onSelect={() => void runDriveAction("select")}
+        onRead={(selectionId) => void runDriveAction("read", selectionId)}
+        onDeselect={(selectionId) =>
+          void runDriveAction("deselect", selectionId)
+        }
+      />
+
+      <DriveFixtureCard
+        state={driveFixtureState}
+        busy={driveFixtureBusy}
+        onSelect={() => void runDriveFixtureAction("select")}
+        onRead={(selectionId) =>
+          void runDriveFixtureAction("read", selectionId)
+        }
+        onDeselect={(selectionId) =>
+          void runDriveFixtureAction("deselect", selectionId)
+        }
       />
 
       <section className="fixture-card" aria-labelledby="fixture-title">

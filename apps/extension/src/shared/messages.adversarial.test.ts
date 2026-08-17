@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  driveCommandMessage,
+  isDriveCommandMessage,
   isPageContext,
   isPageContextUpdatedMessage,
   MESSAGE_TYPES,
@@ -106,5 +108,84 @@ describe("runtime page-context message boundaries", () => {
         context: { ...validScombzContext, title: 42 },
       }),
     ).toBe(false);
+  });
+});
+
+describe("Google Drive command message boundaries", () => {
+  it("accepts only the minimal opaque selection command envelope", () => {
+    expect(
+      isDriveCommandMessage({
+        type: MESSAGE_TYPES.driveRead,
+        selection_id: "sel_message_01",
+      }),
+    ).toBe(true);
+    expect(
+      isDriveCommandMessage({
+        type: MESSAGE_TYPES.driveDeselect,
+        selection_id: "sel_message_01",
+      }),
+    ).toBe(true);
+    expect(isDriveCommandMessage({ type: MESSAGE_TYPES.driveSelect })).toBe(
+      true,
+    );
+    expect(isDriveCommandMessage({ type: MESSAGE_TYPES.driveRefresh })).toBe(
+      true,
+    );
+    expect(driveCommandMessage("read", "sel_message_01")).toEqual({
+      type: MESSAGE_TYPES.driveRead,
+      selection_id: "sel_message_01",
+    });
+  });
+
+  it.each([
+    ["provider file ID", "1AbCDeFghIjKlMnOpQrStUvWxYz"],
+    ["token", "sel_access_token_01"],
+    ["auth value", "sel_auth_01"],
+    ["raw content", "raw secret content"],
+  ])("rejects %s in selection_id", (_label, selectionId) => {
+    expect(
+      isDriveCommandMessage({
+        type: MESSAGE_TYPES.driveRead,
+        selection_id: selectionId,
+      }),
+    ).toBe(false);
+    expect(() => driveCommandMessage("read", selectionId)).toThrow(
+      "opaque selection ID",
+    );
+  });
+
+  it("rejects extra fields, IDs, content, and tokens from all Drive commands", () => {
+    const invalidMessages = [
+      {
+        type: MESSAGE_TYPES.driveRead,
+        selection_id: "sel_message_01",
+        fileId: "drive-internal-file-01",
+      },
+      {
+        type: MESSAGE_TYPES.driveDeselect,
+        selection_id: "sel_message_01",
+        content: "private content",
+      },
+      {
+        type: MESSAGE_TYPES.driveSelect,
+        token: "access-token-secret",
+      },
+      {
+        type: MESSAGE_TYPES.driveRefresh,
+        file_id: "drive-internal-file-01",
+      },
+      {
+        type: MESSAGE_TYPES.driveRead,
+        selection_id: "sel_message_01",
+        access_token: "access-token-secret",
+      },
+    ];
+
+    for (const message of invalidMessages) {
+      expect(isDriveCommandMessage(message)).toBe(false);
+    }
+    expect(() => driveCommandMessage("read")).toThrow();
+    expect(() => driveCommandMessage("deselect", "")).toThrow();
+    expect(() => driveCommandMessage("deselect", "sel_auth_01")).toThrow();
   });
 });

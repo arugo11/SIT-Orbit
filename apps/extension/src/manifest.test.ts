@@ -1,9 +1,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const manifest = JSON.parse(
-  readFileSync(new URL("../manifest.json", import.meta.url), "utf8"),
-) as {
+const manifestSource = readFileSync(
+  new URL("../manifest.json", import.meta.url),
+  "utf8",
+);
+const manifest = JSON.parse(manifestSource) as {
   manifest_version: number;
   permissions: string[];
   host_permissions: string[];
@@ -16,7 +18,7 @@ const manifest = JSON.parse(
 describe("production extension contract", () => {
   it("keeps the raw MV3 shell within the requested permissions", () => {
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.permissions).toEqual(["sidePanel", "identity"]);
+    expect(manifest.permissions).toEqual(["sidePanel", "identity", "storage"]);
     expect(manifest.host_permissions).toEqual([
       "https://scombz.shibaura-it.ac.jp/*",
       "http://localhost:8000/*",
@@ -33,5 +35,20 @@ describe("production extension contract", () => {
         run_at: "document_idle",
       },
     ]);
+  });
+
+  it("does not add broad Drive OAuth scopes or remote Picker scripts", () => {
+    const buildSource = readFileSync(
+      new URL("../scripts/build.mjs", import.meta.url),
+      "utf8",
+    );
+    for (const source of [manifestSource, buildSource]) {
+      expect(source).not.toMatch(/googleapis\.com\/auth\/drive/i);
+      expect(source).not.toMatch(/googleapis\.com\/auth\/drive\.readonly/i);
+      expect(source).not.toMatch(/apis\.google\.com\/js\/api\.js/i);
+      expect(source).not.toMatch(/gapi\.load\(['"]picker/i);
+      expect(source).not.toMatch(/Google Picker/i);
+    }
+    expect(manifest.oauth2).toBeUndefined();
   });
 });

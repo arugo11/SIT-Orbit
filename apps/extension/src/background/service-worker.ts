@@ -2,10 +2,16 @@ import {
   type CalendarConnectorResult,
   GoogleCalendarConnector,
 } from "../connectors/google-calendar";
+import {
+  type DriveConnectorResult,
+  GoogleDriveConnector,
+} from "../connectors/google-drive";
 import { isScombzUrl, type PageContext } from "../content/page-context";
 import {
   type CalendarCommandMessage,
+  type DriveCommandMessage,
   isCalendarCommandMessage,
+  isDriveCommandMessage,
   isGetPageContextMessage,
   isPageContext,
   isPageContextUpdatedMessage,
@@ -13,12 +19,23 @@ import {
 } from "../shared/messages";
 
 const googleCalendarConnector = new GoogleCalendarConnector();
+const googleDriveConnector = new GoogleDriveConnector();
 
 function unavailableCalendarResult(): CalendarConnectorResult {
   return {
     status: "unavailable",
     message:
       "Google Calendarを利用できません。時間をおいて再試行してください。",
+  };
+}
+
+function unavailableDriveResult(): DriveConnectorResult {
+  return {
+    status: "unavailable",
+    selections: [],
+    message:
+      "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
+    retryable: false,
   };
 }
 
@@ -38,6 +55,25 @@ async function handleCalendarCommand(
     }
   } catch {
     return unavailableCalendarResult();
+  }
+}
+
+async function handleDriveCommand(
+  message: DriveCommandMessage,
+): Promise<DriveConnectorResult> {
+  try {
+    switch (message.type) {
+      case MESSAGE_TYPES.driveSelect:
+        return await googleDriveConnector.select();
+      case MESSAGE_TYPES.driveRead:
+        return await googleDriveConnector.read(message.selection_id);
+      case MESSAGE_TYPES.driveDeselect:
+        return await googleDriveConnector.deselect(message.selection_id);
+      case MESSAGE_TYPES.driveRefresh:
+        return await googleDriveConnector.refresh();
+    }
+  } catch {
+    return unavailableDriveResult();
   }
 }
 
@@ -156,6 +192,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleCalendarCommand(message).then(sendResponse);
+    return true;
+  }
+
+  if (isDriveCommandMessage(message)) {
+    if (sender.tab !== undefined) {
+      sendResponse(unavailableDriveResult());
+      return true;
+    }
+    void handleDriveCommand(message).then(sendResponse);
     return true;
   }
 
