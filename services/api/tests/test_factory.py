@@ -38,4 +38,5 @@ def test_azure_openai_uses_v1_endpoint(monkeypatch) -> None:
 
     assert isinstance(agent, AzureOpenAIAgent)
     assert str(agent.client.base_url) == "https://example.openai.azure.com/openai/v1/"
-    assert agent.model == "demo-deployment"
+    assert agent.model_name == "demo-deployment"
+    assert agent.model.settings == {"openai_store": False}

@@ -5,7 +5,8 @@ const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 
 describe("Side Panel B1 closed-loop contract", () => {
   it("keeps API calls behind explicit proposal, approval, and completion controls", () => {
-    expect(appSource).toContain("agentApiClient.propose");
+    expect(appSource).toContain("agentApiClient.startRun");
+    expect(appSource).toContain("agentApiClient.submitToolResult");
     expect(appSource).toContain("agentApiClient.verify");
     expect(appSource).toContain("onClick={() => void requestProposal()}");
     expect(appSource).toContain("onClick={approveProposal}");

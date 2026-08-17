@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import orbit_api.main as orbit_main
 from fastapi.testclient import TestClient
 from orbit_api.main import app
 
@@ -56,3 +57,65 @@ def test_propose_and_verify_action(monkeypatch) -> None:
         )
     assert verify_response.status_code == 200
     assert verify_response.json()["event_type"] == "action_completed"
+
+
+def test_unknown_run_returns_gone_without_model_configuration() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/agent/runs/run-does-not-exist/tool-results",
+            json={
+                "tool_call_id": "calendar-call-1",
+                "result": {
+                    "schema_version": "v1",
+                    "status": "known",
+                    "time_zone": "Asia/Tokyo",
+                    "window_start": "2026-08-17T00:00:00+09:00",
+                    "window_end": "2026-08-24T00:00:00+09:00",
+                    "available_minutes": 10080,
+                    "busy_minutes": 0,
+                    "free_intervals": [],
+                    "reason_code": None,
+                },
+            },
+        )
+
+    assert response.status_code == 410
+    assert response.json() == {"detail": "Agent run is no longer resumable."}
+
+
+def test_calendar_event_details_and_oauth_tokens_are_rejected_before_model_call(
+    monkeypatch,
+) -> None:
+    class SpyRunService:
+        called = False
+        store = type("Store", (), {"clear": lambda self: None})()
+
+        async def submit_tool_result(self, run_id, request):
+            self.called = True
+            raise AssertionError("Malformed Calendar results must not reach the model.")
+
+    spy = SpyRunService()
+    monkeypatch.setattr(orbit_main, "agent_run_service", spy)
+    result = {
+        "schema_version": "v1",
+        "status": "known",
+        "time_zone": "Asia/Tokyo",
+        "window_start": "2026-08-17T00:00:00+09:00",
+        "window_end": "2026-08-24T00:00:00+09:00",
+        "available_minutes": 10080,
+        "busy_minutes": 0,
+        "free_intervals": [],
+        "reason_code": None,
+        "title": "private event title",
+        "event_id": "private-event-id",
+        "oauth_token": "oauth-secret",
+    }
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/agent/runs/run-with-invalid-result/tool-results",
+            json={"tool_call_id": "calendar-call-1", "result": result},
+        )
+
+    assert response.status_code == 422
+    assert spy.called is False
