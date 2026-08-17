@@ -15,8 +15,6 @@ azure_args=(
   --ingress external
   --target-port 8080
   --env-vars ORBIT_AGENT_BACKEND=fixture ORBIT_OBSERVABILITY=off
-  --only-show-errors
-  --output none
 )
 
 if [[ -n "${ORBIT_AZURE_SUBSCRIPTION:-}" ]]; then
@@ -36,7 +34,6 @@ update_args=(
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}"
   --min-replicas 0
   --max-replicas 1
-  --only-show-errors
   --output none
 )
 
