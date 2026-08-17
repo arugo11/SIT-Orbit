@@ -683,7 +683,7 @@ export function App({
     retryable: false,
   });
   const [driveBusy, setDriveBusy] = useState(false);
-  const [driveFixtureConnector] = useState(() =>
+  const [driveFixtureConnector, setDriveFixtureConnector] = useState(() =>
     createFixtureDriveConnector({
       candidates: DRIVE_FIXTURE_CANDIDATE,
       selectionIdFactory: () => "sel_fixture_drive_1",
@@ -758,6 +758,14 @@ export function App({
             ? await driveFixtureConnector.read(selectionId ?? "")
             : await driveFixtureConnector.deselect(selectionId ?? "");
       setDriveFixtureState(result);
+      if (action === "deselect" && result.status === "not_connected") {
+        setDriveFixtureConnector(
+          createFixtureDriveConnector({
+            candidates: DRIVE_FIXTURE_CANDIDATE,
+            selectionIdFactory: () => "sel_fixture_drive_1",
+          }),
+        );
+      }
     } catch {
       setDriveFixtureState((current) => ({
         status: "unavailable",

@@ -518,6 +518,26 @@ describe("Side Panel B1 agent loop behavior", () => {
     expect(mounted.document.body.textContent).not.toContain("合成ノート.md");
     expect(driveRequest).toHaveBeenCalledTimes(1);
     expect(apiFetcher).not.toHaveBeenCalled();
+
+    const reselectButton = mounted.document.querySelector(
+      '[data-testid="drive-fixture-select"]',
+    );
+    expect(reselectButton).not.toBeNull();
+    expect((reselectButton as HTMLButtonElement).disabled).toBe(false);
+    await click(reselectButton as Element);
+    await waitFor(
+      () =>
+        mounted?.document.querySelector(
+          '[data-drive-fixture-status="connected"]',
+        ) !== null &&
+        mounted?.document.body.textContent?.includes("合成ノート.md") === true,
+    );
+    expect(mounted.document.body.textContent).toContain("合成ノート.md");
+    expect(
+      mounted.document.querySelector('[data-testid="drive-fixture-read"]'),
+    ).not.toBeNull();
+    expect(mounted.document.body.textContent).toContain("未読み取り");
+    expect(apiFetcher).not.toHaveBeenCalled();
   });
 
   it("[UI-DRIVE-003] includes the read synthetic Drive EvidenceLink in the B1 proposal context", async () => {
