@@ -14,7 +14,7 @@
 - Next.jsのWebアプリケーション
 - Expoのモバイルアプリケーション
 - 外部モデルを呼び出さない決定論的なfixture
-- 合成デモデータ向けのOpenAIおよびW&B Weaveのオプションアダプター
+- 合成デモデータ向けのOpenAI、Azure OpenAI、およびW&B Weaveのオプションアダプター
 
 ## 環境要件
 
@@ -34,6 +34,8 @@ pnpm generate:api
 APIデモまたはW&Bのトレースを使う場合だけ、`.env.example`を`.env`へコピーしてください。
 
 標準設定では、決定論的なfixtureバックエンドを使用します。
+
+Azure Container Appsへの合成デモ配置手順は[`docs/azure-demo.md`](docs/azure-demo.md)にまとめています。
 
 ## 起動
 

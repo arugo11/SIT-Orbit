@@ -55,6 +55,7 @@ pnpm build
 - Do not call an external model while writing or running ordinary tests.
 - Never silently fall back from one model or backend to another.
 - OpenAI requires both `ORBIT_AGENT_BACKEND=openai` and an API key.
+- Azure OpenAI requires `ORBIT_AGENT_BACKEND=azure_openai`, an endpoint, a deployment name, and an API key.
 - W&B requires `ORBIT_OBSERVABILITY=wandb` and explicit W&B configuration.
 - Only `synthetic` or `public` data may be sent to OpenAI or W&B.
 - Never send student records, grades, private course material, unpublished

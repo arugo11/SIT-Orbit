@@ -40,7 +40,7 @@ Chrome Side Panel   FastAPI Agent API
     │                    │
     │                    ├── FixtureAgent
     │                    ├── OpenAIAgent
-    │                    ├── Azure Adapter（予定）
+    │                    ├── AzureOpenAIAgent（明示設定時のみ）
     │                    └── PydanticAI（導入条件を満たした後）
     │
     └── 利用者の承認
