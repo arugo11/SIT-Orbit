@@ -11,6 +11,10 @@ import {
   type CalendarEventView,
   formatAvailabilitySummary,
 } from "../connectors/google-calendar";
+import {
+  createFixtureDriveConnector,
+  type DriveSelectionCandidate,
+} from "../connectors/google-drive";
 import type {
   DriveConnector,
   DriveConnectorResult,
@@ -44,6 +48,19 @@ const LOCAL_FIXTURE = {
   event: "campus_entered",
   evidence: "微分積分学の課題は明日締切",
   available: "次の授業まで18分",
+};
+
+const DRIVE_FIXTURE_CANDIDATE: DriveSelectionCandidate = {
+  fileId: "fixture-drive-note",
+  name: "合成ノート.md",
+  mimeType: "text/markdown",
+  sizeBytes: 512,
+  modifiedTime: "2026-08-17T09:00:00+09:00",
+  trashed: false,
+  canDownload: true,
+  isFolder: false,
+  isShortcut: false,
+  dataClassification: "synthetic",
 };
 
 const agentApiClient = new AgentApiClient({
@@ -533,7 +550,7 @@ function DriveCard({
           className="primary-button"
           data-testid="drive-select"
           onClick={onSelect}
-          disabled={busy}
+          disabled={busy || (state.status === "unavailable" && state.retryable === false)}
         >
           {busy ? "確認中…" : "Google Driveから選ぶ"}
         </button>
@@ -542,6 +559,95 @@ function DriveCard({
       {state.message && state.status !== "unavailable" ? (
         <p className="connector-description">{state.message}</p>
       ) : null}
+    </section>
+  );
+}
+
+function DriveFixtureCard({
+  state,
+  busy,
+  onSelect,
+  onRead,
+  onDeselect,
+}: {
+  state: DriveConnectorResult;
+  busy: boolean;
+  onSelect: () => void;
+  onRead: (selectionId: string) => void;
+  onDeselect: (selectionId: string) => void;
+}) {
+  const selection = state.selections[0];
+  return (
+    <section
+      className="drive-fixture-card"
+      aria-labelledby="drive-fixture-title"
+      data-drive-fixture-status={state.status}
+    >
+      <div className="section-heading">
+        <h2 id="drive-fixture-title">合成Drive fixture</h2>
+        <span className="fixture-label">合成データ</span>
+      </div>
+      <p className="fixture-disclaimer">
+        Google Driveではありません。Agent APIや外部サービスへ接続しない、ローカルの操作確認です。
+      </p>
+      {selection ? (
+        <dl className="drive-fixture-list">
+          <div>
+            <dt>ファイル</dt>
+            <dd>{selection.name}</dd>
+          </div>
+          <div>
+            <dt>形式</dt>
+            <dd>{selection.mimeType}</dd>
+          </div>
+          <div>
+            <dt>状態</dt>
+            <dd>{selection.status === "read" ? "読み取り済み" : "未読み取り"}</dd>
+          </div>
+          {selection.evidence ? (
+            <div>
+              <dt>EvidenceLink</dt>
+              <dd>{selection.evidence.locator}</dd>
+            </div>
+          ) : null}
+        </dl>
+      ) : (
+        <p className="empty-state">合成ファイルはまだ選択されていません。</p>
+      )}
+      <div className="button-row drive-fixture-controls">
+        <button
+          type="button"
+          className="primary-button"
+          data-testid="drive-fixture-select"
+          onClick={onSelect}
+          disabled={busy || selection !== undefined}
+        >
+          {busy ? "処理中…" : "合成ファイルを選ぶ"}
+        </button>
+        {selection ? (
+          <>
+            <button
+              type="button"
+              className="primary-button"
+              data-testid="drive-fixture-read"
+              onClick={() => onRead(selection.selectionId)}
+              disabled={busy}
+            >
+              読み取る
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="drive-fixture-deselect"
+              onClick={() => onDeselect(selection.selectionId)}
+              disabled={busy}
+            >
+              選択解除
+            </button>
+          </>
+        ) : null}
+      </div>
+      {state.message ? <p className="connector-description">{state.message}</p> : null}
     </section>
   );
 }
@@ -569,6 +675,18 @@ export function App({
     retryable: false,
   });
   const [driveBusy, setDriveBusy] = useState(false);
+  const [driveFixtureConnector] = useState(() =>
+    createFixtureDriveConnector({
+      candidates: DRIVE_FIXTURE_CANDIDATE,
+      selectionIdFactory: () => "sel_fixture_drive_1",
+    }),
+  );
+  const [driveFixtureState, setDriveFixtureState] =
+    useState<DriveConnectorResult>({
+      status: "not_connected",
+      selections: [],
+    });
+  const [driveFixtureBusy, setDriveFixtureBusy] = useState(false);
 
   const runCalendarAction = async (
     action: "connect" | "refresh" | "reauthenticate" | "disconnect",
@@ -619,6 +737,59 @@ export function App({
     }
   };
 
+  const runDriveFixtureAction = async (
+    action: "select" | "read" | "deselect",
+    selectionId?: string,
+  ): Promise<void> => {
+    setDriveFixtureBusy(true);
+    try {
+      const result =
+        action === "select"
+          ? await driveFixtureConnector.select()
+          : action === "read"
+            ? await driveFixtureConnector.read(selectionId ?? "")
+            : await driveFixtureConnector.deselect(selectionId ?? "");
+      setDriveFixtureState(result);
+    } catch {
+      setDriveFixtureState((current) => ({
+        status: "unavailable",
+        selections: current.selections,
+        message: "合成Drive fixtureを利用できません。",
+        retryable: false,
+      }));
+    } finally {
+      setDriveFixtureBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    let mounted = true;
+    const hydrateDrive = async (): Promise<void> => {
+      try {
+        const result = driveConnector
+          ? await driveConnector.refresh()
+          : await driveRequest("refresh");
+        if (mounted) {
+          setDriveState(result);
+        }
+      } catch {
+        if (mounted) {
+          setDriveState((current) => ({
+            status: "unavailable",
+            selections: current.selections,
+            message:
+              "Google Driveのセッション状態を確認できません。時間をおいて再試行してください。",
+            retryable: true,
+          }));
+        }
+      }
+    };
+    void hydrateDrive();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   useEffect(() => {
     let mounted = true;
 
@@ -644,9 +815,20 @@ export function App({
   const requestProposal = async (): Promise<void> => {
     dispatch({ type: "propose-started" });
     try {
+      const fixtureEvidence = driveFixtureState.selections
+        .filter(
+          (selection) =>
+            selection.status === "read" &&
+            selection.evidence !== undefined &&
+            isSyntheticOrPublic(selection.evidence.data_classification),
+        )
+        .map((selection) => selection.evidence)
+        .filter((evidence): evidence is NonNullable<typeof evidence> =>
+          Boolean(evidence),
+        );
       const proposal = await agentApiClient.propose({
         event: B1_OMIYA_EVENT,
-        context: B1_OMIYA_CONTEXT,
+        context: [...B1_OMIYA_CONTEXT, ...fixtureEvidence],
       });
       if (!isSafeB1Proposal(proposal)) {
         throw new Error(
@@ -764,6 +946,18 @@ export function App({
         onRead={(selectionId) => void runDriveAction("read", selectionId)}
         onDeselect={(selectionId) =>
           void runDriveAction("deselect", selectionId)
+        }
+      />
+
+      <DriveFixtureCard
+        state={driveFixtureState}
+        busy={driveFixtureBusy}
+        onSelect={() => void runDriveFixtureAction("select")}
+        onRead={(selectionId) =>
+          void runDriveFixtureAction("read", selectionId)
+        }
+        onDeselect={(selectionId) =>
+          void runDriveFixtureAction("deselect", selectionId)
         }
       />
 

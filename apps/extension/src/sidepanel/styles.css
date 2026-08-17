@@ -83,7 +83,8 @@ h2 {
 .proposal-card,
 .event-card,
 .calendar-card,
-.drive-card {
+.drive-card,
+.drive-fixture-card {
   border: 1px solid #d9e1e8;
   border-radius: 12px;
   padding: 14px;
@@ -117,6 +118,11 @@ h2 {
 .drive-card {
   border-color: #d4c6e4;
   background: #fdfbff;
+}
+
+.drive-fixture-card {
+  border-color: #e7d7b1;
+  background: #fffaf0;
 }
 
 .calendar-status-badge {
@@ -254,6 +260,22 @@ h2 {
   color: #697785;
   line-height: 1.5;
   overflow-wrap: anywhere;
+}
+
+.drive-fixture-list {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.drive-fixture-list div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.drive-fixture-controls {
+  margin-top: 14px;
 }
 
 .section-note {

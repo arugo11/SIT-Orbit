@@ -48,9 +48,6 @@ export interface DriveSelectionCandidate {
   dataClassification?: DriveDataClassification;
 }
 
-/** Alias used by callers that treat a provider result as a Drive file. */
-export type DriveFileCandidate = DriveSelectionCandidate;
-
 /** Internal session record. The only persisted identifier is the provider's
  * file ID, paired with an opaque selection ID. No content or credentials are
  * part of this record.
@@ -100,14 +97,8 @@ export interface DriveConnectorResult {
 
 /** A provider returns one Picker selection, or null when the user cancels. */
 export interface DriveSelectionProvider {
-  select(): Promise<
-    DriveSelectionCandidate | DriveSelectionProviderResult | null
-  >;
+  select(): Promise<DriveSelectionCandidate | null>;
 }
-
-export type DriveSelectionProviderResult =
-  | { kind: "cancelled" }
-  | { kind: "unavailable"; retryable?: boolean };
 
 /** The reader receives only an approved internal ID and a normalized format. */
 export interface DriveFileReader {
@@ -238,54 +229,6 @@ export function validateDriveSelectionCandidate(
   return null;
 }
 
-/** Convert a bounded Google file metadata object into an internal candidate. */
-export function mapDriveFileMetadata(
-  metadata: unknown,
-): DriveSelectionCandidate | null {
-  if (!isRecord(metadata)) {
-    return null;
-  }
-
-  const fileId = firstString(metadata.fileId, metadata.id);
-  const name = firstString(metadata.name);
-  const mimeType = firstString(metadata.mimeType);
-  if (fileId === null || name === null || mimeType === null) {
-    return null;
-  }
-
-  const capabilities = isRecord(metadata.capabilities)
-    ? metadata.capabilities
-    : undefined;
-  const sizeBytes = parseSizeBytes(metadata.sizeBytes ?? metadata.size);
-  const modifiedTime = firstString(metadata.modifiedTime);
-  const classification = parseClassification(
-    metadata.dataClassification ?? metadata.data_classification,
-  );
-
-  return {
-    fileId,
-    name,
-    mimeType,
-    sizeBytes,
-    modifiedTime,
-    trashed: readOptionalBoolean(metadata.trashed),
-    canDownload: readOptionalBoolean(
-      metadata.canDownload ?? capabilities?.canDownload,
-    ),
-    isFolder:
-      readOptionalBoolean(metadata.isFolder) ??
-      mimeType === DRIVE_FOLDER_MIME_TYPE,
-    isShortcut:
-      readOptionalBoolean(metadata.isShortcut) ??
-      mimeType === DRIVE_SHORTCUT_MIME_TYPE,
-    ...(classification === undefined
-      ? {}
-      : { dataClassification: classification }),
-  };
-}
-
-export const mapDriveCandidate = mapDriveFileMetadata;
-
 export function mapDriveSelectionToEvidence(
   selection: Pick<DriveSelectionView, "selectionId" | "name">,
   dataClassification: DriveDataClassification = "personal",
@@ -324,6 +267,7 @@ export class GoogleDriveConnector implements DriveConnector {
   private readonly reader: DriveFileReader;
   private readonly storage: DriveSelectionStorage;
   private readonly selectionIdFactory: () => string;
+  private readonly providerConfigured: boolean;
   private readonly selections = new Map<string, DriveSelectionRecord>();
   private loaded = false;
 
@@ -333,6 +277,7 @@ export class GoogleDriveConnector implements DriveConnector {
     this.storage = options.storage ?? new ChromeDriveSelectionStorage();
     this.selectionIdFactory =
       options.selectionIdFactory ?? createOpaqueSelectionId;
+    this.providerConfigured = options.provider !== undefined;
   }
 
   async select(): Promise<DriveConnectorResult> {
@@ -342,24 +287,13 @@ export class GoogleDriveConnector implements DriveConnector {
 
     let candidate: DriveSelectionCandidate | null;
     try {
-      const providerResult = await this.provider.select();
-      if (
-        providerResult === null ||
-        isCancelledProviderResult(providerResult)
-      ) {
+      const providerCandidate = await this.provider.select();
+      if (providerCandidate === null) {
         candidate = null;
-      } else if (isUnavailableProviderResult(providerResult)) {
-        return this.unavailable(
-          "Google Driveのファイル選択を利用できません。ライブProviderは未設定です。",
-          providerResult.retryable ?? false,
-        );
-      } else if (isDriveSelectionCandidate(providerResult)) {
-        candidate = providerResult;
+      } else if (isDriveSelectionCandidate(providerCandidate)) {
+        candidate = providerCandidate;
       } else {
-        return this.unavailable(
-          "Google Driveの選択情報を確認できません。",
-          false,
-        );
+        return this.unavailable("Google Driveの選択情報を確認できません。", false);
       }
     } catch (error) {
       if (error instanceof DriveConnectorError) {
@@ -514,6 +448,12 @@ export class GoogleDriveConnector implements DriveConnector {
     if (!(await this.ensureLoaded())) {
       return this.unavailable("Google Driveの選択状態を読み取れません。", true);
     }
+    if (!this.providerConfigured) {
+      return this.unavailable(
+        "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
+        false,
+      );
+    }
     return this.currentResult();
   }
 
@@ -583,7 +523,7 @@ export interface DriveConnector {
 export class UnavailableDriveSelectionProvider
   implements DriveSelectionProvider
 {
-  async select(): Promise<DriveSelectionProviderResult> {
+  async select(): Promise<DriveSelectionCandidate | null> {
     throw new DriveConnectorError(
       "unavailable",
       "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
@@ -769,20 +709,10 @@ function isDriveSelectionCandidate(
     typeof value.name === "string" &&
     typeof value.mimeType === "string" &&
     (typeof value.sizeBytes === "number" || value.sizeBytes === null) &&
-    (typeof value.modifiedTime === "string" || value.modifiedTime === null)
+    (typeof value.modifiedTime === "string" || value.modifiedTime === null) &&
+    (value.dataClassification === undefined ||
+      isDriveDataClassification(value.dataClassification))
   );
-}
-
-function isCancelledProviderResult(
-  value: unknown,
-): value is { kind: "cancelled" } {
-  return isRecord(value) && value.kind === "cancelled";
-}
-
-function isUnavailableProviderResult(
-  value: unknown,
-): value is { kind: "unavailable"; retryable?: boolean } {
-  return isRecord(value) && value.kind === "unavailable";
 }
 
 function validateStoredSelectionForRead(
@@ -817,36 +747,6 @@ function isDriveDataClassification(
     value === "personal" ||
     value === "restricted"
   );
-}
-
-function parseClassification(
-  value: unknown,
-): DriveDataClassification | undefined {
-  return isDriveDataClassification(value) ? value : undefined;
-}
-
-function parseSizeBytes(value: unknown): number | null {
-  if (typeof value === "number") {
-    return Number.isSafeInteger(value) && value >= 0 ? value : null;
-  }
-  if (typeof value === "string" && /^\d+$/.test(value)) {
-    const parsed = Number(value);
-    return Number.isSafeInteger(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function firstString(...values: unknown[]): string | null {
-  for (const value of values) {
-    if (typeof value === "string" && value.length > 0) {
-      return value;
-    }
-  }
-  return null;
-}
-
-function readOptionalBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

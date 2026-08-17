@@ -398,27 +398,191 @@ describe("Side Panel B1 agent loop behavior", () => {
     expect(mounted.document.body.textContent).not.toContain(token);
   });
 
-  it("[UI-DRIVE-001] presents Drive as unavailable until an injected or live provider is explicitly used", async () => {
+  it("[UI-DRIVE-001] requests one Drive session refresh on mount and keeps unavailable select disabled", async () => {
     const token = "drive-mount-secret";
     const apiFetcher = vi.fn(async () => {
       throw new Error("Agent API must not run on Drive mount");
     });
     vi.stubGlobal("fetch", apiFetcher);
+    const driveRequest = vi.fn(async (command: string) => {
+      if (command !== "refresh") {
+        throw new Error(`Unexpected Drive command: ${command}`);
+      }
+      return {
+        status: "unavailable" as const,
+        selections: [],
+        message:
+          "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
+        retryable: false,
+      };
+    });
 
-    mounted = await mountSidePanel(() => <App />);
+    mounted = await mountSidePanel(() => <App driveRequest={driveRequest} />);
+    await waitFor(
+      () =>
+        driveRequest.mock.calls.length === 1 &&
+        mounted?.document.querySelector('[data-drive-status="unavailable"]') !==
+          null,
+    );
 
     const driveMessages = mounted.chromeRuntime.sendMessage.mock.calls
       .map(([message]) => message)
       .filter(isDriveCommandMessage);
     expect(driveMessages).toEqual([]);
+    expect(driveRequest).toHaveBeenCalledTimes(1);
+    expect(driveRequest).toHaveBeenCalledWith("refresh");
     expect(
       mounted.document.querySelector('[data-drive-status="unavailable"]'),
     ).not.toBeNull();
+    const selectButton = mounted.document.querySelector(
+      '[data-testid="drive-select"]',
+    );
+    expect(selectButton).not.toBeNull();
+    expect((selectButton as HTMLButtonElement).disabled).toBe(true);
     expect(mounted.document.body.textContent).toContain(
       "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
     );
     expect(mounted.document.body.textContent).not.toContain(token);
     expect(apiFetcher).not.toHaveBeenCalled();
+  });
+
+  it("[UI-DRIVE-002] completes the synthetic Drive fixture flow through EvidenceLink and deselection", async () => {
+    const apiFetcher = vi.fn(async () => {
+      throw new Error("Agent API must not run for the local Drive fixture");
+    });
+    vi.stubGlobal("fetch", apiFetcher);
+    const driveRequest = vi.fn(async (command: string) => {
+      if (command !== "refresh") {
+        throw new Error(`Unexpected live Drive command: ${command}`);
+      }
+      return {
+        status: "unavailable" as const,
+        selections: [],
+        message:
+          "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
+        retryable: false,
+      };
+    });
+
+    mounted = await mountSidePanel(() => <App driveRequest={driveRequest} />);
+    await waitFor(() => driveRequest.mock.calls.length === 1);
+
+    const fixtureSelect = mounted.document.querySelector(
+      '[data-testid="drive-fixture-select"]',
+    );
+    expect(fixtureSelect).not.toBeNull();
+    await click(fixtureSelect as Element);
+    await waitFor(
+      () =>
+        mounted?.document.querySelector(
+          '[data-testid="drive-fixture-read"]',
+        ) !== null,
+    );
+    expect(mounted.document.body.textContent).toContain("合成ノート.md");
+    expect(
+      mounted.document.querySelector('[data-drive-fixture-status="connected"]'),
+    ).not.toBeNull();
+    expect(mounted.document.body.textContent).toContain("未読み取り");
+
+    const fixtureRead = mounted.document.querySelector(
+      '[data-testid="drive-fixture-read"]',
+    );
+    expect(fixtureRead).not.toBeNull();
+    await click(fixtureRead as Element);
+    await waitFor(
+      () =>
+        mounted?.document.body.textContent?.includes(
+          "orbit-drive://sel_fixture_drive_1",
+        ) ?? false,
+    );
+    expect(mounted.document.body.textContent).toContain("EvidenceLink");
+    expect(mounted.document.body.textContent).toContain("読み取り済み");
+    expect(mounted.document.body.textContent).not.toContain(
+      "fixture-drive-note",
+    );
+
+    const fixtureDeselect = mounted.document.querySelector(
+      '[data-testid="drive-fixture-deselect"]',
+    );
+    expect(fixtureDeselect).not.toBeNull();
+    await click(fixtureDeselect as Element);
+    await waitFor(
+      () =>
+        mounted?.document.querySelector(
+          '[data-drive-fixture-status="not_connected"]',
+        ) !== null,
+    );
+    expect(mounted.document.body.textContent).toContain(
+      "合成ファイルはまだ選択されていません。",
+    );
+    expect(mounted.document.body.textContent).not.toContain("合成ノート.md");
+    expect(driveRequest).toHaveBeenCalledTimes(1);
+    expect(apiFetcher).not.toHaveBeenCalled();
+  });
+
+  it("[UI-DRIVE-003] includes the read synthetic Drive EvidenceLink in the B1 proposal context", async () => {
+    const apiFetcher = responseSequence([jsonResponse(validProposal)]);
+    vi.stubGlobal("fetch", apiFetcher);
+    const driveRequest = vi.fn(async (command: string) => {
+      if (command !== "refresh") {
+        throw new Error(`Unexpected live Drive command: ${command}`);
+      }
+      return {
+        status: "unavailable" as const,
+        selections: [],
+        message:
+          "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
+        retryable: false,
+      };
+    });
+
+    mounted = await mountSidePanel(() => <App driveRequest={driveRequest} />);
+    await waitFor(() => driveRequest.mock.calls.length === 1);
+    await click(
+      mounted.document.querySelector(
+        '[data-testid="drive-fixture-select"]',
+      ) as Element,
+    );
+    await waitFor(
+      () =>
+        mounted?.document.querySelector(
+          '[data-testid="drive-fixture-read"]',
+        ) !== null,
+    );
+    await click(
+      mounted.document.querySelector(
+        '[data-testid="drive-fixture-read"]',
+      ) as Element,
+    );
+    await waitFor(
+      () =>
+        mounted?.document.body.textContent?.includes(
+          "orbit-drive://sel_fixture_drive_1",
+        ) ?? false,
+    );
+
+    await click(buttonByName(mounted.document, "B1 大宮の提案を作成"));
+    await waitFor(() => apiFetcher.mock.calls.length === 1);
+
+    const body = requestBody(apiFetcher, 0);
+    const context = body.context as Array<Record<string, unknown>>;
+    expect(context).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source_type: "google_drive",
+          evidence_id: "ev-sel_fixture_drive_1",
+          title: "合成ノート.md",
+          locator: "orbit-drive://sel_fixture_drive_1",
+          data_classification: "synthetic",
+        }),
+      ]),
+    );
+    expect(context).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source_type: "assignment" }),
+      ]),
+    );
+    expect(JSON.stringify(body)).not.toContain("fixture-drive-note");
   });
 
   it("[UI-002] sends typed connect/disconnect commands and keeps token/API boundaries clean", async () => {
