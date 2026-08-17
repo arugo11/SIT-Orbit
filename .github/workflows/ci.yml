@@ -45,6 +45,9 @@ jobs:
           PYTHONPATH=services/api uv run python -m evals.run_eval
           uv run python scripts/check_secrets.py
 
+      - name: Azure script syntax
+        run: bash -n scripts/azure/*.sh
+
       - name: Generate API client
         run: pnpm generate:api
 
