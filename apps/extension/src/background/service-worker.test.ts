@@ -167,4 +167,27 @@ describe("service worker side panel contract", () => {
     expect(removeCachedAuthToken).not.toHaveBeenCalled();
     expect(liveFetch).not.toHaveBeenCalled();
   });
+
+  it("[SW-002] rejects every Drive command from a content-script sender", async () => {
+    const internalFileId = "drive-internal-file-01";
+    const commandMessages = [
+      { type: MESSAGE_TYPES.driveSelect },
+      { type: MESSAGE_TYPES.driveRead, selection_id: "sel_worker_01" },
+      { type: MESSAGE_TYPES.driveDeselect, selection_id: "sel_worker_01" },
+      { type: MESSAGE_TYPES.driveRefresh },
+    ] as const;
+
+    for (const message of commandMessages) {
+      const response = vi.fn();
+      onMessage.dispatch(message, { tab: { id: 77 } }, response);
+      await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+      expect(response).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: "unavailable",
+          selections: [],
+        }),
+      );
+      expect(JSON.stringify(response.mock.calls)).not.toContain(internalFileId);
+    }
+  });
 });

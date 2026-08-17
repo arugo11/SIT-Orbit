@@ -87,7 +87,7 @@ const requiredFiles = [
 if (
   manifest.manifest_version !== 3 ||
   JSON.stringify(manifest.permissions) !==
-    JSON.stringify(["sidePanel", "identity"]) ||
+    JSON.stringify(["sidePanel", "identity", "storage"]) ||
   JSON.stringify(manifest.host_permissions) !==
     JSON.stringify([
       "https://scombz.shibaura-it.ac.jp/*",
@@ -99,7 +99,7 @@ if (
   manifest.background?.service_worker !== "service-worker.js"
 ) {
   throw new Error(
-    "Generated extension manifest is outside the Branch 1 contract",
+    "Generated extension manifest is outside the Branch 5 contract",
   );
 }
 

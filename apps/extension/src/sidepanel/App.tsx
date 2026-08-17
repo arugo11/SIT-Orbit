@@ -11,10 +11,17 @@ import {
   type CalendarEventView,
   formatAvailabilitySummary,
 } from "../connectors/google-calendar";
+import type {
+  DriveConnector,
+  DriveConnectorResult,
+  DriveSelectionView,
+} from "../connectors/google-drive";
 import type { PageContext, PageKind } from "../content/page-context";
 import {
   type CalendarCommand,
   calendarCommandMessage,
+  type DriveCommand,
+  driveCommandMessage,
   isPageContext,
   isPageContextUpdatedMessage,
   MESSAGE_TYPES,
@@ -75,6 +82,28 @@ function requestCalendarCommand(
   });
 }
 
+export function requestDriveCommand(
+  command: DriveCommand,
+  selectionId?: string,
+): Promise<DriveConnectorResult> {
+  return new Promise((resolve, reject) => {
+    let message: ReturnType<typeof driveCommandMessage>;
+    try {
+      message = driveCommandMessage(command, selectionId);
+    } catch {
+      reject(new Error("Drive connector command was invalid."));
+      return;
+    }
+    chrome.runtime.sendMessage(message, (response: unknown) => {
+      if (chrome.runtime.lastError || !isDriveResult(response)) {
+        reject(new Error("Drive connector response was unavailable."));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
 function isCalendarResult(value: unknown): value is CalendarConnectorResult {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -85,6 +114,52 @@ function isCalendarResult(value: unknown): value is CalendarConnectorResult {
     candidate.status === "connected" ||
     candidate.status === "reauth_required" ||
     candidate.status === "unavailable"
+  );
+}
+
+function isDriveResult(value: unknown): value is DriveConnectorResult {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    (candidate.status === "not_connected" ||
+      candidate.status === "connected" ||
+      candidate.status === "reauth_required" ||
+      candidate.status === "unavailable") &&
+    Array.isArray(candidate.selections) &&
+    candidate.selections.every(isDriveSelectionView)
+  );
+}
+
+function isDriveSelectionView(value: unknown): value is DriveSelectionView {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.selectionId === "string" &&
+    typeof candidate.name === "string" &&
+    typeof candidate.mimeType === "string" &&
+    (candidate.sizeBytes === null || typeof candidate.sizeBytes === "number") &&
+    (candidate.modifiedTime === null ||
+      typeof candidate.modifiedTime === "string") &&
+    (candidate.status === "selected" || candidate.status === "read") &&
+    (candidate.evidence === undefined || isDriveEvidence(candidate.evidence))
+  );
+}
+
+function isDriveEvidence(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.evidence_id === "string" &&
+    typeof candidate.title === "string" &&
+    candidate.source_type === "google_drive" &&
+    typeof candidate.locator === "string" &&
+    typeof candidate.data_classification === "string"
   );
 }
 
@@ -133,6 +208,12 @@ export interface AppProps {
   calendarRequest?: (
     command: CalendarCommand,
   ) => Promise<CalendarConnectorResult>;
+  /** Test-only seam; production uses the typed service-worker request below. */
+  driveConnector?: DriveConnector;
+  driveRequest?: (
+    command: DriveCommand,
+    selectionId?: string,
+  ) => Promise<DriveConnectorResult>;
 }
 
 function formatCalendarEventTime(
@@ -340,9 +421,136 @@ function CalendarCard({
   );
 }
 
+function driveStatusLabel(status: DriveConnectorResult["status"]): string {
+  switch (status) {
+    case "not_connected":
+      return "未接続";
+    case "connected":
+      return "接続済み";
+    case "reauth_required":
+      return "再認証が必要";
+    case "unavailable":
+      return "利用できません";
+  }
+}
+
+function DriveCard({
+  state,
+  busy,
+  onSelect,
+  onRead,
+  onDeselect,
+}: {
+  state: DriveConnectorResult;
+  busy: boolean;
+  onSelect: () => void;
+  onRead: (selectionId: string) => void;
+  onDeselect: (selectionId: string) => void;
+}) {
+  return (
+    <section
+      className="drive-card"
+      aria-labelledby="drive-title"
+      data-drive-status={state.status}
+    >
+      <div className="section-heading">
+        <h2 id="drive-title">Google Drive</h2>
+        <span className="drive-status-badge">
+          {driveStatusLabel(state.status)}
+        </span>
+      </div>
+
+      <p className="connector-description">
+        選択したファイルのメタデータだけを、このブラウザのセッション中に扱います。
+      </p>
+
+      {state.status === "unavailable" ? (
+        <p className="connector-description" role="alert">
+          {state.message ?? "Google Driveのファイル選択は利用できません。"}
+        </p>
+      ) : null}
+
+      {state.status === "not_connected" ? (
+        <p className="connector-description">
+          ライブProviderには接続していません。選択操作を行ったときだけ確認します。
+        </p>
+      ) : null}
+
+      {state.selections.length > 0 ? (
+        <div className="drive-selection-block">
+          <h3>選択済みファイル</h3>
+          <ul className="drive-selection-list">
+            {state.selections.map((selection) => (
+              <li key={selection.selectionId}>
+                <div className="drive-selection-metadata">
+                  <strong>{selection.name}</strong>
+                  <small>
+                    {selection.mimeType} ·{" "}
+                    {selection.modifiedTime ?? "更新日時不明"}
+                    {" · "}
+                    {selection.sizeBytes === null
+                      ? "サイズ不明"
+                      : `${selection.sizeBytes.toLocaleString()} bytes`}
+                  </small>
+                  <small>
+                    {selection.status === "read"
+                      ? "読み取り済み"
+                      : "未読み取り"}
+                    {selection.evidence
+                      ? ` · ${selection.evidence.locator}`
+                      : ""}
+                  </small>
+                </div>
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="primary-button"
+                    data-testid={`drive-read-${selection.selectionId}`}
+                    onClick={() => onRead(selection.selectionId)}
+                    disabled={busy}
+                  >
+                    {busy ? "読み取り中…" : "読み取る"}
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    data-testid={`drive-deselect-${selection.selectionId}`}
+                    onClick={() => onDeselect(selection.selectionId)}
+                    disabled={busy}
+                  >
+                    選択解除
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <div className="button-row drive-controls">
+        <button
+          type="button"
+          className="primary-button"
+          data-testid="drive-select"
+          onClick={onSelect}
+          disabled={busy}
+        >
+          {busy ? "確認中…" : "Google Driveから選ぶ"}
+        </button>
+      </div>
+
+      {state.message && state.status !== "unavailable" ? (
+        <p className="connector-description">{state.message}</p>
+      ) : null}
+    </section>
+  );
+}
+
 export function App({
   calendarConnector,
   calendarRequest = requestCalendarCommand,
+  driveConnector,
+  driveRequest = requestDriveCommand,
 }: AppProps) {
   const [pageContext, setPageContext] = useState<PageContext | null>(null);
   const [loopState, dispatch] = useReducer(
@@ -353,6 +561,14 @@ export function App({
     status: "not_connected",
   });
   const [calendarBusy, setCalendarBusy] = useState(false);
+  const [driveState, setDriveState] = useState<DriveConnectorResult>({
+    status: "unavailable",
+    selections: [],
+    message:
+      "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
+    retryable: false,
+  });
+  const [driveBusy, setDriveBusy] = useState(false);
 
   const runCalendarAction = async (
     action: "connect" | "refresh" | "reauthenticate" | "disconnect",
@@ -373,6 +589,33 @@ export function App({
       });
     } finally {
       setCalendarBusy(false);
+    }
+  };
+
+  const runDriveAction = async (
+    action: "select" | "read" | "deselect",
+    selectionId?: string,
+  ): Promise<void> => {
+    setDriveBusy(true);
+    try {
+      const result = driveConnector
+        ? action === "select"
+          ? await driveConnector.select()
+          : action === "read"
+            ? await driveConnector.read(selectionId ?? "")
+            : await driveConnector.deselect(selectionId ?? "")
+        : await driveRequest(action, selectionId);
+      setDriveState(result);
+    } catch {
+      setDriveState((current) => ({
+        status: "unavailable",
+        selections: current.selections,
+        message:
+          "Google Driveを利用できません。時間をおいて再試行してください。",
+        retryable: true,
+      }));
+    } finally {
+      setDriveBusy(false);
     }
   };
 
@@ -512,6 +755,16 @@ export function App({
         onRefresh={() => void runCalendarAction("refresh")}
         onReauthenticate={() => void runCalendarAction("reauthenticate")}
         onDisconnect={() => void runCalendarAction("disconnect")}
+      />
+
+      <DriveCard
+        state={driveState}
+        busy={driveBusy}
+        onSelect={() => void runDriveAction("select")}
+        onRead={(selectionId) => void runDriveAction("read", selectionId)}
+        onDeselect={(selectionId) =>
+          void runDriveAction("deselect", selectionId)
+        }
       />
 
       <section className="fixture-card" aria-labelledby="fixture-title">

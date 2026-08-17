@@ -14,7 +14,14 @@ class EvidenceLink(BaseModel):
 
     evidence_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
-    source_type: Literal["syllabus", "assignment", "learning_history", "calendar", "library"]
+    source_type: Literal[
+        "syllabus",
+        "assignment",
+        "learning_history",
+        "calendar",
+        "library",
+        "google_drive",
+    ]
     locator: str = Field(min_length=1)
     data_classification: DataClassification = "synthetic"
 

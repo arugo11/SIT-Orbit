@@ -66,6 +66,7 @@ const sourceTypes = [
   "learning_history",
   "calendar",
   "library",
+  "google_drive",
 ] as const;
 const dataClassifications = [
   "synthetic",

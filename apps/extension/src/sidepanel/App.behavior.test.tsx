@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionProposal, OrbitEvent } from "../api/client";
-import { isCalendarCommandMessage, MESSAGE_TYPES } from "../shared/messages";
+import {
+  isCalendarCommandMessage,
+  isDriveCommandMessage,
+  MESSAGE_TYPES,
+} from "../shared/messages";
 import { App } from "./App";
 import {
   buttonByName,
@@ -392,6 +396,29 @@ describe("Side Panel B1 agent loop behavior", () => {
     expect(apiFetcher).not.toHaveBeenCalled();
     expect(mounted.document.body.textContent).toContain("未接続");
     expect(mounted.document.body.textContent).not.toContain(token);
+  });
+
+  it("[UI-DRIVE-001] presents Drive as unavailable until an injected or live provider is explicitly used", async () => {
+    const token = "drive-mount-secret";
+    const apiFetcher = vi.fn(async () => {
+      throw new Error("Agent API must not run on Drive mount");
+    });
+    vi.stubGlobal("fetch", apiFetcher);
+
+    mounted = await mountSidePanel(() => <App />);
+
+    const driveMessages = mounted.chromeRuntime.sendMessage.mock.calls
+      .map(([message]) => message)
+      .filter(isDriveCommandMessage);
+    expect(driveMessages).toEqual([]);
+    expect(
+      mounted.document.querySelector('[data-drive-status="unavailable"]'),
+    ).not.toBeNull();
+    expect(mounted.document.body.textContent).toContain(
+      "Google Driveのファイル選択はまだ利用できません。ライブProviderは未設定です。",
+    );
+    expect(mounted.document.body.textContent).not.toContain(token);
+    expect(apiFetcher).not.toHaveBeenCalled();
   });
 
   it("[UI-002] sends typed connect/disconnect commands and keeps token/API boundaries clean", async () => {

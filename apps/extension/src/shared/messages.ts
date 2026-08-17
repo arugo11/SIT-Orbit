@@ -1,3 +1,4 @@
+import { isOpaqueDriveSelectionId } from "../connectors/google-drive";
 import {
   classifyPageKind,
   type PageContext,
@@ -18,6 +19,10 @@ export const MESSAGE_TYPES = {
   calendarRefresh: "calendar-refresh",
   calendarReauthenticate: "calendar-reauthenticate",
   calendarDisconnect: "calendar-disconnect",
+  driveSelect: "drive-select",
+  driveRead: "drive-read",
+  driveDeselect: "drive-deselect",
+  driveRefresh: "drive-refresh",
 } as const;
 
 export type CalendarCommand =
@@ -32,6 +37,20 @@ export type CalendarCommandMessage =
   | { type: typeof MESSAGE_TYPES.calendarReauthenticate }
   | { type: typeof MESSAGE_TYPES.calendarDisconnect };
 
+export type DriveCommand = "select" | "read" | "deselect" | "refresh";
+
+export type DriveCommandMessage =
+  | { type: typeof MESSAGE_TYPES.driveSelect }
+  | {
+      type: typeof MESSAGE_TYPES.driveRead;
+      selection_id: string;
+    }
+  | {
+      type: typeof MESSAGE_TYPES.driveDeselect;
+      selection_id: string;
+    }
+  | { type: typeof MESSAGE_TYPES.driveRefresh };
+
 export type ExtensionMessage =
   | { type: typeof MESSAGE_TYPES.getPageContext }
   | { type: typeof MESSAGE_TYPES.requestPageContext }
@@ -39,7 +58,8 @@ export type ExtensionMessage =
       type: typeof MESSAGE_TYPES.pageContextUpdated;
       context: PageContext | null;
     }
-  | CalendarCommandMessage;
+  | CalendarCommandMessage
+  | DriveCommandMessage;
 
 export function isGetPageContextMessage(message: unknown): message is {
   type: typeof MESSAGE_TYPES.getPageContext;
@@ -74,6 +94,50 @@ export function isCalendarCommandMessage(
       message.type === MESSAGE_TYPES.calendarReauthenticate ||
       message.type === MESSAGE_TYPES.calendarDisconnect)
   );
+}
+
+export function isDriveCommandMessage(
+  message: unknown,
+): message is DriveCommandMessage {
+  if (!isRecord(message) || typeof message.type !== "string") {
+    return false;
+  }
+
+  switch (message.type) {
+    case MESSAGE_TYPES.driveSelect:
+    case MESSAGE_TYPES.driveRefresh:
+      return Object.keys(message).length === 1;
+    case MESSAGE_TYPES.driveRead:
+    case MESSAGE_TYPES.driveDeselect:
+      return (
+        Object.keys(message).length === 2 &&
+        isOpaqueDriveSelectionId(message.selection_id)
+      );
+    default:
+      return false;
+  }
+}
+
+export function driveCommandMessage(
+  command: DriveCommand,
+  selectionId?: string,
+): DriveCommandMessage {
+  switch (command) {
+    case "select":
+      return { type: MESSAGE_TYPES.driveSelect };
+    case "refresh":
+      return { type: MESSAGE_TYPES.driveRefresh };
+    case "read":
+      if (!isOpaqueDriveSelectionId(selectionId)) {
+        throw new TypeError("Drive read requires an opaque selection ID.");
+      }
+      return { type: MESSAGE_TYPES.driveRead, selection_id: selectionId };
+    case "deselect":
+      if (!isOpaqueDriveSelectionId(selectionId)) {
+        throw new TypeError("Drive deselect requires an opaque selection ID.");
+      }
+      return { type: MESSAGE_TYPES.driveDeselect, selection_id: selectionId };
+  }
 }
 
 export function calendarCommandMessage(

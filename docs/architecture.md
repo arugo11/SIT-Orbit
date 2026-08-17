@@ -75,7 +75,8 @@ Chromeの設定によってパネルの左右が変わるため、UIは右側に
 {
   "manifest_version": 3,
   "permissions": [
-    "sidePanel"
+    "sidePanel",
+    "storage"
   ],
   "host_permissions": [
     "https://scombz.shibaura-it.ac.jp/*"
@@ -85,7 +86,7 @@ Chromeの設定によってパネルの左右が変わるため、UIは右側に
 
 Side Panelのパスは、ScombZのタブを検出したService Workerが`sidePanel.setOptions()`へ渡す。全サイト共通の`default_path`は宣言しない。
 
-`identity`はGoogle連携を実装するときに追加する。
+`identity`はGoogle Calendarの読み取りに使用し、`storage`はGoogle Driveの選択メタデータをブラウザのセッション中だけ保持するために使用する。
 
 `cookies`、`webRequest`、`browsingData`、`<all_urls>`は初期版で使用しない。
 
@@ -233,6 +234,15 @@ ExtensionのSide Panelから、利用者が明示的に接続、更新、再認�
 
 通常のfixture CIにはGoogle OAuth client IDを含めない。
 登録済みChrome拡張OAuth client IDは`ORBIT_GOOGLE_OAUTH_CLIENT_ID`のbuild-time設定として後から注入できるが、Calendar API有効化、同意設定、demo accountを含むProvider acceptanceが成立するまでは、実Google連携を成功済みとは扱わない。
+
+### Branch 5 Google Drive選択ファイルの実装境界
+
+Google Driveはファイル一覧を取得せず、利用者が選択した1ファイルを注入可能なProviderから受け取る境界だけを持つ。
+ライブのGoogle Picker/OAuth Providerは、Service Worker内だけに認証情報を閉じ込める公式経路が確認できるまで利用不可として扱う。
+
+選択結果はランダムな`selectionId`で管理し、実際のDrive file IDとの対応だけを`chrome.storage.session`へ保存する。
+Side Panel、runtime message、Agent APIへはfile ID、ファイル内容、tokenを渡さない。
+Service Worker再起動後に選択を自動取得せず、選択解除またはセッション終了で対応表も消える。
 
 ## Azure配置
 

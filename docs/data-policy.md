@@ -69,3 +69,8 @@ Connectorは、`not_connected`、`connected`、`reauth_required`、`unavailable`
 拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
 
 実データを扱うConnectorを追加する場合は、送信先、保存期間、削除方法、利用目的、大学の許可範囲を個別に確認する。
+
+Google Driveの現行Connector境界は、利用者が明示的に選択したファイルだけを対象にする。
+選択中はopaqueな`selectionId`と、名前・MIME type・更新日時・読み取り状態などのメタデータを`chrome.storage.session`へ保持するが、Drive file IDは対応表の内部値としてのみ扱う。
+token、認証コード、ファイル内容、Drive一覧は保存・runtime message・Side Panel・Agent APIへ渡さない。
+ライブPicker/OAuth Providerは未実装であり、既定状態は`unavailable`とする。

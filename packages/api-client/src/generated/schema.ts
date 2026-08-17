@@ -101,7 +101,7 @@ export interface components {
              * Source Type
              * @enum {string}
              */
-            source_type: "syllabus" | "assignment" | "learning_history" | "calendar" | "library";
+            source_type: "syllabus" | "assignment" | "learning_history" | "calendar" | "library" | "google_drive";
             /** Locator */
             locator: string;
             /**
