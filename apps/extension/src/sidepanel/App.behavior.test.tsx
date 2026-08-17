@@ -205,6 +205,9 @@ describe("Side Panel B1 agent loop behavior", () => {
           '[data-calendar-status="connected"]',
         ) !== null,
     );
+    expect(mounted.document.body.textContent).toContain(
+      "予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。",
+    );
     await click(buttonByName(mounted.document, "B1 大宮の提案を作成"));
     await waitFor(
       () =>
@@ -216,6 +219,31 @@ describe("Side Panel B1 agent loop behavior", () => {
     expect(requestBody(fetcher, 0).client_tools).toEqual([
       { name: "google_calendar_availability", version: 1 },
     ]);
+  });
+
+  it("labels proposals that include personal Calendar availability evidence", async () => {
+    const calendarProposal: ActionProposal = {
+      ...validProposal,
+      evidence: [
+        ...validProposal.evidence,
+        {
+          evidence_id: "calendar-availability-v1-run-1",
+          title: "Calendarから導出した空き時間",
+          source_type: "calendar",
+          locator: "orbit-calendar://availability/run-1",
+          data_classification: "personal",
+        },
+      ],
+    };
+    const fetcher = responseSequence([
+      jsonResponse({ status: "completed", proposal: calendarProposal }),
+    ]);
+    mounted = await openProposal(fetcher);
+
+    const proposalCard = mounted.document.querySelector(
+      '[aria-labelledby="proposal-title"]',
+    );
+    expect(proposalCard?.textContent).toContain("合成＋Calendar空き時間");
   });
 
   it.each([
@@ -551,6 +579,12 @@ describe("Side Panel B1 agent loop behavior", () => {
     expect(calendarMessages).toEqual([]);
     expect(apiFetcher).not.toHaveBeenCalled();
     expect(mounted.document.body.textContent).toContain("未接続");
+    expect(mounted.document.body.textContent).toContain(
+      "ボタンを押したときだけ、合成データをローカル Agent API に送ります。",
+    );
+    expect(mounted.document.body.textContent).not.toContain(
+      "予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。",
+    );
     expect(mounted.document.body.textContent).not.toContain(token);
   });
 

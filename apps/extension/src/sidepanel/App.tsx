@@ -1073,7 +1073,9 @@ export function App({
                     : "B1 大宮の提案を作成"}
           </button>
           <p className="action-note">
-            ボタンを押したときだけ、合成データをローカル Agent API に送ります。
+            {calendarState.status === "connected" && calendarState.snapshot
+              ? "ボタンを押したときだけ、合成データをローカル Agent API に送ります。AgentがCalendarを要求した場合は、予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。"
+              : "ボタンを押したときだけ、合成データをローカル Agent API に送ります。"}
           </p>
           {loopState.status === "tool-running" ? (
             <p className="state-message" data-agent-status="tool-running">
@@ -1104,7 +1106,15 @@ export function App({
         <section className="proposal-card" aria-labelledby="proposal-title">
           <div className="section-heading">
             <h2 id="proposal-title">Agent APIからの提案</h2>
-            <span className="fixture-label">合成データ</span>
+            <span className="fixture-label">
+              {loopState.proposal.evidence.some(
+                (evidence) =>
+                  evidence.source_type === "calendar" &&
+                  evidence.data_classification === "personal",
+              )
+                ? "合成＋Calendar空き時間"
+                : "合成データ"}
+            </span>
           </div>
           <dl className="proposal-list">
             <div>
