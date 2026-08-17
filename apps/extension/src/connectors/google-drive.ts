@@ -293,7 +293,10 @@ export class GoogleDriveConnector implements DriveConnector {
       } else if (isDriveSelectionCandidate(providerCandidate)) {
         candidate = providerCandidate;
       } else {
-        return this.unavailable("Google Driveの選択情報を確認できません。", false);
+        return this.unavailable(
+          "Google Driveの選択情報を確認できません。",
+          false,
+        );
       }
     } catch (error) {
       if (error instanceof DriveConnectorError) {

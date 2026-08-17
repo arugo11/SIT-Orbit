@@ -11,14 +11,14 @@ import {
   type CalendarEventView,
   formatAvailabilitySummary,
 } from "../connectors/google-calendar";
-import {
-  createFixtureDriveConnector,
-  type DriveSelectionCandidate,
-} from "../connectors/google-drive";
 import type {
   DriveConnector,
   DriveConnectorResult,
   DriveSelectionView,
+} from "../connectors/google-drive";
+import {
+  createFixtureDriveConnector,
+  type DriveSelectionCandidate,
 } from "../connectors/google-drive";
 import type { PageContext, PageKind } from "../content/page-context";
 import {
@@ -550,7 +550,10 @@ function DriveCard({
           className="primary-button"
           data-testid="drive-select"
           onClick={onSelect}
-          disabled={busy || (state.status === "unavailable" && state.retryable === false)}
+          disabled={
+            busy ||
+            (state.status === "unavailable" && state.retryable === false)
+          }
         >
           {busy ? "確認中…" : "Google Driveから選ぶ"}
         </button>
@@ -588,7 +591,8 @@ function DriveFixtureCard({
         <span className="fixture-label">合成データ</span>
       </div>
       <p className="fixture-disclaimer">
-        Google Driveではありません。Agent APIや外部サービスへ接続しない、ローカルの操作確認です。
+        Google Driveではありません。Agent
+        APIや外部サービスへ接続しない、ローカルの操作確認です。
       </p>
       {selection ? (
         <dl className="drive-fixture-list">
@@ -602,7 +606,9 @@ function DriveFixtureCard({
           </div>
           <div>
             <dt>状態</dt>
-            <dd>{selection.status === "read" ? "読み取り済み" : "未読み取り"}</dd>
+            <dd>
+              {selection.status === "read" ? "読み取り済み" : "未読み取り"}
+            </dd>
           </div>
           {selection.evidence ? (
             <div>
@@ -647,7 +653,9 @@ function DriveFixtureCard({
           </>
         ) : null}
       </div>
-      {state.message ? <p className="connector-description">{state.message}</p> : null}
+      {state.message ? (
+        <p className="connector-description">{state.message}</p>
+      ) : null}
     </section>
   );
 }
@@ -788,7 +796,7 @@ export function App({
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [driveConnector, driveRequest]);
 
   useEffect(() => {
     let mounted = true;
