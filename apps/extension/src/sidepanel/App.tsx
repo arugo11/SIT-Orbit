@@ -24,9 +24,9 @@ import {
   type DriveSelectionCandidate,
 } from "../connectors/google-drive";
 import {
-  projectScombzPageSummary,
   type PageContext,
   type PageKind,
+  projectScombzPageSummary,
 } from "../content/page-context";
 import {
   type CalendarCommand,
@@ -1150,7 +1150,8 @@ export function App({
           ) : null}
           {loopState.status === "resuming" ? (
             <p className="state-message" data-agent-status="resuming">
-              {toolDisplayName(loopState.pendingToolName)}の導出結果をAgentへ渡して提案を再開しています。
+              {toolDisplayName(loopState.pendingToolName)}
+              の導出結果をAgentへ渡して提案を再開しています。
             </p>
           ) : null}
           {loopState.status === "reauth_required" ? (

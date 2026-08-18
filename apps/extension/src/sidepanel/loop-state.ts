@@ -21,7 +21,10 @@ export interface AgentLoopState {
   error: string | null;
   pendingRunId: string | null;
   pendingToolCallId: string | null;
-  pendingToolName: "scombz_page_summary" | "google_calendar_availability" | null;
+  pendingToolName:
+    | "scombz_page_summary"
+    | "google_calendar_availability"
+    | null;
 }
 
 export const initialAgentLoopState: AgentLoopState = {
