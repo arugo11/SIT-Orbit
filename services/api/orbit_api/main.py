@@ -2,13 +2,27 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from orbit_api.agent import AgentRunService, AgentService, get_agent_backend
+from orbit_api.agent import (
+    AgentRunService,
+    AgentService,
+    ChatRunService,
+    get_agent_backend,
+    get_chat_backend,
+)
+from orbit_api.agent.chat import (
+    ChatRunConsumedError,
+    ChatRunExpiredError,
+    ChatRunUnknownError,
+)
 from orbit_api.agent.runs import ConsumedRunError, ExpiredRunError, UnknownRunError
 from orbit_api.models import (
     ActionProposal,
     AgentRunRequest,
     AgentRunResponse,
     AgentToolResultRequest,
+    ChatRunRequest,
+    ChatRunResponse,
+    ChatToolResultRequest,
     OrbitEvent,
     ProposeActionRequest,
     VerifyActionRequest,
@@ -19,11 +33,13 @@ from orbit_api.observability import init_observability
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     agent_run_service.store.clear()
+    chat_run_service.store.clear()
     init_observability()
     try:
         yield
     finally:
         agent_run_service.store.clear()
+        chat_run_service.store.clear()
 
 
 app = FastAPI(
@@ -34,6 +50,7 @@ app = FastAPI(
 )
 
 agent_run_service = AgentRunService()
+chat_run_service = ChatRunService(backend_factory=get_chat_backend)
 
 
 @app.get("/health")
@@ -58,6 +75,27 @@ async def submit_agent_tool_result(
         return await agent_run_service.submit_tool_result(run_id, request)
     except (UnknownRunError, ExpiredRunError, ConsumedRunError) as error:
         raise HTTPException(status_code=410, detail="Agent run is no longer resumable.") from error
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/v1/chat/runs", response_model=ChatRunResponse)
+async def start_chat_run(request: ChatRunRequest) -> ChatRunResponse:
+    try:
+        return await chat_run_service.start(request)
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@app.post("/v1/chat/runs/{run_id}/tool-results", response_model=ChatRunResponse)
+async def submit_chat_tool_result(
+    run_id: str,
+    request: ChatToolResultRequest,
+) -> ChatRunResponse:
+    try:
+        return await chat_run_service.submit_tool_result(run_id, request)
+    except (ChatRunUnknownError, ChatRunExpiredError, ChatRunConsumedError) as error:
+        raise HTTPException(status_code=410, detail="Chat run is no longer resumable.") from error
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

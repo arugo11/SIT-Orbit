@@ -11,6 +11,14 @@ export type AgentRunResponse =
   | components["schemas"]["AgentRunToolRequired"];
 export type AgentToolResultRequest =
   components["schemas"]["AgentToolResultRequest"];
+export type ChatRunRequest = components["schemas"]["ChatRunRequest"];
+export type ChatRunResponse =
+  | components["schemas"]["ChatRunCompleted"]
+  | components["schemas"]["ChatRunToolRequired"];
+export type ChatToolResultRequest =
+  components["schemas"]["ChatToolResultRequest"];
+export type ChatHistoryMessage = components["schemas"]["ChatHistoryMessage"];
+export type ChatClientTool = components["schemas"]["ChatClientTool"];
 export type CalendarAvailabilityResult =
   components["schemas"]["CalendarAvailabilityResult"];
 export type ScombzPageSummaryResult =
@@ -238,6 +246,57 @@ export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   );
 }
 
+const chatToolNames = [
+  "scombz_page_summary",
+  "google_calendar_availability",
+  "syllabus_search",
+  "browser_read_url",
+] as const;
+
+function isChatEvidenceMessage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, ["message_id", "content_markdown", "evidence"]) &&
+    isNonEmptyString(value.message_id) &&
+    isNonEmptyString(value.content_markdown) &&
+    Array.isArray(value.evidence) &&
+    value.evidence.every(isEvidenceLink)
+  );
+}
+
+export function isChatRunResponse(value: unknown): value is ChatRunResponse {
+  if (!isRecord(value) || typeof value.status !== "string") {
+    return false;
+  }
+  if (value.status === "completed") {
+    return (
+      hasExactlyKeys(value, ["status", "message", "proposal"]) &&
+      isChatEvidenceMessage(value.message) &&
+      (value.proposal === null || isActionProposal(value.proposal))
+    );
+  }
+  if (value.status !== "tool_required") {
+    return false;
+  }
+  if (
+    !hasExactlyKeys(value, ["status", "run_id", "calls"]) ||
+    !isNonEmptyString(value.run_id) ||
+    !Array.isArray(value.calls) ||
+    value.calls.length !== 1
+  ) {
+    return false;
+  }
+  const call = value.calls[0];
+  return (
+    isRecord(call) &&
+    hasExactlyKeys(call, ["tool_call_id", "name", "version", "arguments"]) &&
+    isNonEmptyString(call.tool_call_id) &&
+    isOneOf(call.name, chatToolNames) &&
+    call.version === 1 &&
+    isRecord(call.arguments)
+  );
+}
+
 export function isOrbitEvent(value: unknown): value is OrbitEvent {
   return (
     isRecord(value) &&
@@ -330,6 +389,25 @@ export class AgentApiClient {
       request,
       isAgentRunResponse,
       "agent run",
+    );
+  }
+
+  startChat(request: ChatRunRequest): Promise<ChatRunResponse> {
+    return this.post("/v1/chat/runs", request, isChatRunResponse, "chat run");
+  }
+
+  submitChatToolResult(
+    runId: string,
+    request: ChatToolResultRequest,
+  ): Promise<ChatRunResponse> {
+    if (!runId.trim()) {
+      throw new TypeError("Chat run ID must not be empty.");
+    }
+    return this.post(
+      `/v1/chat/runs/${encodeURIComponent(runId)}/tool-results`,
+      request,
+      isChatRunResponse,
+      "chat run",
     );
   }
 

@@ -84,6 +84,16 @@ Connectorは、`not_connected`、`connected`、`reauth_required`、`unavailable`
 
 外部サービスへの書き込みは、Agentが候補を作成した後、利用者が確認した場合だけ実行する。
 
+## Chat履歴とChat Tool
+
+Chatは利用者が明示的に送信した一つの発言を起点にする。常時巡回、事前索引、ブラウザ履歴の収集は行わない。
+
+Side Panelと全画面ワークスペースで共有するChat履歴は、拡張機能originのIndexedDBへ保存する。保存するのは発言、回答、引用メタデータ、ActionProposalと承認状態だけである。raw HTML、フォーム入力値、Cookie、OAuth token、Toolの生レスポンス、PydanticAIのmessage historyは保存しない。履歴はFastAPIやChrome Syncへ送信せず、利用者の操作で会話単位または全件を削除できる。
+
+Composerのアクセスモードは`Ask every time`を既定とし、ブラウザ読取を実装するbranchで今回のみ許可・サイト許可・拒否へ接続する。`Full access`もread-onlyの範囲に限り、提出・送信・更新・削除・ダウンロード・アップロードは常にActionProposalと本人確認を要求する。成績、出欠、個人評価を含むページは、許可済みサイトであっても`Ask every time`では毎回確認する。blocklistはFull accessより優先する。
+
+Chat APIへ送るTool結果は、Toolごとの厳密な最小Schemaだけにする。SCombZはページ種別と件数、Calendarは空き時間の区間と分数だけであり、予定名・ID・参加者・説明、SCombZのHTML、Cookie、パスワード、第三者入力、OAuth tokenは表現できない。Tool待ちのrunはAPIプロセス内に600秒だけ保持し、完了・失敗・期限切れで削除する。
+
 拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
 
 実データを扱うConnectorを追加する場合は、送信先、保存期間、削除方法、利用目的、大学の許可範囲を個別に確認する。
