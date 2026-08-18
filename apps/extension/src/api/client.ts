@@ -23,6 +23,10 @@ export type CalendarAvailabilityResult =
   components["schemas"]["CalendarAvailabilityResult"];
 export type ScombzPageSummaryResult =
   components["schemas"]["ScombzPageSummaryResult"];
+export type ScombzReadResult = components["schemas"]["ScombzReadResult"];
+export type SyllabusSearchResult =
+  components["schemas"]["SyllabusSearchResult"];
+export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 
@@ -95,6 +99,7 @@ const sourceTypes = [
   "scombz",
   "library",
   "google_drive",
+  "web",
 ] as const;
 const dataClassifications = [
   "synthetic",
@@ -221,6 +226,143 @@ export function isScombzPageSummaryResult(
   );
 }
 
+export function isScombzReadResult(value: unknown): value is ScombzReadResult {
+  if (!isRecord(value)) return false;
+  return (
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "route",
+      "tasks",
+      "announcements",
+      "timetable",
+      "current_course",
+      "restricted_present",
+      "reason_code",
+    ]) &&
+    value.schema_version === "v1" &&
+    (value.status === "known" || value.status === "unavailable") &&
+    isOneOf(value.route, [
+      "home",
+      "tasks",
+      "timetable",
+      "announcements",
+      "calendar",
+      "course",
+      "other",
+    ]) &&
+    Array.isArray(value.tasks) &&
+    value.tasks.every(
+      (item) =>
+        isRecord(item) &&
+        hasExactlyKeys(item, ["course", "title", "deadline"]) &&
+        typeof item.course === "string" &&
+        typeof item.title === "string" &&
+        typeof item.deadline === "string",
+    ) &&
+    Array.isArray(value.announcements) &&
+    value.announcements.every(
+      (item) =>
+        isRecord(item) &&
+        hasExactlyKeys(item, ["title"]) &&
+        typeof item.title === "string",
+    ) &&
+    Array.isArray(value.timetable) &&
+    value.timetable.every(
+      (item) =>
+        isRecord(item) &&
+        hasExactlyKeys(item, ["title", "starts_at", "ends_at", "status"]) &&
+        typeof item.title === "string" &&
+        (item.starts_at === null || typeof item.starts_at === "string") &&
+        (item.ends_at === null || typeof item.ends_at === "string") &&
+        isOneOf(item.status, ["class", "cancelled", "makeup", "unknown"]),
+    ) &&
+    (value.current_course === null ||
+      typeof value.current_course === "string") &&
+    typeof value.restricted_present === "boolean" &&
+    (value.reason_code === null || typeof value.reason_code === "string")
+  );
+}
+
+export function isSyllabusSearchResult(
+  value: unknown,
+): value is SyllabusSearchResult {
+  if (!isRecord(value)) return false;
+  return (
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "query",
+      "year",
+      "faculty",
+      "results",
+      "reason_code",
+    ]) &&
+    value.schema_version === "v1" &&
+    (value.status === "known" || value.status === "unavailable") &&
+    typeof value.query === "string" &&
+    (value.year === null || typeof value.year === "number") &&
+    (value.faculty === null || typeof value.faculty === "string") &&
+    Array.isArray(value.results) &&
+    value.results.every(
+      (item) =>
+        isRecord(item) &&
+        hasExactlyKeys(item, [
+          "title",
+          "course_code",
+          "faculty",
+          "url",
+          "snippet",
+        ]) &&
+        typeof item.title === "string" &&
+        (item.course_code === null || typeof item.course_code === "string") &&
+        (item.faculty === null || typeof item.faculty === "string") &&
+        typeof item.url === "string" &&
+        item.url.startsWith("https://syllabus.sic.shibaura-it.ac.jp/") &&
+        (item.snippet === null || typeof item.snippet === "string"),
+    )
+  );
+}
+
+export function isBrowserReadResult(
+  value: unknown,
+): value is BrowserReadResult {
+  if (!isRecord(value)) return false;
+  return (
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "url",
+      "title",
+      "text",
+      "links",
+      "truncated",
+      "data_classification",
+      "reason_code",
+    ]) &&
+    value.schema_version === "v1" &&
+    (value.status === "known" || value.status === "unavailable") &&
+    typeof value.url === "string" &&
+    typeof value.title === "string" &&
+    typeof value.text === "string" &&
+    Array.isArray(value.links) &&
+    value.text.length <= 30_000 &&
+    value.links.length <= 50 &&
+    value.links.every(
+      (item) =>
+        isRecord(item) &&
+        hasExactlyKeys(item, ["label", "url"]) &&
+        typeof item.label === "string" &&
+        typeof item.url === "string" &&
+        (item.url.startsWith("https://") || item.url.startsWith("http://")),
+    ) &&
+    typeof value.truncated === "boolean" &&
+    (value.data_classification === "public" ||
+      value.data_classification === "personal") &&
+    (value.reason_code === null || typeof value.reason_code === "string")
+  );
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -248,6 +390,7 @@ export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
 
 const chatToolNames = [
   "scombz_page_summary",
+  "scombz_read",
   "google_calendar_availability",
   "syllabus_search",
   "browser_read_url",

@@ -35,6 +35,7 @@ from .pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX,
     SCOMBZ_TOOL_NAME,
+    ActionToolName,
     DeferredActionRun,
     PydanticAIAgentBackend,
     validate_agent_data,
@@ -124,7 +125,12 @@ class RunStore:
         deferred: DeferredActionRun,
     ) -> tuple[ClientTool, ...]:
         if advertised_tools is None:
-            return (ClientTool(name=deferred.tool_name, version=cast(Literal[1], 1)),)
+            return (
+                ClientTool(
+                    name=cast(ActionToolName, deferred.tool_name),
+                    version=cast(Literal[1], 1),
+                ),
+            )
         tools = tuple(advertised_tools)
         names = [tool.name for tool in tools]
         if len(tools) > 2 or len(set(names)) != len(names):
@@ -341,7 +347,7 @@ class AgentRunService:
             calls=[
                 AgentToolCall(
                     tool_call_id=deferred.tool_call_id,
-                    name=deferred.tool_name,
+                    name=cast(ActionToolName, deferred.tool_name),
                     version=deferred.tool_version,
                 )
             ],

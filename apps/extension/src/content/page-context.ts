@@ -56,6 +56,23 @@ export interface ScombzPageSummary {
   has_current_course: boolean;
 }
 
+export interface ScombzReadResult {
+  schema_version: "v1";
+  status: "known" | "unavailable";
+  route: ScombzRoute;
+  tasks: Array<{ course: string; title: string; deadline: string }>;
+  announcements: Array<{ title: string }>;
+  timetable: Array<{
+    title: string;
+    starts_at: string | null;
+    ends_at: string | null;
+    status: "class" | "cancelled" | "makeup" | "unknown";
+  }>;
+  current_course: string | null;
+  restricted_present: boolean;
+  reason_code: string | null;
+}
+
 export interface PageContext {
   title: string;
   url: string;
@@ -84,6 +101,33 @@ export function projectScombzPageSummary(
     announcement_count: context.scombz.announcements.length,
     related_link_count: context.scombz.relatedLinks.length,
     has_current_course: context.scombz.currentCourse !== null,
+  };
+}
+
+/** Project only visible, structured SCombZ fields for the explicit Chat Tool. */
+export function projectScombzRead(
+  context: PageContext | null | undefined,
+): ScombzReadResult | null {
+  if (context?.kind !== "scombz" || context.scombz === undefined) return null;
+  const route = context.scombz.route;
+  return {
+    schema_version: "v1",
+    status: "known",
+    route,
+    tasks: context.scombz.tasks.slice(0, 100).map((task) => ({
+      course: task.course.slice(0, 200),
+      title: task.title.slice(0, 300),
+      deadline: task.deadline.slice(0, 100),
+    })),
+    announcements: context.scombz.announcements.slice(0, 100).map((item) => ({
+      title: item.title.slice(0, 300),
+    })),
+    timetable: [],
+    current_course: context.scombz.currentCourse?.name.slice(0, 200) ?? null,
+    restricted_present: /(?:grade|score|attendance|成績|出席|評価)/iu.test(
+      context.url,
+    ),
+    reason_code: null,
   };
 }
 

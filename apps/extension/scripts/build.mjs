@@ -38,6 +38,11 @@ await Promise.all([
   }),
   build({
     ...bundleOptions,
+    entryPoints: [resolve(packageRoot, "src/content/browser-reader.ts")],
+    outfile: resolve(outputDirectory, "browser-reader.js"),
+  }),
+  build({
+    ...bundleOptions,
     entryPoints: [resolve(packageRoot, "src/sidepanel/index.tsx")],
     outfile: resolve(outputDirectory, "sidepanel.js"),
   }),
@@ -116,6 +121,7 @@ const requiredFiles = [
   "manifest.json",
   "service-worker.js",
   "content-script.js",
+  "browser-reader.js",
   "sidepanel.html",
   "sidepanel.js",
   "workspace.html",
@@ -126,14 +132,23 @@ const requiredFiles = [
 if (
   manifest.manifest_version !== 3 ||
   JSON.stringify(manifest.permissions) !==
-    JSON.stringify(["sidePanel", "identity", "storage"]) ||
+    JSON.stringify([
+      "sidePanel",
+      "identity",
+      "storage",
+      "scripting",
+      "unlimitedStorage",
+    ]) ||
   JSON.stringify(manifest.host_permissions) !==
     JSON.stringify([
       "https://scombz.shibaura-it.ac.jp/*",
       "http://localhost:8000/*",
       "https://www.googleapis.com/*",
       "https://oauth2.googleapis.com/*",
+      "https://syllabus.sic.shibaura-it.ac.jp/*",
     ]) ||
+  JSON.stringify(manifest.optional_host_permissions) !==
+    JSON.stringify(["https://*/*", "http://*/*"]) ||
   manifest.side_panel !== undefined ||
   manifest.background?.service_worker !== "service-worker.js"
 ) {

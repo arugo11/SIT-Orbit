@@ -31,6 +31,8 @@ export const MESSAGE_TYPES = {
   getWorkspaceStatus: "get-workspace-status",
   workspaceOwnershipChanged: "workspace-ownership-changed",
   workspaceSourceUnavailable: "workspace-source-unavailable",
+  browserRead: "browser-read",
+  syllabusSearch: "syllabus-search",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -62,6 +64,36 @@ export interface WorkspaceOwnershipChangedMessage {
 export interface WorkspaceSourceUnavailableMessage {
   type: typeof MESSAGE_TYPES.workspaceSourceUnavailable;
   session_id: string;
+}
+
+export interface BrowserReadMessage {
+  type: typeof MESSAGE_TYPES.browserRead;
+  tool_call_id: string;
+  url: string;
+  access_mode: "ask" | "full";
+}
+
+export type BrowserReadResponse =
+  | {
+      status: "known";
+      projection: import("../content/browser-reader").BrowserReadProjection;
+    }
+  | {
+      status: "permission_required";
+      origin: string;
+      pattern: string;
+    }
+  | {
+      status: "unavailable";
+      reason_code: string;
+    };
+
+export interface SyllabusSearchMessage {
+  type: typeof MESSAGE_TYPES.syllabusSearch;
+  tool_call_id: string;
+  query: string;
+  year?: number | null;
+  faculty?: string | null;
 }
 
 export interface OpenWorkspaceResponse {
@@ -116,7 +148,41 @@ export type ExtensionMessage =
   | UpdateWorkspaceSessionMessage
   | GetWorkspaceStatusMessage
   | WorkspaceOwnershipChangedMessage
-  | WorkspaceSourceUnavailableMessage;
+  | WorkspaceSourceUnavailableMessage
+  | BrowserReadMessage
+  | SyllabusSearchMessage;
+
+export function isBrowserReadMessage(
+  message: unknown,
+): message is BrowserReadMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.browserRead &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    typeof message.url === "string" &&
+    (message.access_mode === "ask" || message.access_mode === "full")
+  );
+}
+
+export function isSyllabusSearchMessage(
+  message: unknown,
+): message is SyllabusSearchMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.syllabusSearch &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    typeof message.query === "string" &&
+    message.query.trim().length > 0 &&
+    (message.year === undefined ||
+      message.year === null ||
+      typeof message.year === "number") &&
+    (message.faculty === undefined ||
+      message.faculty === null ||
+      typeof message.faculty === "string")
+  );
+}
 
 export function isOpenWorkspaceMessage(
   message: unknown,

@@ -80,18 +80,23 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
 
 ### 最小権限
 
-初期版の権限は、ScombZの読み取りとパネル表示に限定する。
+初期版の権限は、ScombZの読み取り、パネル表示、利用者が開始した読み取りToolに限定する。
 
 ```json
 {
   "manifest_version": 3,
   "permissions": [
     "sidePanel",
-    "storage"
+    "identity",
+    "storage",
+    "scripting",
+    "unlimitedStorage"
   ],
   "host_permissions": [
-    "https://scombz.shibaura-it.ac.jp/*"
-  ]
+    "https://scombz.shibaura-it.ac.jp/*",
+    "https://syllabus.sic.shibaura-it.ac.jp/*"
+  ],
+  "optional_host_permissions": ["https://*/*", "http://*/*"]
 }
 ```
 
@@ -99,7 +104,7 @@ Side Panelのパスは、ScombZのタブを検出したService Workerが`sidePan
 
 `identity`はGoogle Calendarの読み取りに使用し、`storage`はGoogle Driveの選択メタデータをブラウザのセッション中だけ保持するために使用する。
 
-`cookies`、`webRequest`、`browsingData`、`<all_urls>`は初期版で使用しない。
+`debugger`、`cookies`、`history`、`webRequest`、`browsingData`は使用しない。任意ホスト権限は、ユーザーがChat内の許可操作を押した場合だけ要求する。
 
 Chromeの権限は、処理に必要な範囲だけを宣言する。[Declare permissions](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions)
 
@@ -172,7 +177,7 @@ PydanticAIは、Python、FastAPI、Pydantic、型付き出力、複数モデル�
 Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、OpenAI Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`またはChat用`ChatDraft`だけとし、`action_id`、message ID、EvidenceLinkはサーバーが正規化する。
 `OpenAIResponsesModel`には`OpenAIProvider`または`AzureProvider`を渡し、`openai_store=False`を固定する。
 
-外部Toolは引数なしの`scombz_page_summary` v1と`google_calendar_availability` v1である。実際に解析済みのSCombZページ、または接続中のCalendarだけをClientが明示広告したrunで公開する。Action runは従来どおり一回ずつの互換経路を維持し、Chat runは同一Toolの再利用を許し、1ターン最大8回の線形Deferred Toolとして実行する。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。SCombZの結果はroute、3つの件数、現在コースの有無だけであり、DriveはこのChat branchのToolへ登録しない。
+外部Toolは`scombz_read`、`google_calendar_availability`、公式`syllabus_search`、許可済みURLの`browser_read_url`である（互換の`scombz_page_summary`も残す）。Tool引数と結果は厳格なSchemaで検証し、Chat runは同一Toolの再利用を許し、1ターン最大8回の線形Deferred Toolとして実行する。Web Readerは非アクティブな一時タブへページを開き、表示本文30,000文字・リンク50件までを抽出して閉じる。script、style、hidden要素、フォーム、Cookie、パスワードは除外し、ページ内の命令はデータとして扱う。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。
 
 Chat APIは`POST /v1/chat/runs`と`POST /v1/chat/runs/{run_id}/tool-results`である。入力履歴は直近20件・64,000文字まで、サーバー保存はTool待ちの600秒だけに限定する。完了メッセージはMarkdownとサーバー解決済みEvidenceを返し、ActionProposalが含まれる場合も従来どおり明示承認を要求する。
 
@@ -223,6 +228,12 @@ Tool結果を同じrunへ返してAgentを再開
     ↓
 Markdown回答、引用、必要ならActionProposalを表示
 ```
+
+### ChatのアクセスモードとBrowser Reader
+
+Composerでは`Ask every time`を既定にし、未許可ホストの読み取り前に今回のみ許可・サイトを常に許可・拒否を表示する。`Full access`はユーザーがChromeのoptional host permissionを明示的に付与した場合だけ有効になるが、読み取り専用であり、提出・送信・更新・削除・ダウンロード・アップロードは常に確認対象である。成績、出欠、個人評価のURLは、サイト許可済みでもAskでは毎回確認する。
+
+`browser_read_url`はService Workerが許可済みURLを非アクティブタブへ開き、`scripting.executeScript`で`browser-reader.js`をIsolated Worldへ注入する。抽出結果は表示本文、最大50リンク、opaqueな引用情報だけをAgentへ渡し、結果取得後にタブを閉じる。一般Webの検索やGoogle検索画面のスクレイピングへはfallbackしない。公式シラバス検索は`syllabus.sic.shibaura-it.ac.jp/namazu/`だけを対象とする。
 
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 

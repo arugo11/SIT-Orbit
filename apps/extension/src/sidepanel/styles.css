@@ -733,6 +733,27 @@ textarea {
   font-size: 12px;
 }
 
+.connector-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.connector-settings > summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 8px 0;
+}
+
+.chat-permission-prompt {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 12px;
+  border: 1px solid #e4ad47;
+  border-radius: 12px;
+  background: #fff8e7;
+}
+
 .chat-access-row legend {
   padding: 0;
   color: #53616d;
