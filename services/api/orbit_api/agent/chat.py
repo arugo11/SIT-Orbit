@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from orbit_api.models import (
     ActionProposal,
+    BrowserReadResult,
     CalendarAvailabilityResult,
     ChatAssistantMessage,
     ChatClientTool,
@@ -24,12 +25,17 @@ from orbit_api.models import (
     ChatToolResultRequest,
     EvidenceLink,
     ScombzPageSummaryResult,
+    ScombzReadResult,
+    SyllabusSearchResult,
 )
 
 from .pydantic_ai_backend import (
+    BROWSER_READ_TOOL_NAME,
     CALENDAR_AVAILABILITY_LOCATOR_PREFIX,
     CALENDAR_TOOL_NAME,
     SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX,
+    SCOMBZ_READ_TOOL_NAME,
+    SYLLABUS_SEARCH_TOOL_NAME,
     ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
@@ -55,7 +61,13 @@ class ChatBackend(Protocol):
         self,
         *,
         deferred: DeferredChatRun,
-        tool_result: CalendarAvailabilityResult | ScombzPageSummaryResult,
+        tool_result: (
+            CalendarAvailabilityResult
+            | ScombzPageSummaryResult
+            | ScombzReadResult
+            | SyllabusSearchResult
+            | BrowserReadResult
+        ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
         seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
@@ -297,18 +309,41 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "SCombZページから導出したページ概要"
         source_type = "scombz"
         locator = f"{SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX}{uuid4().hex}"
+    elif request.name == SCOMBZ_READ_TOOL_NAME:
+        title = "SCombZから取得した表示情報"
+        source_type = "scombz"
+        locator = f"orbit-scombz://read/{uuid4().hex}"
+    elif request.name == SYLLABUS_SEARCH_TOOL_NAME:
+        title = "芝浦工業大学公式シラバス検索"
+        source_type = "syllabus"
+        locator = f"orbit-syllabus://search/{uuid4().hex}"
+    elif request.name == BROWSER_READ_TOOL_NAME:
+        title = "許可されたWebページの表示情報"
+        source_type = "web"
+        locator = f"orbit-browser://read/{uuid4().hex}"
     else:
         raise ValueError("The chat tool is not enabled in the current API build.")
+    evidence_prefix = {
+        CALENDAR_TOOL_NAME: "calendar-availability-v1",
+        "scombz_page_summary": "scombz-page-summary-v1",
+        SCOMBZ_READ_TOOL_NAME: "scombz-read-v1",
+        SYLLABUS_SEARCH_TOOL_NAME: "syllabus-search-v1",
+        BROWSER_READ_TOOL_NAME: "browser-read-v1",
+    }[request.name]
     return EvidenceLink(
-        evidence_id=(
-            f"calendar-availability-v1-{run_id}"
-            if request.name == CALENDAR_TOOL_NAME
-            else f"scombz-page-summary-v1-{run_id}"
-        ),
+        evidence_id=f"{evidence_prefix}-{run_id}",
         title=title,
         source_type=source_type,  # type: ignore[arg-type]
         locator=locator,
-        data_classification="personal",
+        data_classification=(
+            "public"
+            if request.name == SYLLABUS_SEARCH_TOOL_NAME
+            else (
+                request.result.data_classification
+                if isinstance(request.result, BrowserReadResult)
+                else "personal"
+            )
+        ),
     )
 
 
@@ -374,7 +409,7 @@ class ChatRunService:
                     tool_call_id=deferred.tool_call_id,
                     name=deferred.tool_name,
                     version=deferred.tool_version,
-                    arguments={},
+                    arguments=deferred.arguments,
                 )
             ],
         )
@@ -414,12 +449,9 @@ class ChatRunService:
         self.store.peek(run_id)
         if os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
             raise ValueError("Live client tools require ORBIT_OBSERVABILITY=off.")
-        if isinstance(request.result, CalendarAvailabilityResult) and request.result.status in {
-            "reauth_required",
-            "unavailable",
-        }:
+        if getattr(request.result, "status", None) in {"reauth_required", "unavailable"}:
             raise ValueError(
-                "Calendar authorization or availability must be restored before resuming."
+                "The client tool was unavailable and cannot resume this chat run."
             )
         claimed = self.store.claim(
             run_id,

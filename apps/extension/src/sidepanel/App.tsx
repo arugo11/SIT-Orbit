@@ -1240,36 +1240,39 @@ export function App({
             )}
           </section>
 
-          <CalendarCard
-            state={calendarState}
-            busy={calendarBusy || interactionLocked}
-            onConnect={() => void runCalendarAction("connect")}
-            onRefresh={() => void runCalendarAction("refresh")}
-            onReauthenticate={() => void runCalendarAction("reauthenticate")}
-            onDisconnect={() => void runCalendarAction("disconnect")}
-          />
+          <details className="connector-settings">
+            <summary>接続設定</summary>
+            <CalendarCard
+              state={calendarState}
+              busy={calendarBusy || interactionLocked}
+              onConnect={() => void runCalendarAction("connect")}
+              onRefresh={() => void runCalendarAction("refresh")}
+              onReauthenticate={() => void runCalendarAction("reauthenticate")}
+              onDisconnect={() => void runCalendarAction("disconnect")}
+            />
 
-          <DriveCard
-            state={driveState}
-            busy={driveBusy || interactionLocked}
-            onSelect={() => void runDriveAction("select")}
-            onRead={(selectionId) => void runDriveAction("read", selectionId)}
-            onDeselect={(selectionId) =>
-              void runDriveAction("deselect", selectionId)
-            }
-          />
+            <DriveCard
+              state={driveState}
+              busy={driveBusy || interactionLocked}
+              onSelect={() => void runDriveAction("select")}
+              onRead={(selectionId) => void runDriveAction("read", selectionId)}
+              onDeselect={(selectionId) =>
+                void runDriveAction("deselect", selectionId)
+              }
+            />
 
-          <DriveFixtureCard
-            state={driveFixtureState}
-            busy={driveFixtureBusy || interactionLocked}
-            onSelect={() => void runDriveFixtureAction("select")}
-            onRead={(selectionId) =>
-              void runDriveFixtureAction("read", selectionId)
-            }
-            onDeselect={(selectionId) =>
-              void runDriveFixtureAction("deselect", selectionId)
-            }
-          />
+            <DriveFixtureCard
+              state={driveFixtureState}
+              busy={driveFixtureBusy || interactionLocked}
+              onSelect={() => void runDriveFixtureAction("select")}
+              onRead={(selectionId) =>
+                void runDriveFixtureAction("read", selectionId)
+              }
+              onDeselect={(selectionId) =>
+                void runDriveFixtureAction("deselect", selectionId)
+              }
+            />
+          </details>
         </aside>
         <section className="orbit-conversation" aria-label="Agentとの対話">
           <ChatPanel

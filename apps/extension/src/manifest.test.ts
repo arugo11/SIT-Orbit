@@ -9,6 +9,7 @@ const manifest = JSON.parse(manifestSource) as {
   manifest_version: number;
   permissions: string[];
   host_permissions: string[];
+  optional_host_permissions: string[];
   background: { service_worker: string };
   oauth2?: { client_id?: string; scopes?: string[] };
   side_panel?: { default_path?: string };
@@ -18,12 +19,23 @@ const manifest = JSON.parse(manifestSource) as {
 describe("production extension contract", () => {
   it("keeps the raw MV3 shell within the requested permissions", () => {
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.permissions).toEqual(["sidePanel", "identity", "storage"]);
+    expect(manifest.permissions).toEqual([
+      "sidePanel",
+      "identity",
+      "storage",
+      "scripting",
+      "unlimitedStorage",
+    ]);
     expect(manifest.host_permissions).toEqual([
       "https://scombz.shibaura-it.ac.jp/*",
       "http://localhost:8000/*",
       "https://www.googleapis.com/*",
       "https://oauth2.googleapis.com/*",
+      "https://syllabus.sic.shibaura-it.ac.jp/*",
+    ]);
+    expect(manifest.optional_host_permissions).toEqual([
+      "https://*/*",
+      "http://*/*",
     ]);
     expect(manifest.background.service_worker).toBe("service-worker.js");
     expect(manifest.side_panel).toBeUndefined();
@@ -60,5 +72,9 @@ describe("production extension contract", () => {
     expect(buildSource).toContain('"workspace.html"');
     expect(buildSource).toContain('"workspace.js"');
     expect(manifest.permissions).not.toContain("tabs");
+    expect(manifest.permissions).not.toContain("debugger");
+    expect(manifest.permissions).not.toContain("cookies");
+    expect(manifest.permissions).not.toContain("history");
+    expect(manifest.permissions).not.toContain("webRequest");
   });
 });

@@ -234,6 +234,60 @@ export interface components {
             result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"];
         };
         /**
+         * BrowserReadLink
+         * @description A visible link projection; it has no DOM or form state.
+         */
+        BrowserReadLink: {
+            /** Label */
+            label: string;
+            /** Url */
+            url: string;
+        };
+        /**
+         * BrowserReadResult
+         * @description Visible text from a user-authorized URL, bounded for model context.
+         */
+        BrowserReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /** Url */
+            url: string;
+            /**
+             * Title
+             * @default
+             */
+            title: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /** Links */
+            links?: components["schemas"]["BrowserReadLink"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /**
+             * Data Classification
+             * @default public
+             * @enum {string}
+             */
+            data_classification: "public" | "personal";
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
          * CalendarAvailabilityInterval
          * @description One derived free-time interval, without calendar event details.
          */
@@ -292,7 +346,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
             /**
              * Version
              * @constant
@@ -350,7 +404,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
             /**
              * Version
              * @constant
@@ -369,14 +423,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"];
         };
         /**
          * ClientTool
@@ -407,7 +461,7 @@ export interface components {
              * Source Type
              * @enum {string}
              */
-            source_type: "syllabus" | "assignment" | "learning_history" | "calendar" | "scombz" | "library" | "google_drive";
+            source_type: "syllabus" | "assignment" | "learning_history" | "calendar" | "scombz" | "library" | "google_drive" | "web";
             /** Locator */
             locator: string;
             /**
@@ -485,6 +539,128 @@ export interface components {
             related_link_count: number;
             /** Has Current Course */
             has_current_course: boolean;
+        };
+        /**
+         * ScombzReadAnnouncement
+         * @description A visible announcement projection without its raw link or markup.
+         */
+        ScombzReadAnnouncement: {
+            /** Title */
+            title: string;
+        };
+        /**
+         * ScombzReadResult
+         * @description Structured SCombZ information returned after an explicit user run.
+         *
+         *     Restricted grade/attendance values have no representation here.  A
+         *     connector can report their presence so the UI can ask for confirmation,
+         *     but it cannot forward those values through this result schema.
+         */
+        ScombzReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /**
+             * Route
+             * @enum {string}
+             */
+            route: "home" | "tasks" | "timetable" | "announcements" | "calendar" | "course" | "other";
+            /** Tasks */
+            tasks?: components["schemas"]["ScombzReadTask"][];
+            /** Announcements */
+            announcements?: components["schemas"]["ScombzReadAnnouncement"][];
+            /** Timetable */
+            timetable?: components["schemas"]["ScombzReadScheduleItem"][];
+            /** Current Course */
+            current_course?: string | null;
+            /**
+             * Restricted Present
+             * @default false
+             */
+            restricted_present: boolean;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
+         * ScombzReadScheduleItem
+         * @description A visible timetable/absence notice projection.
+         */
+        ScombzReadScheduleItem: {
+            /** Title */
+            title: string;
+            /** Starts At */
+            starts_at?: string | null;
+            /** Ends At */
+            ends_at?: string | null;
+            /**
+             * Status
+             * @default unknown
+             * @enum {string}
+             */
+            status: "class" | "cancelled" | "makeup" | "unknown";
+        };
+        /**
+         * ScombzReadTask
+         * @description A visible SCombZ assignment projection without HTML or identifiers.
+         */
+        ScombzReadTask: {
+            /** Course */
+            course: string;
+            /** Title */
+            title: string;
+            /** Deadline */
+            deadline: string;
+        };
+        /**
+         * SyllabusResult
+         * @description One result from the official public syllabus search.
+         */
+        SyllabusResult: {
+            /** Title */
+            title: string;
+            /** Course Code */
+            course_code?: string | null;
+            /** Faculty */
+            faculty?: string | null;
+            /** Url */
+            url: string;
+            /** Snippet */
+            snippet?: string | null;
+        };
+        /**
+         * SyllabusSearchResult
+         * @description A bounded public result set from the official syllabus search.
+         */
+        SyllabusSearchResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /** Query */
+            query: string;
+            /** Year */
+            year?: number | null;
+            /** Faculty */
+            faculty?: string | null;
+            /** Results */
+            results?: components["schemas"]["SyllabusResult"][];
+            /** Reason Code */
+            reason_code?: string | null;
         };
         /** ValidationError */
         ValidationError: {

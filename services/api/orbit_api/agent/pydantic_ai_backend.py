@@ -6,9 +6,10 @@ history (including minimized tool results), but never a connector's raw
 provider response, OAuth token, or token usage metadata.
 """
 
+import json
 import os
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 from uuid import uuid4
 
@@ -21,11 +22,14 @@ from pydantic_ai.usage import RunUsage
 
 from orbit_api.models import (
     ActionProposal,
+    BrowserReadResult,
     CalendarAvailabilityResult,
     ChatHistoryMessage,
     EvidenceLink,
     OrbitEvent,
     ScombzPageSummaryResult,
+    ScombzReadResult,
+    SyllabusSearchResult,
 )
 
 from .base import AgentBackend
@@ -38,9 +42,33 @@ SCOMBZ_TOOL_VERSION = "v1"
 CALENDAR_AVAILABILITY_LOCATOR_PREFIX = "orbit-calendar://availability/"
 SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX = "orbit-scombz://page-summary/"
 SAFE_CLASSIFICATIONS = {"synthetic", "public"}
-SUPPORTED_TOOL_NAMES = frozenset({CALENDAR_TOOL_NAME, SCOMBZ_TOOL_NAME})
-ToolName = Literal["scombz_page_summary", "google_calendar_availability"]
-ToolResult = CalendarAvailabilityResult | ScombzPageSummaryResult
+SCOMBZ_READ_TOOL_NAME = "scombz_read"
+SYLLABUS_SEARCH_TOOL_NAME = "syllabus_search"
+BROWSER_READ_TOOL_NAME = "browser_read_url"
+SUPPORTED_TOOL_NAMES = frozenset(
+    {
+        CALENDAR_TOOL_NAME,
+        SCOMBZ_TOOL_NAME,
+        SCOMBZ_READ_TOOL_NAME,
+        SYLLABUS_SEARCH_TOOL_NAME,
+        BROWSER_READ_TOOL_NAME,
+    }
+)
+ToolName = Literal[
+    "scombz_page_summary",
+    "scombz_read",
+    "google_calendar_availability",
+    "syllabus_search",
+    "browser_read_url",
+]
+ActionToolName = Literal["scombz_page_summary", "google_calendar_availability"]
+ToolResult = (
+    CalendarAvailabilityResult
+    | ScombzPageSummaryResult
+    | ScombzReadResult
+    | SyllabusSearchResult
+    | BrowserReadResult
+)
 
 
 class ActionDraft(BaseModel):
@@ -84,6 +112,7 @@ class DeferredChatRun:
     tool_call_id: str
     conversation_id: str
     tool_name: ToolName
+    arguments: dict[str, Any] = field(default_factory=dict)
     tool_version: Literal[1] = 1
     tool_call_count: int = 1
 
@@ -105,6 +134,7 @@ class DeferredActionRun:
     tool_call_id: str
     conversation_id: str
     tool_name: ToolName = CALENDAR_TOOL_NAME
+    arguments: dict[str, Any] = field(default_factory=dict)
     tool_version: Literal[1] = 1
 
 @dataclass(frozen=True)
@@ -136,12 +166,42 @@ def is_derived_scombz_evidence(evidence: EvidenceLink) -> bool:
     )
 
 
+def is_derived_scombz_read_evidence(evidence: EvidenceLink) -> bool:
+    return (
+        evidence.source_type == "scombz"
+        and evidence.data_classification == "personal"
+        and _is_opaque_locator(locator=evidence.locator, prefix="orbit-scombz://read/")
+        and evidence.evidence_id.startswith("scombz-read-v1-")
+    )
+
+
+def is_derived_syllabus_evidence(evidence: EvidenceLink) -> bool:
+    return (
+        evidence.source_type == "syllabus"
+        and evidence.data_classification == "public"
+        and _is_opaque_locator(locator=evidence.locator, prefix="orbit-syllabus://search/")
+        and evidence.evidence_id.startswith("syllabus-search-v1-")
+    )
+
+
+def is_derived_browser_evidence(evidence: EvidenceLink) -> bool:
+    return (
+        evidence.source_type == "web"
+        and evidence.data_classification in {"public", "personal"}
+        and _is_opaque_locator(locator=evidence.locator, prefix="orbit-browser://read/")
+        and evidence.evidence_id.startswith("browser-read-v1-")
+    )
+
+
 def validate_agent_data(
     event: OrbitEvent,
     context: list[EvidenceLink],
     *,
     allow_calendar_availability: bool = False,
     allow_scombz_page_summary: bool = False,
+    allow_scombz_read: bool = False,
+    allow_syllabus_search: bool = False,
+    allow_browser_read: bool = False,
 ) -> None:
     if event.data_classification not in SAFE_CLASSIFICATIONS:
         raise ValueError("The agent backend accepts only synthetic or public event data.")
@@ -151,6 +211,12 @@ def validate_agent_data(
         if allow_calendar_availability and is_derived_calendar_evidence(evidence):
             continue
         if allow_scombz_page_summary and is_derived_scombz_evidence(evidence):
+            continue
+        if allow_scombz_read and is_derived_scombz_read_evidence(evidence):
+            continue
+        if allow_syllabus_search and is_derived_syllabus_evidence(evidence):
+            continue
+        if allow_browser_read and is_derived_browser_evidence(evidence):
             continue
         raise ValueError(
             "The agent backend rejects personal or restricted evidence unless it is "
@@ -168,6 +234,44 @@ async def scombz_page_summary() -> ScombzPageSummaryResult:
     """Deferred, no-argument ScombZ page-summary connector boundary."""
 
     raise CallDeferred()
+
+
+async def scombz_read() -> ScombzReadResult:
+    """Deferred structured read of visible SCombZ sections."""
+
+    raise CallDeferred()
+
+
+async def syllabus_search(
+    query: str,
+    year: int | None = None,
+    faculty: str | None = None,
+) -> SyllabusSearchResult:
+    """Deferred read of the public SIT syllabus search."""
+
+    del query, year, faculty
+    raise CallDeferred()
+
+
+async def browser_read_url(url: str) -> BrowserReadResult:
+    """Deferred read of a user-authorized visible URL."""
+
+    del url
+    raise CallDeferred()
+
+
+def _tool_arguments(raw: Any) -> dict[str, Any]:
+    if raw in ({}, "{}", None):
+        return {}
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError as error:
+            raise ValueError("Deferred tool arguments must be a JSON object.") from error
+        raw = decoded
+    if not isinstance(raw, dict) or not all(isinstance(key, str) for key in raw):
+        raise ValueError("Deferred tool arguments must be an object.")
+    return dict(raw)
 
 
 class PydanticAIAgentBackend(AgentBackend):
@@ -310,7 +414,8 @@ class PydanticAIAgentBackend(AgentBackend):
             raise RuntimeError("The agent requested a client tool that was already used.")
         if call.tool_call_id in seen_tool_call_ids or not call.tool_call_id:
             raise RuntimeError("The agent returned a duplicate or empty tool call ID.")
-        if call.args not in ({}, "{}"):
+        arguments = _tool_arguments(call.args)
+        if arguments:
             raise RuntimeError("Deferred client tools must receive an empty argument object.")
 
         return AgentExecution(
@@ -318,8 +423,9 @@ class PydanticAIAgentBackend(AgentBackend):
                 messages=result.all_messages(),
                 tool_call_id=call.tool_call_id,
                 conversation_id=result.conversation_id,
-                tool_name=cast(ToolName, call.tool_name),
+                tool_name=cast(ActionToolName, call.tool_name),
                 tool_version=1,
+                arguments=arguments,
             )
         )
 
@@ -385,6 +491,9 @@ class PydanticAIAgentBackend(AgentBackend):
             context,
             allow_calendar_availability=True,
             allow_scombz_page_summary=True,
+            allow_scombz_read=True,
+            allow_syllabus_search=True,
+            allow_browser_read=True,
         )
         if deferred.tool_name == CALENDAR_TOOL_NAME:
             if not isinstance(tool_result, CalendarAvailabilityResult):
@@ -459,8 +568,14 @@ class PydanticAIAgentBackend(AgentBackend):
         tools = []
         if SCOMBZ_TOOL_NAME in advertised:
             tools.append(scombz_page_summary)
+        if SCOMBZ_READ_TOOL_NAME in advertised:
+            tools.append(scombz_read)
         if CALENDAR_TOOL_NAME in advertised:
             tools.append(google_calendar_availability)
+        if SYLLABUS_SEARCH_TOOL_NAME in advertised:
+            tools.append(syllabus_search)
+        if BROWSER_READ_TOOL_NAME in advertised:
+            tools.append(browser_read_url)
         model_settings: OpenAIResponsesModelSettings = {"openai_store": False}
         return Agent(
             self.model,
@@ -536,8 +651,36 @@ class PydanticAIAgentBackend(AgentBackend):
             raise RuntimeError("The chat agent requested a tool that was not advertised.")
         if not call.tool_call_id or call.tool_call_id in seen_tool_call_ids:
             raise RuntimeError("The chat agent returned a duplicate or empty tool call ID.")
-        if call.args not in ({}, "{}"):
-            raise RuntimeError("The current client tools must receive an empty argument object.")
+        arguments = _tool_arguments(call.args)
+        if call.tool_name in {
+            CALENDAR_TOOL_NAME,
+            SCOMBZ_TOOL_NAME,
+            SCOMBZ_READ_TOOL_NAME,
+        } and arguments:
+            raise RuntimeError("This client tool does not accept arguments.")
+        if call.tool_name == BROWSER_READ_TOOL_NAME:
+            if set(arguments) != {"url"} or not isinstance(arguments["url"], str):
+                raise RuntimeError("browser_read_url requires exactly one URL argument.")
+        if call.tool_name == SYLLABUS_SEARCH_TOOL_NAME:
+            if "query" not in arguments or not isinstance(arguments["query"], str):
+                raise RuntimeError("syllabus_search requires a query argument.")
+            if set(arguments) - {"query", "year", "faculty"}:
+                raise RuntimeError("syllabus_search received unknown arguments.")
+            if not arguments["query"].strip() or len(arguments["query"]) > 200:
+                raise RuntimeError("syllabus_search query is outside the allowed range.")
+            year = arguments.get("year")
+            if year is not None and (
+                isinstance(year, bool)
+                or not isinstance(year, int)
+                or year < 2000
+                or year > 2100
+            ):
+                raise RuntimeError("syllabus_search year is outside the allowed range.")
+            faculty = arguments.get("faculty")
+            if faculty is not None and (
+                not isinstance(faculty, str) or len(faculty) > 200
+            ):
+                raise RuntimeError("syllabus_search faculty is outside the allowed range.")
         return ChatAgentExecution(
             deferred=DeferredChatRun(
                 messages=result.all_messages(),
@@ -545,6 +688,7 @@ class PydanticAIAgentBackend(AgentBackend):
                 conversation_id=result.conversation_id,
                 tool_name=cast(ToolName, call.tool_name),
                 tool_version=1,
+                arguments=arguments,
                 tool_call_count=tool_call_count + 1,
             )
         )
@@ -569,6 +713,9 @@ class PydanticAIAgentBackend(AgentBackend):
             context,
             allow_calendar_availability=True,
             allow_scombz_page_summary=True,
+            allow_scombz_read=True,
+            allow_syllabus_search=True,
+            allow_browser_read=True,
         )
         advertised = set(advertised_tools or set()) & set(SUPPORTED_TOOL_NAMES)
         if advertised and os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
@@ -606,6 +753,39 @@ class PydanticAIAgentBackend(AgentBackend):
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "page_summary": tool_result.model_dump(mode="json"),
             }
+        elif deferred.tool_name == SCOMBZ_READ_TOOL_NAME:
+            if not isinstance(tool_result, ScombzReadResult):
+                raise ValueError("SCombZ read calls require a ScombzReadResult.")
+            evidence = next(
+                (item for item in context if is_derived_scombz_read_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "scombz_read": tool_result.model_dump(mode="json"),
+            }
+        elif deferred.tool_name == SYLLABUS_SEARCH_TOOL_NAME:
+            if not isinstance(tool_result, SyllabusSearchResult):
+                raise ValueError("Syllabus calls require a SyllabusSearchResult.")
+            evidence = next(
+                (item for item in context if is_derived_syllabus_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "syllabus_search": tool_result.model_dump(mode="json"),
+            }
+        elif deferred.tool_name == BROWSER_READ_TOOL_NAME:
+            if not isinstance(tool_result, BrowserReadResult):
+                raise ValueError("Browser calls require a BrowserReadResult.")
+            evidence = next(
+                (item for item in context if is_derived_browser_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "browser_read": tool_result.model_dump(mode="json"),
+            }
         else:
             raise ValueError("The deferred chat tool is unsupported.")
         if evidence is None:
@@ -620,6 +800,9 @@ class PydanticAIAgentBackend(AgentBackend):
             context,
             allow_calendar_availability=True,
             allow_scombz_page_summary=True,
+            allow_scombz_read=True,
+            allow_syllabus_search=True,
+            allow_browser_read=True,
         )
         result = await self._chat_agent(advertised_tools=advertised_tools).run(
             message_history=deferred.messages,
@@ -648,6 +831,9 @@ __all__ = [
     "CALENDAR_AVAILABILITY_LOCATOR_PREFIX",
     "CALENDAR_TOOL_NAME",
     "CALENDAR_TOOL_VERSION",
+    "BROWSER_READ_TOOL_NAME",
+    "SCOMBZ_READ_TOOL_NAME",
+    "SYLLABUS_SEARCH_TOOL_NAME",
     "DeferredActionRun",
     "PydanticAIAgentBackend",
     "SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX",
@@ -656,6 +842,12 @@ __all__ = [
     "google_calendar_availability",
     "is_derived_calendar_evidence",
     "is_derived_scombz_evidence",
+    "is_derived_scombz_read_evidence",
+    "is_derived_syllabus_evidence",
+    "is_derived_browser_evidence",
+    "browser_read_url",
+    "scombz_read",
     "scombz_page_summary",
+    "syllabus_search",
     "validate_agent_data",
 ]

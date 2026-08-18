@@ -22,6 +22,7 @@ class EvidenceLink(BaseModel):
         "scombz",
         "library",
         "google_drive",
+        "web",
     ]
     locator: str = Field(min_length=1)
     data_classification: DataClassification = "synthetic"

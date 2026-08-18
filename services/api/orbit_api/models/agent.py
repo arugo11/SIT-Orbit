@@ -7,6 +7,7 @@ fields are rejected and the response union is discriminated by ``status``.
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import (
     BaseModel,
@@ -114,6 +115,157 @@ class ScombzPageSummaryResult(StrictApiModel):
     has_current_course: StrictBool
 
 
+class ScombzReadTask(StrictApiModel):
+    """A visible SCombZ assignment projection without HTML or identifiers."""
+
+    course: StrictStr = Field(min_length=1, max_length=200)
+    title: StrictStr = Field(min_length=1, max_length=300)
+    deadline: StrictStr = Field(min_length=1, max_length=100)
+
+
+class ScombzReadAnnouncement(StrictApiModel):
+    """A visible announcement projection without its raw link or markup."""
+
+    title: StrictStr = Field(min_length=1, max_length=300)
+
+
+class ScombzReadScheduleItem(StrictApiModel):
+    """A visible timetable/absence notice projection."""
+
+    title: StrictStr = Field(min_length=1, max_length=300)
+    starts_at: StrictStr | None = Field(default=None, max_length=40)
+    ends_at: StrictStr | None = Field(default=None, max_length=40)
+    status: Literal["class", "cancelled", "makeup", "unknown"] = "unknown"
+
+
+class ScombzReadResult(StrictApiModel):
+    """Structured SCombZ information returned after an explicit user run.
+
+    Restricted grade/attendance values have no representation here.  A
+    connector can report their presence so the UI can ask for confirmation,
+    but it cannot forward those values through this result schema.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    route: Literal[
+        "home",
+        "tasks",
+        "timetable",
+        "announcements",
+        "calendar",
+        "course",
+        "other",
+    ]
+    tasks: list[ScombzReadTask] = Field(default_factory=list, max_length=100)
+    announcements: list[ScombzReadAnnouncement] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    timetable: list[ScombzReadScheduleItem] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    current_course: StrictStr | None = Field(default=None, max_length=200)
+    restricted_present: StrictBool = False
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_page_data(self) -> "ScombzReadResult":
+        if self.status == "unavailable" and (
+            self.tasks
+            or self.announcements
+            or self.timetable
+            or self.current_course is not None
+        ):
+            raise ValueError("Unavailable SCombZ results cannot include page data.")
+        return self
+
+
+class SyllabusResult(StrictApiModel):
+    """One result from the official public syllabus search."""
+
+    title: StrictStr = Field(min_length=1, max_length=300)
+    course_code: StrictStr | None = Field(default=None, max_length=100)
+    faculty: StrictStr | None = Field(default=None, max_length=200)
+    url: StrictStr = Field(min_length=1, max_length=500)
+    snippet: StrictStr | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def official_https_url(self) -> "SyllabusResult":
+        parsed = urlparse(self.url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "syllabus.sic.shibaura-it.ac.jp"
+            or not parsed.path.startswith("/")
+        ):
+            raise ValueError("Syllabus results must link to the official SIT syllabus site.")
+        return self
+
+
+class SyllabusSearchResult(StrictApiModel):
+    """A bounded public result set from the official syllabus search."""
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    query: StrictStr = Field(min_length=1, max_length=200)
+    year: StrictInt | None = Field(default=None, ge=2000, le=2100)
+    faculty: StrictStr | None = Field(default=None, max_length=200)
+    results: list[SyllabusResult] = Field(default_factory=list, max_length=20)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_results(self) -> "SyllabusSearchResult":
+        if self.status == "unavailable" and self.results:
+            raise ValueError("Unavailable syllabus results cannot include results.")
+        return self
+
+
+class BrowserReadLink(StrictApiModel):
+    """A visible link projection; it has no DOM or form state."""
+
+    label: StrictStr = Field(min_length=1, max_length=300)
+    url: StrictStr = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def http_url_only(self) -> "BrowserReadLink":
+        parsed = urlparse(self.url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Browser links must use an absolute HTTP(S) URL.")
+        if parsed.username or parsed.password:
+            raise ValueError("Browser links must not contain credentials.")
+        return self
+
+
+class BrowserReadResult(StrictApiModel):
+    """Visible text from a user-authorized URL, bounded for model context."""
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    url: StrictStr = Field(min_length=1, max_length=500)
+    title: StrictStr = Field(default="", max_length=300)
+    text: StrictStr = Field(default="", max_length=30_000)
+    links: list[BrowserReadLink] = Field(default_factory=list, max_length=50)
+    truncated: StrictBool = False
+    data_classification: Literal["public", "personal"] = "public"
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def validates_safe_browser_projection(self) -> "BrowserReadResult":
+        parsed = urlparse(self.url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Browser results must use an absolute HTTP(S) URL.")
+        if parsed.username or parsed.password:
+            raise ValueError("Browser results must not contain credentials.")
+        if self.status == "unavailable" and (self.text or self.links):
+            raise ValueError("Unavailable browser results cannot include page data.")
+        suspicious = ("<script", "<input", "access_token", "oauth_token", "cookie=")
+        lowered = f"{self.title}\n{self.text}".lower()
+        if any(marker in lowered for marker in suspicious):
+            raise ValueError("Browser results contain a prohibited raw or credential marker.")
+        return self
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
@@ -193,6 +345,7 @@ class AgentToolCall(StrictApiModel):
 ChatRole = Literal["user", "assistant"]
 ChatToolName = Literal[
     "scombz_page_summary",
+    "scombz_read",
     "google_calendar_availability",
     "syllabus_search",
     "browser_read_url",
@@ -236,7 +389,13 @@ class ChatToolResultRequest(StrictApiModel):
     tool_call_id: StrictStr = Field(min_length=1, max_length=200)
     name: ChatToolName
     version: Literal[1]
-    result: CalendarAvailabilityResult | ScombzPageSummaryResult
+    result: (
+        CalendarAvailabilityResult
+        | ScombzPageSummaryResult
+        | ScombzReadResult
+        | SyllabusSearchResult
+        | BrowserReadResult
+    )
 
     @model_validator(mode="after")
     def result_matches_tool(self) -> "ChatToolResultRequest":
@@ -248,8 +407,16 @@ class ChatToolResultRequest(StrictApiModel):
             self.result, ScombzPageSummaryResult
         ):
             raise ValueError("SCombZ tool results must use ScombzPageSummaryResult.")
-        if self.name in {"syllabus_search", "browser_read_url"}:
-            raise ValueError("This chat tool is not enabled in the current API build.")
+        if self.name == "scombz_read" and not isinstance(self.result, ScombzReadResult):
+            raise ValueError("SCombZ read results must use ScombzReadResult.")
+        if self.name == "syllabus_search" and not isinstance(
+            self.result, SyllabusSearchResult
+        ):
+            raise ValueError("Syllabus results must use SyllabusSearchResult.")
+        if self.name == "browser_read_url" and not isinstance(
+            self.result, BrowserReadResult
+        ):
+            raise ValueError("Browser results must use BrowserReadResult.")
         return self
 
 
@@ -300,9 +467,17 @@ __all__ = [
     "ChatToolCall",
     "ChatToolName",
     "ChatToolResultRequest",
+    "BrowserReadLink",
+    "BrowserReadResult",
     "CalendarAvailabilityInterval",
     "CalendarAvailabilityResult",
     "ClientTool",
     "ScombzPageSummaryResult",
+    "ScombzReadAnnouncement",
+    "ScombzReadResult",
+    "ScombzReadScheduleItem",
+    "ScombzReadTask",
+    "SyllabusResult",
+    "SyllabusSearchResult",
     "StrictApiModel",
 ]

@@ -1,10 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type ActionProposal,
   AgentApiClient,
   type ChatRunResponse,
   type ChatToolResultRequest,
   DEFAULT_AGENT_API_BASE,
+  isBrowserReadResult,
+  isSyllabusSearchResult,
+  type SyllabusSearchResult,
 } from "../api/client";
 import {
   type CalendarConnector,
@@ -14,7 +17,16 @@ import {
 import {
   type PageContext,
   projectScombzPageSummary,
+  projectScombzRead,
 } from "../content/page-context";
+import type { BrowserReadResponse } from "../shared/messages";
+import {
+  type AccessMode,
+  containsOriginPermission,
+  hostAccessRequest,
+  requestOriginPermission,
+  requiresHostConfirmation,
+} from "./access-policy";
 import {
   type ChatConversation,
   type ChatTimelineMessage,
@@ -28,8 +40,6 @@ import {
 } from "./chat-history";
 
 const chatApiClient = new AgentApiClient({ baseUrl: DEFAULT_AGENT_API_BASE });
-
-type AccessMode = "ask" | "full";
 
 export interface ChatPanelProps {
   pageContext: PageContext | null;
@@ -45,6 +55,8 @@ function toolLabel(name: string): string {
       return "SCombZを確認中";
     case "google_calendar_availability":
       return "Google Calendarを確認中";
+    case "scombz_read":
+      return "SCombZを確認中";
     case "syllabus_search":
       return "シラバスを検索中";
     case "browser_read_url":
@@ -74,7 +86,12 @@ function messageFromResponse(response: ChatRunResponse): ChatTimelineMessage {
 
 function toolResultRequest(
   toolCallId: string,
-  name: "scombz_page_summary" | "google_calendar_availability",
+  name:
+    | "scombz_page_summary"
+    | "scombz_read"
+    | "google_calendar_availability"
+    | "syllabus_search"
+    | "browser_read_url",
   result: ChatToolResultRequest["result"],
 ): ChatToolResultRequest {
   return {
@@ -83,6 +100,41 @@ function toolResultRequest(
     version: 1,
     result,
   };
+}
+
+function sendExtensionMessage<T>(message: unknown): Promise<T> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response: T | undefined) => {
+      if (chrome.runtime.lastError || response === undefined) {
+        reject(new Error("拡張機能のToolを利用できません。"));
+        return;
+      }
+      resolve(response);
+    });
+  });
+}
+
+class BrowserAccessRequiredError extends Error {
+  readonly pattern: string;
+  readonly origin: string;
+  readonly url: string;
+
+  constructor(url: string, origin: string, pattern: string) {
+    super("このサイトを読むには許可が必要です。");
+    this.name = "BrowserAccessRequiredError";
+    this.url = url;
+    this.origin = origin;
+    this.pattern = pattern;
+  }
+}
+
+interface PendingPermission {
+  url: string;
+  origin: string;
+  pattern: string;
+  response: Extract<ChatRunResponse, { status: "tool_required" }>;
+  conversation: ChatConversation;
+  seenCallIds: string[];
 }
 
 export function ChatPanel({
@@ -97,10 +149,17 @@ export function ChatPanel({
   );
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [accessMode, setAccessMode] = useState<AccessMode>("ask");
+  const [accessMode, setAccessMode] = useState<AccessMode>(() =>
+    globalThis.localStorage?.getItem("sit-orbit-access-mode") === "full"
+      ? "full"
+      : "ask",
+  );
   const [composer, setComposer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [permissionPrompt, setPermissionPrompt] =
+    useState<PendingPermission | null>(null);
+  const sensitiveApproval = useRef(new Set<string>());
 
   const pageSummary = useMemo(
     () => projectScombzPageSummary(pageContext),
@@ -136,15 +195,20 @@ export function ChatPanel({
     const tools: Array<{
       name:
         | "scombz_page_summary"
+        | "scombz_read"
         | "google_calendar_availability"
         | "syllabus_search"
         | "browser_read_url";
       version: 1;
     }> = [];
-    if (pageSummary) tools.push({ name: "scombz_page_summary", version: 1 });
+    if (projectScombzRead(pageContext)) {
+      tools.push({ name: "scombz_read", version: 1 });
+    }
     if (calendarState.status === "connected" && calendarState.snapshot) {
       tools.push({ name: "google_calendar_availability", version: 1 });
     }
+    tools.push({ name: "syllabus_search", version: 1 });
+    tools.push({ name: "browser_read_url", version: 1 });
     return tools;
   }
 
@@ -156,14 +220,64 @@ export function ChatPanel({
     if (!call) {
       throw new Error("AgentのTool呼び出しを検証できません。");
     }
-    if (call.version !== 1 || Object.keys(call.arguments ?? {}).length > 0) {
+    const argumentsObject = call.arguments ?? {};
+    if (call.version !== 1 || typeof argumentsObject !== "object") {
       throw new Error("AgentのTool引数を検証できません。");
     }
     if (
       call.name !== "scombz_page_summary" &&
-      call.name !== "google_calendar_availability"
+      call.name !== "scombz_read" &&
+      call.name !== "google_calendar_availability" &&
+      call.name !== "syllabus_search" &&
+      call.name !== "browser_read_url"
     ) {
       throw new Error("このChatではまだ対応していないToolです。");
+    }
+    if (
+      (call.name === "scombz_page_summary" ||
+        call.name === "scombz_read" ||
+        call.name === "google_calendar_availability") &&
+      Object.keys(argumentsObject).length > 0
+    ) {
+      throw new Error("このToolには引数を指定できません。");
+    }
+    if (
+      call.name === "syllabus_search" &&
+      (typeof argumentsObject.query !== "string" ||
+        argumentsObject.query.trim().length === 0 ||
+        argumentsObject.query.length > 200 ||
+        Object.keys(argumentsObject).some(
+          (key) => !["query", "year", "faculty"].includes(key),
+        ))
+    ) {
+      throw new Error("シラバス検索の引数を検証できません。");
+    }
+    if (
+      call.name === "syllabus_search" &&
+      argumentsObject.year !== undefined &&
+      argumentsObject.year !== null &&
+      (typeof argumentsObject.year !== "number" ||
+        !Number.isInteger(argumentsObject.year) ||
+        argumentsObject.year < 2000 ||
+        argumentsObject.year > 2100)
+    ) {
+      throw new Error("シラバス検索の年度を検証できません。");
+    }
+    if (
+      call.name === "syllabus_search" &&
+      argumentsObject.faculty !== undefined &&
+      argumentsObject.faculty !== null &&
+      (typeof argumentsObject.faculty !== "string" ||
+        argumentsObject.faculty.length > 200)
+    ) {
+      throw new Error("シラバス検索の学部を検証できません。");
+    }
+    if (
+      call.name === "browser_read_url" &&
+      (typeof argumentsObject.url !== "string" ||
+        Object.keys(argumentsObject).length !== 1)
+    ) {
+      throw new Error("参照先URLを検証できません。");
     }
     const activity: ChatTimelineMessage = {
       id: `tool-${call.tool_call_id}`,
@@ -185,7 +299,23 @@ export function ChatPanel({
         throw new Error("表示中のSCombZページを読み取れません。");
       }
       request = toolResultRequest(call.tool_call_id, call.name, pageSummary);
-    } else {
+    } else if (call.name === "scombz_read") {
+      const readResult = projectScombzRead(pageContext);
+      if (!readResult) {
+        throw new Error("表示中のSCombZページを読み取れません。");
+      }
+      if (readResult.restricted_present && pageContext) {
+        const access = hostAccessRequest(pageContext.url);
+        if (access && !sensitiveApproval.current.has(pageContext.url)) {
+          throw new BrowserAccessRequiredError(
+            pageContext.url,
+            access.origin,
+            access.pattern,
+          );
+        }
+      }
+      request = toolResultRequest(call.tool_call_id, call.name, readResult);
+    } else if (call.name === "google_calendar_availability") {
       const refreshed = calendarConnector
         ? await calendarConnector.refresh()
         : await calendarRequest("refresh");
@@ -202,6 +332,66 @@ export function ChatPanel({
         call.name,
         projectCalendarAvailability(refreshed.snapshot),
       );
+    } else if (call.name === "syllabus_search") {
+      const syllabus = await sendExtensionMessage<SyllabusSearchResult>({
+        type: "syllabus-search",
+        tool_call_id: call.tool_call_id,
+        query: argumentsObject.query as string,
+        year:
+          typeof argumentsObject.year === "number"
+            ? argumentsObject.year
+            : null,
+        faculty:
+          typeof argumentsObject.faculty === "string"
+            ? argumentsObject.faculty
+            : null,
+      });
+      if (!isSyllabusSearchResult(syllabus)) {
+        throw new Error("シラバス検索結果を検証できません。");
+      }
+      request = toolResultRequest(call.tool_call_id, call.name, syllabus);
+    } else {
+      const url = argumentsObject.url as string;
+      const access = hostAccessRequest(url);
+      if (!access) throw new Error("参照先URLを検証できません。");
+      const hasPermission = await containsOriginPermission(access.pattern);
+      const allowedOrigins = hasPermission
+        ? new Set([access.origin])
+        : new Set<string>();
+      if (
+        requiresHostConfirmation(accessMode, access, allowedOrigins) &&
+        !sensitiveApproval.current.has(url)
+      ) {
+        throw new BrowserAccessRequiredError(
+          url,
+          access.origin,
+          access.pattern,
+        );
+      }
+      const browser = await sendExtensionMessage<BrowserReadResponse>({
+        type: "browser-read",
+        tool_call_id: call.tool_call_id,
+        url,
+        access_mode: accessMode,
+      });
+      if (browser.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          url,
+          browser.origin,
+          browser.pattern,
+        );
+      }
+      if (
+        browser.status !== "known" ||
+        !isBrowserReadResult(browser.projection)
+      ) {
+        throw new Error("Webページを読み取れませんでした。");
+      }
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        browser.projection,
+      );
     }
     const nextResponse = await chatApiClient.submitChatToolResult(
       response.run_id,
@@ -217,6 +407,52 @@ export function ChatPanel({
     };
     await persist(completedConversation);
     return { response: nextResponse, conversation: completedConversation };
+  }
+
+  async function finishResponse(
+    initialResponse: ChatRunResponse,
+    initialConversation: ChatConversation,
+    initialSeenCallIds = new Set<string>(),
+  ): Promise<void> {
+    let response = initialResponse;
+    let current = initialConversation;
+    const seenCallIds = initialSeenCallIds;
+    try {
+      for (let index = 0; response.status === "tool_required"; index += 1) {
+        if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
+        const call = response.calls[0];
+        if (!call || seenCallIds.has(call.tool_call_id)) {
+          throw new Error("重複したTool呼び出しを受け取りました。");
+        }
+        seenCallIds.add(call.tool_call_id);
+        const next = await runTool(response, current);
+        response = next.response;
+        current = next.conversation;
+      }
+      const assistant = messageFromResponse(response);
+      await persist({
+        ...current,
+        updatedAt: new Date().toISOString(),
+        messages: [...current.messages, assistant],
+      });
+    } catch (caught) {
+      if (
+        caught instanceof BrowserAccessRequiredError &&
+        response.status === "tool_required"
+      ) {
+        setPermissionPrompt({
+          url: caught.url,
+          origin: caught.origin,
+          pattern: caught.pattern,
+          response,
+          conversation: current,
+          seenCallIds: [...seenCallIds],
+        });
+        setError("このサイトを読む前に、Chat内でアクセスを許可してください。");
+        return;
+      }
+      throw caught;
+    }
   }
 
   async function send(): Promise<void> {
@@ -241,33 +477,17 @@ export function ChatPanel({
       messages: [...beforeSend.messages, userMessage],
     };
     await persist(withUser);
-    let current = withUser;
+    const current = withUser;
     try {
-      let response = await chatApiClient.startChat({
+      const response = await chatApiClient.startChat({
         conversation_id: withUser.conversationId,
         message,
         history: toChatHistory(beforeSend.messages),
         client_tools: clientTools(),
       });
-      const seenCallIds = new Set<string>();
-      for (let index = 0; response.status === "tool_required"; index += 1) {
-        if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
-        const call = response.calls[0];
-        if (!call || seenCallIds.has(call.tool_call_id)) {
-          throw new Error("重複したTool呼び出しを受け取りました。");
-        }
-        seenCallIds.add(call.tool_call_id);
-        const next = await runTool(response, current);
-        response = next.response;
-        current = next.conversation;
-      }
-      const assistant = messageFromResponse(response);
-      await persist({
-        ...current,
-        updatedAt: new Date().toISOString(),
-        messages: [...current.messages, assistant],
-      });
+      await finishResponse(response, current);
     } catch (caught) {
+      if (caught instanceof BrowserAccessRequiredError) return;
       setError(
         caught instanceof Error ? caught.message : "Chatに失敗しました。",
       );
@@ -287,6 +507,62 @@ export function ChatPanel({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function continueWithPermission(remember: boolean): Promise<void> {
+    const pending = permissionPrompt;
+    if (!pending || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const granted = await requestOriginPermission(pending.pattern);
+      if (!granted) {
+        setError("サイトの読み取り許可が得られませんでした。");
+        return;
+      }
+      sensitiveApproval.current.add(pending.url);
+      setPermissionPrompt(null);
+      await finishResponse(
+        pending.response,
+        pending.conversation,
+        new Set(pending.seenCallIds),
+      );
+      if (!remember && typeof chrome.permissions?.remove === "function") {
+        await chrome.permissions.remove({ origins: [pending.pattern] });
+      }
+      sensitiveApproval.current.delete(pending.url);
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "許可後のTool実行に失敗しました。",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function enableFullAccess(): Promise<void> {
+    if (busy || disabled) return;
+    const granted = await Promise.all([
+      requestOriginPermission("https://*/*"),
+      requestOriginPermission("http://*/*"),
+    ]);
+    if (!granted.every(Boolean)) {
+      setError(
+        "Full accessの権限を付与できませんでした。都度確認を使用します。",
+      );
+      setAccessMode("ask");
+      globalThis.localStorage?.setItem("sit-orbit-access-mode", "ask");
+      return;
+    }
+    setAccessMode("full");
+    globalThis.localStorage?.setItem("sit-orbit-access-mode", "full");
+  }
+
+  function useAskMode(): void {
+    setAccessMode("ask");
+    globalThis.localStorage?.setItem("sit-orbit-access-mode", "ask");
   }
 
   async function selectConversation(id: string): Promise<void> {
@@ -404,14 +680,14 @@ export function ChatPanel({
           <button
             type="button"
             aria-pressed={accessMode === "ask"}
-            onClick={() => setAccessMode("ask")}
+            onClick={useAskMode}
           >
             都度確認
           </button>
           <button
             type="button"
             aria-pressed={accessMode === "full"}
-            onClick={() => setAccessMode("full")}
+            onClick={() => void enableFullAccess()}
           >
             Full access
           </button>
@@ -420,6 +696,45 @@ export function ChatPanel({
           {accessMode === "ask" ? "読み取り前に確認します" : "読み取り専用"}
         </small>
       </fieldset>
+
+      {permissionPrompt ? (
+        <aside className="chat-permission-prompt" role="alert">
+          <strong>サイトの読み取り許可</strong>
+          <p>
+            {permissionPrompt.origin}
+            を今回のTool実行で参照します。ページの表示情報だけを使い、送信・変更は行いません。
+          </p>
+          <div className="button-row">
+            <button
+              type="button"
+              className="primary-button"
+              disabled={busy}
+              onClick={() => void continueWithPermission(false)}
+            >
+              今回だけ許可
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={busy}
+              onClick={() => void continueWithPermission(true)}
+            >
+              このサイトを常に許可
+            </button>
+            <button
+              type="button"
+              className="text-button"
+              disabled={busy}
+              onClick={() => {
+                setPermissionPrompt(null);
+                setError("サイトの読み取りを拒否しました。");
+              }}
+            >
+              拒否
+            </button>
+          </div>
+        </aside>
+      ) : null}
 
       <div className="chat-timeline" aria-live="polite">
         {conversation.messages.length === 0 ? (

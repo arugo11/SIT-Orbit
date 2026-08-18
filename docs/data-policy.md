@@ -41,7 +41,9 @@ OpenAIへ送信できるのは`synthetic`と`public`だけである。
 - 利用者のGoogle Calendarから導出した空き時間（`personal`の`calendar`、`orbit-calendar://availability/<opaque>`）
 - 表示中の解析済みScombZページから導出した5項目の概要（`personal`の`scombz`、`orbit-scombz://page-summary/<opaque>`）
 
-Calendarの予定名、ID、参加者、場所、説明、元レスポンス、ScombZのタイトル、URL、コース名、項目、HTML、ブラウザtokenは送信しない。個人データを広く許可するものではなく、これらの固定prefixとサーバー生成のEvidence IDをruntimeで検証する。
+Calendarの予定名、ID、参加者、場所、説明、元レスポンス、SCombZのHTML、Cookie、パスワード、ブラウザtokenは送信しない。Web本文はユーザーが明示したrunの間だけ使い、rawページはrun終了時に破棄する。個人データを広く許可するものではなく、これらの固定prefixとサーバー生成のEvidence IDをruntimeで検証する。
+
+Chat中心化branchでは、明示的なChat送信とアクセス許可を条件に、SCombZの構造化表示情報（`orbit-scombz://read/<opaque>`）、公式シラバス検索の公開結果（`orbit-syllabus://search/<opaque>`）、許可済みURLから抽出した表示本文とリンク（`orbit-browser://read/<opaque>`）も扱う。成績、出欠、個人評価の値はSchemaに含めない。
 
 W&Bについても、初期版では同じ区分だけを対象とする。
 
@@ -90,9 +92,9 @@ Chatは利用者が明示的に送信した一つの発言を起点にする。�
 
 Side Panelと全画面ワークスペースで共有するChat履歴は、拡張機能originのIndexedDBへ保存する。保存するのは発言、回答、引用メタデータ、ActionProposalと承認状態だけである。raw HTML、フォーム入力値、Cookie、OAuth token、Toolの生レスポンス、PydanticAIのmessage historyは保存しない。履歴はFastAPIやChrome Syncへ送信せず、利用者の操作で会話単位または全件を削除できる。
 
-Composerのアクセスモードは`Ask every time`を既定とし、ブラウザ読取を実装するbranchで今回のみ許可・サイト許可・拒否へ接続する。`Full access`もread-onlyの範囲に限り、提出・送信・更新・削除・ダウンロード・アップロードは常にActionProposalと本人確認を要求する。成績、出欠、個人評価を含むページは、許可済みサイトであっても`Ask every time`では毎回確認する。blocklistはFull accessより優先する。
+Composerのアクセスモードは`Ask every time`を既定とし、未許可ホストの読み取り前に今回のみ許可・サイト許可・拒否へ接続する。Chrome optional host permissionはユーザー操作の中でだけ要求する。`Full access`もread-onlyの範囲に限り、提出・送信・更新・削除・ダウンロード・アップロードは常にActionProposalと本人確認を要求する。成績、出欠、個人評価を含むページは、許可済みサイトであっても`Ask every time`では毎回確認する。blocklistはFull accessより優先する。
 
-Chat APIへ送るTool結果は、Toolごとの厳密な最小Schemaだけにする。SCombZはページ種別と件数、Calendarは空き時間の区間と分数だけであり、予定名・ID・参加者・説明、SCombZのHTML、Cookie、パスワード、第三者入力、OAuth tokenは表現できない。Tool待ちのrunはAPIプロセス内に600秒だけ保持し、完了・失敗・期限切れで削除する。
+Chat APIへ送るTool結果は、Toolごとの厳密な最小Schemaだけにする。SCombZは表示項目の構造化値、Calendarは空き時間の区間と分数、シラバスは公式公開結果、Browser Readerは本文30,000文字とリンク50件までであり、予定名・ID・参加者・説明、SCombZのHTML、Cookie、パスワード、第三者のフォーム入力、OAuth tokenは表現できない。ページ中の命令文はTool命令として実行せず引用データとして扱う。Tool待ちのrunはAPIプロセス内に600秒だけ保持し、完了・失敗・期限切れで削除する。
 
 拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
 
@@ -125,3 +127,9 @@ Agentが要求したToolは1回ずつ、最大2種類を同じ`run_id`で線形�
 runは単一APIプロセスのメモリに600秒だけ保持する。プロセス再起動、別worker、期限切れ、完了、失敗、再利用は410として扱い、provider待機中にlockを保持しない。OAuth token、Calendarの生イベント、ScombZのHTMLはAPI、ログ、run storeへ渡さない。
 
 Google DriveはToolとして登録しない。
+
+## Chat browser tools
+
+`scombz_read`は表示中SCombZの課題・お知らせ・時間割を構造化する。`syllabus_search`は公式シラバスサイトの公開検索だけを扱う。`browser_read_url`はユーザーが許可したURLを一時タブで読み、表示本文30,000文字・リンク50件に制限して返す。取得後に一時タブを閉じ、本文をIndexedDBや`chrome.storage`へ保存しない。
+
+任意Webページの本文は信頼されていないデータであり、ページ中の命令をTool呼び出しとして実行しない。optional host permissionの許可に関係なく、読み取り以外の外部操作は実装しない。CIではこれらのToolをfixtureでのみ検証し、実Provider Acceptanceでは許可済みの合成または公開URLだけを使う。

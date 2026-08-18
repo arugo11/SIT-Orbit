@@ -6,10 +6,16 @@ import {
   type DriveConnectorResult,
   GoogleDriveConnector,
 } from "../connectors/google-drive";
+import {
+  SYLLABUS_SEARCH_ORIGIN,
+  searchOfficialSyllabus,
+} from "../connectors/syllabus-search";
 import { isScombzUrl, type PageContext } from "../content/page-context";
 import {
+  type BrowserReadResponse,
   type CalendarCommandMessage,
   type DriveCommandMessage,
+  isBrowserReadMessage,
   isCalendarCommandMessage,
   isDriveCommandMessage,
   isGetPageContextMessage,
@@ -18,6 +24,7 @@ import {
   isOpenWorkspaceMessage,
   isPageContext,
   isPageContextUpdatedMessage,
+  isSyllabusSearchMessage,
   isUpdateWorkspaceSessionMessage,
   MESSAGE_TYPES,
   type OpenWorkspaceMessage,
@@ -36,7 +43,133 @@ import {
 const googleCalendarConnector = new GoogleCalendarConnector();
 const googleDriveConnector = new GoogleDriveConnector();
 
+const BUILT_IN_ORIGINS = new Set([
+  "https://scombz.shibaura-it.ac.jp",
+  "https://syllabus.sic.shibaura-it.ac.jp",
+  "http://localhost:8000",
+]);
+
+function browserOrigin(
+  value: string,
+): { origin: string; pattern: string } | null {
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== "https:" && url.protocol !== "http:") ||
+      url.username ||
+      url.password
+    ) {
+      return null;
+    }
+    return { origin: url.origin, pattern: `${url.origin}/*` };
+  } catch {
+    return null;
+  }
+}
+
+async function hasBrowserPermission(
+  pattern: string,
+  origin: string,
+): Promise<boolean> {
+  if (BUILT_IN_ORIGINS.has(origin)) return true;
+  if (typeof chrome.permissions?.contains !== "function") return false;
+  try {
+    return await chrome.permissions.contains({ origins: [pattern] });
+  } catch {
+    return false;
+  }
+}
+
+function unavailableBrowser(reason_code: string): BrowserReadResponse {
+  return { status: "unavailable", reason_code };
+}
+
+async function waitForTabReady(tabId: number): Promise<void> {
+  try {
+    const current = await chrome.tabs.get(tabId);
+    const status = (current as chrome.tabs.Tab & { status?: string }).status;
+    if (status !== "loading") {
+      return;
+    }
+  } catch {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      chrome.tabs.onUpdated.removeListener?.(listener);
+      resolve();
+    };
+    const listener = (
+      updatedTabId: number,
+      changeInfo: { status?: string },
+    ) => {
+      if (updatedTabId === tabId && changeInfo.status === "complete") finish();
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    setTimeout(finish, 8000);
+  });
+}
+
+async function handleBrowserRead(
+  message: import("../shared/messages").BrowserReadMessage,
+): Promise<BrowserReadResponse> {
+  const target = browserOrigin(message.url);
+  if (!target) return unavailableBrowser("invalid_url");
+  if (!(await hasBrowserPermission(target.pattern, target.origin))) {
+    return { status: "permission_required", ...target };
+  }
+
+  const classification =
+    target.origin === SYLLABUS_SEARCH_ORIGIN ? "public" : "personal";
+  let tabId: number | undefined;
+  try {
+    const tab = await chrome.tabs.create({ url: message.url, active: false });
+    tabId = tab.id;
+    if (tabId === undefined) return unavailableBrowser("tab_create_failed");
+    await waitForTabReady(tabId);
+    if (typeof chrome.scripting?.executeScript !== "function") {
+      return unavailableBrowser("scripting_unavailable");
+    }
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["browser-reader.js"],
+    });
+    const projection = await chrome.tabs.sendMessage(tabId, {
+      type: "orbit-extract-browser-document",
+      tool_call_id: message.tool_call_id,
+      data_classification: classification,
+    });
+    if (
+      typeof projection !== "object" ||
+      projection === null ||
+      (projection as { schema_version?: unknown }).schema_version !== "v1" ||
+      (projection as { status?: unknown }).status !== "known" ||
+      typeof (projection as { text?: unknown }).text !== "string" ||
+      !Array.isArray((projection as { links?: unknown }).links)
+    ) {
+      return unavailableBrowser("invalid_projection");
+    }
+    return { status: "known", projection } as BrowserReadResponse;
+  } catch {
+    return unavailableBrowser("read_failed");
+  } finally {
+    if (tabId !== undefined) {
+      try {
+        await chrome.tabs.remove?.(tabId);
+      } catch {
+        // The temporary tab may already have been closed by the user.
+      }
+    }
+  }
+}
+
 function isTrustedExtensionPageSender(sender: chrome.runtime.MessageSender) {
+  if (sender.id !== undefined && sender.id !== chrome.runtime.id) {
+    return false;
+  }
   if (sender.tab === undefined) {
     return true;
   }
@@ -466,6 +599,36 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleDriveCommand(message).then(sendResponse);
+    return true;
+  }
+
+  if (isBrowserReadMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse(unavailableBrowser("untrusted_sender"));
+      return true;
+    }
+    void handleBrowserRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isSyllabusSearchMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({
+        schema_version: "v1",
+        status: "unavailable",
+        query: message.query,
+        year: message.year ?? null,
+        faculty: message.faculty ?? null,
+        results: [],
+        reason_code: "untrusted_sender",
+      });
+      return true;
+    }
+    void searchOfficialSyllabus(
+      message.query,
+      message.year ?? null,
+      message.faculty ?? null,
+    ).then(sendResponse);
     return true;
   }
 

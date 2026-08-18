@@ -574,6 +574,108 @@
         "title": "AgentToolResultRequest",
         "description": "Result for one registered external tool.\n\nThe envelope repeats the call name and version so a result cannot be\naccidentally delivered to a different deferred tool.  The validator also\nkeeps the two strict result schemas from being mixed across tools."
       },
+      "BrowserReadLink": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Label"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Url"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "label",
+          "url"
+        ],
+        "title": "BrowserReadLink",
+        "description": "A visible link projection; it has no DOM or form state."
+      },
+      "BrowserReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Url"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Title",
+            "default": ""
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 30000,
+            "title": "Text",
+            "default": ""
+          },
+          "links": {
+            "items": {
+              "$ref": "#/components/schemas/BrowserReadLink"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Links"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
+          "data_classification": {
+            "type": "string",
+            "enum": [
+              "public",
+              "personal"
+            ],
+            "title": "Data Classification",
+            "default": "public"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "url"
+        ],
+        "title": "BrowserReadResult",
+        "description": "Visible text from a user-authorized URL, bounded for model context."
+      },
       "CalendarAvailabilityInterval": {
         "properties": {
           "start": {
@@ -729,6 +831,7 @@
             "type": "string",
             "enum": [
               "scombz_page_summary",
+              "scombz_read",
               "google_calendar_availability",
               "syllabus_search",
               "browser_read_url"
@@ -886,6 +989,7 @@
             "type": "string",
             "enum": [
               "scombz_page_summary",
+              "scombz_read",
               "google_calendar_availability",
               "syllabus_search",
               "browser_read_url"
@@ -924,6 +1028,7 @@
             "type": "string",
             "enum": [
               "scombz_page_summary",
+              "scombz_read",
               "google_calendar_availability",
               "syllabus_search",
               "browser_read_url"
@@ -942,6 +1047,15 @@
               },
               {
                 "$ref": "#/components/schemas/ScombzPageSummaryResult"
+              },
+              {
+                "$ref": "#/components/schemas/ScombzReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/SyllabusSearchResult"
+              },
+              {
+                "$ref": "#/components/schemas/BrowserReadResult"
               }
             ],
             "title": "Result"
@@ -1003,7 +1117,8 @@
               "calendar",
               "scombz",
               "library",
-              "google_drive"
+              "google_drive",
+              "web"
             ],
             "title": "Source Type"
           },
@@ -1176,6 +1291,335 @@
         ],
         "title": "ScombzPageSummaryResult",
         "description": "A minimized summary of the currently displayed ScombZ page.\n\nThis deliberately has no title, URL, course name, item, link, HTML, or\nbrowser token field.  The tool name and version are carried by the\nsurrounding deferred-tool result envelope."
+      },
+      "ScombzReadAnnouncement": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "ScombzReadAnnouncement",
+        "description": "A visible announcement projection without its raw link or markup."
+      },
+      "ScombzReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "route": {
+            "type": "string",
+            "enum": [
+              "home",
+              "tasks",
+              "timetable",
+              "announcements",
+              "calendar",
+              "course",
+              "other"
+            ],
+            "title": "Route"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/ScombzReadTask"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Tasks"
+          },
+          "announcements": {
+            "items": {
+              "$ref": "#/components/schemas/ScombzReadAnnouncement"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Announcements"
+          },
+          "timetable": {
+            "items": {
+              "$ref": "#/components/schemas/ScombzReadScheduleItem"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Timetable"
+          },
+          "current_course": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Course"
+          },
+          "restricted_present": {
+            "type": "boolean",
+            "title": "Restricted Present",
+            "default": false
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "route"
+        ],
+        "title": "ScombzReadResult",
+        "description": "Structured SCombZ information returned after an explicit user run.\n\nRestricted grade/attendance values have no representation here.  A\nconnector can report their presence so the UI can ask for confirmation,\nbut it cannot forward those values through this result schema."
+      },
+      "ScombzReadScheduleItem": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Starts At"
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ends At"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "class",
+              "cancelled",
+              "makeup",
+              "unknown"
+            ],
+            "title": "Status",
+            "default": "unknown"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "title": "ScombzReadScheduleItem",
+        "description": "A visible timetable/absence notice projection."
+      },
+      "ScombzReadTask": {
+        "properties": {
+          "course": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Course"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "deadline": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Deadline"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "course",
+          "title",
+          "deadline"
+        ],
+        "title": "ScombzReadTask",
+        "description": "A visible SCombZ assignment projection without HTML or identifiers."
+      },
+      "SyllabusResult": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "course_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Course Code"
+          },
+          "faculty": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Faculty"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Url"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "url"
+        ],
+        "title": "SyllabusResult",
+        "description": "One result from the official public syllabus search."
+      },
+      "SyllabusSearchResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 2000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Year"
+          },
+          "faculty": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Faculty"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SyllabusResult"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Results"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "query"
+        ],
+        "title": "SyllabusSearchResult",
+        "description": "A bounded public result set from the official syllabus search."
       },
       "ValidationError": {
         "properties": {

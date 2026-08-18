@@ -4,13 +4,21 @@
   "description": "SIT ORBIT の ScombZ Side Panel 殻",
   "version": "0.1.0",
   "minimum_chrome_version": "116",
-  "permissions": ["sidePanel", "identity", "storage"],
+  "permissions": [
+    "sidePanel",
+    "identity",
+    "storage",
+    "scripting",
+    "unlimitedStorage"
+  ],
   "host_permissions": [
     "https://scombz.shibaura-it.ac.jp/*",
     "http://localhost:8000/*",
     "https://www.googleapis.com/*",
-    "https://oauth2.googleapis.com/*"
+    "https://oauth2.googleapis.com/*",
+    "https://syllabus.sic.shibaura-it.ac.jp/*"
   ],
+  "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": {
     "service_worker": "service-worker.js"
   },
