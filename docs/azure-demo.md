@@ -119,6 +119,44 @@ az containerapp update \
 
 設定不足時は`RuntimeError`となり、fixtureやOpenAIへ暗黙に切り替わりません。
 
+## モデル選定の暫定方針
+
+モデルの役割は、実測前の暫定順位として次のように置く。
+
+| 役割 | 候補 | 用途 |
+| --- | --- | --- |
+| Primary | Azure OpenAI GPT-5.6 Terra | 通常デモ |
+| Quality demo | Azure OpenAI GPT-5.6 Sol | 品質を優先するデモ |
+| Challenger | Azure OpenAI GPT-5.6 Luna | 低コスト候補 |
+
+Azure側のdeployment名は固定せず、`evals.run_model_selection`へrole mappingとして渡す。
+この比較Runnerは通常のCIや`run_eval`とは別で、16件の合成・公開ケースを順番に実行する。
+
+```bash
+ORBIT_OBSERVABILITY=off \
+AZURE_OPENAI_ENDPOINT="https://<resource>.openai.azure.com" \
+AZURE_OPENAI_API_KEY="<secret>" \
+PYTHONPATH=services/api uv run python -m evals.run_model_selection \
+  --role terra=<terra-deployment> \
+  --role luna=<luna-deployment> \
+  --role sol=<sol-deployment>
+```
+
+暫定のAzure Standard Global単価は、入力／出力100万tokenあたりTerraが$2／$12、Lunaが$0.20／$1.20、Solが$5／$30である。
+Global deploymentでは複数リージョンで処理され得るため、実データ利用前にはdeployment type、リージョン、データ処理方針を確認する。
+実測後も、hard failureが0件であることを必要条件に、提案本文の人手確認、品質、コストを比較してPrimaryを見直す。case-defined trapはすべての根拠外事実を自動検出するものではないため、hard failure 0だけではPrimaryを確定しない。
+
+Gemini 3.7 Flash Paidは将来のsynthetic/public-only challengerとする。
+このbranchではGoogle Adapterや依存を追加せず、実Calendar派生値をGeminiへ送信しない。
+Geminiの単価は2026年12月31日までは入力$0.75／出力$3.75、2027年1月1日から入力$1.50／出力$7.50（100万tokenあたり）と記録するが、実行時点の公式料金を再確認する。
+
+参考：
+[Microsoft FoundryのGPT-5.6発表](https://azure.microsoft.com/en-us/blog/gpt-5-6-now-available-in-microsoft-foundry/)、
+[Azureのデータ処理方針](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy)、
+[Google公式リリースノート](https://ai.google.dev/gemini-api/docs/changelog)、
+[Gemini API料金表](https://ai.google.dev/gemini-api/docs/pricing)、
+[PydanticAI Googleモデル](https://pydantic.dev/docs/ai/models/google/)。
+
 ## 費用と停止の確認
 
 デモ開始前後に、Azure PortalのEducation／Cost Managementで次を確認します。

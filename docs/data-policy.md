@@ -79,6 +79,20 @@ Google Driveの現行Connector境界は、利用者が明示的に選択した�
 token、認証コード、ファイル内容、Drive一覧は保存・runtime message・Side Panel・Agent APIへ渡さない。
 ライブPicker/OAuth Providerは未実装であり、既定状態は`unavailable`とする。
 
+## Model selection evaluation
+
+`evals.run_model_selection`は通常の開発・CIから分離した、明示的なAzure実Provider比較である。
+実行にはAzure API key、endpoint、deployment mapping、`ORBIT_OBSERVABILITY=off`が必要であり、条件不足時は停止する。
+入力は16件の合成・公開ケースだけとし、実学生データ、Google Calendarの派生値、私的Drive資料、OAuth tokenを送信しない。
+このRunnerではW&Bを有効にできない。
+
+初期のモデル順位は測定前の暫定判断であり、Terraを通常デモのPrimary、Solを品質重視デモ、Lunaを低コストchallenger候補とする。
+Azure Standard Globalの暫定単価は入力／出力100万tokenあたりTerra $2／$12、Luna $0.20／$1.20、Sol $5／$30である。
+Global deploymentでは処理が複数リージョンに分散され得るため、実データを扱う前にdeployment typeとデータ処理条件を確認する。
+
+Gemini 3.7 Flash Paidは将来の比較候補だが、このbranchではAdapter、依存、実Calendar送信経路を追加しない。
+評価する場合もsynthetic/public dataだけを使い、公式料金（2026年12月31日まで入力$0.75／出力$3.75、2027年1月1日から入力$1.50／出力$7.50、100万tokenあたり）を実行時点で再確認する。
+
 ## Branch 7 resumable Agent run
 
 `POST /v1/agent/runs`は、Side Panelが明示的に提案ボタンを押した場合だけ開始する。

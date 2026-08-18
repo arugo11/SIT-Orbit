@@ -25,6 +25,7 @@ from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.usage import RunUsage
 
 
 def make_event() -> OrbitEvent:
@@ -112,6 +113,30 @@ async def test_test_model_structured_output_restores_server_owned_evidence() -> 
     assert proposal.evidence[0] is evidence
     assert proposal.requires_confirmation is True
     assert proposal.external_action == "checklist_update"
+
+
+@pytest.mark.asyncio
+async def test_optional_usage_callback_receives_run_usage() -> None:
+    usages: list[RunUsage] = []
+    backend = OpenAIAgent(
+        api_key="synthetic-test-key",
+        model="demo-model",
+        usage_callback=usages.append,
+    )
+    evidence = make_evidence()
+    model = TestModel(custom_output_args=action_args(evidence.evidence_id))
+    test_agent = Agent(
+        model,
+        output_type=[ActionDraft, DeferredToolRequests],
+        instructions="test",
+    )
+    backend._agent = lambda *, calendar_connected: test_agent  # type: ignore[method-assign]
+
+    await backend.propose_action(make_event(), [evidence])
+
+    assert len(usages) == 1
+    assert isinstance(usages[0], RunUsage)
+    assert usages[0].requests == 1
 
 
 @pytest.mark.asyncio
