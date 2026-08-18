@@ -7,6 +7,7 @@ import {
   DEFAULT_AGENT_API_BASE,
   type OrbitEvent,
 } from "../api/client";
+import { ChatPanel } from "../chat/ChatPanel";
 import {
   type CalendarConnector,
   type CalendarConnectorResult,
@@ -1271,86 +1272,99 @@ export function App({
           />
         </aside>
         <section className="orbit-conversation" aria-label="Agentとの対話">
-          <section className="fixture-card" aria-labelledby="fixture-title">
-            <div className="section-heading">
-              <h2 id="fixture-title">B1 大宮のデモfixture</h2>
-              <span className="fixture-label">合成データ</span>
-            </div>
-            <p className="fixture-disclaimer">
-              これはローカルの静的表示です。Agent
-              APIや大学の公式記録には接続していません。
-            </p>
-            <dl className="fixture-list">
-              <div>
-                <dt>場所</dt>
-                <dd>{LOCAL_FIXTURE.campus}</dd>
+          <ChatPanel
+            pageContext={pageContext}
+            calendarState={calendarState}
+            calendarConnector={calendarConnector}
+            calendarRequest={(command) => calendarRequest(command)}
+            disabled={interactionLocked}
+          />
+          <details className="developer-demo-menu">
+            <summary>開発・デモメニュー</summary>
+            <section className="fixture-card" aria-labelledby="fixture-title">
+              <div className="section-heading">
+                <h2 id="fixture-title">B1 大宮のデモfixture</h2>
+                <span className="fixture-label">合成データ</span>
               </div>
-              <div>
-                <dt>イベント</dt>
-                <dd>{LOCAL_FIXTURE.event}</dd>
-              </div>
-              <div>
-                <dt>根拠の例</dt>
-                <dd>{LOCAL_FIXTURE.evidence}</dd>
-              </div>
-              <div>
-                <dt>利用可能時間</dt>
-                <dd>{LOCAL_FIXTURE.available}</dd>
-              </div>
-            </dl>
-            <div className="agent-controls">
-              <button
-                type="button"
-                className="primary-button"
-                onClick={() => void requestProposal()}
-                disabled={
-                  interactionLocked ||
-                  loopState.status === "proposing" ||
-                  loopState.status === "tool-running" ||
-                  loopState.status === "resuming" ||
-                  loopState.status === "verifying"
-                }
-              >
-                {loopState.status === "proposing"
-                  ? "提案を取得中…"
-                  : loopState.status === "tool-running"
-                    ? `${toolDisplayName(loopState.pendingToolName)}を処理中…`
-                    : loopState.status === "resuming"
-                      ? "提案を再開中…"
-                      : loopState.proposal
-                        ? "B1 大宮の提案を再取得"
-                        : "B1 大宮の提案を作成"}
-              </button>
-              <p className="action-note">
-                {projectScombzPageSummary(pageContext) !== null ||
-                (calendarState.status === "connected" && calendarState.snapshot)
-                  ? "ボタンを押したときだけ、合成データと必要な最小化済みのページ概要・空き時間をローカル Agent API に送ります。予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。"
-                  : "ボタンを押したときだけ、合成データをローカル Agent API に送ります。"}
+              <p className="fixture-disclaimer">
+                これはローカルの静的表示です。Agent
+                APIや大学の公式記録には接続していません。
               </p>
-              {loopState.status === "tool-running" ? (
-                <p className="state-message" data-agent-status="tool-running">
-                  {toolDisplayName(loopState.pendingToolName)}を準備しています。
-                  {loopState.pendingToolName === "google_calendar_availability"
-                    ? "認証画面は自動では開きません。"
-                    : "表示中のページから件数だけをまとめています。"}
-                </p>
-              ) : null}
-              {loopState.status === "resuming" ? (
-                <p className="state-message" data-agent-status="resuming">
-                  {toolDisplayName(loopState.pendingToolName)}
-                  の導出結果をAgentへ渡して提案を再開しています。
-                </p>
-              ) : null}
-              {loopState.status === "reauth_required" ? (
-                <p
-                  className="state-message"
-                  data-agent-status="reauth-required"
+              <dl className="fixture-list">
+                <div>
+                  <dt>場所</dt>
+                  <dd>{LOCAL_FIXTURE.campus}</dd>
+                </div>
+                <div>
+                  <dt>イベント</dt>
+                  <dd>{LOCAL_FIXTURE.event}</dd>
+                </div>
+                <div>
+                  <dt>根拠の例</dt>
+                  <dd>{LOCAL_FIXTURE.evidence}</dd>
+                </div>
+                <div>
+                  <dt>利用可能時間</dt>
+                  <dd>{LOCAL_FIXTURE.available}</dd>
+                </div>
+              </dl>
+              <div className="agent-controls">
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void requestProposal()}
+                  disabled={
+                    interactionLocked ||
+                    loopState.status === "proposing" ||
+                    loopState.status === "tool-running" ||
+                    loopState.status === "resuming" ||
+                    loopState.status === "verifying"
+                  }
                 >
-                  Calendarの再認証が必要です。明示的に再認証してから、提案ボタンを押してください。
+                  {loopState.status === "proposing"
+                    ? "提案を取得中…"
+                    : loopState.status === "tool-running"
+                      ? `${toolDisplayName(loopState.pendingToolName)}を処理中…`
+                      : loopState.status === "resuming"
+                        ? "提案を再開中…"
+                        : loopState.proposal
+                          ? "B1 大宮の提案を再取得"
+                          : "B1 大宮の提案を作成"}
+                </button>
+                <p className="action-note">
+                  {projectScombzPageSummary(pageContext) !== null ||
+                  (calendarState.status === "connected" &&
+                    calendarState.snapshot)
+                    ? "ボタンを押したときだけ、合成データと必要な最小化済みのページ概要・空き時間をローカル Agent API に送ります。予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。"
+                    : "ボタンを押したときだけ、合成データをローカル Agent API に送ります。"}
                 </p>
-              ) : null}
-            </div>
-          </section>
+                {loopState.status === "tool-running" ? (
+                  <p className="state-message" data-agent-status="tool-running">
+                    {toolDisplayName(loopState.pendingToolName)}
+                    を準備しています。
+                    {loopState.pendingToolName ===
+                    "google_calendar_availability"
+                      ? "認証画面は自動では開きません。"
+                      : "表示中のページから件数だけをまとめています。"}
+                  </p>
+                ) : null}
+                {loopState.status === "resuming" ? (
+                  <p className="state-message" data-agent-status="resuming">
+                    {toolDisplayName(loopState.pendingToolName)}
+                    の導出結果をAgentへ渡して提案を再開しています。
+                  </p>
+                ) : null}
+                {loopState.status === "reauth_required" ? (
+                  <p
+                    className="state-message"
+                    data-agent-status="reauth-required"
+                  >
+                    Calendarの再認証が必要です。明示的に再認証してから、提案ボタンを押してください。
+                  </p>
+                ) : null}
+              </div>
+            </section>
+          </details>
 
           {loopState.error ? (
             <p className="error-message" role="alert">

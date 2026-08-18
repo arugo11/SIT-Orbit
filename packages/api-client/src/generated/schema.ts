@@ -55,6 +55,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/chat/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Chat Run */
+        post: operations["start_chat_run_v1_chat_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/chat/runs/{run_id}/tool-results": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Submit Chat Tool Result */
+        post: operations["submit_chat_tool_result_v1_chat_runs__run_id__tool_results_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/actions/propose": {
         parameters: {
             query?: never;
@@ -242,6 +276,107 @@ export interface components {
             free_intervals?: components["schemas"]["CalendarAvailabilityInterval"][];
             /** Reason Code */
             reason_code?: string | null;
+        };
+        /** ChatAssistantMessage */
+        ChatAssistantMessage: {
+            /** Message Id */
+            message_id: string;
+            /** Content Markdown */
+            content_markdown: string;
+            /** Evidence */
+            evidence?: components["schemas"]["EvidenceLink"][];
+        };
+        /** ChatClientTool */
+        ChatClientTool: {
+            /**
+             * Name
+             * @enum {string}
+             */
+            name: "scombz_page_summary" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            /**
+             * Version
+             * @constant
+             */
+            version: 1;
+        };
+        /** ChatHistoryMessage */
+        ChatHistoryMessage: {
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Content */
+            content: string;
+        };
+        /** ChatRunCompleted */
+        ChatRunCompleted: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "completed";
+            message: components["schemas"]["ChatAssistantMessage"];
+            proposal?: components["schemas"]["ActionProposal"] | null;
+        };
+        /** ChatRunRequest */
+        ChatRunRequest: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Message */
+            message: string;
+            /** History */
+            history?: components["schemas"]["ChatHistoryMessage"][];
+            /** Client Tools */
+            client_tools?: components["schemas"]["ChatClientTool"][];
+        };
+        /** ChatRunToolRequired */
+        ChatRunToolRequired: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "tool_required";
+            /** Run Id */
+            run_id: string;
+            /** Calls */
+            calls: components["schemas"]["ChatToolCall"][];
+        };
+        /** ChatToolCall */
+        ChatToolCall: {
+            /** Tool Call Id */
+            tool_call_id: string;
+            /**
+             * Name
+             * @enum {string}
+             */
+            name: "scombz_page_summary" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            /**
+             * Version
+             * @constant
+             */
+            version: 1;
+            /** Arguments */
+            arguments?: {
+                [key: string]: unknown;
+            };
+        };
+        /** ChatToolResultRequest */
+        ChatToolResultRequest: {
+            /** Tool Call Id */
+            tool_call_id: string;
+            /**
+             * Name
+             * @enum {string}
+             */
+            name: "scombz_page_summary" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            /**
+             * Version
+             * @constant
+             */
+            version: 1;
+            /** Result */
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"];
         };
         /**
          * ClientTool
@@ -469,6 +604,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentRunCompleted"] | components["schemas"]["AgentRunToolRequired"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_chat_run_v1_chat_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatRunCompleted"] | components["schemas"]["ChatRunToolRequired"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_chat_tool_result_v1_chat_runs__run_id__tool_results_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatToolResultRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatRunCompleted"] | components["schemas"]["ChatRunToolRequired"];
                 };
             };
             /** @description Validation Error */

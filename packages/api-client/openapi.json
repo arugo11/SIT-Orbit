@@ -145,6 +145,123 @@
         }
       }
     },
+    "/v1/chat/runs": {
+      "post": {
+        "summary": "Start Chat Run",
+        "operationId": "start_chat_run_v1_chat_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatRunCompleted"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatRunToolRequired"
+                    }
+                  ],
+                  "title": "Response Start Chat Run V1 Chat Runs Post",
+                  "discriminator": {
+                    "propertyName": "status",
+                    "mapping": {
+                      "completed": "#/components/schemas/ChatRunCompleted",
+                      "tool_required": "#/components/schemas/ChatRunToolRequired"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/chat/runs/{run_id}/tool-results": {
+      "post": {
+        "summary": "Submit Chat Tool Result",
+        "operationId": "submit_chat_tool_result_v1_chat_runs__run_id__tool_results_post",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatToolResultRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatRunCompleted"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatRunToolRequired"
+                    }
+                  ],
+                  "discriminator": {
+                    "propertyName": "status",
+                    "mapping": {
+                      "completed": "#/components/schemas/ChatRunCompleted",
+                      "tool_required": "#/components/schemas/ChatRunToolRequired"
+                    }
+                  },
+                  "title": "Response Submit Chat Tool Result V1 Chat Runs  Run Id  Tool Results Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/actions/propose": {
       "post": {
         "summary": "Propose Action",
@@ -574,6 +691,271 @@
         ],
         "title": "CalendarAvailabilityResult",
         "description": "Minimal v1 result accepted from the extension's Calendar connector.\n\nEvent IDs, titles, attendees, locations, descriptions, and raw Google\nresponses deliberately have no representation in this model."
+      },
+      "ChatAssistantMessage": {
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Message Id"
+          },
+          "content_markdown": {
+            "type": "string",
+            "maxLength": 12000,
+            "minLength": 1,
+            "title": "Content Markdown"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceLink"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Evidence"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "message_id",
+          "content_markdown"
+        ],
+        "title": "ChatAssistantMessage"
+      },
+      "ChatClientTool": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "scombz_page_summary",
+              "google_calendar_availability",
+              "syllabus_search",
+              "browser_read_url"
+            ],
+            "title": "Name"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name",
+          "version"
+        ],
+        "title": "ChatClientTool"
+      },
+      "ChatHistoryMessage": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Content"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "title": "ChatHistoryMessage"
+      },
+      "ChatRunCompleted": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "completed",
+            "title": "Status"
+          },
+          "message": {
+            "$ref": "#/components/schemas/ChatAssistantMessage"
+          },
+          "proposal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActionProposal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "message"
+        ],
+        "title": "ChatRunCompleted"
+      },
+      "ChatRunRequest": {
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Conversation Id"
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Message"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/ChatHistoryMessage"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "History"
+          },
+          "client_tools": {
+            "items": {
+              "$ref": "#/components/schemas/ChatClientTool"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Client Tools"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "message"
+        ],
+        "title": "ChatRunRequest"
+      },
+      "ChatRunToolRequired": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "tool_required",
+            "title": "Status"
+          },
+          "run_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Run Id"
+          },
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/ChatToolCall"
+            },
+            "type": "array",
+            "maxItems": 1,
+            "minItems": 1,
+            "title": "Calls"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "run_id",
+          "calls"
+        ],
+        "title": "ChatRunToolRequired"
+      },
+      "ChatToolCall": {
+        "properties": {
+          "tool_call_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tool Call Id"
+          },
+          "name": {
+            "type": "string",
+            "enum": [
+              "scombz_page_summary",
+              "google_calendar_availability",
+              "syllabus_search",
+              "browser_read_url"
+            ],
+            "title": "Name"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Arguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tool_call_id",
+          "name",
+          "version"
+        ],
+        "title": "ChatToolCall"
+      },
+      "ChatToolResultRequest": {
+        "properties": {
+          "tool_call_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tool Call Id"
+          },
+          "name": {
+            "type": "string",
+            "enum": [
+              "scombz_page_summary",
+              "google_calendar_availability",
+              "syllabus_search",
+              "browser_read_url"
+            ],
+            "title": "Name"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CalendarAvailabilityResult"
+              },
+              {
+                "$ref": "#/components/schemas/ScombzPageSummaryResult"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "tool_call_id",
+          "name",
+          "version",
+          "result"
+        ],
+        "title": "ChatToolResultRequest"
       },
       "ClientTool": {
         "properties": {

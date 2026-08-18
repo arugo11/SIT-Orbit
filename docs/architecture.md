@@ -16,7 +16,7 @@ SIT ORBITは、Chromeの標準Side Panelを入口にし、Agentの実行は既�
 
 現在の実装では、独自のマルチエージェント基盤を追加せず、`AgentBackend`と決定的なFixtureAgentを使う。
 
-複数のツール呼び出し、構造化出力、会話状態が実際に必要になった時点で、PydanticAIを`AgentBackend`の内側へ導入する。
+Chatの複数ターン、構造化出力、線形なDeferred Tool再開が要件になったため、PydanticAIを`AgentBackend`の内側へ導入した。PydanticAIのmessage履歴は公開APIへ出さず、Tool待ちの短命runだけをAPIプロセス内に保持する。
 
 Azureで長期セッションや管理されたAgentランタイムが必要になった場合は、Microsoft Agent FrameworkとMicrosoft Foundryを評価する。
 
@@ -165,14 +165,18 @@ Azureモデルを追加する場合も、アプリケーションへモデル名
 
 APIキーやモデルが設定されていない場合に、別Backendへ暗黙に切り替えない。
 
-### Branch 7のAgent Framework
+### PydanticAIとChatのAgent境界
 
 PydanticAIは、Python、FastAPI、Pydantic、型付き出力、複数モデル対応の条件に合うため、最初に評価するAgent Frameworkである。[PydanticAI](https://github.com/pydantic/pydantic-ai)
 
-Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、OpenAI Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`だけとし、`action_id`とEvidenceLinkはサーバーが正規化する。
+Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、OpenAI Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`またはChat用`ChatDraft`だけとし、`action_id`、message ID、EvidenceLinkはサーバーが正規化する。
 `OpenAIResponsesModel`には`OpenAIProvider`または`AzureProvider`を渡し、`openai_store=False`を固定する。
 
-外部Toolは引数なしの`scombz_page_summary` v1と`google_calendar_availability` v1である。実際に解析済みのScombZページ、または接続中のCalendarだけをClientが明示広告したrunで公開する。1つのrunでは広告済みの各Toolを高々1回、最大2段階で線形にDeferred Toolとして実行し、Tool結果を受けた後に同じメッセージ履歴を再開する。ScombZの結果はroute、3つの件数、現在コースの有無だけであり、Driveは登録しない。
+外部Toolは引数なしの`scombz_page_summary` v1と`google_calendar_availability` v1である。実際に解析済みのSCombZページ、または接続中のCalendarだけをClientが明示広告したrunで公開する。Action runは従来どおり一回ずつの互換経路を維持し、Chat runは同一Toolの再利用を許し、1ターン最大8回の線形Deferred Toolとして実行する。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。SCombZの結果はroute、3つの件数、現在コースの有無だけであり、DriveはこのChat branchのToolへ登録しない。
+
+Chat APIは`POST /v1/chat/runs`と`POST /v1/chat/runs/{run_id}/tool-results`である。入力履歴は直近20件・64,000文字まで、サーバー保存はTool待ちの600秒だけに限定する。完了メッセージはMarkdownとサーバー解決済みEvidenceを返し、ActionProposalが含まれる場合も従来どおり明示承認を要求する。
+
+Side Panelと全画面ワークスペースは共通のChat UIを使い、会話履歴は拡張機能originのIndexedDBへ保存する。保存対象は発言、回答、引用メタデータ、提案の承認状態だけであり、raw HTML、Tool生レスポンス、OAuth token、Cookie、PydanticAI message historyは保存しない。IndexedDBの履歴はChrome SyncやFastAPIへ送らず、利用者が会話単位または全履歴を削除できる。
 
 run storeはAPIプロセスのメモリ内だけに置き、TTLは600秒、単一worker affinity、固定expiry、`pending/in_flight`のatomic claimを使う。provider/model await中にlockを保持せず、claim後の失敗はterminal tombstoneとする。未知・期限切れ・別worker・再利用済みrunは、プロセス再起動後も含めて410とする。
 
@@ -188,7 +192,7 @@ LangGraphは、承認待ち、チェックポイント、停止後の再開が�
 
 初期Agentは、任意のWebサイトを巡回するBrowser Agentにしない。
 
-最初の閉ループは、B1大宮の合成シナリオに限定する。
+最初の閉ループは、B1大宮の合成シナリオと、明示的に送信したChatの一ターンに限定する。
 
 ```text
 campus_entered または課題ページを検出
@@ -204,6 +208,20 @@ Side Panelへ提案、理由、根拠を表示
 利用者が承認、変更、却下
     ↓
 完了結果をaction_completedイベントとして記録
+```
+
+Chatでは次の線形ループを追加する。
+
+```text
+利用者がChatを送信
+    ↓
+Agentが必要なToolだけを要求
+    ↓
+Side Panelが許可済みの最小データを取得
+    ↓
+Tool結果を同じrunへ返してAgentを再開
+    ↓
+Markdown回答、引用、必要ならActionProposalを表示
 ```
 
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。

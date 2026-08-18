@@ -6,7 +6,7 @@ fields are rejected and the response union is discriminated by ``status``.
 """
 
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -186,6 +186,97 @@ class AgentToolCall(StrictApiModel):
     version: Literal[1]
 
 
+# Chat is intentionally a separate envelope from the original action-run API.
+# The action API keeps its one-shot semantics for compatibility, while Chat
+# can carry a short-lived, linear tool chain without exposing PydanticAI's
+# internal message objects to the browser.
+ChatRole = Literal["user", "assistant"]
+ChatToolName = Literal[
+    "scombz_page_summary",
+    "google_calendar_availability",
+    "syllabus_search",
+    "browser_read_url",
+]
+
+
+class ChatHistoryMessage(StrictApiModel):
+    role: ChatRole
+    content: StrictStr = Field(min_length=1, max_length=8000)
+
+
+class ChatClientTool(StrictApiModel):
+    name: ChatToolName
+    version: Literal[1]
+
+
+class ChatRunRequest(StrictApiModel):
+    conversation_id: StrictStr = Field(min_length=1, max_length=200)
+    message: StrictStr = Field(min_length=1, max_length=8000)
+    history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
+    client_tools: list[ChatClientTool] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def history_is_bounded(self) -> "ChatRunRequest":
+        if sum(len(item.content) for item in self.history) > 64_000:
+            raise ValueError("Chat history must not exceed 64000 characters.")
+        names = [tool.name for tool in self.client_tools]
+        if len(set(names)) != len(names):
+            raise ValueError("Chat client tool names must be unique per run.")
+        return self
+
+
+class ChatToolCall(StrictApiModel):
+    tool_call_id: StrictStr = Field(min_length=1, max_length=200)
+    name: ChatToolName
+    version: Literal[1]
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class ChatToolResultRequest(StrictApiModel):
+    tool_call_id: StrictStr = Field(min_length=1, max_length=200)
+    name: ChatToolName
+    version: Literal[1]
+    result: CalendarAvailabilityResult | ScombzPageSummaryResult
+
+    @model_validator(mode="after")
+    def result_matches_tool(self) -> "ChatToolResultRequest":
+        if self.name == "google_calendar_availability" and not isinstance(
+            self.result, CalendarAvailabilityResult
+        ):
+            raise ValueError("Calendar tool results must use CalendarAvailabilityResult.")
+        if self.name == "scombz_page_summary" and not isinstance(
+            self.result, ScombzPageSummaryResult
+        ):
+            raise ValueError("SCombZ tool results must use ScombzPageSummaryResult.")
+        if self.name in {"syllabus_search", "browser_read_url"}:
+            raise ValueError("This chat tool is not enabled in the current API build.")
+        return self
+
+
+class ChatAssistantMessage(StrictApiModel):
+    message_id: StrictStr = Field(min_length=1, max_length=200)
+    content_markdown: StrictStr = Field(min_length=1, max_length=12000)
+    evidence: list[EvidenceLink] = Field(default_factory=list, max_length=100)
+
+
+class ChatRunCompleted(StrictApiModel):
+    status: Literal["completed"]
+    message: ChatAssistantMessage
+    proposal: ActionProposal | None = None
+
+
+class ChatRunToolRequired(StrictApiModel):
+    status: Literal["tool_required"]
+    run_id: StrictStr = Field(min_length=1, max_length=200)
+    calls: list[ChatToolCall] = Field(min_length=1, max_length=1)
+
+
+ChatRunResponse = Annotated[
+    ChatRunCompleted | ChatRunToolRequired,
+    Field(discriminator="status"),
+]
+
+
 AgentRunResponse = Annotated[
     AgentRunCompleted | AgentRunToolRequired,
     Field(discriminator="status"),
@@ -199,6 +290,16 @@ __all__ = [
     "AgentRunToolRequired",
     "AgentToolCall",
     "AgentToolResultRequest",
+    "ChatAssistantMessage",
+    "ChatClientTool",
+    "ChatHistoryMessage",
+    "ChatRunCompleted",
+    "ChatRunRequest",
+    "ChatRunResponse",
+    "ChatRunToolRequired",
+    "ChatToolCall",
+    "ChatToolName",
+    "ChatToolResultRequest",
     "CalendarAvailabilityInterval",
     "CalendarAvailabilityResult",
     "ClientTool",
