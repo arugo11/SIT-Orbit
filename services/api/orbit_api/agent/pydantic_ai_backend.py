@@ -1,9 +1,15 @@
-"""PydanticAI-backed proposal generation and deferred Calendar tool boundary."""
+"""PydanticAI-backed proposal generation and deferred client-tool boundary.
+
+The backend owns the model checkpoint, while the client owns the two small
+read-only connectors. A deferred checkpoint contains the PydanticAI message
+history (including minimized tool results), but never a connector's raw
+provider response, OAuth token, or token usage metadata.
+"""
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,6 +24,7 @@ from orbit_api.models import (
     CalendarAvailabilityResult,
     EvidenceLink,
     OrbitEvent,
+    ScombzPageSummaryResult,
 )
 
 from .base import AgentBackend
@@ -25,8 +32,14 @@ from .base import AgentBackend
 PROMPT_VERSION = "pydantic-ai-next-action-v1"
 CALENDAR_TOOL_NAME = "google_calendar_availability"
 CALENDAR_TOOL_VERSION = "v1"
+SCOMBZ_TOOL_NAME = "scombz_page_summary"
+SCOMBZ_TOOL_VERSION = "v1"
 CALENDAR_AVAILABILITY_LOCATOR_PREFIX = "orbit-calendar://availability/"
+SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX = "orbit-scombz://page-summary/"
 SAFE_CLASSIFICATIONS = {"synthetic", "public"}
+SUPPORTED_TOOL_NAMES = frozenset({CALENDAR_TOOL_NAME, SCOMBZ_TOOL_NAME})
+ToolName = Literal["scombz_page_summary", "google_calendar_availability"]
+ToolResult = CalendarAvailabilityResult | ScombzPageSummaryResult
 
 
 class ActionDraft(BaseModel):
@@ -50,10 +63,16 @@ class ActionDraft(BaseModel):
 
 @dataclass(frozen=True)
 class DeferredActionRun:
+    """The latest resumable PydanticAI checkpoint for one pending call."""
+
+    # This is the checkpoint consumed by Agent.run on resume. PydanticAI's
+    # all_messages contains the minimized result, never the raw provider
+    # response/token; this list is therefore safe to retain in process memory.
     messages: list[ModelMessage]
     tool_call_id: str
     conversation_id: str
-
+    tool_name: ToolName = CALENDAR_TOOL_NAME
+    tool_version: Literal[1] = 1
 
 @dataclass(frozen=True)
 class AgentExecution:
@@ -61,13 +80,26 @@ class AgentExecution:
     deferred: DeferredActionRun | None = None
 
 
+def _is_opaque_locator(locator: str, prefix: str) -> bool:
+    opaque = locator.removeprefix(prefix)
+    return locator.startswith(prefix) and len(opaque) >= 16 and "\x00" not in opaque
+
+
 def is_derived_calendar_evidence(evidence: EvidenceLink) -> bool:
     return (
         evidence.source_type == "calendar"
         and evidence.data_classification == "personal"
-        and evidence.locator.startswith(CALENDAR_AVAILABILITY_LOCATOR_PREFIX)
-        and len(evidence.locator.removeprefix(CALENDAR_AVAILABILITY_LOCATOR_PREFIX)) >= 16
+        and _is_opaque_locator(evidence.locator, CALENDAR_AVAILABILITY_LOCATOR_PREFIX)
         and evidence.evidence_id.startswith("calendar-availability-v1-")
+    )
+
+
+def is_derived_scombz_evidence(evidence: EvidenceLink) -> bool:
+    return (
+        evidence.source_type == "scombz"
+        and evidence.data_classification == "personal"
+        and _is_opaque_locator(evidence.locator, SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX)
+        and evidence.evidence_id.startswith("scombz-page-summary-v1-")
     )
 
 
@@ -76,6 +108,7 @@ def validate_agent_data(
     context: list[EvidenceLink],
     *,
     allow_calendar_availability: bool = False,
+    allow_scombz_page_summary: bool = False,
 ) -> None:
     if event.data_classification not in SAFE_CLASSIFICATIONS:
         raise ValueError("The agent backend accepts only synthetic or public event data.")
@@ -84,10 +117,24 @@ def validate_agent_data(
             continue
         if allow_calendar_availability and is_derived_calendar_evidence(evidence):
             continue
+        if allow_scombz_page_summary and is_derived_scombz_evidence(evidence):
+            continue
         raise ValueError(
             "The agent backend rejects personal or restricted evidence unless it is "
-            "derived calendar availability."
+            "derived Calendar availability or a minimized ScombZ page summary."
         )
+
+
+async def google_calendar_availability() -> CalendarAvailabilityResult:
+    """Deferred, no-argument Calendar connector boundary."""
+
+    raise CallDeferred()
+
+
+async def scombz_page_summary() -> ScombzPageSummaryResult:
+    """Deferred, no-argument ScombZ page-summary connector boundary."""
+
+    raise CallDeferred()
 
 
 class PydanticAIAgentBackend(AgentBackend):
@@ -120,17 +167,22 @@ class PydanticAIAgentBackend(AgentBackend):
 
         return self.model.client
 
-    def _agent(self, *, calendar_connected: bool) -> Agent[Any, Any]:
-        tools: list[Any] = []
-        if calendar_connected:
+    def _agent(
+        self,
+        *,
+        advertised_tools: Iterable[str],
+    ) -> Agent[Any, Any]:
+        advertised = set(advertised_tools)
 
-            async def google_calendar_availability() -> CalendarAvailabilityResult:
-                """Return derived free-time information from the connected Calendar."""
-
-                raise CallDeferred()
-
-            tools.append(google_calendar_availability)
-
+        tool_by_name: Mapping[str, Any] = {
+            SCOMBZ_TOOL_NAME: scombz_page_summary,
+            CALENDAR_TOOL_NAME: google_calendar_availability,
+        }
+        tools = [
+            tool_by_name[name]
+            for name in (SCOMBZ_TOOL_NAME, CALENDAR_TOOL_NAME)
+            if name in advertised
+        ]
         model_settings: OpenAIResponsesModelSettings = {"openai_store": False}
         return Agent(
             self.model,
@@ -139,7 +191,8 @@ class PydanticAIAgentBackend(AgentBackend):
                 "You are the SIT ORBIT next-action planner. Propose exactly one small "
                 "action using only the supplied event and evidence. The external action "
                 "must require confirmation. Write student-facing fields in concise Japanese. "
-                "If the calendar tool is available, use it only when availability is needed."
+                "Use a client tool only when its minimized context is needed, and request "
+                "at most one tool at a time."
             ),
             tools=tools,
             model_settings=model_settings,
@@ -194,7 +247,20 @@ class PydanticAIAgentBackend(AgentBackend):
         )
 
     @staticmethod
-    def _execution(result: Any) -> AgentExecution:
+    def _execution(
+        result: Any,
+        *,
+        advertised_tools: set[str] | None = None,
+        used_tool_names: set[str] | frozenset[str] = frozenset(),
+        seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
+        expected_conversation_id: str | None = None,
+    ) -> AgentExecution:
+        if (
+            expected_conversation_id is not None
+            and result.conversation_id != expected_conversation_id
+        ):
+            raise RuntimeError("The agent changed the conversation ID while resuming.")
+
         output = result.output
         if isinstance(output, ActionDraft):
             return AgentExecution(draft=output)
@@ -202,14 +268,25 @@ class PydanticAIAgentBackend(AgentBackend):
             raise RuntimeError("The agent returned an unsupported structured output.")
         if output.approvals or len(output.calls) != 1:
             raise RuntimeError("Exactly one deferred external tool call is allowed per run.")
+
         call = output.calls[0]
-        if call.tool_name != CALENDAR_TOOL_NAME or call.args not in ({}, "{}"):
-            raise RuntimeError("The agent requested an unsupported calendar tool call.")
+        advertised = SUPPORTED_TOOL_NAMES if advertised_tools is None else advertised_tools
+        if call.tool_name not in SUPPORTED_TOOL_NAMES or call.tool_name not in advertised:
+            raise RuntimeError("The agent requested a tool that was not advertised by the client.")
+        if call.tool_name in used_tool_names:
+            raise RuntimeError("The agent requested a client tool that was already used.")
+        if call.tool_call_id in seen_tool_call_ids or not call.tool_call_id:
+            raise RuntimeError("The agent returned a duplicate or empty tool call ID.")
+        if call.args not in ({}, "{}"):
+            raise RuntimeError("Deferred client tools must receive an empty argument object.")
+
         return AgentExecution(
             deferred=DeferredActionRun(
                 messages=result.all_messages(),
                 tool_call_id=call.tool_call_id,
                 conversation_id=result.conversation_id,
+                tool_name=cast(ToolName, call.tool_name),
+                tool_version=1,
             )
         )
 
@@ -218,26 +295,26 @@ class PydanticAIAgentBackend(AgentBackend):
         event: OrbitEvent,
         context: list[EvidenceLink],
         *,
-        calendar_connected: bool,
+        advertised_tools: set[str],
     ) -> AgentExecution:
         validate_agent_data(event, context)
-        if calendar_connected and os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
-            raise ValueError("Live calendar tools require ORBIT_OBSERVABILITY=off.")
-        result = await self._agent(calendar_connected=calendar_connected).run(
+        if advertised_tools and os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
+            raise ValueError("Live client tools require ORBIT_OBSERVABILITY=off.")
+        result = await self._agent(advertised_tools=advertised_tools).run(
             self._prompt(event, context)
         )
         if self.usage_callback is not None:
             self.usage_callback(result.usage)
-        return self._execution(result)
+        return self._execution(result, advertised_tools=advertised_tools)
 
     async def propose_action(
         self,
         event: OrbitEvent,
         context: list[EvidenceLink],
     ) -> ActionProposal:
-        execution = await self._run(event, context, calendar_connected=False)
+        execution = await self._run(event, context, advertised_tools=set())
         if execution.draft is None:
-            raise RuntimeError("The agent requested a calendar tool in a non-tool run.")
+            raise RuntimeError("The agent requested a client tool in a non-tool run.")
         return self._canonicalize(execution.draft, context)
 
     async def start_run(
@@ -245,16 +322,82 @@ class PydanticAIAgentBackend(AgentBackend):
         event: OrbitEvent,
         context: list[EvidenceLink],
         *,
-        calendar_connected: bool,
+        calendar_connected: bool | None = None,
+        advertised_tools: Iterable[str] | None = None,
     ) -> tuple[ActionProposal | None, DeferredActionRun | None]:
-        execution = await self._run(
-            event,
-            context,
-            calendar_connected=calendar_connected,
-        )
+        if advertised_tools is None:
+            advertised = set()
+            if calendar_connected:
+                advertised.add(CALENDAR_TOOL_NAME)
+        else:
+            advertised = set(advertised_tools)
+        execution = await self._run(event, context, advertised_tools=advertised)
         if execution.draft is not None:
             return self._canonicalize(execution.draft, context), None
         return None, execution.deferred
+
+    async def resume_execution(
+        self,
+        event: OrbitEvent,
+        context: list[EvidenceLink],
+        deferred: DeferredActionRun,
+        tool_result: ToolResult,
+        *,
+        advertised_tools: set[str] | None = None,
+        used_tool_names: set[str] | frozenset[str] = frozenset(),
+        seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
+    ) -> AgentExecution:
+        validate_agent_data(
+            event,
+            context,
+            allow_calendar_availability=True,
+            allow_scombz_page_summary=True,
+        )
+        if deferred.tool_name == CALENDAR_TOOL_NAME:
+            if not isinstance(tool_result, CalendarAvailabilityResult):
+                raise ValueError("Calendar deferred calls require a CalendarAvailabilityResult.")
+            derived_evidence = next(
+                (item for item in context if is_derived_calendar_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": derived_evidence.evidence_id if derived_evidence else None,
+                "availability": tool_result.model_dump(mode="json"),
+            }
+        elif deferred.tool_name == SCOMBZ_TOOL_NAME:
+            if not isinstance(tool_result, ScombzPageSummaryResult):
+                raise ValueError("ScombZ deferred calls require a ScombzPageSummaryResult.")
+            derived_evidence = next(
+                (item for item in context if is_derived_scombz_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": derived_evidence.evidence_id if derived_evidence else None,
+                "page_summary": tool_result.model_dump(mode="json"),
+            }
+        else:
+            raise ValueError("The deferred tool name is unsupported.")
+
+        if derived_evidence is None:
+            raise ValueError("A resumed run requires server-generated tool evidence.")
+
+        advertised = advertised_tools or {deferred.tool_name}
+        result = await self._agent(advertised_tools=advertised).run(
+            message_history=deferred.messages,
+            deferred_tool_results=DeferredToolResults(
+                calls={deferred.tool_call_id: result_content},
+            ),
+            conversation_id=deferred.conversation_id,
+        )
+        if self.usage_callback is not None:
+            self.usage_callback(result.usage)
+        return self._execution(
+            result,
+            advertised_tools=advertised,
+            used_tool_names=set(used_tool_names) | {deferred.tool_name},
+            seen_tool_call_ids=set(seen_tool_call_ids) | {deferred.tool_call_id},
+            expected_conversation_id=deferred.conversation_id,
+        )
 
     async def resume_run(
         self,
@@ -263,27 +406,15 @@ class PydanticAIAgentBackend(AgentBackend):
         deferred: DeferredActionRun,
         calendar_result: CalendarAvailabilityResult,
     ) -> ActionProposal:
-        validate_agent_data(event, context, allow_calendar_availability=True)
-        calendar_evidence = next(
-            (item for item in context if is_derived_calendar_evidence(item)),
-            None,
+        """Compatibility wrapper for callers that only support one tool stage."""
+
+        execution = await self.resume_execution(
+            event,
+            context,
+            deferred,
+            calendar_result,
+            advertised_tools={deferred.tool_name},
         )
-        if calendar_evidence is None:
-            raise ValueError("A resumed run requires server-generated calendar evidence.")
-        result = await self._agent(calendar_connected=True).run(
-            message_history=deferred.messages,
-            deferred_tool_results=DeferredToolResults(
-                calls={
-                    deferred.tool_call_id: {
-                        "evidence_id": calendar_evidence.evidence_id,
-                        "availability": calendar_result.model_dump(mode="json"),
-                    }
-                }
-            ),
-        )
-        if self.usage_callback is not None:
-            self.usage_callback(result.usage)
-        execution = self._execution(result)
         if execution.draft is None:
             raise RuntimeError("A resumed run requested another tool call.")
         return self._canonicalize(execution.draft, context)
@@ -297,6 +428,12 @@ __all__ = [
     "CALENDAR_TOOL_VERSION",
     "DeferredActionRun",
     "PydanticAIAgentBackend",
+    "SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX",
+    "SCOMBZ_TOOL_NAME",
+    "SCOMBZ_TOOL_VERSION",
+    "google_calendar_availability",
     "is_derived_calendar_evidence",
+    "is_derived_scombz_evidence",
+    "scombz_page_summary",
     "validate_agent_data",
 ]

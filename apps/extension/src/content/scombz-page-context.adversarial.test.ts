@@ -1,6 +1,9 @@
 import { parseHTML } from "linkedom";
 import { describe, expect, it, vi } from "vitest";
-import { parseScombzPageContext } from "./page-context";
+import {
+  parseScombzPageContext,
+  projectScombzPageSummary,
+} from "./page-context";
 
 const SCOMBZ_URL = "https://scombz.shibaura-it.ac.jp";
 
@@ -9,6 +12,83 @@ function documentFromHtml(html: string): Document {
 }
 
 describe("ScombZ adapter adversarial boundaries", () => {
+  it("projects parsed ScombZ context to counts without raw page fields", () => {
+    const context = {
+      title: "私的な課題ページのタイトル",
+      url: `${SCOMBZ_URL}/lms/task/private-1`,
+      kind: "scombz" as const,
+      scombz: {
+        route: "tasks" as const,
+        tasks: [
+          {
+            course: "非公開授業名",
+            title: "非公開課題タイトル",
+            deadline: "2026-08-20",
+            url: `${SCOMBZ_URL}/task/private-1`,
+          },
+        ],
+        announcements: [
+          {
+            title: "非公開お知らせ",
+            url: `${SCOMBZ_URL}/notice/private-1`,
+          },
+        ],
+        calendar: {
+          googleCalendarUrl: `${SCOMBZ_URL}/calendar/private-1`,
+          icsUrl: null,
+        },
+        currentCourse: {
+          name: "非公開授業名",
+          url: `${SCOMBZ_URL}/course/private-1`,
+        },
+        relatedLinks: [
+          {
+            label: "非公開リンク",
+            url: `${SCOMBZ_URL}/link/private-1`,
+          },
+        ],
+      },
+    };
+
+    const summary = projectScombzPageSummary(context);
+
+    expect(summary).toEqual({
+      route: "tasks",
+      task_count: 1,
+      announcement_count: 1,
+      related_link_count: 1,
+      has_current_course: true,
+    });
+    const serialized = JSON.stringify(summary);
+    for (const rawValue of [
+      "私的な課題ページのタイトル",
+      "https://scombz.shibaura-it.ac.jp/lms/task/private-1",
+      "非公開授業名",
+      "非公開課題タイトル",
+      "非公開お知らせ",
+      "/course/private-1",
+    ]) {
+      expect(serialized).not.toContain(rawValue);
+    }
+  });
+
+  it("does not advertise ScombZ summary for an unparsed or other-origin page", () => {
+    expect(
+      projectScombzPageSummary({
+        title: "ScombZ",
+        url: "https://scombz.shibaura-it.ac.jp/unknown",
+        kind: "scombz",
+      }),
+    ).toBeNull();
+    expect(
+      projectScombzPageSummary({
+        title: "Other",
+        url: "https://example.com/page",
+        kind: "other",
+      }),
+    ).toBeNull();
+  });
+
   it("does not turn hidden task rows into evidence", () => {
     const context = parseScombzPageContext(
       { title: "課題", url: `${SCOMBZ_URL}/lms/task` },

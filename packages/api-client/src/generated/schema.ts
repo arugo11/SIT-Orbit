@@ -164,9 +164,9 @@ export interface components {
             tool_call_id: string;
             /**
              * Name
-             * @constant
+             * @enum {string}
              */
-            name: "google_calendar_availability";
+            name: "scombz_page_summary" | "google_calendar_availability";
             /**
              * Version
              * @constant
@@ -175,12 +175,29 @@ export interface components {
         };
         /**
          * AgentToolResultRequest
-         * @description Result for the one registered external tool.
+         * @description Result for one registered external tool.
+         *
+         *     The envelope repeats the call name and version so a result cannot be
+         *     accidentally delivered to a different deferred tool.  The validator also
+         *     keeps the two strict result schemas from being mixed across tools.
          */
         AgentToolResultRequest: {
             /** Tool Call Id */
             tool_call_id: string;
-            result: components["schemas"]["CalendarAvailabilityResult"];
+            /**
+             * Name
+             * @default google_calendar_availability
+             * @enum {string}
+             */
+            name: "scombz_page_summary" | "google_calendar_availability";
+            /**
+             * Version
+             * @default 1
+             * @constant
+             */
+            version: 1;
+            /** Result */
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"];
         };
         /**
          * CalendarAvailabilityInterval
@@ -233,9 +250,9 @@ export interface components {
         ClientTool: {
             /**
              * Name
-             * @constant
+             * @enum {string}
              */
-            name: "google_calendar_availability";
+            name: "scombz_page_summary" | "google_calendar_availability";
             /**
              * Version
              * @constant
@@ -255,7 +272,7 @@ export interface components {
              * Source Type
              * @enum {string}
              */
-            source_type: "syllabus" | "assignment" | "learning_history" | "calendar" | "library" | "google_drive";
+            source_type: "syllabus" | "assignment" | "learning_history" | "calendar" | "scombz" | "library" | "google_drive";
             /** Locator */
             locator: string;
             /**
@@ -310,6 +327,29 @@ export interface components {
             event: components["schemas"]["OrbitEvent"];
             /** Context */
             context: components["schemas"]["EvidenceLink"][];
+        };
+        /**
+         * ScombzPageSummaryResult
+         * @description A minimized summary of the currently displayed ScombZ page.
+         *
+         *     This deliberately has no title, URL, course name, item, link, HTML, or
+         *     browser token field.  The tool name and version are carried by the
+         *     surrounding deferred-tool result envelope.
+         */
+        ScombzPageSummaryResult: {
+            /**
+             * Route
+             * @enum {string}
+             */
+            route: "home" | "tasks" | "timetable" | "announcements" | "calendar" | "course" | "other";
+            /** Task Count */
+            task_count: number;
+            /** Announcement Count */
+            announcement_count: number;
+            /** Related Link Count */
+            related_link_count: number;
+            /** Has Current Course */
+            has_current_course: boolean;
         };
         /** ValidationError */
         ValidationError: {

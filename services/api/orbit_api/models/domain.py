@@ -19,6 +19,7 @@ class EvidenceLink(BaseModel):
         "assignment",
         "learning_history",
         "calendar",
+        "scombz",
         "library",
         "google_drive",
     ]

@@ -3,6 +3,7 @@ import {
   type ActionProposal,
   AgentApiClient,
   type AgentRunResponse,
+  type AgentToolResultRequest,
   DEFAULT_AGENT_API_BASE,
   type OrbitEvent,
 } from "../api/client";
@@ -22,7 +23,11 @@ import {
   createFixtureDriveConnector,
   type DriveSelectionCandidate,
 } from "../connectors/google-drive";
-import type { PageContext, PageKind } from "../content/page-context";
+import {
+  projectScombzPageSummary,
+  type PageContext,
+  type PageKind,
+} from "../content/page-context";
 import {
   type CalendarCommand,
   calendarCommandMessage,
@@ -219,6 +224,16 @@ function proposalEvidence(proposal: ActionProposal) {
       </small>
     </li>
   ));
+}
+
+function toolDisplayName(
+  toolName: "scombz_page_summary" | "google_calendar_availability" | null,
+): string {
+  return toolName === "scombz_page_summary"
+    ? "ScombZページ概要"
+    : toolName === "google_calendar_availability"
+      ? "Google Calendar"
+      : "Agent Tool";
 }
 
 export interface AppProps {
@@ -844,57 +859,104 @@ export function App({
         .filter((evidence): evidence is NonNullable<typeof evidence> =>
           Boolean(evidence),
         );
+      const clientTools: Array<{
+        name: "scombz_page_summary" | "google_calendar_availability";
+        version: 1;
+      }> = [];
+      if (projectScombzPageSummary(pageContext) !== null) {
+        clientTools.push({ name: "scombz_page_summary", version: 1 });
+      }
+      if (calendarState.status === "connected" && calendarState.snapshot) {
+        clientTools.push({ name: "google_calendar_availability", version: 1 });
+      }
+
       let runResponse: AgentRunResponse = await agentApiClient.startRun({
         event: B1_OMIYA_EVENT,
         context: [...B1_OMIYA_CONTEXT, ...fixtureEvidence],
-        client_tools:
-          calendarState.status === "connected" && calendarState.snapshot
-            ? [{ name: "google_calendar_availability", version: 1 }]
-            : [],
+        client_tools: clientTools,
       });
-      if (runResponse.status === "tool_required") {
+      const usedToolNames = new Set<string>();
+      const seenToolCallIds = new Set<string>();
+      let activeRunId: string | null = null;
+      while (runResponse.status === "tool_required") {
+        if (activeRunId === null) {
+          activeRunId = runResponse.run_id;
+        } else if (runResponse.run_id !== activeRunId) {
+          throw new Error("Agent run IDが再開中に変更されました。");
+        }
         const [call] = runResponse.calls;
         if (!call) {
-          throw new Error("Calendar tool call was missing.");
+          throw new Error("AgentからのTool呼び出しが見つかりません。");
         }
+        if (
+          (call.name !== "scombz_page_summary" &&
+            call.name !== "google_calendar_availability") ||
+          call.version !== 1 ||
+          usedToolNames.has(call.name) ||
+          seenToolCallIds.has(call.tool_call_id) ||
+          !clientTools.some(
+            (tool) => tool.name === call.name && tool.version === call.version,
+          )
+        ) {
+          throw new Error("未広告または重複したAgent Tool呼び出しです。");
+        }
+        usedToolNames.add(call.name);
+        seenToolCallIds.add(call.tool_call_id);
         dispatch({
           type: "tool-started",
           runId: runResponse.run_id,
           toolCallId: call.tool_call_id,
+          toolName: call.name,
         });
-        const refreshed = calendarConnector
-          ? await calendarConnector.refresh()
-          : await calendarRequest("refresh");
-        setCalendarState(refreshed);
-        if (refreshed.status === "reauth_required") {
-          dispatch({
-            type: "reauth-required",
-            error: refreshed.message ?? "Google Calendarの再認証が必要です。",
-          });
-          return;
+
+        let toolResult: AgentToolResultRequest["result"];
+        if (call.name === "scombz_page_summary") {
+          const summary = projectScombzPageSummary(pageContext);
+          if (summary === null) {
+            throw new Error(
+              "解析済みのScombZページがないため、ページ概要を送信できません。",
+            );
+          }
+          toolResult = summary;
+        } else {
+          const refreshed = calendarConnector
+            ? await calendarConnector.refresh()
+            : await calendarRequest("refresh");
+          setCalendarState(refreshed);
+          if (refreshed.status === "reauth_required") {
+            dispatch({
+              type: "reauth-required",
+              error: refreshed.message ?? "Google Calendarの再認証が必要です。",
+            });
+            return;
+          }
+          if (refreshed.status !== "connected" || !refreshed.snapshot) {
+            throw new Error(
+              refreshed.message ??
+                "Google Calendarの空き時間を取得できなかったため、提案を続行できません。",
+            );
+          }
+          toolResult = projectCalendarAvailability(refreshed.snapshot);
         }
-        if (refreshed.status !== "connected" || !refreshed.snapshot) {
-          throw new Error(
-            refreshed.message ??
-              "Google Calendarの空き時間を取得できなかったため、提案を続行できません。",
-          );
-        }
+
         dispatch({ type: "resume-started" });
         runResponse = await agentApiClient.submitToolResult(
           runResponse.run_id,
           {
             tool_call_id: call.tool_call_id,
-            result: projectCalendarAvailability(refreshed.snapshot),
+            name: call.name,
+            version: call.version,
+            result: toolResult,
           },
         );
       }
       if (runResponse.status !== "completed") {
-        throw new Error("Calendar toolを1回で完了できませんでした。");
+        throw new Error("Agent Toolの線形再開が完了しませんでした。");
       }
       const proposal = runResponse.proposal;
       if (!isSafeB1Proposal(proposal)) {
         throw new Error(
-          "synthetic/public または導出済みCalendar空き時間だけを表示できます。",
+          "synthetic/public または導出済みScombZ概要・Calendar空き時間だけを表示できます。",
         );
       }
       dispatch({ type: "proposal-received", proposal });
@@ -1065,7 +1127,7 @@ export function App({
             {loopState.status === "proposing"
               ? "提案を取得中…"
               : loopState.status === "tool-running"
-                ? "Calendarを更新中…"
+                ? `${toolDisplayName(loopState.pendingToolName)}を処理中…`
                 : loopState.status === "resuming"
                   ? "提案を再開中…"
                   : loopState.proposal
@@ -1073,19 +1135,22 @@ export function App({
                     : "B1 大宮の提案を作成"}
           </button>
           <p className="action-note">
-            {calendarState.status === "connected" && calendarState.snapshot
-              ? "ボタンを押したときだけ、合成データをローカル Agent API に送ります。AgentがCalendarを要求した場合は、予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。"
+            {projectScombzPageSummary(pageContext) !== null ||
+            (calendarState.status === "connected" && calendarState.snapshot)
+              ? "ボタンを押したときだけ、合成データと必要な最小化済みのページ概要・空き時間をローカル Agent API に送ります。予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。"
               : "ボタンを押したときだけ、合成データをローカル Agent API に送ります。"}
           </p>
           {loopState.status === "tool-running" ? (
             <p className="state-message" data-agent-status="tool-running">
-              Google
-              Calendarを非対話で更新しています。認証画面は自動では開きません。
+              {toolDisplayName(loopState.pendingToolName)}を準備しています。
+              {loopState.pendingToolName === "google_calendar_availability"
+                ? "認証画面は自動では開きません。"
+                : "表示中のページから件数だけをまとめています。"}
             </p>
           ) : null}
           {loopState.status === "resuming" ? (
             <p className="state-message" data-agent-status="resuming">
-              Calendarの導出結果をAgentへ渡して提案を再開しています。
+              {toolDisplayName(loopState.pendingToolName)}の導出結果をAgentへ渡して提案を再開しています。
             </p>
           ) : null}
           {loopState.status === "reauth_required" ? (
@@ -1112,8 +1177,20 @@ export function App({
                   evidence.source_type === "calendar" &&
                   evidence.data_classification === "personal",
               )
-                ? "合成＋Calendar空き時間"
-                : "合成データ"}
+                ? loopState.proposal.evidence.some(
+                    (evidence) =>
+                      evidence.source_type === "scombz" &&
+                      evidence.data_classification === "personal",
+                  )
+                  ? "合成＋ScombZ概要＋Calendar空き時間"
+                  : "合成＋Calendar空き時間"
+                : loopState.proposal.evidence.some(
+                      (evidence) =>
+                        evidence.source_type === "scombz" &&
+                        evidence.data_classification === "personal",
+                    )
+                  ? "合成＋ScombZ概要"
+                  : "合成データ"}
             </span>
           </div>
           <dl className="proposal-list">

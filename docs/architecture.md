@@ -161,9 +161,9 @@ PydanticAIは、Python、FastAPI、Pydantic、型付き出力、複数モデル�
 Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、OpenAI Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`だけとし、`action_id`とEvidenceLinkはサーバーが正規化する。
 `OpenAIResponsesModel`には`OpenAIProvider`または`AzureProvider`を渡し、`openai_store=False`を固定する。
 
-外部Toolは引数なしの`google_calendar_availability` v1だけである。接続中のClientが明示広告したrunでのみDeferred Toolとして公開し、Tool結果を受けた後に同じメッセージ履歴を再開する。Driveは登録しない。
+外部Toolは引数なしの`scombz_page_summary` v1と`google_calendar_availability` v1である。実際に解析済みのScombZページ、または接続中のCalendarだけをClientが明示広告したrunで公開する。1つのrunでは広告済みの各Toolを高々1回、最大2段階で線形にDeferred Toolとして実行し、Tool結果を受けた後に同じメッセージ履歴を再開する。ScombZの結果はroute、3つの件数、現在コースの有無だけであり、Driveは登録しない。
 
-run storeはAPIプロセスのメモリ内だけに置き、TTLは600秒、1 run 1 Tool call、完了・失敗・期限切れで削除する。未知・期限切れ・再利用済みrunは、プロセス再起動後も含めて410とする。
+run storeはAPIプロセスのメモリ内だけに置き、TTLは600秒、単一worker affinity、固定expiry、`pending/in_flight`のatomic claimを使う。provider/model await中にlockを保持せず、claim後の失敗はterminal tombstoneとする。未知・期限切れ・別worker・再利用済みrunは、プロセス再起動後も含めて410とする。
 
 Microsoft Agent Frameworkは、Agents、Harness、Workflows、セッション状態、Middleware、MCPクライアントを提供するAzure寄りの選択肢である。[Microsoft Agent Framework概要](https://learn.microsoft.com/en-us/agent-framework/overview/)
 

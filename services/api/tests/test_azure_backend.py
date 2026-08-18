@@ -106,7 +106,7 @@ async def test_azure_backend_preserves_structured_action_boundary(monkeypatch) -
     monkeypatch.setattr(
         agent,
         "_agent",
-        lambda *, calendar_connected: agent_instance,
+        lambda *, advertised_tools: agent_instance,
     )
 
     proposal = await agent.propose_action(make_event(), [evidence])
@@ -133,7 +133,7 @@ async def test_azure_backend_rejects_unstructured_output(monkeypatch) -> None:
     monkeypatch.setattr(
         agent,
         "_agent",
-        lambda *, calendar_connected: agent_instance,
+        lambda *, advertised_tools: agent_instance,
     )
 
     with pytest.raises(AssertionError, match="Plain response not allowed"):

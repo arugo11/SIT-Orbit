@@ -337,7 +337,7 @@
               "$ref": "#/components/schemas/ClientTool"
             },
             "type": "array",
-            "maxItems": 1,
+            "maxItems": 2,
             "title": "Client Tools"
           }
         },
@@ -392,7 +392,10 @@
           },
           "name": {
             "type": "string",
-            "const": "google_calendar_availability",
+            "enum": [
+              "scombz_page_summary",
+              "google_calendar_availability"
+            ],
             "title": "Name"
           },
           "version": {
@@ -418,8 +421,31 @@
             "minLength": 1,
             "title": "Tool Call Id"
           },
+          "name": {
+            "type": "string",
+            "enum": [
+              "scombz_page_summary",
+              "google_calendar_availability"
+            ],
+            "title": "Name",
+            "default": "google_calendar_availability"
+          },
+          "version": {
+            "type": "integer",
+            "const": 1,
+            "title": "Version",
+            "default": 1
+          },
           "result": {
-            "$ref": "#/components/schemas/CalendarAvailabilityResult"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CalendarAvailabilityResult"
+              },
+              {
+                "$ref": "#/components/schemas/ScombzPageSummaryResult"
+              }
+            ],
+            "title": "Result"
           }
         },
         "additionalProperties": false,
@@ -429,7 +455,7 @@
           "result"
         ],
         "title": "AgentToolResultRequest",
-        "description": "Result for the one registered external tool."
+        "description": "Result for one registered external tool.\n\nThe envelope repeats the call name and version so a result cannot be\naccidentally delivered to a different deferred tool.  The validator also\nkeeps the two strict result schemas from being mixed across tools."
       },
       "CalendarAvailabilityInterval": {
         "properties": {
@@ -553,7 +579,10 @@
         "properties": {
           "name": {
             "type": "string",
-            "const": "google_calendar_availability",
+            "enum": [
+              "scombz_page_summary",
+              "google_calendar_availability"
+            ],
             "title": "Name"
           },
           "version": {
@@ -590,6 +619,7 @@
               "assignment",
               "learning_history",
               "calendar",
+              "scombz",
               "library",
               "google_drive"
             ],
@@ -714,6 +744,56 @@
           "context"
         ],
         "title": "ProposeActionRequest"
+      },
+      "ScombzPageSummaryResult": {
+        "properties": {
+          "route": {
+            "type": "string",
+            "enum": [
+              "home",
+              "tasks",
+              "timetable",
+              "announcements",
+              "calendar",
+              "course",
+              "other"
+            ],
+            "title": "Route"
+          },
+          "task_count": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Task Count"
+          },
+          "announcement_count": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Announcement Count"
+          },
+          "related_link_count": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Related Link Count"
+          },
+          "has_current_course": {
+            "type": "boolean",
+            "title": "Has Current Course"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "route",
+          "task_count",
+          "announcement_count",
+          "related_link_count",
+          "has_current_course"
+        ],
+        "title": "ScombzPageSummaryResult",
+        "description": "A minimized summary of the currently displayed ScombZ page.\n\nThis deliberately has no title, URL, course name, item, link, HTML, or\nbrowser token field.  The tool name and version are carried by the\nsurrounding deferred-tool result envelope."
       },
       "ValidationError": {
         "properties": {
