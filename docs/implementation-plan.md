@@ -284,6 +284,8 @@ CalendarのDeferred Toolと構造化出力を導入する要件が成立した�
 - 厳格なdiscriminated API envelopeと最小Calendar availability schema
 - Extensionの明示クリック、非対話refresh、Tool結果の再開表示
 
+Run再開はAPIプロセス内メモリの単一worker affinityに限定する。`scombz_page_summary` v1と`google_calendar_availability` v1は引数なしで、同じrunの中で広告済みの各Toolを高々1回だけ線形に呼ぶ。ScombZからAgentへ渡す値はroute、課題・お知らせ・関連リンクの件数、現在コースの有無だけとし、サーバー側では`orbit-scombz://page-summary/<opaque>`の個人Evidence例外を固定prefixで検証する。
+
 ### 実装しない範囲
 
 - APIモデルの全面置換

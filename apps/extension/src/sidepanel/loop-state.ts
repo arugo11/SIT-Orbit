@@ -21,6 +21,10 @@ export interface AgentLoopState {
   error: string | null;
   pendingRunId: string | null;
   pendingToolCallId: string | null;
+  pendingToolName:
+    | "scombz_page_summary"
+    | "google_calendar_availability"
+    | null;
 }
 
 export const initialAgentLoopState: AgentLoopState = {
@@ -31,11 +35,17 @@ export const initialAgentLoopState: AgentLoopState = {
   error: null,
   pendingRunId: null,
   pendingToolCallId: null,
+  pendingToolName: null,
 };
 
 export type AgentLoopAction =
   | { type: "propose-started" }
-  | { type: "tool-started"; runId: string; toolCallId: string }
+  | {
+      type: "tool-started";
+      runId: string;
+      toolCallId: string;
+      toolName: "scombz_page_summary" | "google_calendar_availability";
+    }
   | { type: "reauth-required"; error: string }
   | { type: "resume-started" }
   | { type: "proposal-received"; proposal: ActionProposal }
@@ -66,6 +76,7 @@ export function agentLoopReducer(
         error: null,
         pendingRunId: null,
         pendingToolCallId: null,
+        pendingToolName: null,
       };
     case "tool-started":
       return {
@@ -73,6 +84,7 @@ export function agentLoopReducer(
         status: "tool-running",
         pendingRunId: action.runId,
         pendingToolCallId: action.toolCallId,
+        pendingToolName: action.toolName,
         error: null,
       };
     case "reauth-required":

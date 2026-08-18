@@ -52,6 +52,9 @@ export function isSafeB1Proposal(
       isSyntheticOrPublic(evidence.data_classification) ||
       (evidence.source_type === "calendar" &&
         evidence.data_classification === "personal" &&
-        evidence.locator.startsWith("orbit-calendar://availability/")),
+        evidence.locator.startsWith("orbit-calendar://availability/")) ||
+      (evidence.source_type === "scombz" &&
+        evidence.data_classification === "personal" &&
+        evidence.locator.startsWith("orbit-scombz://page-summary/")),
   );
 }

@@ -1,5 +1,11 @@
 import pytest
-from orbit_api.models import ActionProposal, CalendarAvailabilityResult, EvidenceLink
+from orbit_api.models import (
+    ActionProposal,
+    AgentToolResultRequest,
+    CalendarAvailabilityResult,
+    EvidenceLink,
+    ScombzPageSummaryResult,
+)
 from pydantic import ValidationError
 
 
@@ -41,3 +47,81 @@ def test_calendar_availability_rejects_event_details_and_tokens(extra_field: str
 
     with pytest.raises(ValidationError, match="extra_forbidden"):
         CalendarAvailabilityResult.model_validate(payload)
+
+
+def test_scombz_page_summary_is_exactly_the_minimized_v1_shape() -> None:
+    result = ScombzPageSummaryResult(
+        route="tasks",
+        task_count=2,
+        announcement_count=1,
+        related_link_count=3,
+        has_current_course=True,
+    )
+
+    assert set(result.model_dump()) == {
+        "route",
+        "task_count",
+        "announcement_count",
+        "related_link_count",
+        "has_current_course",
+    }
+
+
+@pytest.mark.parametrize(
+    "extra_field",
+    ["title", "url", "course", "items", "html", "oauth_token"],
+)
+def test_scombz_page_summary_rejects_raw_page_fields(extra_field: str) -> None:
+    payload = {
+        "route": "tasks",
+        "task_count": 2,
+        "announcement_count": 1,
+        "related_link_count": 3,
+        "has_current_course": True,
+        extra_field: "must-not-cross-boundary",
+    }
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        ScombzPageSummaryResult.model_validate(payload)
+
+
+def test_tool_result_envelope_rejects_mismatched_name_and_result_schema() -> None:
+    summary = ScombzPageSummaryResult(
+        route="home",
+        task_count=0,
+        announcement_count=1,
+        related_link_count=2,
+        has_current_course=False,
+    )
+    calendar = CalendarAvailabilityResult(
+        status="known",
+        time_zone="Asia/Tokyo",
+        window_start="2026-08-17T00:00:00+09:00",
+        window_end="2026-08-17T01:00:00+09:00",
+        available_minutes=60,
+        busy_minutes=0,
+        free_intervals=[],
+        reason_code=None,
+    )
+
+    with pytest.raises(ValidationError, match="Calendar tool results"):
+        AgentToolResultRequest(
+            tool_call_id="call-1",
+            name="google_calendar_availability",
+            result=summary,
+        )
+    with pytest.raises(ValidationError, match="ScombZ tool results"):
+        AgentToolResultRequest(
+            tool_call_id="call-2",
+            name="scombz_page_summary",
+            result=calendar,
+        )
+    with pytest.raises(ValidationError):
+        AgentToolResultRequest.model_validate(
+            {
+                "tool_call_id": "call-3",
+                "name": "scombz_page_summary",
+                "version": 2,
+                "result": summary.model_dump(),
+            }
+        )

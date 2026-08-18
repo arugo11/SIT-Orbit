@@ -17,6 +17,8 @@ export interface MountedSidePanel {
   chromeRuntime: TestChromeRuntime;
 }
 
+export type ConfigureTestChromeRuntime = (runtime: TestChromeRuntime) => void;
+
 export function installSidePanelGlobals(): TestChromeRuntime {
   const chromeRuntime: TestChromeRuntime = {
     sendMessage: vi.fn(
@@ -54,8 +56,10 @@ export function installSidePanelGlobals(): TestChromeRuntime {
 
 export async function mountSidePanel(
   render: (container: HTMLElement) => ReactNode,
+  configureRuntime?: ConfigureTestChromeRuntime,
 ): Promise<MountedSidePanel> {
   const chromeRuntime = installSidePanelGlobals();
+  configureRuntime?.(chromeRuntime);
   const container = document.getElementById("root");
   if (!container) {
     throw new Error("Test root is missing.");

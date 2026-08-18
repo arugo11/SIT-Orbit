@@ -47,6 +47,15 @@ export interface ScombzPageData {
   relatedLinks: ScombzLink[];
 }
 
+/** The only ScombZ values permitted in a deferred Agent tool result. */
+export interface ScombzPageSummary {
+  route: ScombzRoute;
+  task_count: number;
+  announcement_count: number;
+  related_link_count: number;
+  has_current_course: boolean;
+}
+
 export interface PageContext {
   title: string;
   url: string;
@@ -57,6 +66,25 @@ export interface PageContext {
 export interface PageSnapshot {
   title: string;
   url: string;
+}
+
+/**
+ * Project a parsed ScombZ context into the strict, title/URL-free v1 result.
+ * Unparsed or non-ScombZ contexts cannot advertise this client tool.
+ */
+export function projectScombzPageSummary(
+  context: PageContext | null | undefined,
+): ScombzPageSummary | null {
+  if (context?.kind !== "scombz" || context.scombz === undefined) {
+    return null;
+  }
+  return {
+    route: context.scombz.route,
+    task_count: context.scombz.tasks.length,
+    announcement_count: context.scombz.announcements.length,
+    related_link_count: context.scombz.relatedLinks.length,
+    has_current_course: context.scombz.currentCourse !== null,
+  };
 }
 
 export function isScombzUrl(value: string | undefined): boolean {

@@ -8,6 +8,7 @@ from .agent import (
     CalendarAvailabilityInterval,
     CalendarAvailabilityResult,
     ClientTool,
+    ScombzPageSummaryResult,
 )
 from .domain import (
     ActionProposal,
@@ -32,4 +33,5 @@ __all__ = [
     "OrbitEvent",
     "ProposeActionRequest",
     "VerifyActionRequest",
+    "ScombzPageSummaryResult",
 ]

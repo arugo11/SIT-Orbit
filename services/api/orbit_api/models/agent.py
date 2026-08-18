@@ -12,6 +12,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictInt,
     StrictStr,
     model_validator,
@@ -90,10 +91,33 @@ class CalendarAvailabilityResult(StrictApiModel):
         return self
 
 
+class ScombzPageSummaryResult(StrictApiModel):
+    """A minimized summary of the currently displayed ScombZ page.
+
+    This deliberately has no title, URL, course name, item, link, HTML, or
+    browser token field.  The tool name and version are carried by the
+    surrounding deferred-tool result envelope.
+    """
+
+    route: Literal[
+        "home",
+        "tasks",
+        "timetable",
+        "announcements",
+        "calendar",
+        "course",
+        "other",
+    ]
+    task_count: StrictInt = Field(ge=0, le=10000)
+    announcement_count: StrictInt = Field(ge=0, le=10000)
+    related_link_count: StrictInt = Field(ge=0, le=10000)
+    has_current_course: StrictBool
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
-    name: Literal["google_calendar_availability"]
+    name: Literal["scombz_page_summary", "google_calendar_availability"]
     version: Literal[1]
 
 
@@ -107,14 +131,42 @@ class AgentRunRequest(StrictApiModel):
 
     event: OrbitEvent
     context: list[EvidenceLink] = Field(min_length=1, max_length=100)
-    client_tools: list[ClientTool] = Field(default_factory=list, max_length=1)
+    client_tools: list[ClientTool] = Field(default_factory=list, max_length=2)
+
+    @model_validator(mode="after")
+    def tool_names_are_unique(self) -> "AgentRunRequest":
+        names = [tool.name for tool in self.client_tools]
+        if len(set(names)) != len(names):
+            raise ValueError("Client tool names must be unique per run.")
+        return self
 
 
 class AgentToolResultRequest(StrictApiModel):
-    """Result for the one registered external tool."""
+    """Result for one registered external tool.
+
+    The envelope repeats the call name and version so a result cannot be
+    accidentally delivered to a different deferred tool.  The validator also
+    keeps the two strict result schemas from being mixed across tools.
+    """
 
     tool_call_id: StrictStr = Field(min_length=1, max_length=200)
-    result: CalendarAvailabilityResult
+    name: Literal["scombz_page_summary", "google_calendar_availability"] = (
+        "google_calendar_availability"
+    )
+    version: Literal[1] = 1
+    result: CalendarAvailabilityResult | ScombzPageSummaryResult
+
+    @model_validator(mode="after")
+    def result_matches_tool(self) -> "AgentToolResultRequest":
+        if self.name == "google_calendar_availability" and not isinstance(
+            self.result, CalendarAvailabilityResult
+        ):
+            raise ValueError("Calendar tool results must use CalendarAvailabilityResult.")
+        if self.name == "scombz_page_summary" and not isinstance(
+            self.result, ScombzPageSummaryResult
+        ):
+            raise ValueError("ScombZ tool results must use ScombzPageSummaryResult.")
+        return self
 
 
 class AgentRunCompleted(StrictApiModel):
@@ -130,7 +182,7 @@ class AgentRunToolRequired(StrictApiModel):
 
 class AgentToolCall(StrictApiModel):
     tool_call_id: StrictStr = Field(min_length=1, max_length=200)
-    name: Literal["google_calendar_availability"]
+    name: Literal["scombz_page_summary", "google_calendar_availability"]
     version: Literal[1]
 
 
@@ -150,5 +202,6 @@ __all__ = [
     "CalendarAvailabilityInterval",
     "CalendarAvailabilityResult",
     "ClientTool",
+    "ScombzPageSummaryResult",
     "StrictApiModel",
 ]

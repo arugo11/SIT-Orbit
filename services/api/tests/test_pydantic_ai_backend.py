@@ -105,7 +105,7 @@ async def test_test_model_structured_output_restores_server_owned_evidence() -> 
         instructions="test",
     )
 
-    backend._agent = lambda *, calendar_connected: test_agent  # type: ignore[method-assign]
+    backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
     proposal = await backend.propose_action(make_event(), [evidence])
 
     assert proposal.action_id.startswith("act-openai-")
@@ -130,7 +130,7 @@ async def test_optional_usage_callback_receives_run_usage() -> None:
         output_type=[ActionDraft, DeferredToolRequests],
         instructions="test",
     )
-    backend._agent = lambda *, calendar_connected: test_agent  # type: ignore[method-assign]
+    backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
 
     await backend.propose_action(make_event(), [evidence])
 
@@ -149,7 +149,7 @@ async def test_no_tool_path_returns_a_completed_action_proposal() -> None:
         output_type=[ActionDraft, DeferredToolRequests],
         instructions="test",
     )
-    backend._agent = lambda *, calendar_connected: test_agent  # type: ignore[method-assign]
+    backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
 
     proposal, deferred = await backend.start_run(
         make_event(),
@@ -171,7 +171,7 @@ async def test_unknown_evidence_id_is_rejected_after_structured_output() -> None
         output_type=[ActionDraft, DeferredToolRequests],
         instructions="test",
     )
-    backend._agent = lambda *, calendar_connected: test_agent  # type: ignore[method-assign]
+    backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
 
     with pytest.raises(ValueError, match="unknown evidence IDs"):
         await backend.propose_action(make_event(), [make_evidence()])
@@ -214,7 +214,7 @@ async def test_function_model_deferred_calendar_result_is_minimized_before_resum
         tools=[google_calendar_availability],
     )
     backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
-    backend._agent = lambda *, calendar_connected: test_agent  # type: ignore[method-assign]
+    backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
 
     event = make_event()
     evidence = make_evidence()
@@ -281,7 +281,7 @@ async def test_function_model_deferred_calendar_result_is_minimized_before_resum
 
 def test_agent_settings_disable_provider_storage() -> None:
     backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
-    agent = backend._agent(calendar_connected=False)
+    agent = backend._agent(advertised_tools=set())
 
     assert isinstance(backend.model, OpenAIResponsesModel)
     assert isinstance(agent.model, OpenAIResponsesModel)

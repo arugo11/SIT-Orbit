@@ -36,7 +36,12 @@ MVPの`OrbitEvent`と`EvidenceLink`は次の区分を持つ。
 
 OpenAIへ送信できるのは`synthetic`と`public`だけである。
 
-ただし、Branch 7のAgent runでは、利用者のGoogle CalendarからConnectorが導出した空き時間だけを、`personal`の`calendar` EvidenceLinkとして扱える。予定名、ID、参加者、場所、説明、元レスポンスは送信しない。
+ただし、Branch 7のAgent runでは、次の2種類のサーバー生成EvidenceLinkだけを例外として扱える。
+
+- 利用者のGoogle Calendarから導出した空き時間（`personal`の`calendar`、`orbit-calendar://availability/<opaque>`）
+- 表示中の解析済みScombZページから導出した5項目の概要（`personal`の`scombz`、`orbit-scombz://page-summary/<opaque>`）
+
+Calendarの予定名、ID、参加者、場所、説明、元レスポンス、ScombZのタイトル、URL、コース名、項目、HTML、ブラウザtokenは送信しない。個人データを広く許可するものではなく、これらの固定prefixとサーバー生成のEvidence IDをruntimeで検証する。
 
 W&Bについても、初期版では同じ区分だけを対象とする。
 
@@ -96,7 +101,8 @@ Gemini 3.7 Flash Paidは将来の比較候補だが、このbranchではAdapter�
 ## Branch 7 resumable Agent run
 
 `POST /v1/agent/runs`は、Side Panelが明示的に提案ボタンを押した場合だけ開始する。
-Calendar接続中だけ`google_calendar_availability` v1を`client_tools`として広告し、Toolが要求された場合はService Workerの非対話refresh結果から、時間帯・分数・空き区間・理由コードだけを`/v1/agent/runs/{run_id}/tool-results`へ送る。
-runはAPIプロセス内メモリに600秒だけ保持し、完了・失敗・期限切れで削除する。OAuth token、raw event、Calendarのイベント詳細はAPI、ログ、run storeへ渡さない。
+表示中のページが実際に解析済みScombZコンテキストを持つ場合だけ`scombz_page_summary` v1を、Calendar接続中だけ`google_calendar_availability` v1を`client_tools`として広告する。
+Agentが要求したToolは1回ずつ、最大2種類を同じ`run_id`で線形に再開する。ScombZはService Workerを介さずSide Panel内で5項目へ投影し、CalendarはService Workerの非対話refresh結果から時間帯・分数・空き区間・理由コードだけを`/v1/agent/runs/{run_id}/tool-results`へ送る。
+runは単一APIプロセスのメモリに600秒だけ保持する。プロセス再起動、別worker、期限切れ、完了、失敗、再利用は410として扱い、provider待機中にlockを保持しない。OAuth token、Calendarの生イベント、ScombZのHTMLはAPI、ログ、run storeへ渡さない。
 
 Google DriveはToolとして登録しない。

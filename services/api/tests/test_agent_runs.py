@@ -211,10 +211,10 @@ async def test_expired_run_is_rejected_before_model_factory() -> None:
 @pytest.mark.asyncio
 async def test_client_tool_advertisement_controls_deferred_tool_registration(monkeypatch) -> None:
     backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
-    seen_calendar_connected: list[bool] = []
+    seen_advertised_tools: list[set[str]] = []
 
-    def build_agent(*, calendar_connected: bool):
-        seen_calendar_connected.append(calendar_connected)
+    def build_agent(*, advertised_tools: set[str]):
+        seen_advertised_tools.append(advertised_tools)
         model = TestModel(
             custom_output_args=action_args(),
             call_tools="all",
@@ -223,7 +223,9 @@ async def test_client_tool_advertisement_controls_deferred_tool_registration(mon
             model,
             output_type=[ActionDraft, DeferredToolRequests],
             instructions="test",
-            tools=[google_calendar_availability] if calendar_connected else [],
+            tools=[google_calendar_availability]
+            if "google_calendar_availability" in advertised_tools
+            else [],
         )
 
     monkeypatch.setattr(backend, "_agent", build_agent)
@@ -243,4 +245,4 @@ async def test_client_tool_advertisement_controls_deferred_tool_registration(mon
         )
     )
     assert isinstance(connected, AgentRunToolRequired)
-    assert seen_calendar_connected == [False, True]
+    assert seen_advertised_tools == [set(), {"google_calendar_availability"}]

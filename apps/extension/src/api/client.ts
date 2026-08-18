@@ -13,6 +13,8 @@ export type AgentToolResultRequest =
   components["schemas"]["AgentToolResultRequest"];
 export type CalendarAvailabilityResult =
   components["schemas"]["CalendarAvailabilityResult"];
+export type ScombzPageSummaryResult =
+  components["schemas"]["ScombzPageSummaryResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 
@@ -82,6 +84,7 @@ const sourceTypes = [
   "assignment",
   "learning_history",
   "calendar",
+  "scombz",
   "library",
   "google_drive",
 ] as const;
@@ -180,6 +183,36 @@ export function isCalendarAvailabilityResult(
     : available === null && busy === null && value.free_intervals.length === 0;
 }
 
+export function isScombzPageSummaryResult(
+  value: unknown,
+): value is ScombzPageSummaryResult {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    hasExactlyKeys(value, [
+      "route",
+      "task_count",
+      "announcement_count",
+      "related_link_count",
+      "has_current_course",
+    ]) &&
+    isOneOf(value.route, [
+      "home",
+      "tasks",
+      "timetable",
+      "announcements",
+      "calendar",
+      "course",
+      "other",
+    ]) &&
+    isIntegerInRange(value.task_count, 0, 10000) &&
+    isIntegerInRange(value.announcement_count, 0, 10000) &&
+    isIntegerInRange(value.related_link_count, 0, 10000) &&
+    typeof value.has_current_course === "boolean"
+  );
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -199,7 +232,8 @@ export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
     isRecord(value.calls[0]) &&
     hasExactlyKeys(value.calls[0], ["tool_call_id", "name", "version"]) &&
     isNonEmptyString(value.calls[0].tool_call_id) &&
-    value.calls[0].name === "google_calendar_availability" &&
+    (value.calls[0].name === "google_calendar_availability" ||
+      value.calls[0].name === "scombz_page_summary") &&
     value.calls[0].version === 1
   );
 }
