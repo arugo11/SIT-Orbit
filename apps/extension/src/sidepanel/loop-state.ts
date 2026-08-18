@@ -27,6 +27,19 @@ export interface AgentLoopState {
     | null;
 }
 
+export type StableAgentLoopStatus = Extract<
+  AgentLoopStatus,
+  "idle" | "proposed" | "approved" | "rejected" | "completed" | "error"
+>;
+
+export interface StableAgentLoopSnapshot {
+  status: StableAgentLoopStatus;
+  proposal: ActionProposal | null;
+  completionEvent: OrbitEvent | null;
+  changeNote: string;
+  error: string | null;
+}
+
 export const initialAgentLoopState: AgentLoopState = {
   status: "idle",
   proposal: null,
@@ -55,13 +68,50 @@ export type AgentLoopAction =
   | { type: "rejected" }
   | { type: "verify-started" }
   | { type: "verification-received"; event: OrbitEvent }
-  | { type: "verification-failed"; error: string };
+  | { type: "verification-failed"; error: string }
+  | { type: "state-hydrated"; state: StableAgentLoopSnapshot };
+
+export function toStableAgentLoopSnapshot(
+  state: AgentLoopState,
+): StableAgentLoopSnapshot | null {
+  if (
+    state.status !== "idle" &&
+    state.status !== "proposed" &&
+    state.status !== "approved" &&
+    state.status !== "rejected" &&
+    state.status !== "completed" &&
+    state.status !== "error"
+  ) {
+    return null;
+  }
+
+  return {
+    status: state.status,
+    proposal: state.proposal,
+    completionEvent: state.completionEvent,
+    changeNote: state.changeNote,
+    error: state.error,
+  };
+}
+
+export function hydrateAgentLoopState(
+  snapshot: StableAgentLoopSnapshot,
+): AgentLoopState {
+  return {
+    ...snapshot,
+    pendingRunId: null,
+    pendingToolCallId: null,
+    pendingToolName: null,
+  };
+}
 
 export function agentLoopReducer(
   state: AgentLoopState,
   action: AgentLoopAction,
 ): AgentLoopState {
   switch (action.type) {
+    case "state-hydrated":
+      return hydrateAgentLoopState(action.state);
     case "propose-started":
       return {
         ...initialAgentLoopState,

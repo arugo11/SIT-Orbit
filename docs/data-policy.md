@@ -65,6 +65,15 @@ Data Sharingを有効にするProjectには、公開・合成データ以外を�
 
 Chrome拡張機能は、初期版ではScombZの表示中ページから必要な情報だけを読み取る。
 
+Side Panelから全画面ワークスペースへ移る場合、`chrome.storage.session`へ次だけを一時保存する。
+
+- opaqueなworkspace session ID
+- 接続元ScombZタブと全画面タブのID
+- Content Scriptが構造化したPage Context
+- 提案、承認・却下、完了イベントの安定状態
+
+OAuth token、Google APIの生レスポンス、Calendarの予定名・参加者・説明、ScombZのHTML、PydanticAIのmessage history、`pendingRunId`、保留中のDeferred Tool callは保存しない。全画面タブを開く操作は、AgentまたはToolが実行中でない場合だけ許可する。接続元タブを失った場合は、他のScombZタブを自動選択せず再接続を求める。
+
 ページのHTML全体、Cookie、OAuth token、パスワード、ブラウザ履歴をAgent APIへ送信しない。
 
 ScombZ以外のサービスは、サービスごとのOAuth同意、正式API、または利用者が明示的に開いたページの読み取りを必要とする。

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isPageContext } from "./messages";
+import {
+  isOpenWorkspaceMessage,
+  isPageContext,
+  isUpdateWorkspaceSessionMessage,
+} from "./messages";
 
 const validContext = {
   title: "ScombZ",
@@ -56,6 +60,47 @@ describe("page context message validation", () => {
       isPageContext({
         ...validContext,
         kind: "other",
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("workspace message validation", () => {
+  const stableState = {
+    status: "idle",
+    proposal: null,
+    completionEvent: null,
+    changeNote: "",
+    error: null,
+  } as const;
+
+  it("accepts stable workspace handoffs and rejects in-flight state", () => {
+    expect(
+      isOpenWorkspaceMessage({
+        type: "open-workspace",
+        stable_state: stableState,
+      }),
+    ).toBe(true);
+    expect(
+      isOpenWorkspaceMessage({
+        type: "open-workspace",
+        stable_state: { ...stableState, status: "tool-running" },
+      }),
+    ).toBe(false);
+  });
+
+  it("requires a session ID and stable state for workspace updates", () => {
+    expect(
+      isUpdateWorkspaceSessionMessage({
+        type: "update-workspace-session",
+        session_id: "11111111-1111-4111-8111-111111111111",
+        stable_state: stableState,
+      }),
+    ).toBe(true);
+    expect(
+      isUpdateWorkspaceSessionMessage({
+        type: "update-workspace-session",
+        stable_state: stableState,
       }),
     ).toBe(false);
   });
