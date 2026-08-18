@@ -1,6 +1,7 @@
 """PydanticAI-backed proposal generation and deferred Calendar tool boundary."""
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import uuid4
@@ -10,6 +11,7 @@ from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, DeferredToolR
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.openai import OpenAIResponsesModel, OpenAIResponsesModelSettings
 from pydantic_ai.providers import Provider
+from pydantic_ai.usage import RunUsage
 
 from orbit_api.models import (
     ActionProposal,
@@ -98,11 +100,13 @@ class PydanticAIAgentBackend(AgentBackend):
         provider: Provider[Any],
         provider_name: str,
         action_id_prefix: str,
+        usage_callback: Callable[[RunUsage], None] | None = None,
     ) -> None:
         self.model_name = model_name
         self.provider = provider
         self.provider_name = provider_name
         self.action_id_prefix = action_id_prefix
+        self.usage_callback = usage_callback
         model_settings: OpenAIResponsesModelSettings = {"openai_store": False}
         self.model = OpenAIResponsesModel(
             model_name,
@@ -222,6 +226,8 @@ class PydanticAIAgentBackend(AgentBackend):
         result = await self._agent(calendar_connected=calendar_connected).run(
             self._prompt(event, context)
         )
+        if self.usage_callback is not None:
+            self.usage_callback(result.usage)
         return self._execution(result)
 
     async def propose_action(
@@ -275,6 +281,8 @@ class PydanticAIAgentBackend(AgentBackend):
                 }
             ),
         )
+        if self.usage_callback is not None:
+            self.usage_callback(result.usage)
         execution = self._execution(result)
         if execution.draft is None:
             raise RuntimeError("A resumed run requested another tool call.")

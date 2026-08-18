@@ -293,6 +293,51 @@ CalendarのDeferred Toolと構造化出力を導入する要件が成立した�
 - Google Drive Tool登録
 - OAuth token、raw Calendar event、永続run store
 
+## Branch 8：Azureモデル選定の比較評価
+
+### ブランチ
+
+`codex/model-selection-eval`
+
+### 目的
+
+Terra、Luna、Solなど、Azure側で明示したdeploymentを同じ16件の合成・公開ケースで比較し、通常デモのPrimary候補を実測で見直せるようにする。
+
+### 暫定判断
+
+実測前はAzure OpenAI GPT-5.6 TerraをPrimary、GPT-5.6 Solを品質重視デモ、GPT-5.6 Lunaを低コストchallenger候補とする。
+この順位は確定モデルではなく、hard failure、token、latency、best-effort costの測定後に再評価する。
+
+Gemini 3.7 Flash Paidは将来の他社challenger候補であり、このbranchではGoogle Adapter、依存、モデルルーターを追加しない。
+比較する場合もsynthetic/public dataだけに限定する。
+
+### 実装範囲
+
+- `evals/model_selection_cases.jsonl`の16ケース
+- `evals.run_model_selection`の明示的な`--role ROLE=DEPLOYMENT`入力
+- 既存`AzureOpenAIAgent`とDeferred Calendar経路の再利用
+- ケースごとのCalendar Tool挙動、Evidence、unsupported fact、confirmation、structured outputのhard failure分類
+- PydanticAI usage callbackによるinput/output/cache tokenとbest-effort costの集計
+- ケース・roleごとのJSONレポートと非ゼロ終了
+- オフラインUnit Test
+
+### 実装しない範囲
+
+- 通常の`run_eval`やCIへのlive model追加
+- LLM Judge、W&B評価、Leaderboard、総合スコア
+- Gemini依存、Google Adapter、モデルルーター
+- 実学生データ、実Calendar派生値、私的資料の送信
+
+Azure Standard Globalの暫定単価は入力／出力100万tokenあたりTerra $2／$12、Luna $0.20／$1.20、Sol $5／$30とする。
+Global deploymentは複数リージョンで処理され得るため、実データ利用時はdeployment typeとデータ処理条件を別途確認する。
+
+参考：
+[Microsoft FoundryのGPT-5.6発表](https://azure.microsoft.com/en-us/blog/gpt-5-6-now-available-in-microsoft-foundry/)、
+[Azureのデータ処理方針](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy)、
+[Google公式リリースノート](https://ai.google.dev/gemini-api/docs/changelog)、
+[Gemini API料金表](https://ai.google.dev/gemini-api/docs/pricing)、
+[PydanticAI Googleモデル](https://pydantic.dev/docs/ai/models/google/)。
+
 ## 将来ブランチ
 
 次の機能は、現在のコンペMVPとは分離する。

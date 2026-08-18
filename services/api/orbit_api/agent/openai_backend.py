@@ -1,8 +1,10 @@
 """OpenAI provider construction for the shared PydanticAI adapter."""
 
 import os
+from collections.abc import Callable
 
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import RunUsage
 
 from .pydantic_ai_backend import PydanticAIAgentBackend
 
@@ -18,6 +20,7 @@ class OpenAIAgent(PydanticAIAgentBackend):
         base_url: str | None = None,
         provider_name: str = "OpenAI",
         action_id_prefix: str = "act-openai",
+        usage_callback: Callable[[RunUsage], None] | None = None,
     ) -> None:
         provider = OpenAIProvider(base_url=base_url, api_key=api_key)
         super().__init__(
@@ -25,6 +28,7 @@ class OpenAIAgent(PydanticAIAgentBackend):
             provider=provider,
             provider_name=provider_name,
             action_id_prefix=action_id_prefix,
+            usage_callback=usage_callback,
         )
 
 
