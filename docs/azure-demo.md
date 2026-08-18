@@ -144,7 +144,7 @@ PYTHONPATH=services/api uv run python -m evals.run_model_selection \
 
 暫定のAzure Standard Global単価は、入力／出力100万tokenあたりTerraが$2／$12、Lunaが$0.20／$1.20、Solが$5／$30である。
 Global deploymentでは複数リージョンで処理され得るため、実データ利用前にはdeployment type、リージョン、データ処理方針を確認する。
-実測後も、hard failureが0件であることを前提に、品質とコストを比較してPrimaryを見直す。
+実測後も、hard failureが0件であることを必要条件に、提案本文の人手確認、品質、コストを比較してPrimaryを見直す。case-defined trapはすべての根拠外事実を自動検出するものではないため、hard failure 0だけではPrimaryを確定しない。
 
 Gemini 3.7 Flash Paidは将来のsynthetic/public-only challengerとする。
 このbranchではGoogle Adapterや依存を追加せず、実Calendar派生値をGeminiへ送信しない。

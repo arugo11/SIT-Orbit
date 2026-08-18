@@ -64,6 +64,10 @@ PYTHONPATH=services/api uv run python -m evals.run_model_selection \
 - 根拠にない事実の追加
 - 外部操作に対する利用者確認の欠落
 - 構造化出力の失敗
+- ケースに明示した利用可能時間を超える提案
+
+根拠外事実の自動判定は、各ケースの`forbidden_terms`に定義した既知のtrapだけを対象とする。別表現を含むすべての幻覚を機械的に判定するものではない。
+そのため、hard failureが0件であることはPrimary候補に残るための必要条件であり、十分条件ではない。JSONに記録された提案本文とEvidence IDを人が確認してから、Primaryを確定する。
 
 いずれかのdeploymentでhard failureが発生した場合、Runnerは非ゼロ終了する。
 結果は明確な`--output`を指定した場合だけJSONファイルへ保存し、指定しなければ標準出力に表示する。

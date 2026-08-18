@@ -166,6 +166,16 @@ def validate_cases(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             raise ValueError(f"Unsupported expected_tool in {row['case_id']}.")
         if not isinstance(row.get("calendar_connected"), bool):
             raise ValueError(f"calendar_connected must be boolean in {row['case_id']}.")
+        max_duration = row.get("max_duration_minutes")
+        if not isinstance(max_duration, int) or not 1 <= max_duration <= 180:
+            raise ValueError(
+                f"max_duration_minutes must be an integer from 1 to 180 in {row['case_id']}."
+            )
+        forbidden_terms = row.get("forbidden_terms")
+        if not isinstance(forbidden_terms, list) or any(
+            not isinstance(term, str) or not term for term in forbidden_terms
+        ):
+            raise ValueError(f"forbidden_terms must be a list of strings in {row['case_id']}.")
     return rows
 
 
@@ -307,6 +317,8 @@ def _validate_proposal(
         return "evidence_integrity"
     if proposal.external_action != "none" and not proposal.requires_confirmation:
         return "confirmation_invariant"
+    if proposal.duration_minutes > case["max_duration_minutes"]:
+        return "duration_exceeds_window"
     output_text = f"{proposal.title}\n{proposal.reason}".casefold()
     if any(str(term).casefold() in output_text for term in case.get("forbidden_terms", [])):
         return "unsupported_fact"
@@ -489,6 +501,8 @@ async def run_live(
         "version": 1,
         "case_count": len(selected_cases),
         "hard_failure_count": sum(int(row["hard_failure_count"]) for row in roles),
+        "selection_status": "manual_review_required",
+        "automated_grounding_scope": "case_defined_forbidden_terms_only",
         "pricing_checked_on": "2026-08-19",
         "pricing_source": (
             "https://azure.microsoft.com/en-us/blog/"

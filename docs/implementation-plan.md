@@ -316,9 +316,10 @@ Gemini 3.7 Flash Paidは将来の他社challenger候補であり、このbranch�
 - `evals/model_selection_cases.jsonl`の16ケース
 - `evals.run_model_selection`の明示的な`--role ROLE=DEPLOYMENT`入力
 - 既存`AzureOpenAIAgent`とDeferred Calendar経路の再利用
-- ケースごとのCalendar Tool挙動、Evidence、unsupported fact、confirmation、structured outputのhard failure分類
+- ケースごとのCalendar Tool挙動、Evidence、case-defined unsupported fact trap、confirmation、structured output、所要時間上限のhard failure分類
 - PydanticAI usage callbackによるinput/output/cache tokenとbest-effort costの集計
-- ケース・roleごとのJSONレポートと非ゼロ終了
+- ケース・roleごとの提案本文を含むJSONレポートと非ゼロ終了
+- hard failure 0を必要条件とした人手レビュー
 - オフラインUnit Test
 
 ### 実装しない範囲

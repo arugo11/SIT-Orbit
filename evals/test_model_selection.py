@@ -423,6 +423,32 @@ async def test_confirmation_violation_is_a_hard_failure_in_model_selection_repor
     assert result["failure_category"] == "confirmation_invariant"
 
 
+@pytest.mark.asyncio
+async def test_duration_exceeding_case_limit_is_a_hard_failure() -> None:
+    class OverlongActionBackend(FakeBackend):
+        async def start_run(self, event, context, *, calendar_connected):
+            self.usage_callback(RunUsage(requests=1, input_tokens=10, output_tokens=5))
+            case = self.cases_by_scenario[event.scenario_id]
+            proposal = _proposal(context, case["case_id"])
+            proposal = proposal.model_copy(
+                update={"duration_minutes": case["max_duration_minutes"] + 1}
+            )
+            return proposal, None
+
+    case = next(case for case in load_cases() if case["case_id"] == "direct-short-window")
+    collector = UsageCollector()
+    result = await evaluate_case(
+        OverlongActionBackend(collector.callback, {case["event"]["scenario_id"]: case}),
+        case,
+        role="terra",
+        usage_collector=collector,
+        clock=lambda: 1.0,
+    )
+
+    assert result["status"] == "failed"
+    assert result["failure_category"] == "duration_exceeds_window"
+
+
 def test_invalid_structured_output_exception_is_a_hard_failure() -> None:
     from evals.run_model_selection import classify_exception
 
@@ -465,6 +491,8 @@ async def test_report_is_deterministic_and_aggregates_deferred_usage(monkeypatch
     assert first["roles"][0]["usage"]["cost_source"] == "estimate"
     assert first["roles"][0]["cases"][0]["proposal"]["title"] == "根拠を確認する"
     assert first["pricing_checked_on"] == "2026-08-19"
+    assert first["selection_status"] == "manual_review_required"
+    assert first["automated_grounding_scope"] == "case_defined_forbidden_terms_only"
     assert first["pricing_source"].startswith("https://")
     assert first["roles"][0]["cases"][0]["elapsed_ms"] == 0
     assert set(first["roles"][0]["cases"][0]["usage"]) == {
