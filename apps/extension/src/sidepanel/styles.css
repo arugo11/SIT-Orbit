@@ -39,6 +39,52 @@ select {
   align-items: center;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-color: #c8d3dc;
+  padding: 0;
+  color: #40515f;
+  background: #fff;
+}
+
+.icon-button:hover:not(:disabled) {
+  color: #234f71;
+  background: #eef4f8;
+}
+
+.icon-button svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.orbit-body,
+.orbit-sidebar,
+.orbit-conversation {
+  display: grid;
+  gap: 16px;
+}
+
+.workspace-notice {
+  margin: 0;
+  border: 1px solid #bcd1e6;
+  border-radius: 10px;
+  padding: 10px 12px;
+  color: #405979;
+  background: #eff5fb;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .eyebrow {
   margin: 0 0 4px;
   color: #51606f;
@@ -459,4 +505,142 @@ textarea {
 .footer-note {
   margin: 0;
   text-align: center;
+}
+
+.workspace-page {
+  min-width: 720px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgb(214 232 241 / 55%), transparent 30%),
+    #f4f6f8;
+}
+
+.workspace-shell {
+  width: min(1440px, 100%);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 24px 32px 40px;
+}
+
+.workspace-shell > .panel-header {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  border-bottom: 1px solid rgb(205 215 224 / 80%);
+  padding: 12px 0 18px;
+  background: rgb(244 246 248 / 92%);
+  backdrop-filter: blur(14px);
+}
+
+.workspace-shell .orbit-body {
+  grid-template-columns: minmax(260px, 320px) minmax(0, 820px);
+  justify-content: center;
+  align-items: start;
+  gap: 28px;
+}
+
+.workspace-shell .orbit-sidebar {
+  position: sticky;
+  top: 104px;
+  max-height: calc(100vh - 128px);
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.workspace-shell .orbit-conversation {
+  min-height: calc(100vh - 110px);
+  align-content: start;
+  padding: 8px 0 120px;
+}
+
+.workspace-shell .fixture-card {
+  margin-left: 54px;
+  border-color: #d7e0e8;
+  border-bottom-right-radius: 4px;
+  background: #eef4f8;
+}
+
+.workspace-shell .proposal-card,
+.workspace-shell .event-card {
+  margin-right: 54px;
+  border-bottom-left-radius: 4px;
+}
+
+.workspace-shell .agent-controls,
+.workspace-shell .approval-controls .button-row,
+.workspace-shell .completion-controls > button {
+  display: none;
+}
+
+.workspace-action-bar {
+  position: sticky;
+  z-index: 8;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border: 1px solid #cbd6df;
+  border-radius: 16px;
+  padding: 14px 16px;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 14px 38px rgb(35 50 65 / 16%);
+  backdrop-filter: blur(14px);
+}
+
+.workspace-action-bar > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.workspace-action-bar strong {
+  color: #263746;
+  font-size: 13px;
+}
+
+.workspace-action-bar small {
+  color: #697785;
+  font-size: 11px;
+}
+
+.workspace-loading {
+  display: grid;
+  width: min(640px, calc(100% - 40px));
+  min-height: 100vh;
+  margin: 0 auto;
+  place-content: center;
+  gap: 12px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .workspace-page {
+    min-width: 320px;
+  }
+
+  .workspace-shell {
+    padding: 20px 18px 32px;
+  }
+
+  .workspace-shell .orbit-body {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace-shell .orbit-sidebar {
+    position: static;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .workspace-shell .fixture-card,
+  .workspace-shell .proposal-card,
+  .workspace-shell .event-card {
+    margin-right: 0;
+    margin-left: 0;
+  }
+
+  .workspace-action-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }

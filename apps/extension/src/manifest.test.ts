@@ -51,4 +51,14 @@ describe("production extension contract", () => {
     }
     expect(manifest.oauth2).toBeUndefined();
   });
+
+  it("builds the workspace as an extension page without adding tabs permission", () => {
+    const buildSource = readFileSync(
+      new URL("../scripts/build.mjs", import.meta.url),
+      "utf8",
+    );
+    expect(buildSource).toContain('"workspace.html"');
+    expect(buildSource).toContain('"workspace.js"');
+    expect(manifest.permissions).not.toContain("tabs");
+  });
 });

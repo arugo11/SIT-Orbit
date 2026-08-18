@@ -28,6 +28,7 @@ const onInstalled = createEvent();
 const onStartup = createEvent();
 const onUpdated = createEvent();
 const onActivated = createEvent();
+const onRemoved = createEvent();
 const onMessage = createEvent();
 const setOptions = vi.fn(async (_options: unknown) => undefined);
 const setPanelBehavior = vi.fn(async (_options: unknown) => undefined);
@@ -35,17 +36,51 @@ const sendMessage = vi.fn(async (_message: unknown) => undefined);
 const queryTabs = vi.fn(
   async (_query: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]> => [],
 );
+const getTab = vi.fn(async (tabId: number) => ({
+  id: tabId,
+  windowId: 4,
+  url: "https://scombz.shibaura-it.ac.jp/portal/home",
+}));
+const tabSendMessage = vi.fn(
+  async (_tabId: number, _message: unknown): Promise<unknown> => undefined,
+);
 const getAuthToken = vi.fn(async () => "calendar-worker-token");
 const removeCachedAuthToken = vi.fn(
   async (_details: { token: string }) => undefined,
 );
+const storageValues: Record<string, unknown> = {};
+const storageGet = vi.fn(async (keys: string | string[] | null) => {
+  if (keys === null) {
+    return { ...storageValues };
+  }
+  const requested = Array.isArray(keys) ? keys : [keys];
+  return Object.fromEntries(
+    requested
+      .filter((key) => key in storageValues)
+      .map((key) => [key, storageValues[key]]),
+  );
+});
+const storageSet = vi.fn(async (values: Record<string, unknown>) => {
+  Object.assign(storageValues, values);
+});
+const createTab = vi.fn(async (properties: chrome.tabs.CreateProperties) => ({
+  id: 91,
+  windowId: properties.windowId ?? 1,
+  url: properties.url,
+}));
+const updateTab = vi.fn(async (_tabId: number, _properties: unknown) => ({}));
+const updateWindow = vi.fn(
+  async (_windowId: number, _properties: unknown) => ({}),
+);
 
 const chromeMock = {
   runtime: {
+    id: "orbit-extension-id",
     onInstalled,
     onStartup,
     onMessage,
     sendMessage,
+    getURL: (path: string) => `chrome-extension://orbit-extension-id/${path}`,
   },
   sidePanel: {
     setOptions,
@@ -54,15 +89,25 @@ const chromeMock = {
   tabs: {
     onUpdated,
     onActivated,
-    get: vi.fn(async (_tabId: number) => ({
-      url: "https://scombz.shibaura-it.ac.jp/portal/home",
-    })),
+    onRemoved,
+    get: getTab,
     query: queryTabs,
-    sendMessage: vi.fn(async (_tabId: number, _message: unknown) => undefined),
+    create: createTab,
+    update: updateTab,
+    sendMessage: tabSendMessage,
   },
   identity: {
     getAuthToken,
     removeCachedAuthToken,
+  },
+  storage: {
+    session: {
+      get: storageGet,
+      set: storageSet,
+    },
+  },
+  windows: {
+    update: updateWindow,
   },
 } as unknown as typeof chrome;
 
@@ -87,8 +132,19 @@ describe("service worker side panel contract", () => {
     setPanelBehavior.mockClear();
     sendMessage.mockClear();
     queryTabs.mockClear();
+    getTab.mockClear();
+    tabSendMessage.mockReset();
+    tabSendMessage.mockResolvedValue(undefined);
     getAuthToken.mockClear();
     removeCachedAuthToken.mockClear();
+    storageGet.mockClear();
+    storageSet.mockClear();
+    createTab.mockClear();
+    updateTab.mockClear();
+    updateWindow.mockClear();
+    for (const key of Object.keys(storageValues)) {
+      delete storageValues[key];
+    }
   });
 
   it("enables the panel per tab and preserves its path for ScombZ and other origins", async () => {
@@ -189,5 +245,164 @@ describe("service worker side panel contract", () => {
       );
       expect(JSON.stringify(response.mock.calls)).not.toContain(internalFileId);
     }
+  });
+
+  it("allows a trusted full-page extension tab to use connector commands", async () => {
+    getAuthToken.mockRejectedValueOnce(new Error("no cached token"));
+    const response = vi.fn();
+    onMessage.dispatch(
+      { type: MESSAGE_TYPES.calendarRefresh },
+      {
+        id: "orbit-extension-id",
+        tab: { id: 91 },
+        url: "chrome-extension://orbit-extension-id/workspace.html",
+      },
+      response,
+    );
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "reauth_required" }),
+    );
+  });
+
+  it("opens, reuses, and releases one workspace for the active ScombZ tab", async () => {
+    queryTabs.mockResolvedValue([
+      {
+        id: 11,
+        windowId: 4,
+        url: "https://scombz.shibaura-it.ac.jp/portal/home",
+      },
+    ] as chrome.tabs.Tab[]);
+    tabSendMessage.mockResolvedValue({
+      title: "Home",
+      url: "https://scombz.shibaura-it.ac.jp/portal/home",
+      kind: "scombz",
+    });
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.openWorkspace,
+        stable_state: {
+          status: "idle",
+          proposal: null,
+          completionEvent: null,
+          changeNote: "",
+          error: null,
+        },
+      },
+      { id: "orbit-extension-id" },
+      response,
+    );
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response.mock.calls[0]?.[0]).toMatchObject({
+      ok: true,
+      session: {
+        sourceTabId: 11,
+        sourceWindowId: 4,
+        workspaceTabId: 91,
+        sourceAvailable: true,
+      },
+    });
+    expect(createTab).toHaveBeenCalledWith(
+      expect.objectContaining({
+        openerTabId: 11,
+        windowId: 4,
+        active: false,
+      }),
+    );
+    expect(updateTab).toHaveBeenCalledWith(
+      91,
+      expect.objectContaining({
+        active: true,
+        url: expect.stringContaining("workspace.html?session="),
+      }),
+    );
+    const serialized = JSON.stringify(storageValues);
+    expect(serialized).not.toContain("pendingRunId");
+    expect(serialized).not.toContain("oauth");
+
+    const secondResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.openWorkspace,
+        stable_state: {
+          status: "idle",
+          proposal: null,
+          completionEvent: null,
+          changeNote: "",
+          error: null,
+        },
+      },
+      { id: "orbit-extension-id" },
+      secondResponse,
+    );
+    await vi.waitFor(() => expect(secondResponse).toHaveBeenCalledTimes(1));
+    expect(createTab).toHaveBeenCalledTimes(1);
+    expect(updateTab).toHaveBeenLastCalledWith(91, { active: true });
+
+    onUpdated.dispatch(
+      11,
+      { url: "https://example.com/left-scombz" },
+      { url: "https://example.com/left-scombz" },
+    );
+    await vi.waitFor(() =>
+      expect(JSON.stringify(storageValues)).toContain(
+        '"sourceAvailable":false',
+      ),
+    );
+
+    const reconnectResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.openWorkspace,
+        stable_state: {
+          status: "idle",
+          proposal: null,
+          completionEvent: null,
+          changeNote: "",
+          error: null,
+        },
+      },
+      { id: "orbit-extension-id" },
+      reconnectResponse,
+    );
+    await vi.waitFor(() => expect(reconnectResponse).toHaveBeenCalledTimes(1));
+    expect(JSON.stringify(storageValues)).toContain('"sourceAvailable":true');
+    expect(createTab).toHaveBeenCalledTimes(1);
+
+    onRemoved.dispatch(91);
+    await vi.waitFor(() =>
+      expect(JSON.stringify(storageValues)).toContain('"workspaceTabId":null'),
+    );
+  });
+
+  it("rejects workspace creation from a ScombZ content script", async () => {
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.openWorkspace,
+        stable_state: {
+          status: "idle",
+          proposal: null,
+          completionEvent: null,
+          changeNote: "",
+          error: null,
+        },
+      },
+      {
+        id: "orbit-extension-id",
+        tab: { id: 11 },
+        url: "https://scombz.shibaura-it.ac.jp/portal/home",
+      },
+      response,
+    );
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith(
+      expect.objectContaining({ ok: false }),
+    );
+    expect(createTab).not.toHaveBeenCalled();
   });
 });

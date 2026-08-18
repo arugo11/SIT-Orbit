@@ -10,6 +10,8 @@ import {
   type ScombzRoute,
   type ScombzTask,
 } from "../content/page-context";
+import type { StableAgentLoopSnapshot } from "../sidepanel/loop-state";
+import type { WorkspaceSession, WorkspaceStatus } from "./workspace-session";
 
 export const MESSAGE_TYPES = {
   getPageContext: "get-page-context",
@@ -23,7 +25,56 @@ export const MESSAGE_TYPES = {
   driveRead: "drive-read",
   driveDeselect: "drive-deselect",
   driveRefresh: "drive-refresh",
+  openWorkspace: "open-workspace",
+  getWorkspaceSession: "get-workspace-session",
+  updateWorkspaceSession: "update-workspace-session",
+  getWorkspaceStatus: "get-workspace-status",
+  workspaceOwnershipChanged: "workspace-ownership-changed",
+  workspaceSourceUnavailable: "workspace-source-unavailable",
 } as const;
+
+export interface OpenWorkspaceMessage {
+  type: typeof MESSAGE_TYPES.openWorkspace;
+  stable_state: StableAgentLoopSnapshot;
+}
+
+export interface GetWorkspaceSessionMessage {
+  type: typeof MESSAGE_TYPES.getWorkspaceSession;
+  session_id: string;
+}
+
+export interface UpdateWorkspaceSessionMessage {
+  type: typeof MESSAGE_TYPES.updateWorkspaceSession;
+  session_id: string;
+  stable_state: StableAgentLoopSnapshot;
+}
+
+export interface GetWorkspaceStatusMessage {
+  type: typeof MESSAGE_TYPES.getWorkspaceStatus;
+}
+
+export interface WorkspaceOwnershipChangedMessage {
+  type: typeof MESSAGE_TYPES.workspaceOwnershipChanged;
+  active: boolean;
+  session: WorkspaceSession;
+}
+
+export interface WorkspaceSourceUnavailableMessage {
+  type: typeof MESSAGE_TYPES.workspaceSourceUnavailable;
+  session_id: string;
+}
+
+export interface OpenWorkspaceResponse {
+  ok: boolean;
+  session?: WorkspaceSession;
+  error?: string;
+}
+
+export type WorkspaceSessionResponse =
+  | { ok: true; session: WorkspaceSession }
+  | { ok: false; error: string };
+
+export type WorkspaceStatusResponse = WorkspaceStatus;
 
 export type CalendarCommand =
   | "connect"
@@ -59,7 +110,91 @@ export type ExtensionMessage =
       context: PageContext | null;
     }
   | CalendarCommandMessage
-  | DriveCommandMessage;
+  | DriveCommandMessage
+  | OpenWorkspaceMessage
+  | GetWorkspaceSessionMessage
+  | UpdateWorkspaceSessionMessage
+  | GetWorkspaceStatusMessage
+  | WorkspaceOwnershipChangedMessage
+  | WorkspaceSourceUnavailableMessage;
+
+export function isOpenWorkspaceMessage(
+  message: unknown,
+): message is OpenWorkspaceMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.openWorkspace &&
+    isStableAgentLoopSnapshot(message.stable_state)
+  );
+}
+
+export function isGetWorkspaceSessionMessage(
+  message: unknown,
+): message is GetWorkspaceSessionMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.getWorkspaceSession &&
+    typeof message.session_id === "string"
+  );
+}
+
+export function isUpdateWorkspaceSessionMessage(
+  message: unknown,
+): message is UpdateWorkspaceSessionMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.updateWorkspaceSession &&
+    typeof message.session_id === "string" &&
+    isStableAgentLoopSnapshot(message.stable_state)
+  );
+}
+
+export function isGetWorkspaceStatusMessage(
+  message: unknown,
+): message is GetWorkspaceStatusMessage {
+  return isMessageType(message, MESSAGE_TYPES.getWorkspaceStatus);
+}
+
+export function isWorkspaceOwnershipChangedMessage(
+  message: unknown,
+): message is WorkspaceOwnershipChangedMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.workspaceOwnershipChanged &&
+    typeof message.active === "boolean" &&
+    isRecord(message.session)
+  );
+}
+
+export function isWorkspaceSourceUnavailableMessage(
+  message: unknown,
+): message is WorkspaceSourceUnavailableMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.workspaceSourceUnavailable &&
+    typeof message.session_id === "string"
+  );
+}
+
+function isStableAgentLoopSnapshot(
+  value: unknown,
+): value is StableAgentLoopSnapshot {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    (value.status === "idle" ||
+      value.status === "proposed" ||
+      value.status === "approved" ||
+      value.status === "rejected" ||
+      value.status === "completed" ||
+      value.status === "error") &&
+    (value.proposal === null || isRecord(value.proposal)) &&
+    (value.completionEvent === null || isRecord(value.completionEvent)) &&
+    typeof value.changeNote === "string" &&
+    (value.error === null || typeof value.error === "string")
+  );
+}
 
 export function isGetPageContextMessage(message: unknown): message is {
   type: typeof MESSAGE_TYPES.getPageContext;

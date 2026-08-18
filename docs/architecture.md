@@ -36,7 +36,8 @@ Extension Service Worker
     │  タブごとの有効化、キャッシュ、メッセージ routing
     ├──────────────┐
     ▼              ▼
-Chrome Side Panel   FastAPI Agent API
+Chrome UI           FastAPI Agent API
+（Side Panel / 全画面タブ）
     │                    │
     │                    ├── FixtureAgent
     │                    ├── OpenAIAgent
@@ -66,6 +67,16 @@ Chromeの`chrome.sidePanel` APIは、Webページの横に拡張機能のUIを�
 拡張機能アイコン、またはページ内の明示的なボタンを起点にパネルを開く。[Chrome Side Panel API](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
 
 Chromeの設定によってパネルの左右が変わるため、UIは右側に固定されることを前提にしない。
+
+### 全画面ワークスペース
+
+Side Panel右上の明示的なボタンから、同じExtension UIを通常のChromeタブへ開ける。全画面ワークスペースは自由入力チャットではなく、現在の「提案、承認、完了」ループを会話風タイムラインと下部操作バーで表示する。
+
+Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`として固定し、全画面タブがアクティブになった後もそのタブへPage Contextを問い合わせる。接続元が閉じた、またはScombZ外へ遷移した場合、別のタブへ暗黙に切り替えない。
+
+画面間の引継ぎには`chrome.storage.session`を使用する。保存対象はopaqueなsession ID、接続元と全画面のtab ID、最小化済みPage Context、提案・承認・完了の安定状態だけである。Agent Toolの実行中は全画面へ切り替えず、`pendingRunId`やDeferred Tool callは保存しない。全画面タブが操作主体の間、Side Panelは読み取り専用とし、二重のTool実行や完了記録を防ぐ。
+
+拡張機能ページを`chrome.tabs.create()`で開くための`tabs`権限は追加しない。既存のScombZ host permissionと`storage`権限の範囲で実装する。[Chrome Tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs)、[Chrome Storage API](https://developer.chrome.com/docs/extensions/reference/api/storage)
 
 ### 最小権限
 
@@ -98,7 +109,7 @@ Content ScriptはScombZのDOMを読み取り、ページと拡張機能の間で
 
 Content ScriptはページのJavaScript環境から分離されたIsolated Worldで動作し、Chrome APIの多くはService Workerとのメッセージ交換を経由して利用する。[Content scripts](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts)
 
-Service Workerのメモリを長期状態の正本にしない。Branch 1ではタブの現在状態をContent Scriptから再取得できるため、`chrome.storage`によるキャッシュも持たない。
+Service Workerのメモリを長期状態の正本にしない。タブの現在状態はContent Scriptから再取得する。画面間の安定状態だけは`chrome.storage.session`へ保持し、ブラウザ再起動後の復元には使用しない。
 
 ## ScombZ Adapter
 

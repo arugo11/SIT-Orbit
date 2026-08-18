@@ -41,6 +41,11 @@ await Promise.all([
     entryPoints: [resolve(packageRoot, "src/sidepanel/index.tsx")],
     outfile: resolve(outputDirectory, "sidepanel.js"),
   }),
+  build({
+    ...bundleOptions,
+    entryPoints: [resolve(packageRoot, "src/workspace/index.tsx")],
+    outfile: resolve(outputDirectory, "workspace.js"),
+  }),
 ]);
 
 await Promise.all([
@@ -51,6 +56,10 @@ await Promise.all([
   copyFile(
     resolve(packageRoot, "src/sidepanel/sidepanel.html"),
     resolve(outputDirectory, "sidepanel.html"),
+  ),
+  copyFile(
+    resolve(packageRoot, "src/workspace/workspace.html"),
+    resolve(outputDirectory, "workspace.html"),
   ),
   copyFile(
     resolve(packageRoot, "src/sidepanel/styles.css"),
@@ -81,6 +90,8 @@ const requiredFiles = [
   "content-script.js",
   "sidepanel.html",
   "sidepanel.js",
+  "workspace.html",
+  "workspace.js",
   "styles.css",
 ];
 
@@ -99,7 +110,7 @@ if (
   manifest.background?.service_worker !== "service-worker.js"
 ) {
   throw new Error(
-    "Generated extension manifest is outside the Branch 5 contract",
+    "Generated extension manifest is outside the production permission contract",
   );
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 import {
   type ActionProposal,
   AgentApiClient,
@@ -35,15 +35,25 @@ import {
   driveCommandMessage,
   isPageContext,
   isPageContextUpdatedMessage,
+  isWorkspaceOwnershipChangedMessage,
+  isWorkspaceSourceUnavailableMessage,
   MESSAGE_TYPES,
+  type OpenWorkspaceResponse,
+  type WorkspaceStatusResponse,
 } from "../shared/messages";
+import type { WorkspaceSession } from "../shared/workspace-session";
 import {
   B1_OMIYA_CONTEXT,
   B1_OMIYA_EVENT,
   isSafeB1Proposal,
   isSyntheticOrPublic,
 } from "./b1-fixture";
-import { agentLoopReducer, initialAgentLoopState } from "./loop-state";
+import {
+  agentLoopReducer,
+  hydrateAgentLoopState,
+  initialAgentLoopState,
+  toStableAgentLoopSnapshot,
+} from "./loop-state";
 
 const PAGE_KIND_LABEL: Record<PageKind, string> = {
   scombz: "ScombZページ",
@@ -248,6 +258,40 @@ export interface AppProps {
     command: DriveCommand,
     selectionId?: string,
   ) => Promise<DriveConnectorResult>;
+  mode?: "sidepanel" | "workspace";
+  workspaceSession?: WorkspaceSession;
+}
+
+function openWorkspace(
+  stableState: NonNullable<ReturnType<typeof toStableAgentLoopSnapshot>>,
+): Promise<OpenWorkspaceResponse> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: MESSAGE_TYPES.openWorkspace, stable_state: stableState },
+      (response: OpenWorkspaceResponse | undefined) => {
+        if (chrome.runtime.lastError || !response) {
+          resolve({ ok: false, error: "全画面タブを開けませんでした。" });
+          return;
+        }
+        resolve(response);
+      },
+    );
+  });
+}
+
+function requestWorkspaceStatus(): Promise<WorkspaceStatusResponse> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage(
+      { type: MESSAGE_TYPES.getWorkspaceStatus },
+      (response: WorkspaceStatusResponse | undefined) => {
+        if (chrome.runtime.lastError || !response) {
+          resolve({ active: false, session: null, sourceTabId: null });
+          return;
+        }
+        resolve(response);
+      },
+    );
+  });
 }
 
 function formatCalendarEventTime(
@@ -682,12 +726,26 @@ export function App({
   calendarRequest = requestCalendarCommand,
   driveConnector,
   driveRequest = requestDriveCommand,
+  mode = "sidepanel",
+  workspaceSession,
 }: AppProps) {
-  const [pageContext, setPageContext] = useState<PageContext | null>(null);
+  const [pageContext, setPageContext] = useState<PageContext | null>(
+    workspaceSession?.pageContext ?? null,
+  );
   const [loopState, dispatch] = useReducer(
     agentLoopReducer,
-    initialAgentLoopState,
+    workspaceSession?.stableState,
+    (snapshot) =>
+      snapshot ? hydrateAgentLoopState(snapshot) : initialAgentLoopState,
   );
+  const [workspaceActive, setWorkspaceActive] = useState(mode === "workspace");
+  const boundSourceTabId = useRef<number | null>(
+    workspaceSession?.sourceTabId ?? null,
+  );
+  const [workspaceSourceAvailable, setWorkspaceSourceAvailable] = useState(
+    workspaceSession?.sourceAvailable ?? true,
+  );
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [calendarState, setCalendarState] = useState<CalendarConnectorResult>({
     status: "not_connected",
   });
@@ -827,23 +885,107 @@ export function App({
     let mounted = true;
 
     const handleMessage = (message: unknown) => {
-      if (mounted && isPageContextUpdatedMessage(message)) {
+      if (
+        mounted &&
+        mode === "sidepanel" &&
+        isPageContextUpdatedMessage(message)
+      ) {
         setPageContext(message.context);
+      }
+      if (
+        mounted &&
+        mode === "sidepanel" &&
+        isWorkspaceOwnershipChangedMessage(message) &&
+        boundSourceTabId.current === message.session.sourceTabId
+      ) {
+        setWorkspaceActive(message.active);
+        setPageContext(message.session.pageContext);
+        dispatch({
+          type: "state-hydrated",
+          state: message.session.stableState,
+        });
+      }
+      if (
+        mounted &&
+        mode === "workspace" &&
+        workspaceSession &&
+        isWorkspaceOwnershipChangedMessage(message) &&
+        message.session.sessionId === workspaceSession.sessionId
+      ) {
+        setPageContext(message.session.pageContext);
+        setWorkspaceSourceAvailable(message.session.sourceAvailable);
+      }
+      if (
+        mounted &&
+        mode === "workspace" &&
+        workspaceSession &&
+        isWorkspaceSourceUnavailableMessage(message) &&
+        message.session_id === workspaceSession.sessionId
+      ) {
+        setWorkspaceSourceAvailable(false);
       }
     };
 
     chrome.runtime.onMessage.addListener(handleMessage);
-    void requestPageContext().then((context) => {
-      if (mounted) {
-        setPageContext(context);
-      }
-    });
+    if (mode === "sidepanel") {
+      void Promise.all([requestPageContext(), requestWorkspaceStatus()]).then(
+        ([context, workspaceStatus]) => {
+          if (!mounted) {
+            return;
+          }
+          setPageContext(workspaceStatus.session?.pageContext ?? context);
+          setWorkspaceActive(workspaceStatus.active);
+          boundSourceTabId.current = workspaceStatus.sourceTabId;
+          if (workspaceStatus.session) {
+            dispatch({
+              type: "state-hydrated",
+              state: workspaceStatus.session.stableState,
+            });
+          }
+        },
+      );
+    }
 
     return () => {
       mounted = false;
       chrome.runtime.onMessage.removeListener(handleMessage);
     };
-  }, []);
+  }, [mode, workspaceSession]);
+
+  useEffect(() => {
+    if (mode !== "workspace" || !workspaceSession) {
+      return;
+    }
+    const stableState = toStableAgentLoopSnapshot(loopState);
+    if (!stableState) {
+      return;
+    }
+    chrome.runtime.sendMessage({
+      type: MESSAGE_TYPES.updateWorkspaceSession,
+      session_id: workspaceSession.sessionId,
+      stable_state: stableState,
+    });
+  }, [loopState, mode, workspaceSession]);
+
+  const handleOpenWorkspace = async (): Promise<void> => {
+    const stableState = toStableAgentLoopSnapshot(loopState);
+    if (!stableState) {
+      return;
+    }
+    setWorkspaceError(null);
+    const response = await openWorkspace(stableState);
+    if (!response.ok) {
+      setWorkspaceError(response.error ?? "全画面タブを開けませんでした。");
+      return;
+    }
+    setWorkspaceActive(true);
+    boundSourceTabId.current =
+      response.session?.sourceTabId ?? boundSourceTabId.current;
+  };
+
+  const interactionLocked =
+    (mode === "sidepanel" && workspaceActive) ||
+    (mode === "workspace" && !workspaceSourceAvailable);
 
   const requestProposal = async (): Promise<void> => {
     dispatch({ type: "propose-started" });
@@ -1000,329 +1142,464 @@ export function App({
   };
 
   return (
-    <main className="panel-shell">
+    <main
+      className={`panel-shell ${mode === "workspace" ? "workspace-shell" : "sidepanel-shell"}`}
+      data-display-mode={mode}
+    >
       <header className="panel-header">
         <div>
           <p className="eyebrow">SIT ORBIT</p>
           <h1>次の一歩を、軽く。</h1>
         </div>
-        <span className="status-badge">ローカル表示</span>
+        <div className="header-actions">
+          <span className="status-badge">
+            {mode === "workspace" ? "全画面表示" : "ローカル表示"}
+          </span>
+          {mode === "sidepanel" ? (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="全画面で開く"
+              title="全画面で開く"
+              onClick={() => void handleOpenWorkspace()}
+              disabled={toStableAgentLoopSnapshot(loopState) === null}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M8 3H3v5h2V5h3V3Zm8 0v2h3v3h2V3h-5ZM5 16H3v5h5v-2H5v-3Zm16 0h-2v3h-3v2h5v-5Z" />
+              </svg>
+            </button>
+          ) : null}
+        </div>
       </header>
 
-      <section className="context-card" aria-labelledby="page-context-title">
-        <div className="section-heading">
-          <h2 id="page-context-title">現在のScombZページ</h2>
-          <span className="section-note">読み取りは最小限</span>
-        </div>
-        {pageContext ? (
-          <dl className="context-list">
-            <div>
-              <dt>ページ種別</dt>
-              <dd>{PAGE_KIND_LABEL[pageContext.kind]}</dd>
-            </div>
-            <div>
-              <dt>タイトル</dt>
-              <dd>{pageContext.title}</dd>
-            </div>
-            <div>
-              <dt>URL</dt>
-              <dd className="url-value">{pageContext.url}</dd>
-            </div>
-            {pageContext.scombz ? (
-              <>
-                <div>
-                  <dt>ルート</dt>
-                  <dd>{pageContext.scombz.route}</dd>
-                </div>
-                <div>
-                  <dt>課題</dt>
-                  <dd>{pageContext.scombz.tasks.length}件</dd>
-                </div>
-                <div>
-                  <dt>お知らせ</dt>
-                  <dd>{pageContext.scombz.announcements.length}件</dd>
-                </div>
-                <div>
-                  <dt>関連リンク</dt>
-                  <dd>{pageContext.scombz.relatedLinks.length}件</dd>
-                </div>
-              </>
-            ) : null}
-          </dl>
-        ) : (
-          <p className="empty-state">ScombZページの情報を待っています。</p>
-        )}
-      </section>
-
-      <CalendarCard
-        state={calendarState}
-        busy={calendarBusy}
-        onConnect={() => void runCalendarAction("connect")}
-        onRefresh={() => void runCalendarAction("refresh")}
-        onReauthenticate={() => void runCalendarAction("reauthenticate")}
-        onDisconnect={() => void runCalendarAction("disconnect")}
-      />
-
-      <DriveCard
-        state={driveState}
-        busy={driveBusy}
-        onSelect={() => void runDriveAction("select")}
-        onRead={(selectionId) => void runDriveAction("read", selectionId)}
-        onDeselect={(selectionId) =>
-          void runDriveAction("deselect", selectionId)
-        }
-      />
-
-      <DriveFixtureCard
-        state={driveFixtureState}
-        busy={driveFixtureBusy}
-        onSelect={() => void runDriveFixtureAction("select")}
-        onRead={(selectionId) =>
-          void runDriveFixtureAction("read", selectionId)
-        }
-        onDeselect={(selectionId) =>
-          void runDriveFixtureAction("deselect", selectionId)
-        }
-      />
-
-      <section className="fixture-card" aria-labelledby="fixture-title">
-        <div className="section-heading">
-          <h2 id="fixture-title">B1 大宮のデモfixture</h2>
-          <span className="fixture-label">合成データ</span>
-        </div>
-        <p className="fixture-disclaimer">
-          これはローカルの静的表示です。Agent
-          APIや大学の公式記録には接続していません。
+      {mode === "sidepanel" && workspaceActive ? (
+        <p className="workspace-notice" role="status">
+          全画面ワークスペースで操作中です。このSide Panelは読み取り専用です。
         </p>
-        <dl className="fixture-list">
-          <div>
-            <dt>場所</dt>
-            <dd>{LOCAL_FIXTURE.campus}</dd>
-          </div>
-          <div>
-            <dt>イベント</dt>
-            <dd>{LOCAL_FIXTURE.event}</dd>
-          </div>
-          <div>
-            <dt>根拠の例</dt>
-            <dd>{LOCAL_FIXTURE.evidence}</dd>
-          </div>
-          <div>
-            <dt>利用可能時間</dt>
-            <dd>{LOCAL_FIXTURE.available}</dd>
-          </div>
-        </dl>
-        <div className="agent-controls">
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => void requestProposal()}
-            disabled={
-              loopState.status === "proposing" ||
-              loopState.status === "tool-running" ||
-              loopState.status === "resuming" ||
-              loopState.status === "verifying"
-            }
-          >
-            {loopState.status === "proposing"
-              ? "提案を取得中…"
-              : loopState.status === "tool-running"
-                ? `${toolDisplayName(loopState.pendingToolName)}を処理中…`
-                : loopState.status === "resuming"
-                  ? "提案を再開中…"
-                  : loopState.proposal
-                    ? "B1 大宮の提案を再取得"
-                    : "B1 大宮の提案を作成"}
-          </button>
-          <p className="action-note">
-            {projectScombzPageSummary(pageContext) !== null ||
-            (calendarState.status === "connected" && calendarState.snapshot)
-              ? "ボタンを押したときだけ、合成データと必要な最小化済みのページ概要・空き時間をローカル Agent API に送ります。予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。"
-              : "ボタンを押したときだけ、合成データをローカル Agent API に送ります。"}
-          </p>
-          {loopState.status === "tool-running" ? (
-            <p className="state-message" data-agent-status="tool-running">
-              {toolDisplayName(loopState.pendingToolName)}を準備しています。
-              {loopState.pendingToolName === "google_calendar_availability"
-                ? "認証画面は自動では開きません。"
-                : "表示中のページから件数だけをまとめています。"}
-            </p>
-          ) : null}
-          {loopState.status === "resuming" ? (
-            <p className="state-message" data-agent-status="resuming">
-              {toolDisplayName(loopState.pendingToolName)}
-              の導出結果をAgentへ渡して提案を再開しています。
-            </p>
-          ) : null}
-          {loopState.status === "reauth_required" ? (
-            <p className="state-message" data-agent-status="reauth-required">
-              Calendarの再認証が必要です。明示的に再認証してから、提案ボタンを押してください。
-            </p>
-          ) : null}
-        </div>
-      </section>
-
-      {loopState.error ? (
+      ) : null}
+      {mode === "workspace" && !workspaceSourceAvailable ? (
         <p className="error-message" role="alert">
-          {loopState.error}
+          接続元のScombZタブが閉じられたか、別ページへ移動しました。ScombZを開き直してSide
+          Panelから再接続してください。
+        </p>
+      ) : null}
+      {workspaceError ? (
+        <p className="error-message" role="alert">
+          {workspaceError}
         </p>
       ) : null}
 
-      {loopState.proposal ? (
-        <section className="proposal-card" aria-labelledby="proposal-title">
-          <div className="section-heading">
-            <h2 id="proposal-title">Agent APIからの提案</h2>
-            <span className="fixture-label">
-              {loopState.proposal.evidence.some(
-                (evidence) =>
-                  evidence.source_type === "calendar" &&
-                  evidence.data_classification === "personal",
-              )
-                ? loopState.proposal.evidence.some(
-                    (evidence) =>
-                      evidence.source_type === "scombz" &&
-                      evidence.data_classification === "personal",
-                  )
-                  ? "合成＋ScombZ概要＋Calendar空き時間"
-                  : "合成＋Calendar空き時間"
-                : loopState.proposal.evidence.some(
-                      (evidence) =>
-                        evidence.source_type === "scombz" &&
-                        evidence.data_classification === "personal",
-                    )
-                  ? "合成＋ScombZ概要"
-                  : "合成データ"}
-            </span>
-          </div>
-          <dl className="proposal-list">
-            <div>
-              <dt>タイトル</dt>
-              <dd>{loopState.proposal.title}</dd>
+      <div className="orbit-body">
+        <aside className="orbit-sidebar" aria-label="接続情報">
+          <section
+            className="context-card"
+            aria-labelledby="page-context-title"
+          >
+            <div className="section-heading">
+              <h2 id="page-context-title">現在のScombZページ</h2>
+              <span className="section-note">読み取りは最小限</span>
             </div>
-            <div>
-              <dt>理由</dt>
-              <dd>{loopState.proposal.reason}</dd>
-            </div>
-            <div>
-              <dt>所要時間</dt>
-              <dd>{loopState.proposal.duration_minutes}分</dd>
-            </div>
-          </dl>
-          <div className="evidence-block">
-            <h3>根拠</h3>
-            <ul className="evidence-list">
-              {proposalEvidence(loopState.proposal)}
-            </ul>
-          </div>
+            {pageContext ? (
+              <dl className="context-list">
+                <div>
+                  <dt>ページ種別</dt>
+                  <dd>{PAGE_KIND_LABEL[pageContext.kind]}</dd>
+                </div>
+                <div>
+                  <dt>タイトル</dt>
+                  <dd>{pageContext.title}</dd>
+                </div>
+                <div>
+                  <dt>URL</dt>
+                  <dd className="url-value">{pageContext.url}</dd>
+                </div>
+                {pageContext.scombz ? (
+                  <>
+                    <div>
+                      <dt>ルート</dt>
+                      <dd>{pageContext.scombz.route}</dd>
+                    </div>
+                    <div>
+                      <dt>課題</dt>
+                      <dd>{pageContext.scombz.tasks.length}件</dd>
+                    </div>
+                    <div>
+                      <dt>お知らせ</dt>
+                      <dd>{pageContext.scombz.announcements.length}件</dd>
+                    </div>
+                    <div>
+                      <dt>関連リンク</dt>
+                      <dd>{pageContext.scombz.relatedLinks.length}件</dd>
+                    </div>
+                  </>
+                ) : null}
+              </dl>
+            ) : (
+              <p className="empty-state">ScombZページの情報を待っています。</p>
+            )}
+          </section>
 
-          {loopState.status === "proposed" ? (
-            <div className="approval-controls">
-              <label htmlFor="change-note">
-                完了時に添えるメモ（任意）
-                <textarea
-                  id="change-note"
-                  value={loopState.changeNote}
-                  maxLength={500}
-                  onChange={(event) =>
-                    dispatch({
-                      type: "note-changed",
-                      note: event.target.value,
-                    })
-                  }
-                  rows={3}
-                />
-                <small>
-                  提案内容は変更せず、完了イベントのnotesにだけ添付します。
-                </small>
-              </label>
-              <div className="button-row">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={approveProposal}
-                >
-                  提案を承認する
-                </button>
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={rejectProposal}
-                >
-                  却下（APIに送信しない）
-                </button>
-              </div>
-            </div>
-          ) : null}
+          <CalendarCard
+            state={calendarState}
+            busy={calendarBusy || interactionLocked}
+            onConnect={() => void runCalendarAction("connect")}
+            onRefresh={() => void runCalendarAction("refresh")}
+            onReauthenticate={() => void runCalendarAction("reauthenticate")}
+            onDisconnect={() => void runCalendarAction("disconnect")}
+          />
 
-          {loopState.status === "rejected" ? (
-            <p className="state-message">
-              提案を却下しました。却下のための Agent API
-              呼び出しは行っていません。
+          <DriveCard
+            state={driveState}
+            busy={driveBusy || interactionLocked}
+            onSelect={() => void runDriveAction("select")}
+            onRead={(selectionId) => void runDriveAction("read", selectionId)}
+            onDeselect={(selectionId) =>
+              void runDriveAction("deselect", selectionId)
+            }
+          />
+
+          <DriveFixtureCard
+            state={driveFixtureState}
+            busy={driveFixtureBusy || interactionLocked}
+            onSelect={() => void runDriveFixtureAction("select")}
+            onRead={(selectionId) =>
+              void runDriveFixtureAction("read", selectionId)
+            }
+            onDeselect={(selectionId) =>
+              void runDriveFixtureAction("deselect", selectionId)
+            }
+          />
+        </aside>
+        <section className="orbit-conversation" aria-label="Agentとの対話">
+          <section className="fixture-card" aria-labelledby="fixture-title">
+            <div className="section-heading">
+              <h2 id="fixture-title">B1 大宮のデモfixture</h2>
+              <span className="fixture-label">合成データ</span>
+            </div>
+            <p className="fixture-disclaimer">
+              これはローカルの静的表示です。Agent
+              APIや大学の公式記録には接続していません。
             </p>
-          ) : null}
-
-          {loopState.status === "approved" ||
-          loopState.status === "verifying" ? (
-            <div className="completion-controls">
-              <p className="state-message">
-                承認済みです。行動が完了したら、明示的に記録してください。
-              </p>
+            <dl className="fixture-list">
+              <div>
+                <dt>場所</dt>
+                <dd>{LOCAL_FIXTURE.campus}</dd>
+              </div>
+              <div>
+                <dt>イベント</dt>
+                <dd>{LOCAL_FIXTURE.event}</dd>
+              </div>
+              <div>
+                <dt>根拠の例</dt>
+                <dd>{LOCAL_FIXTURE.evidence}</dd>
+              </div>
+              <div>
+                <dt>利用可能時間</dt>
+                <dd>{LOCAL_FIXTURE.available}</dd>
+              </div>
+            </dl>
+            <div className="agent-controls">
               <button
                 type="button"
                 className="primary-button"
-                onClick={() => void verifyCompletion()}
-                disabled={loopState.status === "verifying"}
+                onClick={() => void requestProposal()}
+                disabled={
+                  interactionLocked ||
+                  loopState.status === "proposing" ||
+                  loopState.status === "tool-running" ||
+                  loopState.status === "resuming" ||
+                  loopState.status === "verifying"
+                }
               >
-                {loopState.status === "verifying"
-                  ? "完了を記録中…"
-                  : "完了を確認して記録する"}
+                {loopState.status === "proposing"
+                  ? "提案を取得中…"
+                  : loopState.status === "tool-running"
+                    ? `${toolDisplayName(loopState.pendingToolName)}を処理中…`
+                    : loopState.status === "resuming"
+                      ? "提案を再開中…"
+                      : loopState.proposal
+                        ? "B1 大宮の提案を再取得"
+                        : "B1 大宮の提案を作成"}
               </button>
+              <p className="action-note">
+                {projectScombzPageSummary(pageContext) !== null ||
+                (calendarState.status === "connected" && calendarState.snapshot)
+                  ? "ボタンを押したときだけ、合成データと必要な最小化済みのページ概要・空き時間をローカル Agent API に送ります。予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。"
+                  : "ボタンを押したときだけ、合成データをローカル Agent API に送ります。"}
+              </p>
+              {loopState.status === "tool-running" ? (
+                <p className="state-message" data-agent-status="tool-running">
+                  {toolDisplayName(loopState.pendingToolName)}を準備しています。
+                  {loopState.pendingToolName === "google_calendar_availability"
+                    ? "認証画面は自動では開きません。"
+                    : "表示中のページから件数だけをまとめています。"}
+                </p>
+              ) : null}
+              {loopState.status === "resuming" ? (
+                <p className="state-message" data-agent-status="resuming">
+                  {toolDisplayName(loopState.pendingToolName)}
+                  の導出結果をAgentへ渡して提案を再開しています。
+                </p>
+              ) : null}
+              {loopState.status === "reauth_required" ? (
+                <p
+                  className="state-message"
+                  data-agent-status="reauth-required"
+                >
+                  Calendarの再認証が必要です。明示的に再認証してから、提案ボタンを押してください。
+                </p>
+              ) : null}
             </div>
-          ) : null}
+          </section>
 
-          {loopState.status === "completed" ? (
-            <p className="state-message success-message">
-              完了を記録しました。下の action_completed イベントを確認できます。
+          {loopState.error ? (
+            <p className="error-message" role="alert">
+              {loopState.error}
             </p>
           ) : null}
-        </section>
-      ) : null}
 
-      {loopState.completionEvent ? (
-        <section className="event-card" aria-labelledby="completion-title">
-          <div className="section-heading">
-            <h2 id="completion-title">完了イベント</h2>
-            <span className="status-badge">記録済み</span>
-          </div>
-          <dl className="context-list">
-            <div>
-              <dt>イベント種別</dt>
-              <dd>{loopState.completionEvent.event_type}</dd>
-            </div>
-            <div>
-              <dt>シナリオ</dt>
-              <dd>{loopState.completionEvent.scenario_id}</dd>
-            </div>
-            <div>
-              <dt>キャンパス</dt>
-              <dd>{loopState.completionEvent.campus}</dd>
-            </div>
-            <div>
-              <dt>詳細</dt>
-              <dd>
-                <code className="event-payload">
-                  {formatPayload(loopState.completionEvent.payload)}
-                </code>
-              </dd>
-            </div>
-          </dl>
-        </section>
-      ) : null}
+          {loopState.proposal ? (
+            <section className="proposal-card" aria-labelledby="proposal-title">
+              <div className="section-heading">
+                <h2 id="proposal-title">Agent APIからの提案</h2>
+                <span className="fixture-label">
+                  {loopState.proposal.evidence.some(
+                    (evidence) =>
+                      evidence.source_type === "calendar" &&
+                      evidence.data_classification === "personal",
+                  )
+                    ? loopState.proposal.evidence.some(
+                        (evidence) =>
+                          evidence.source_type === "scombz" &&
+                          evidence.data_classification === "personal",
+                      )
+                      ? "合成＋ScombZ概要＋Calendar空き時間"
+                      : "合成＋Calendar空き時間"
+                    : loopState.proposal.evidence.some(
+                          (evidence) =>
+                            evidence.source_type === "scombz" &&
+                            evidence.data_classification === "personal",
+                        )
+                      ? "合成＋ScombZ概要"
+                      : "合成データ"}
+                </span>
+              </div>
+              <dl className="proposal-list">
+                <div>
+                  <dt>タイトル</dt>
+                  <dd>{loopState.proposal.title}</dd>
+                </div>
+                <div>
+                  <dt>理由</dt>
+                  <dd>{loopState.proposal.reason}</dd>
+                </div>
+                <div>
+                  <dt>所要時間</dt>
+                  <dd>{loopState.proposal.duration_minutes}分</dd>
+                </div>
+              </dl>
+              <div className="evidence-block">
+                <h3>根拠</h3>
+                <ul className="evidence-list">
+                  {proposalEvidence(loopState.proposal)}
+                </ul>
+              </div>
 
-      <p className="footer-note">
-        この静的fixture自体は提案の作成や外部サービスへの書き込みは行いません。
-        Agent APIへの接続は、提案作成と完了記録を押したときだけです。
-      </p>
+              {loopState.status === "proposed" ? (
+                <div className="approval-controls">
+                  <label htmlFor="change-note">
+                    完了時に添えるメモ（任意）
+                    <textarea
+                      id="change-note"
+                      value={loopState.changeNote}
+                      maxLength={500}
+                      disabled={interactionLocked}
+                      onChange={(event) =>
+                        dispatch({
+                          type: "note-changed",
+                          note: event.target.value,
+                        })
+                      }
+                      rows={3}
+                    />
+                    <small>
+                      提案内容は変更せず、完了イベントのnotesにだけ添付します。
+                    </small>
+                  </label>
+                  <div className="button-row">
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={approveProposal}
+                      disabled={interactionLocked}
+                    >
+                      提案を承認する
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={rejectProposal}
+                      disabled={interactionLocked}
+                    >
+                      却下（APIに送信しない）
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {loopState.status === "rejected" ? (
+                <p className="state-message">
+                  提案を却下しました。却下のための Agent API
+                  呼び出しは行っていません。
+                </p>
+              ) : null}
+
+              {loopState.status === "approved" ||
+              loopState.status === "verifying" ? (
+                <div className="completion-controls">
+                  <p className="state-message">
+                    承認済みです。行動が完了したら、明示的に記録してください。
+                  </p>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void verifyCompletion()}
+                    disabled={
+                      interactionLocked || loopState.status === "verifying"
+                    }
+                  >
+                    {loopState.status === "verifying"
+                      ? "完了を記録中…"
+                      : "完了を確認して記録する"}
+                  </button>
+                </div>
+              ) : null}
+
+              {loopState.status === "completed" ? (
+                <p className="state-message success-message">
+                  完了を記録しました。下の action_completed
+                  イベントを確認できます。
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+
+          {loopState.completionEvent ? (
+            <section className="event-card" aria-labelledby="completion-title">
+              <div className="section-heading">
+                <h2 id="completion-title">完了イベント</h2>
+                <span className="status-badge">記録済み</span>
+              </div>
+              <dl className="context-list">
+                <div>
+                  <dt>イベント種別</dt>
+                  <dd>{loopState.completionEvent.event_type}</dd>
+                </div>
+                <div>
+                  <dt>シナリオ</dt>
+                  <dd>{loopState.completionEvent.scenario_id}</dd>
+                </div>
+                <div>
+                  <dt>キャンパス</dt>
+                  <dd>{loopState.completionEvent.campus}</dd>
+                </div>
+                <div>
+                  <dt>詳細</dt>
+                  <dd>
+                    <code className="event-payload">
+                      {formatPayload(loopState.completionEvent.payload)}
+                    </code>
+                  </dd>
+                </div>
+              </dl>
+            </section>
+          ) : null}
+
+          {mode === "workspace" ? (
+            <section
+              className="workspace-action-bar"
+              aria-labelledby="workspace-action-title"
+            >
+              <div>
+                <strong id="workspace-action-title">
+                  {loopState.status === "proposed"
+                    ? "提案を確認してください"
+                    : loopState.status === "approved"
+                      ? "行動後に完了を記録できます"
+                      : loopState.status === "tool-running" ||
+                          loopState.status === "resuming"
+                        ? "Agent Toolを実行しています"
+                        : "次の一歩をAgentに提案させます"}
+                </strong>
+                <small>対応している操作だけを表示しています。</small>
+              </div>
+              <div className="button-row">
+                {loopState.status === "proposed" ? (
+                  <>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={approveProposal}
+                      disabled={interactionLocked}
+                    >
+                      提案を承認する
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={rejectProposal}
+                      disabled={interactionLocked}
+                    >
+                      却下する
+                    </button>
+                  </>
+                ) : loopState.status === "approved" ||
+                  loopState.status === "verifying" ? (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void verifyCompletion()}
+                    disabled={
+                      interactionLocked || loopState.status === "verifying"
+                    }
+                  >
+                    {loopState.status === "verifying"
+                      ? "完了を記録中…"
+                      : "完了を確認して記録する"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void requestProposal()}
+                    disabled={
+                      interactionLocked ||
+                      loopState.status === "proposing" ||
+                      loopState.status === "tool-running" ||
+                      loopState.status === "resuming"
+                    }
+                  >
+                    {loopState.status === "proposing"
+                      ? "提案を取得中…"
+                      : loopState.status === "tool-running"
+                        ? `${toolDisplayName(loopState.pendingToolName)}を処理中…`
+                        : loopState.status === "resuming"
+                          ? "提案を再開中…"
+                          : loopState.proposal
+                            ? "次の提案を作成"
+                            : "次の一歩を提案"}
+                  </button>
+                )}
+              </div>
+            </section>
+          ) : null}
+
+          <p className="footer-note">
+            この静的fixture自体は提案の作成や外部サービスへの書き込みは行いません。
+            Agent APIへの接続は、提案作成と完了記録を押したときだけです。
+          </p>
+        </section>
+      </div>
     </main>
   );
 }
