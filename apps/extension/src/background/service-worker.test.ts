@@ -1,3 +1,4 @@
+import { parseHTML } from "linkedom";
 import {
   afterAll,
   afterEach,
@@ -7,7 +8,6 @@ import {
   it,
   vi,
 } from "vitest";
-import { parseHTML } from "linkedom";
 import { MESSAGE_TYPES } from "../shared/messages";
 
 type EventCallback = (...args: never[]) => void;
@@ -544,9 +544,7 @@ describe("service worker side panel contract", () => {
 
     executeScript
       .mockResolvedValueOnce([{ result: { status: "submitted" } }])
-      .mockResolvedValueOnce([
-        { result: { status: "known", records: [] } },
-      ]);
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
     const captureResponse = vi.fn();
     onMessage.dispatch(
       {
