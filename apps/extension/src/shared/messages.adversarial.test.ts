@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   driveCommandMessage,
   isDriveCommandMessage,
+  isLibraryActionPreviewMessage,
   isPageContext,
   isPageContextUpdatedMessage,
   MESSAGE_TYPES,
@@ -187,5 +188,33 @@ describe("Google Drive command message boundaries", () => {
     expect(() => driveCommandMessage("read")).toThrow();
     expect(() => driveCommandMessage("deselect", "")).toThrow();
     expect(() => driveCommandMessage("deselect", "sel_auth_01")).toThrow();
+  });
+});
+
+describe("library action preview message boundaries", () => {
+  const operation = {
+    action_type: "ill_copy",
+    resource_ref: "orbit-library://record/ABCDEFGHIJKLMNOP",
+  } as const;
+
+  it("accepts only an operation reference and rejects form values", () => {
+    expect(
+      isLibraryActionPreviewMessage({
+        type: MESSAGE_TYPES.libraryActionPreview,
+        tool_call_id: "library-preview-call",
+        operation,
+      }),
+    ).toBe(true);
+    expect(
+      isLibraryActionPreviewMessage({
+        type: MESSAGE_TYPES.libraryActionPreview,
+        tool_call_id: "library-preview-call",
+        operation,
+        inputs: {
+          action_type: "ill_copy",
+          values: { page_range: "12-18", payment: "private" },
+        },
+      }),
+    ).toBe(false);
   });
 });

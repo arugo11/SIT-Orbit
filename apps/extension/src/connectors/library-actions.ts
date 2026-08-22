@@ -74,38 +74,15 @@ export type LibraryActionPreviewOfficial = {
   page_range: string | null;
 };
 
-export function editableInputsForOperation(
+export function readOnlyInputsForOperation(
   operation: LibraryOperation,
-): LibraryActionEditableInputs {
+): LibraryActionEditableInputs | null {
   switch (operation.action_type) {
     case "visit_shelf":
     case "open_online":
-    case "renew":
       return { action_type: operation.action_type, values: {} };
-    case "reserve":
-    case "intercampus_transfer":
-      return {
-        action_type: operation.action_type,
-        values: { pickup_campus: operation.arguments.pickup_campus },
-      };
-    case "purchase_request":
-      return {
-        action_type: operation.action_type,
-        values: { reason: operation.arguments.reason },
-      };
-    case "ill_loan":
-    case "ill_copy":
-      return {
-        action_type: operation.action_type,
-        values: {
-          receiver: operation.arguments.receiver,
-          payment: operation.arguments.payment,
-          fee: operation.arguments.fee,
-          ...(operation.action_type === "ill_copy"
-            ? { page_range: operation.arguments.page_range }
-            : {}),
-        },
-      } as LibraryActionEditableInputs;
+    default:
+      return null;
   }
 }
 

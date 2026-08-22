@@ -309,12 +309,6 @@ describe("AgentApiClient", () => {
       operation: {
         action_type: "ill_copy",
         resource_ref: libraryEvidence.locator,
-        arguments: {
-          receiver: "豊洲図書館",
-          payment: "私費",
-          fee: null,
-          page_range: "10-20",
-        },
       },
     };
     expect(isActionProposal(illCopyProposal)).toBe(true);
@@ -323,10 +317,7 @@ describe("AgentApiClient", () => {
         ...illCopyProposal,
         operation: {
           ...illCopyProposal.operation,
-          arguments: {
-            ...illCopyProposal.operation.arguments,
-            csrf_token: "must-not-cross-the-boundary",
-          },
+          reason: "must-stay-in-local-confirmation-memory",
         },
       }),
     ).toBe(false);

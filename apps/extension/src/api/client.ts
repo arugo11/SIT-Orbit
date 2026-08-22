@@ -204,74 +204,14 @@ function isOpaqueLibraryResourceRef(value: unknown): value is string {
   return isLibraryResourceRef(value);
 }
 
-function isEmptyOperationArguments(value: unknown): boolean {
-  return isRecord(value) && Object.keys(value).length === 0;
-}
-
 export type LibraryOperation = NonNullable<ActionProposal["operation"]>;
 
 export function isLibraryOperation(value: unknown): value is LibraryOperation {
-  if (!isRecord(value)) return false;
-  if (
-    !hasExactlyKeys(value, ["action_type", "resource_ref", "arguments"]) ||
-    !isOneOf(value.action_type, libraryActionTypes) ||
-    !isOpaqueLibraryResourceRef(value.resource_ref) ||
-    !isRecord(value.arguments)
-  ) {
-    return false;
-  }
-  if (
-    value.action_type === "visit_shelf" ||
-    value.action_type === "open_online"
-  ) {
-    return isEmptyOperationArguments(value.arguments);
-  }
-  if (value.action_type === "renew") {
-    return isEmptyOperationArguments(value.arguments);
-  }
-  if (
-    value.action_type === "reserve" ||
-    value.action_type === "intercampus_transfer"
-  ) {
-    return (
-      hasExactlyKeys(value.arguments, ["pickup_campus"]) &&
-      isOneOf(value.arguments.pickup_campus, ["omiya", "toyosu"])
-    );
-  }
-  if (value.action_type === "purchase_request") {
-    return (
-      hasExactlyKeys(value.arguments, ["reason"]) &&
-      typeof value.arguments.reason === "string" &&
-      value.arguments.reason.trim().length > 0 &&
-      value.arguments.reason.length <= 500
-    );
-  }
-  const common =
-    typeof value.arguments.receiver === "string" &&
-    value.arguments.receiver.trim().length > 0 &&
-    value.arguments.receiver.length <= 200 &&
-    typeof value.arguments.payment === "string" &&
-    value.arguments.payment.trim().length > 0 &&
-    value.arguments.payment.length <= 100 &&
-    (value.arguments.fee === null ||
-      (typeof value.arguments.fee === "string" &&
-        value.arguments.fee.length <= 100));
-  if (value.action_type === "ill_loan") {
-    return (
-      hasExactlyKeys(value.arguments, ["receiver", "payment", "fee"]) && common
-    );
-  }
   return (
-    common &&
-    hasExactlyKeys(value.arguments, [
-      "receiver",
-      "payment",
-      "fee",
-      "page_range",
-    ]) &&
-    typeof value.arguments.page_range === "string" &&
-    value.arguments.page_range.trim().length > 0 &&
-    value.arguments.page_range.length <= 100
+    isRecord(value) &&
+    hasExactlyKeys(value, ["action_type", "resource_ref"]) &&
+    isOneOf(value.action_type, libraryActionTypes) &&
+    isOpaqueLibraryResourceRef(value.resource_ref)
   );
 }
 

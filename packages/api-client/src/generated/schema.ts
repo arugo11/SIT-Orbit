@@ -363,14 +363,6 @@ export interface components {
             /** Reason Code */
             reason_code?: string | null;
         };
-        /** CampusPickupArguments */
-        CampusPickupArguments: {
-            /**
-             * Pickup Campus
-             * @enum {string}
-             */
-            pickup_campus: "omiya" | "toyosu";
-        };
         /**
          * CastReadResult
          * @description Derived CAST dashboard counts safe for an explicitly confirmed run.
@@ -550,17 +542,6 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** IllCopyArguments */
-        IllCopyArguments: {
-            /** Receiver */
-            receiver: string;
-            /** Payment */
-            payment: string;
-            /** Fee */
-            fee?: string | null;
-            /** Page Range */
-            page_range: string;
-        };
         /** IllCopyOperation */
         IllCopyOperation: {
             /**
@@ -570,16 +551,6 @@ export interface components {
             action_type: "ill_copy";
             /** Resource Ref */
             resource_ref: string;
-            arguments: components["schemas"]["IllCopyArguments"];
-        };
-        /** IllLoanArguments */
-        IllLoanArguments: {
-            /** Receiver */
-            receiver: string;
-            /** Payment */
-            payment: string;
-            /** Fee */
-            fee?: string | null;
         };
         /** IllLoanOperation */
         IllLoanOperation: {
@@ -590,7 +561,6 @@ export interface components {
             action_type: "ill_loan";
             /** Resource Ref */
             resource_ref: string;
-            arguments: components["schemas"]["IllLoanArguments"];
         };
         /** IntercampusTransferOperation */
         IntercampusTransferOperation: {
@@ -601,7 +571,6 @@ export interface components {
             action_type: "intercampus_transfer";
             /** Resource Ref */
             resource_ref: string;
-            arguments: components["schemas"]["CampusPickupArguments"];
         };
         /**
          * LegacyMyLibraryReadResult
@@ -937,11 +906,6 @@ export interface components {
             /** Request Type */
             request_type?: string | null;
         };
-        /**
-         * OpenOnlineArguments
-         * @description The extension opens only the official viewer resolved from the ref.
-         */
-        OpenOnlineArguments: Record<string, never>;
         /** OpenOnlineOperation */
         OpenOnlineOperation: {
             /**
@@ -951,7 +915,6 @@ export interface components {
             action_type: "open_online";
             /** Resource Ref */
             resource_ref: string;
-            arguments?: components["schemas"]["OpenOnlineArguments"];
         };
         /**
          * OrbitEvent
@@ -994,11 +957,6 @@ export interface components {
             /** Context */
             context: components["schemas"]["EvidenceLink"][];
         };
-        /** PurchaseRequestArguments */
-        PurchaseRequestArguments: {
-            /** Reason */
-            reason: string;
-        };
         /** PurchaseRequestOperation */
         PurchaseRequestOperation: {
             /**
@@ -1008,13 +966,7 @@ export interface components {
             action_type: "purchase_request";
             /** Resource Ref */
             resource_ref: string;
-            arguments: components["schemas"]["PurchaseRequestArguments"];
         };
-        /**
-         * RenewArguments
-         * @description Renewal uses the currently rendered loan and has no editable input.
-         */
-        RenewArguments: Record<string, never>;
         /** RenewOperation */
         RenewOperation: {
             /**
@@ -1024,7 +976,6 @@ export interface components {
             action_type: "renew";
             /** Resource Ref */
             resource_ref: string;
-            arguments?: components["schemas"]["RenewArguments"];
         };
         /** ReserveOperation */
         ReserveOperation: {
@@ -1035,7 +986,6 @@ export interface components {
             action_type: "reserve";
             /** Resource Ref */
             resource_ref: string;
-            arguments: components["schemas"]["CampusPickupArguments"];
         };
         /**
          * ScombzPageSummaryResult
@@ -1307,11 +1257,6 @@ export interface components {
              */
             notes: string;
         };
-        /**
-         * VisitShelfArguments
-         * @description No user-editable fields are needed to visit a rendered shelf.
-         */
-        VisitShelfArguments: Record<string, never>;
         /** VisitShelfOperation */
         VisitShelfOperation: {
             /**
@@ -1321,7 +1266,6 @@ export interface components {
             action_type: "visit_shelf";
             /** Resource Ref */
             resource_ref: string;
-            arguments?: components["schemas"]["VisitShelfArguments"];
         };
     };
     responses: never;

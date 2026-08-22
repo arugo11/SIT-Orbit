@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DataClassification = Literal["synthetic", "public", "personal", "restricted"]
 Campus = Literal["omiya", "toyosu", "other"]
@@ -50,112 +50,50 @@ OpaqueLibraryResourceRef = Annotated[
 ]
 
 
-class LibraryOperationArguments(BaseModel):
-    """Strict base for bounded, operation-specific library arguments."""
+class _LibraryOperationBase(BaseModel):
+    """Strict base for an operation reference; form values stay in Chrome memory."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class VisitShelfArguments(LibraryOperationArguments):
-    """No user-editable fields are needed to visit a rendered shelf."""
-
-
-class OpenOnlineArguments(LibraryOperationArguments):
-    """The extension opens only the official viewer resolved from the ref."""
-
-
-class CampusPickupArguments(LibraryOperationArguments):
-    pickup_campus: Literal["omiya", "toyosu"]
-
-
-class RenewArguments(LibraryOperationArguments):
-    """Renewal uses the currently rendered loan and has no editable input."""
-
-
-class PurchaseRequestArguments(LibraryOperationArguments):
-    reason: str = Field(min_length=1, max_length=500)
-
-    @field_validator("reason")
-    @classmethod
-    def reason_is_not_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("Purchase request reason cannot be blank.")
-        return value
-
-
-class IllLoanArguments(LibraryOperationArguments):
-    receiver: str = Field(min_length=1, max_length=200)
-    payment: str = Field(min_length=1, max_length=100)
-    fee: str | None = Field(default=None, max_length=100)
-
-    @field_validator("receiver", "payment")
-    @classmethod
-    def required_text_is_not_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("ILL required text cannot be blank.")
-        return value
-
-
-class IllCopyArguments(LibraryOperationArguments):
-    receiver: str = Field(min_length=1, max_length=200)
-    payment: str = Field(min_length=1, max_length=100)
-    fee: str | None = Field(default=None, max_length=100)
-    page_range: str = Field(min_length=1, max_length=100)
-
-    @field_validator("receiver", "payment", "page_range")
-    @classmethod
-    def required_text_is_not_blank(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("ILL required text cannot be blank.")
-        return value
-
-
-class VisitShelfOperation(LibraryOperationArguments):
+class VisitShelfOperation(_LibraryOperationBase):
     action_type: Literal["visit_shelf"]
     resource_ref: OpaqueLibraryResourceRef
-    arguments: VisitShelfArguments = Field(default_factory=VisitShelfArguments)
 
 
-class OpenOnlineOperation(LibraryOperationArguments):
+class OpenOnlineOperation(_LibraryOperationBase):
     action_type: Literal["open_online"]
     resource_ref: OpaqueLibraryResourceRef
-    arguments: OpenOnlineArguments = Field(default_factory=OpenOnlineArguments)
 
 
-class ReserveOperation(LibraryOperationArguments):
+class ReserveOperation(_LibraryOperationBase):
     action_type: Literal["reserve"]
     resource_ref: OpaqueLibraryResourceRef
-    arguments: CampusPickupArguments
 
 
-class IntercampusTransferOperation(LibraryOperationArguments):
+class IntercampusTransferOperation(_LibraryOperationBase):
     action_type: Literal["intercampus_transfer"]
     resource_ref: OpaqueLibraryResourceRef
-    arguments: CampusPickupArguments
 
 
-class RenewOperation(LibraryOperationArguments):
+class RenewOperation(_LibraryOperationBase):
     action_type: Literal["renew"]
     resource_ref: OpaqueLibraryResourceRef
-    arguments: RenewArguments = Field(default_factory=RenewArguments)
 
 
-class PurchaseRequestOperation(LibraryOperationArguments):
+class PurchaseRequestOperation(_LibraryOperationBase):
     action_type: Literal["purchase_request"]
     resource_ref: OpaqueLibraryResourceRef
-    arguments: PurchaseRequestArguments
 
 
-class IllLoanOperation(LibraryOperationArguments):
+class IllLoanOperation(_LibraryOperationBase):
     action_type: Literal["ill_loan"]
     resource_ref: OpaqueLibraryResourceRef
-    arguments: IllLoanArguments
 
 
-class IllCopyOperation(LibraryOperationArguments):
+class IllCopyOperation(_LibraryOperationBase):
     action_type: Literal["ill_copy"]
     resource_ref: OpaqueLibraryResourceRef
-    arguments: IllCopyArguments
 
 
 LibraryOperation = Annotated[
@@ -197,6 +135,17 @@ class LibraryActionOption(BaseModel):
             raise ValueError("Library action inputs must match the action type.")
         if self.available != (self.reason_code == "available"):
             raise ValueError("Library action availability must match its reason code.")
+        if self.action_type in {
+            "reserve",
+            "intercampus_transfer",
+            "renew",
+            "purchase_request",
+            "ill_loan",
+            "ill_copy",
+        } and self.available:
+            raise ValueError(
+                "Library write actions remain unavailable until submit and read-back are verified."
+            )
         return self
 
 

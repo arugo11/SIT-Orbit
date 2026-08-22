@@ -1,36 +1,40 @@
 import { describe, expect, it } from "vitest";
 import {
-  editableInputsForOperation,
   FixtureLibraryWriteStateMachine,
   isLibraryActionEditableInputs,
+  readOnlyInputsForOperation,
 } from "./library-actions";
 
 const ref = "orbit-library://record/ABCDEFGHIJKLMNOP";
 
 describe("library action confirmation inputs", () => {
-  it("bounds editable fields and keeps page range for ILL copy", () => {
+  it("does not derive write form values from an API operation", () => {
     const operation = {
       action_type: "ill_copy" as const,
       resource_ref: ref,
-      arguments: {
-        receiver: "library desk",
-        payment: "student account",
-        fee: null,
-        page_range: "12-18",
-      },
     };
-    const inputs = editableInputsForOperation(operation);
-    expect(isLibraryActionEditableInputs("ill_copy", inputs)).toBe(true);
+    expect(readOnlyInputsForOperation(operation)).toBeNull();
     expect(
       isLibraryActionEditableInputs("ill_copy", {
         action_type: "ill_copy",
-        values: { ...inputs.values, page_range: "" },
+        values: {
+          receiver: "library desk",
+          payment: "student account",
+          fee: null,
+          page_range: "",
+        },
       }),
     ).toBe(false);
     expect(
       isLibraryActionEditableInputs("ill_copy", {
         action_type: "ill_copy",
-        values: { ...inputs.values, unknown: "not allowed" },
+        values: {
+          receiver: "library desk",
+          payment: "student account",
+          fee: null,
+          page_range: "12-18",
+          unknown: "not allowed",
+        },
       }),
     ).toBe(false);
   });

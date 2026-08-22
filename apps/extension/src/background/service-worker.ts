@@ -11,6 +11,7 @@ import {
   type LibraryActionEditableInputs,
   type LibraryActionOption,
   type LibraryActionPreviewOfficial,
+  readOnlyInputsForOperation,
   unavailableLibraryActionOptions,
 } from "../connectors/library-actions";
 import {
@@ -1701,8 +1702,8 @@ function myLibraryActionOptions(
     },
     {
       action_type: "renew",
-      available: renewable,
-      reason_code: renewReason,
+      available: false,
+      reason_code: renewable ? "write_form_not_verified" : renewReason,
       required_inputs: [],
     },
     {
@@ -2124,14 +2125,6 @@ async function readMyLibraryWriteSurface(
 async function handleLibraryActionPreview(
   message: LibraryActionPreviewMessage,
 ): Promise<LibraryActionPreviewResponse> {
-  if (
-    !isLibraryActionEditableInputs(
-      message.operation.action_type,
-      message.inputs,
-    )
-  ) {
-    return { status: "unavailable", reason_code: "invalid_editable_inputs" };
-  }
   if (!isLiveLibraryActionRef(message.operation.resource_ref)) {
     return { status: "unavailable", reason_code: "unknown_resource_ref" };
   }
@@ -2257,10 +2250,14 @@ async function handleLibraryActionPreview(
           status: holding.status,
         })) ?? [],
   });
+  const previewInputs = readOnlyInputsForOperation(message.operation);
+  if (!previewInputs) {
+    return { status: "unavailable", reason_code: "write_form_not_verified" };
+  }
   libraryActionPreviews.set(previewId, {
     tool_call_id: message.tool_call_id,
     operation: message.operation,
-    inputs: message.inputs,
+    inputs: previewInputs,
     resource_ref: message.operation.resource_ref,
     action_type: message.operation.action_type,
     exact_origin: LIBRARY_OPAC_ORIGIN,
@@ -2291,7 +2288,7 @@ async function handleLibraryActionPreview(
             call_number: holding.call_number,
           })) ?? [],
     },
-    inputs: message.inputs,
+    inputs: previewInputs,
   };
 }
 

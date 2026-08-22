@@ -13,6 +13,7 @@ from orbit_api.models import (
     IllLoanOperation,
     IntercampusTransferOperation,
     LibraryActionOptionsResult,
+    OpenOnlineOperation,
     PurchaseRequestOperation,
     RenewOperation,
     ReserveOperation,
@@ -89,7 +90,6 @@ def write_operation(action_type: str):
             {
                 "action_type": "reserve",
                 "resource_ref": RESOURCE_REF,
-                "arguments": {"pickup_campus": "omiya"},
             }
         )
     if action_type == "intercampus_transfer":
@@ -97,7 +97,6 @@ def write_operation(action_type: str):
             {
                 "action_type": "intercampus_transfer",
                 "resource_ref": RESOURCE_REF,
-                "arguments": {"pickup_campus": "toyosu"},
             }
         )
     if action_type == "renew":
@@ -107,7 +106,6 @@ def write_operation(action_type: str):
             {
                 "action_type": "purchase_request",
                 "resource_ref": RESOURCE_REF,
-                "arguments": {"reason": "必要な資料のため"},
             }
         )
     if action_type == "ill_loan":
@@ -115,23 +113,12 @@ def write_operation(action_type: str):
             {
                 "action_type": "ill_loan",
                 "resource_ref": RESOURCE_REF,
-                "arguments": {
-                    "receiver": "大宮カウンター",
-                    "payment": "私費",
-                    "fee": None,
-                },
             }
         )
     return IllCopyOperation.model_validate(
         {
             "action_type": "ill_copy",
             "resource_ref": RESOURCE_REF,
-            "arguments": {
-                "receiver": "大宮カウンター",
-                "payment": "私費",
-                "fee": None,
-                "page_range": "12-18",
-            },
         }
     )
 
@@ -214,12 +201,14 @@ def test_chat_rejects_an_operation_missing_or_not_available_in_current_options()
         content_markdown="現在の図書館操作を確認しました。",
         evidence_ids=[evidence.evidence_id],
         action=ActionDraft(
-            title="延長する",
-            reason="現在の貸出状態で延長可能です。",
+            title="電子版を開く",
+            reason="公式閲覧ページが現在利用可能です。",
             duration_minutes=2,
-            external_action="library_write",
+            external_action="none",
             evidence_ids=[evidence.evidence_id],
-            operation=RenewOperation(action_type="renew", resource_ref=RESOURCE_REF),
+            operation=OpenOnlineOperation(
+                action_type="open_online", resource_ref=RESOURCE_REF
+            ),
         ),
     )
     with pytest.raises(ValueError, match="current known action options"):
@@ -236,11 +225,40 @@ def test_chat_rejects_an_operation_missing_or_not_available_in_current_options()
         draft,
         [evidence],
         action_id_prefix="test",
-        library_action_options={RESOURCE_REF: options_result(available_action="renew")},
+        library_action_options={RESOURCE_REF: options_result(available_action="open_online")},
     )
     assert completed.proposal is not None
     assert completed.proposal.operation is not None
     assert completed.proposal.operation.resource_ref == RESOURCE_REF
+
+
+@pytest.mark.parametrize(
+    "action_type",
+    [
+        "reserve",
+        "intercampus_transfer",
+        "renew",
+        "purchase_request",
+        "ill_loan",
+        "ill_copy",
+    ],
+)
+def test_write_capability_cannot_be_advertised_until_live_readback_is_verified(
+    action_type: str,
+) -> None:
+    with pytest.raises(ValidationError, match="remain unavailable"):
+        options_result(available_action=action_type)
+
+
+def test_library_operation_api_rejects_confirmation_form_values() -> None:
+    with pytest.raises(ValidationError):
+        IllCopyOperation.model_validate(
+            {
+                "action_type": "ill_copy",
+                "resource_ref": RESOURCE_REF,
+                "arguments": {"page_range": "12-18"},
+            }
+        )
 
 
 def test_library_action_boundary_rejects_provider_state_and_keeps_tool_evidence_minimal() -> None:

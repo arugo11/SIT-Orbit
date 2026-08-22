@@ -22,10 +22,7 @@ import {
   type CalendarConnectorResult,
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
-import {
-  editableInputsForOperation,
-  type LibraryActionEditableInputs,
-} from "../connectors/library-actions";
+import type { LibraryActionEditableInputs } from "../connectors/library-actions";
 import {
   LIBRARY_OPAC_ORIGIN,
   LIBRARY_OPAC_PERMISSION_PATTERN,
@@ -1405,12 +1402,10 @@ export function ChatPanel({
       return next;
     });
     try {
-      const inputs = editableInputsForOperation(operation);
       const result = await sendExtensionMessage<LibraryActionPreviewResponse>({
         type: MESSAGE_TYPES.libraryActionPreview,
         tool_call_id: `proposal-${messageId}`,
         operation,
-        inputs,
       });
       if (result.status !== "ready") {
         setLibraryPreviewStates((states) => ({

@@ -233,7 +233,6 @@ export interface LibraryActionPreviewMessage {
   type: typeof MESSAGE_TYPES.libraryActionPreview;
   tool_call_id: string;
   operation: LibraryOperation;
-  inputs: LibraryActionEditableInputs;
 }
 
 export interface LibraryActionSubmitMessage {
@@ -659,11 +658,14 @@ export function isLibraryActionPreviewMessage(
 ): message is LibraryActionPreviewMessage {
   return (
     isRecord(message) &&
+    Object.keys(message).length === 3 &&
+    Object.keys(message).every((key) =>
+      ["type", "tool_call_id", "operation"].includes(key),
+    ) &&
     message.type === MESSAGE_TYPES.libraryActionPreview &&
     typeof message.tool_call_id === "string" &&
     message.tool_call_id.length > 0 &&
-    isLibraryOperation(message.operation) &&
-    isLibraryActionEditableInputs(message.operation.action_type, message.inputs)
+    isLibraryOperation(message.operation)
   );
 }
 
