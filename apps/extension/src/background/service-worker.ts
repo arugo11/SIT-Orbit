@@ -360,6 +360,34 @@ function libraryActionStateFingerprint(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function fingerprintableLibraryHoldings(
+  holdings:
+    | ReadonlyArray<{
+        campus: "toyosu" | "omiya" | "unknown";
+        location: string | null;
+        call_number: string | null;
+        status: string;
+      }>
+    | null
+    | undefined,
+) {
+  return (
+    holdings
+      ?.filter(
+        (holding) =>
+          holding.campus !== "unknown" &&
+          Boolean(holding.location) &&
+          Boolean(holding.call_number),
+      )
+      .map((holding) => ({
+        campus: holding.campus,
+        location: holding.location,
+        call_number: holding.call_number,
+        status: holding.status,
+      })) ?? []
+  );
+}
+
 function newLibraryPreviewId(): string {
   const bytes = new Uint8Array(18);
   crypto.getRandomValues(bytes);
@@ -2235,20 +2263,7 @@ async function handleLibraryActionPreview(
     operation: message.operation.action_type,
     projection: surface.projection,
     title: surface.item?.title ?? null,
-    holdings:
-      surface.item?.holdings
-        .filter(
-          (holding) =>
-            holding.campus !== "unknown" &&
-            Boolean(holding.location) &&
-            Boolean(holding.call_number),
-        )
-        .map((holding) => ({
-          campus: holding.campus,
-          location: holding.location,
-          call_number: holding.call_number,
-          status: holding.status,
-        })) ?? [],
+    holdings: fingerprintableLibraryHoldings(surface.item?.holdings),
   });
   const previewInputs = readOnlyInputsForOperation(message.operation);
   if (!previewInputs) {
@@ -2349,13 +2364,7 @@ async function handleLibraryActionSubmit(
     operation: preview.action_type,
     projection: surface.projection,
     title: surface.item?.title ?? null,
-    holdings:
-      surface.item?.holdings.map((holding) => ({
-        campus: holding.campus,
-        location: holding.location,
-        call_number: holding.call_number,
-        status: holding.status,
-      })) ?? [],
+    holdings: fingerprintableLibraryHoldings(surface.item?.holdings),
   });
   const currentRecordUrl = new URL(surface.official_url);
   if (

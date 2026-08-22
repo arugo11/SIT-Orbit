@@ -1824,7 +1824,22 @@ describe("service worker side panel contract", () => {
         status: "complete",
         url: "https://library.shibaura-it.ac.jp/opc/",
       } as chrome.tabs.Tab);
-      const record = publicActionRecord();
+      const record =
+        action_type === "open_online"
+          ? {
+              ...publicActionRecord(),
+              holdings: [
+                {
+                  campus: "unknown" as const,
+                  location: null,
+                  call_number: null,
+                  status: "electronic",
+                  due_date: null,
+                  reservation_count: 0,
+                },
+              ],
+            }
+          : publicActionRecord();
       executeScript
         .mockResolvedValueOnce([{ result: { status: "submitted" } }])
         .mockResolvedValueOnce([
