@@ -155,6 +155,14 @@ Career Evidence Bankの記録、資料locator、人物対応表は、Azure、Ope
 
 ES下書きは、確認済みEvidenceの`evidence_id`、claim、context、action、resultだけをChrome Prompt APIへ渡す。材料locator、ファイル名、`person_ref`、元の人物名、内部対応表、raw PDF、tokenは渡さない。各文にEvidence IDと、入力フィールドに実在するgrounding quoteを要求し、未知ID、未引用文、根拠にない数値、credential・連絡先・学籍番号らしい文字列を受け取った場合は生成結果を採用しない。Prompt APIが利用できない場合にAzureや別Providerへfallbackしない。
 
+### OBOGコンシェルジュ
+
+就活サポーター候補は、企業詳細の確認済みSnapshotを端末内で仮名化してから扱う。Prompt入力へ渡すのはミッション別名、一般化した卒業年、企業、技術領域、職種、確認済み支援リソースの種別と表示名だけであり、元の氏名、内部ID、source identifier、連絡先、URL、選考報告locatorは除外する。外部Azureへ個人・第三者のCAST記録を送る経路は作らない。
+
+候補探索、面談目的、質問の優先順位、キャリアサポート課宛ての依頼文、面談前の確認事項、お礼文はChrome Prompt APIのstructured outputで端末内生成する。候補別名や支援リソースIDが未知の場合、個人名、URL、メール、電話、tokenが含まれる場合、または候補にない事実を直接連絡先として出した場合は応答を採用しない。連絡、予約、応募、添付、送信は別のAction Adapterでpreviewと本人確認を経るまで開始しない。
+
+面談メモは利用者の明示操作を起点にCareer Vaultへレコード単位で暗号化保存する。暗号文、IV、schema versionだけがIndexedDBに残り、メモ本文、候補別名、面談目的、知見、次の行動はChat履歴、FastAPI、Azure、W&B、runtime messageへ出ない。Prompt APIが利用できないときは外部Providerへfallbackせず、OBOG支援を未実行として表示する。
+
 ### 多視点キャリアレビュー
 
 ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはなく、Prompt APIが利用できない場合も外部Providerへfallbackしない。

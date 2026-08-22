@@ -327,6 +327,14 @@ ES下書きは、利用者が`confirmed`にしたCareer Evidence Bankのprojecti
 
 ES生成はAzure、FastAPI、W&Bへ送信せず、Chrome Prompt APIが利用できない場合に別Providerへfallbackしない。材料のlocator、ファイル本体、`person_ref`、対応表、tokenはPrompt入力と生成結果へ含めない。応募先や応募目的の自由記述に連絡先・学籍番号・credentialらしい値が含まれる場合は、モデル呼び出し前に停止する。
 
+### OBOGコンシェルジュ
+
+`buildObogCandidateProjections`は、確認済みの企業詳細Snapshotに含まれる人物をPseudonymization Gatewayへ渡し、同じミッション内だけで使う別名、一般化した卒業年、企業、技術領域、職種を作る。元の氏名、CAST内部識別子、連絡先、選考記録URLはPrompt入力へ入れない。候補と支援リソースの参照は端末内の番号へ置き換え、依頼文や面談後のお礼文の下書きはキャリアサポート課を経由する内容に限定する。
+
+`planObogConcierge`はChrome Prompt APIを一度だけ実行し、候補別名、面談目的、優先度付き質問、面談前の確認事項、依頼文、お礼文をstrict schemaで受け取る。未知の候補・支援リソース、連絡先やURL、元の人物名、credentialらしい文字列が応答へ出た場合は採用しない。Prompt APIが利用できない場合にAzureや別Providerへfallbackせず、連絡先の推測、CASTへの自動送信、予約、提出は行わない。
+
+面談後の知見は利用者が明示的に保存した場合だけ、`ObogMeetingMemoStore`を通じてCareer Vaultへ暗号化保存する。メモの本文、候補別名、目的、次の行動はIndexedDBの暗号文以外へ出さず、Chat履歴、FastAPI、Azure、W&B、runtime messageへ送信しない。直接連絡先を扱う正式なCAST APIまたは大学側の許可が得られるまでは、コンシェルジュは下書きと確認案内で停止する。
+
 ### 多視点キャリアレビュー
 
 `reviewCareerDraft`は、Evidence-grounded ESの下書きと確認済みEvidence projectionだけを入力にして、人事、技術部門、芝浦卒業生、初見の第三者という4つの視点をそれぞれ独立したChrome Prompt API sessionで実行する。各sessionへ他の視点の結果や人物対応表、`person_ref`、資料locator、raw HTML、tokenを渡さない。Prompt APIが利用できない場合はAzureや別Providerへfallbackせず、レビューを未実行として端末内で停止する。
