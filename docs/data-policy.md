@@ -118,6 +118,8 @@ CASTは、利用者が`cast_read`を明示実行した場合だけ、正規入�
 
 採用実績・選考記録は確認済み企業詳細`/career/company_detail_view`の`#employment`、`#company_exam_entry`、`#company_obog`だけをread-onlyで扱う。氏名・指導教員などの人物値は端末内SnapshotからPseudonymization Gatewayへ送り、外部へはmission固有の別名だけを残す。Prompt projectionには元の氏名、企業コード、内部local_id、report href、raw HTML、フォーム値、名簿本文、連絡先を含めない。PDF、添付、OB・OG名簿の要求、応募・予約・送信は実行しない。未知path、query/fragment、ログイン画面、構造不一致は`unavailable`として扱い、推測URLへのfallbackを行わない。
 
+支援リソースは確認済みCASTトップ`/career/top/student`から、お知らせと公開リンクのタイトル・掲載日だけを端末内へ読み取る。Notion、大学公式、SPIの許可origin以外は破棄し、外部Providerへ送るのはカテゴリ件数とお知らせ日だけである。予約枠の詳細、スタッフの氏名・連絡先、外部ページ本文、フォーム値、cookie、tokenは保存・送信せず、相談予約や連絡は別の本人確認付きActionとする。
+
 ### CAST Career Vaultと仮名化Gateway
 
 CAST Career Agentの人物情報は「完全匿名化」ではなく、対応表で復元可能な「仮名化＋間接識別子の一般化」として扱う。モデル入力を作る前に、Typed Snapshotを必ず次のGatewayへ通す。
