@@ -12,15 +12,69 @@ const scopes = [
 const item = {
   resource_ref: "orbit-library://record/0123456789abcdef",
   title: "端末内資料",
-  author: "公開著者",
+  author: null,
   status: "受付済み",
-  due_date: null,
+  due_date: "2026-08-24",
   renewable: null,
   activity_date: "2026-08-01",
-  request_type: null,
+  request_type: "図書購入",
 };
 
 type Scope = (typeof scopes)[number];
+
+function itemForScope(scope: Scope): Record<string, unknown> {
+  if (scope === "current_loans") {
+    return {
+      ...item,
+      status: "貸出中",
+      due_date: "2026-08-24",
+      activity_date: null,
+      request_type: null,
+    };
+  }
+  if (scope === "reservations") {
+    return {
+      ...item,
+      status: "取置中",
+      due_date: "2026-08-28",
+      activity_date: null,
+      request_type: "reservation",
+    };
+  }
+  if (scope === "loan_history") {
+    return {
+      ...item,
+      status: "返却済み",
+      due_date: null,
+      activity_date: "2026-07-01",
+      request_type: null,
+    };
+  }
+  if (scope === "purchase_requests") {
+    return {
+      ...item,
+      status: "受付済み",
+      due_date: null,
+      activity_date: "2026-08-01",
+      request_type: "図書購入",
+    };
+  }
+  return {
+    ...item,
+    status: "処理中",
+    due_date: null,
+    activity_date: "2026-08-05",
+    request_type: "文献複写",
+  };
+}
+
+const requiredFields: Record<Scope, readonly string[]> = {
+  current_loans: ["due_date"],
+  reservations: ["due_date", "status"],
+  loan_history: ["activity_date", "status"],
+  purchase_requests: ["activity_date", "status", "request_type"],
+  interlibrary_requests: ["activity_date", "status", "request_type"],
+};
 
 function scopedResult(scope: Scope): Record<string, unknown> {
   const aggregates = {
@@ -44,7 +98,7 @@ function scopedResult(scope: Scope): Record<string, unknown> {
     schema_version: "v1",
     status: "known",
     scope,
-    items: [item],
+    items: [itemForScope(scope)],
     total_count: 1,
     next_offset: null,
     ...aggregates,
@@ -82,6 +136,22 @@ describe("My Library result contract adversarial cases", () => {
       }),
     ).toBe(false);
   });
+
+  it.each(scopes)(
+    "rejects a known %s result when a scope-required item field is missing",
+    (scope) => {
+      const valid = scopedResult(scope);
+      expect(isMyLibraryReadResult(valid)).toBe(true);
+      const rows = valid.items as Array<Record<string, unknown>>;
+      for (const field of requiredFields[scope]) {
+        const incomplete = {
+          ...valid,
+          items: [{ ...rows[0], [field]: null }],
+        };
+        expect(isMyLibraryReadResult(incomplete)).toBe(false);
+      }
+    },
+  );
 
   it.each([
     ["current_loans", "reservation_count", 0],

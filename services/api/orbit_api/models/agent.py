@@ -596,6 +596,21 @@ def _validate_my_library_date(value: str | None) -> None:
         raise ValueError("My Library dates must use YYYY-MM-DD.") from error
 
 
+def _validate_my_library_scope_items(
+    scope: MyLibraryScope, items: list[MyLibraryItem]
+) -> None:
+    required_fields: dict[MyLibraryScope, tuple[str, ...]] = {
+        "current_loans": ("due_date",),
+        "reservations": ("due_date", "status"),
+        "loan_history": ("activity_date", "status"),
+        "purchase_requests": ("activity_date", "status", "request_type"),
+        "interlibrary_requests": ("activity_date", "status", "request_type"),
+    }
+    for item in items:
+        if any(getattr(item, field) is None for field in required_fields[scope]):
+            raise ValueError(f"My Library {scope} items have incomplete fields.")
+
+
 class LegacyMyLibraryReadResult(StrictApiModel):
     """The original aggregate-only My Library result shape."""
 
@@ -645,6 +660,8 @@ class ScopedMyLibraryReadResult(StrictApiModel):
     @model_validator(mode="after")
     def values_match_status(self) -> "ScopedMyLibraryReadResult":
         _validate_my_library_date(self.earliest_due_date)
+        if self.status == "known":
+            _validate_my_library_scope_items(self.scope, self.items)
         if self.scope == "current_loans":
             if self.reservation_count is not None:
                 raise ValueError("Unread reservation count must be null.")

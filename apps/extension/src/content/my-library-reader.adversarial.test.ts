@@ -177,6 +177,45 @@ const authorlessScopeCases = [
   },
 ] as const;
 
+const markedRequiredCellCases = [
+  {
+    scope: "current_loans",
+    html: `<table id="lendList"><tbody><tr>
+      <td><dl><dt>書名 / 著者名</dt><dd>必須列検証貸出</dd></dl></td>
+      <td><dl><dt>貸出返却期限延長回数</dt><dd class="empty"></dd></dl></td>
+    </tr></tbody></table>`,
+  },
+  {
+    scope: "reservations",
+    html: `<table id="reservationList"><tbody><tr>
+      <td><dl><dt>書名 / 著者名</dt><dd>必須列検証予約</dd></dl></td>
+      <td><dl><dt>状態</dt><dd class="no-data"></dd></dl></td>
+      <td><dl><dt>受取館取置期限日</dt><dd>2026/08/28</dd></dl></td>
+    </tr></tbody></table>`,
+  },
+  {
+    scope: "loan_history",
+    html: `<table><caption>貸出履歴一覧</caption>
+      <thead><tr><th>書名</th><th>貸出日</th><th>状態</th></tr></thead>
+      <tbody><tr><td>必須列検証履歴</td><td class="empty"></td><td>返却済み</td></tr></tbody>
+    </table>`,
+  },
+  {
+    scope: "purchase_requests",
+    html: `<table><caption>購入依頼状況</caption>
+      <thead><tr><th>書名</th><th>申請日</th><th>状態</th><th>申請種別</th></tr></thead>
+      <tbody><tr><td>必須列検証購入</td><td>2026/08/01</td><td>受付済み</td><td class="no-data"></td></tr></tbody>
+    </table>`,
+  },
+  {
+    scope: "interlibrary_requests",
+    html: `<table><caption>ILL（文献複写・貸借）依頼</caption>
+      <thead><tr><th>書名</th><th>受付日</th><th>状態</th><th>依頼種別</th></tr></thead>
+      <tbody><tr><td>必須列検証ILL</td><td>2026/08/05</td><td class="empty"></td><td>文献複写</td></tr></tbody>
+    </table>`,
+  },
+] as const;
+
 const allowedItemKeys = [
   "activity_date",
   "author",
@@ -325,6 +364,27 @@ describe("My Library reader adversarial boundaries", () => {
       expect(items?.[0]).toMatchObject({ title, author: null });
     },
   );
+
+  it.each(markedRequiredCellCases)(
+    "fails closed when a valid-title $scope required cell is marked empty",
+    ({ scope, html }) => {
+      const items = extractMyLibraryScopePage(
+        parseHTML(html).document,
+        PAGE_URL,
+        scope,
+      );
+      expect(items).toBeNull();
+    },
+  );
+
+  it("keeps an official empty placeholder as a known empty scope", () => {
+    const document = parseHTML(
+      '<table id="reservationList"><tbody><tr><td class="dataTables_empty">データなし</td></tr></tbody></table>',
+    ).document;
+    expect(
+      extractMyLibraryScopePage(document, PAGE_URL, "reservations"),
+    ).toEqual([]);
+  });
 
   it("does not project visible or hidden identity/request form fields", () => {
     const document = parseHTML(`

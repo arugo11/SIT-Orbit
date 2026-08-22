@@ -1980,6 +1980,22 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
     });
     return clone.textContent ?? "";
   };
+  const isEmptyPlaceholderRow = (row: Element): boolean => {
+    const hasEmptyMarker = (element: Element): boolean =>
+      /(?:^|\s)(?:dataTables_empty|empty|no-data)(?:\s|$)/u.test(
+        element.getAttribute("class") ?? "",
+      );
+    const cells = Array.from(row.children).filter(
+      (cell): cell is Element =>
+        cell.tagName.toLowerCase() === "td" ||
+        cell.tagName.toLowerCase() === "th",
+    );
+    const hasActualCellData = cells.some(
+      (cell) => !hasEmptyMarker(cell) && clean(visibleLibraryText(cell), 1000),
+    );
+    if (hasActualCellData) return false;
+    return hasEmptyMarker(row) || cells.some(hasEmptyMarker);
+  };
   const normalizeDate = (value: string): string | null => {
     const match = value.match(/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})/u);
     if (!match) return null;
@@ -2081,11 +2097,7 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
         .padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
       const visibleLoanRows = Array.from(
         loanTable.querySelectorAll("tbody tr"),
-      ).filter(
-        (row) =>
-          isVisible(row) &&
-          !row.querySelector(".dataTables_empty, .empty, .no-data"),
-      );
+      ).filter((row) => isVisible(row) && !isEmptyPlaceholderRow(row));
       const parsedLoanRows = visibleLoanRows.map((row) => {
         const titleAuthor = splitTitleAuthor(
           visibleLibraryText(valueForLabel(row, "書名 / 著者名")),
@@ -2138,11 +2150,7 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
     if (reservationTable && isVisible(reservationTable)) {
       const visibleReservationRows = Array.from(
         reservationTable.querySelectorAll("tbody tr"),
-      ).filter(
-        (row) =>
-          isVisible(row) &&
-          !row.querySelector(".dataTables_empty, .empty, .no-data"),
-      );
+      ).filter((row) => isVisible(row) && !isEmptyPlaceholderRow(row));
       const parsedReservationRows = visibleReservationRows.map((row) => {
         const titleAuthor = splitTitleAuthor(
           visibleLibraryText(valueForLabel(row, "書名 / 著者名")),
@@ -2295,9 +2303,7 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
         table.querySelectorAll("tbody tr, tr"),
       ).filter(
         (row) =>
-          row !== headerRow &&
-          isVisible(row) &&
-          !row.querySelector(".dataTables_empty, .empty, .no-data"),
+          row !== headerRow && isVisible(row) && !isEmptyPlaceholderRow(row),
       );
       const parsedItems = visibleRows.map(
         (row): MyLibraryRawScopedItem | null => {

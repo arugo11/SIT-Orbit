@@ -850,6 +850,10 @@ export function isMyLibraryReadResult(
       !Array.isArray(value.items) ||
       value.items.length > 20 ||
       !value.items.every(isMyLibraryItem) ||
+      (value.status === "known" &&
+        !value.items.every((item) =>
+          isMyLibraryItemForScope(item, value.scope as MyLibraryScope),
+        )) ||
       value.total_count < value.items.length ||
       (value.total_count <= value.items.length && value.next_offset !== null)
     ) {
@@ -943,6 +947,24 @@ function isMyLibraryItem(value: unknown): value is MyLibraryItem {
     return false;
   }
   return true;
+}
+
+function isMyLibraryItemForScope(
+  value: MyLibraryItem,
+  scope: MyLibraryScope,
+): boolean {
+  if (scope === "current_loans") return isIsoDateOnly(value.due_date);
+  if (scope === "reservations") {
+    return isIsoDateOnly(value.due_date) && isNonEmptyString(value.status);
+  }
+  if (scope === "loan_history") {
+    return isIsoDateOnly(value.activity_date) && isNonEmptyString(value.status);
+  }
+  return (
+    isIsoDateOnly(value.activity_date) &&
+    isNonEmptyString(value.status) &&
+    isNonEmptyString(value.request_type)
+  );
 }
 
 export function isCastReadResult(value: unknown): value is CastReadResult {

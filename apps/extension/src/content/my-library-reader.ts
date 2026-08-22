@@ -90,6 +90,23 @@ function compactText(
   return (value ?? "").replace(/\s+/gu, " ").trim().slice(0, maxLength);
 }
 
+function isEmptyPlaceholderRow(row: Element): boolean {
+  const hasEmptyMarker = (element: Element): boolean =>
+    /(?:^|\s)(?:dataTables_empty|empty|no-data)(?:\s|$)/u.test(
+      element.getAttribute("class") ?? "",
+    );
+  const cells = Array.from(row.children).filter(
+    (cell): cell is Element =>
+      cell.tagName.toLowerCase() === "td" ||
+      cell.tagName.toLowerCase() === "th",
+  );
+  const hasActualCellData = cells.some(
+    (cell) => !hasEmptyMarker(cell) && compactText(visibleText(cell), 1000),
+  );
+  if (hasActualCellData) return false;
+  return hasEmptyMarker(row) || cells.some(hasEmptyMarker);
+}
+
 function visibleText(value: Element | null | undefined): string {
   if (!value) return "";
   const clone = value.cloneNode(true) as Element;
@@ -319,7 +336,7 @@ function extractGenericMyLibraryItem(
   columnLabels: readonly string[] = [],
 ): MyLibraryScopedItem | null {
   if (!isVisibleElement(row)) return null;
-  if (row.querySelector(".dataTables_empty, .empty, .no-data")) return null;
+  if (isEmptyPlaceholderRow(row)) return null;
   const tableValueForLabels = (labels: readonly string[]): Element | null => {
     const structured = valueForLabels(row, labels);
     if (structured) return structured;
@@ -431,9 +448,7 @@ export function extractMyLibraryScopePage(
     : [];
   const rows = Array.from(table.querySelectorAll("tbody tr, tr")).filter(
     (row) =>
-      row !== headerRow &&
-      isVisibleElement(row) &&
-      !row.querySelector(".dataTables_empty, .empty, .no-data"),
+      row !== headerRow && isVisibleElement(row) && !isEmptyPlaceholderRow(row),
   );
   const items = rows.map((row) =>
     extractGenericMyLibraryItem(row, scope, columnLabels),
@@ -463,9 +478,7 @@ export function extractMyLibraryLoanPage(
     .toString()
     .padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
   const rows = Array.from(table.querySelectorAll("tbody tr")).filter(
-    (row) =>
-      isVisibleElement(row) &&
-      !row.querySelector(".dataTables_empty, .empty, .no-data"),
+    (row) => isVisibleElement(row) && !isEmptyPlaceholderRow(row),
   );
   const loans = rows.map((row): MyLibraryLoan | null => {
     const titleAuthor = splitTitleAuthor(
@@ -504,9 +517,7 @@ export function extractMyLibraryReservationPage(
   const table = document.querySelector("#reservationList");
   if (!table) return null;
   const rows = Array.from(table.querySelectorAll("tbody tr")).filter(
-    (row) =>
-      isVisibleElement(row) &&
-      !row.querySelector(".dataTables_empty, .empty, .no-data"),
+    (row) => isVisibleElement(row) && !isEmptyPlaceholderRow(row),
   );
   const reservations = rows.map((row): MyLibraryReservation | null => {
     const titleAuthor = splitTitleAuthor(

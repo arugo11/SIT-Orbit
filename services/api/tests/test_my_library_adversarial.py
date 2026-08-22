@@ -28,16 +28,50 @@ FORBIDDEN_VALUES = (
 )
 
 
-def item_payload() -> dict[str, object]:
+def item_payload(
+    scope: str = "purchase_requests",
+    *,
+    author: str | None = "公開著者",
+) -> dict[str, object]:
+    scope_values = {
+        "current_loans": {
+            "status": "貸出中",
+            "due_date": "2026-08-24",
+            "activity_date": None,
+            "request_type": None,
+        },
+        "reservations": {
+            "status": "取置中",
+            "due_date": "2026-08-28",
+            "activity_date": None,
+            "request_type": "reservation",
+        },
+        "loan_history": {
+            "status": "返却済み",
+            "due_date": None,
+            "activity_date": "2026-07-01",
+            "request_type": None,
+        },
+        "purchase_requests": {
+            "status": "受付済み",
+            "due_date": None,
+            "activity_date": "2026-08-01",
+            "request_type": "図書購入",
+        },
+        "interlibrary_requests": {
+            "status": "処理中",
+            "due_date": None,
+            "activity_date": "2026-08-05",
+            "request_type": "文献複写",
+        },
+    }
+    values = scope_values[scope]
     return {
         "resource_ref": OPAQUE_REF,
         "title": "端末内資料",
-        "author": "公開著者",
-        "status": "受付済み",
-        "due_date": None,
+        "author": author,
+        **values,
         "renewable": None,
-        "activity_date": "2026-08-01",
-        "request_type": "図書購入",
     }
 
 
@@ -46,7 +80,7 @@ def result_payload(
     *,
     items: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
-    rows = items if items is not None else [item_payload()]
+    rows = items if items is not None else [item_payload(scope)]
     aggregates: dict[str, object] = {
         "loan_count": None,
         "reservation_count": None,
@@ -98,13 +132,6 @@ def test_my_library_item_rejects_identity_and_provider_fields(
 
 
 def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
-    rows = [
-        {
-            **item_payload(),
-            "resource_ref": f"orbit-library://record/{index:016x}",
-        }
-        for index in range(20)
-    ]
     for scope in (
         "current_loans",
         "reservations",
@@ -112,6 +139,13 @@ def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
         "purchase_requests",
         "interlibrary_requests",
     ):
+        rows = [
+            {
+                **item_payload(scope),
+                "resource_ref": f"orbit-library://record/{index:016x}",
+            }
+            for index in range(20)
+        ]
         result = MY_LIBRARY_RESULT_ADAPTER.validate_python(
             result_payload(scope, items=rows),
         )
@@ -123,7 +157,7 @@ def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
         "loan_history",
         items=[
             {
-                **item_payload(),
+                **item_payload("loan_history"),
                 "resource_ref": f"orbit-library://record/{index:016x}",
             }
             for index in range(21)
@@ -203,6 +237,54 @@ def test_known_result_requires_a_complete_legacy_or_scoped_shape() -> None:
     inconsistent["loan_count"] = 0
     with pytest.raises(ValidationError, match="outside the requested scope"):
         MY_LIBRARY_RESULT_ADAPTER.validate_python(inconsistent)
+
+
+@pytest.mark.parametrize(
+    ("scope", "required_fields"),
+    [
+        ("current_loans", ("due_date",)),
+        ("reservations", ("due_date", "status")),
+        ("loan_history", ("activity_date", "status")),
+        ("purchase_requests", ("activity_date", "status", "request_type")),
+        (
+            "interlibrary_requests",
+            ("activity_date", "status", "request_type"),
+        ),
+    ],
+)
+def test_scoped_known_results_require_scope_semantic_fields_and_allow_authorless_items(
+    scope: str,
+    required_fields: tuple[str, ...],
+) -> None:
+    complete = result_payload(
+        scope,
+        items=[item_payload(scope, author=None)],
+    )
+    parsed = MY_LIBRARY_RESULT_ADAPTER.validate_python(complete)
+    assert parsed.items is not None
+    assert parsed.items[0].author is None
+
+    for field in required_fields:
+        incomplete = copy.deepcopy(complete)
+        incomplete["items"][0][field] = None
+        with pytest.raises(ValidationError, match="incomplete fields"):
+            MY_LIBRARY_RESULT_ADAPTER.validate_python(incomplete)
+
+
+def test_legacy_aggregate_shape_remains_compatible() -> None:
+    legacy = {
+        "schema_version": "v1",
+        "status": "known",
+        "loan_count": 2,
+        "reservation_count": 1,
+        "overdue_count": 1,
+        "renewable_count": 1,
+        "earliest_due_date": "2026-08-24",
+        "reason_code": None,
+    }
+    parsed = MY_LIBRARY_RESULT_ADAPTER.validate_python(legacy)
+    assert parsed.loan_count == 2
+    assert parsed.reservation_count == 1
 
 
 @pytest.mark.parametrize(

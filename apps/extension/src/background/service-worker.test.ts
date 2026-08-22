@@ -160,6 +160,10 @@ function inlineDefinitionCell(label: string, value: string): string {
   return `<td><dl><dt>${label}</dt><dd>${value}</dd></dl></td>`;
 }
 
+function inlineMarkedDefinitionCell(label: string, marker: string): string {
+  return `<td><dl><dt>${label}</dt><dd class="${marker}"></dd></dl></td>`;
+}
+
 function inlineCurrentLoansHtml(title: string, dueDate: string): string {
   return `<table id="lendList"><tbody><tr>${inlineDefinitionCell(
     "書名 / 著者名",
@@ -277,6 +281,59 @@ const inlineAuthorlessScopeCases = [
       "ILL（文献複写・貸借）依頼",
       ["書名", "受付日", "状態", "依頼種別"],
       ["著者なしILL依頼", "2026/08/05", "処理中", "文献複写"],
+    ),
+  },
+] as const;
+
+const inlineMarkedRequiredCellCases = [
+  {
+    scope: "current_loans",
+    html: `<table id="lendList"><tbody><tr>${inlineDefinitionCell(
+      "書名 / 著者名",
+      "必須列検証貸出",
+    )}${inlineMarkedDefinitionCell(
+      "貸出返却期限延長回数",
+      "empty",
+    )}</tr></tbody></table>`,
+  },
+  {
+    scope: "reservations",
+    html: `<table id="reservationList"><tbody><tr>${inlineDefinitionCell(
+      "書名 / 著者名",
+      "必須列検証予約",
+    )}${inlineMarkedDefinitionCell("状態", "no-data")}${inlineDefinitionCell(
+      "受取館取置期限日",
+      "2026/08/28",
+    )}</tr></tbody></table>`,
+  },
+  {
+    scope: "loan_history",
+    html: inlineGenericMyLibraryHtml(
+      "貸出履歴一覧",
+      ["書名", "貸出日", "状態"],
+      ["必須列検証履歴", "", "返却済み"],
+    ).replace(
+      "<td></td><td>返却済み</td>",
+      '<td class="empty"></td><td>返却済み</td>',
+    ),
+  },
+  {
+    scope: "purchase_requests",
+    html: inlineGenericMyLibraryHtml(
+      "購入依頼状況",
+      ["書名", "申請日", "状態", "申請種別"],
+      ["必須列検証購入", "2026/08/01", "受付済み", ""],
+    ).replace("<td></td></tr>", '<td class="no-data"></td></tr>'),
+  },
+  {
+    scope: "interlibrary_requests",
+    html: inlineGenericMyLibraryHtml(
+      "ILL（文献複写・貸借）依頼",
+      ["書名", "受付日", "状態", "依頼種別"],
+      ["必須列検証ILL", "2026/08/05", "", "文献複写"],
+    ).replace(
+      "<td></td><td>文献複写</td>",
+      '<td class="empty"></td><td>文献複写</td>',
     ),
   },
 ] as const;
@@ -824,6 +881,39 @@ describe("service worker side panel contract", () => {
       });
     },
   );
+
+  it.each(inlineMarkedRequiredCellCases)(
+    "inline reader fails closed when a valid-title $scope required cell is marked empty",
+    async ({ scope, html }) => {
+      const result = await runInlineMyLibraryReader(scope, html, {
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+      expect(result).toEqual({
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
+  it("keeps an official empty placeholder as a known empty inline scope", async () => {
+    const result = await runInlineMyLibraryReader(
+      "reservations",
+      '<table id="reservationList"><tbody><tr><td class="dataTables_empty">データなし</td></tr></tbody></table>',
+      {
+        status: "known",
+        scope: "reservations",
+        kind: "reservations",
+        reservations: [],
+        items: [],
+      },
+    );
+    expect(result).toMatchObject({
+      status: "known",
+      kind: "reservations",
+      items: [],
+    });
+  });
 
   it("reads public catalog DOM in an inactive isolated-world tab", async () => {
     permissionsContains.mockResolvedValue(true);
