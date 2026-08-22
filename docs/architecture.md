@@ -332,7 +332,7 @@ Static Web Apps Freeは、静的ホスティング、GitHub連携、SSL、管理
 
 Container Apps Consumptionは、利用量に応じた課金とscale-to-zeroを利用できるため、常時稼働の仮想マシンよりデモ向きである。[Container Appsの環境](https://learn.microsoft.com/en-us/azure/container-apps/environment)
 
-外部公開したAgent APIは、`ORBIT_API_TOKEN`をContainer Apps Secretから設定し、`/v1/*`だけにBearer認証を要求する。`/health`はscale-to-zeroからの起動と監視に使うため公開のままにする。拡張機能は明示的に許可したContainer Apps originだけへ接続し、endpointとtokenを`chrome.storage.session`で共有する。通常のローカル開発とCIでは`ORBIT_API_TOKEN`を設定しない。
+外部公開したAgent APIは、`ORBIT_API_TOKEN`をContainer Apps Secretから設定し、`/v1/*`だけにBearer認証を要求する。`/health`はscale-to-zeroからの起動と監視に使うため公開のままにする。API側のCORSは`ORBIT_CORS_ORIGINS`へ明示した拡張機能originだけを許可し、ワイルドカードを使わない。拡張機能は明示的に許可したContainer Apps originだけへ接続し、endpointとtokenを`chrome.storage.session`で共有する。通常のローカル開発とCIでは`ORBIT_API_TOKEN`と`ORBIT_CORS_ORIGINS`を設定しない。
 
 Azure Functions Timerは、短時間でステートレスな定期処理に使う。
 

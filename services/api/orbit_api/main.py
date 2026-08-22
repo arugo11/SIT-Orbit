@@ -3,6 +3,7 @@ import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from orbit_api.agent import (
@@ -72,6 +73,29 @@ async def require_api_token(request: Request, call_next):
                 headers={"WWW-Authenticate": "Bearer"},
             )
     return await call_next(request)
+
+
+def configure_cors(application: FastAPI) -> None:
+    """Allow only explicitly configured browser-extension origins."""
+    origins = [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("ORBIT_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if not origins:
+        return
+    if "*" in origins:
+        raise RuntimeError("ORBIT_CORS_ORIGINS must list explicit origins.")
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+configure_cors(app)
 
 agent_run_service = AgentRunService()
 chat_run_service = ChatRunService(backend_factory=get_chat_backend)

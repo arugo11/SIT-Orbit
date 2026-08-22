@@ -11,6 +11,10 @@ if [[ -n "${ORBIT_AZURE_SUBSCRIPTION:-}" ]]; then
 fi
 
 secret_name="${ORBIT_AZURE_API_TOKEN_SECRET_NAME:-orbit-api-token}"
+env_vars=("ORBIT_API_TOKEN=secretref:${secret_name}")
+if [[ -n "${ORBIT_EXTENSION_ORIGIN:-}" ]]; then
+  env_vars+=("ORBIT_CORS_ORIGINS=${ORBIT_EXTENSION_ORIGIN%/}")
+fi
 az containerapp secret set \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
@@ -22,7 +26,7 @@ az containerapp secret set \
 az containerapp update \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
-  --set-env-vars "ORBIT_API_TOKEN=secretref:${secret_name}" \
+  --set-env-vars "${env_vars[@]}" \
   "${subscription_args[@]}" \
   --only-show-errors \
   --output none
@@ -36,6 +40,19 @@ readback="$(az containerapp show \
 if [[ "${readback}" != "${secret_name}" ]]; then
   printf 'Container App API authentication verification failed.\n' >&2
   exit 1
+fi
+
+if [[ -n "${ORBIT_EXTENSION_ORIGIN:-}" ]]; then
+  cors_readback="$(az containerapp show \
+    --name "${ORBIT_AZURE_CONTAINER_APP}" \
+    --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
+    "${subscription_args[@]}" \
+    --query "properties.template.containers[0].env[?name=='ORBIT_CORS_ORIGINS'].value | [0]" \
+    --output tsv)"
+  if [[ "${cors_readback}" != "${ORBIT_EXTENSION_ORIGIN%/}" ]]; then
+    printf 'Container App CORS origin verification failed.\n' >&2
+    exit 1
+  fi
 fi
 
 printf 'Enabled Bearer authentication for %s.\n' "${ORBIT_AZURE_CONTAINER_APP}"

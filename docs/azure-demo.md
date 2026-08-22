@@ -146,10 +146,13 @@ scripts/azure/health.sh
 export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
 export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
 export ORBIT_AZURE_API_TOKEN="$(openssl rand -hex 32)"
+export ORBIT_EXTENSION_ORIGIN="chrome-extension://<extension-id>"
 scripts/azure/configure-api-auth.sh
 ```
 
 拡張機能の「接続設定 → Agent API」で「Azureデモを選択」を押し、同じtokenを入力して「保存して接続確認」を押す。endpointとtokenは`chrome.storage.session`だけに保持され、Chrome終了後には復元しない。TokenをChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。
+
+`ORBIT_EXTENSION_ORIGIN`を指定した場合だけ、その拡張機能originからの`GET`、`POST`、CORS preflightと`Authorization`、`Content-Type` headerを許可する。ワイルドカードoriginは設定せず、`chrome://extensions`に表示された実際のIDを使う。
 
 `/health`は監視用に認証なしで応答する。Bearer tokenの正否は実際のChat送信時に検証され、無効なtokenでは`401`となる。ローカル開発とCIは`ORBIT_API_TOKEN`を設定しないため、従来どおり認証なしでfixture APIを利用できる。
 
