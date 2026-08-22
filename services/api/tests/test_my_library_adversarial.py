@@ -1,4 +1,5 @@
 import copy
+from typing import cast
 
 import orbit_api.main as orbit_main
 import pytest
@@ -266,7 +267,8 @@ def test_scoped_known_results_require_scope_semantic_fields_and_allow_authorless
 
     for field in required_fields:
         incomplete = copy.deepcopy(complete)
-        incomplete["items"][0][field] = None
+        incomplete_items = cast(list[dict[str, object]], incomplete["items"])
+        incomplete_items[0][field] = None
         with pytest.raises(ValidationError, match="incomplete fields"):
             MY_LIBRARY_RESULT_ADAPTER.validate_python(incomplete)
 
