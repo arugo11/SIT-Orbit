@@ -7,6 +7,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { parseHTML } from "linkedom";
 import { MESSAGE_TYPES } from "../shared/messages";
 
 type EventCallback = (...args: never[]) => void;
@@ -130,6 +131,23 @@ Object.defineProperty(globalThis, "chrome", {
   configurable: true,
   value: chromeMock,
 });
+
+type ScriptDetails = { func?: unknown };
+
+function capturedScript(index: number): () => unknown {
+  const details = executeScript.mock.calls[index]?.[0] as
+    | ScriptDetails
+    | undefined;
+  if (typeof details?.func !== "function") {
+    throw new Error(`executeScript call ${index} did not capture a function`);
+  }
+  return details.func as () => unknown;
+}
+
+function stubPage(html: string, href: string): void {
+  vi.stubGlobal("document", parseHTML(html).document);
+  vi.stubGlobal("location", new URL(href));
+}
 
 await import("./service-worker");
 
@@ -362,6 +380,197 @@ describe("service worker side panel contract", () => {
       expect.objectContaining({ world: "ISOLATED" }),
     );
     expect(removeTab).toHaveBeenCalledWith(91);
+  });
+
+  it("reads the current OPAC detail record without requiring a self-link", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            records: [
+              {
+                record_id: "BB24928243",
+                title: "Rによる機械学習入門",
+                authors: [],
+                subjects: [],
+                isbn: null,
+                publisher: null,
+                publication_year: null,
+                format: "book",
+                campus: "any",
+                url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB24928243",
+                holdings: [],
+                related_records: [],
+              },
+            ],
+          },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-detail-capture",
+        query: "Rによる機械学習入門",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <h1 class="page-title">Rによる機械学習入門</h1>
+        <dl class="mainTable">
+          <dt>著者名</dt><dd>中村 著</dd>
+          <dt>出版情報</dt><dd>東京 : オーム社, 2024</dd>
+          <dt>ISBN</dt><dd>978-4-274-23111-1</dd>
+          <dt>主題</dt><dd>機械学習; R言語</dd>
+        </dl>
+        <div class="holding-row">
+          <span class="xc-availability">豊洲 貸出可, 830.79/U32</span>
+        </div>
+        <a href="/opc/recordID/catalog.bib/RELATED1">関連版</a>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB24928243",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        record_id: string;
+        title: string;
+        holdings: Array<{
+          campus: string;
+          status: string;
+          call_number: string | null;
+        }>;
+        related_records: Array<{ record_id: string }>;
+      }>;
+    };
+    expect(projection.status).toBe("known");
+    expect(projection.records).toEqual([
+      expect.objectContaining({
+        record_id: "BB24928243",
+        title: "Rによる機械学習入門",
+        holdings: [
+          expect.objectContaining({
+            campus: "toyosu",
+            status: "available",
+            call_number: "830.79/U32",
+          }),
+        ],
+        related_records: [expect.objectContaining({ record_id: "RELATED1" })],
+      }),
+    ]);
+  });
+
+  it("extracts availability and call number from the OPAC search result markup", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([
+        {
+          result: { status: "known", records: [] },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-search-capture",
+        query: "ロボット工学",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <article class="result-row">
+          <a href="/opc/recordID/catalog.bib/ABC123">公開ロボット工学</a>
+          <span class="xc-availability">大宮 貸出可, 830.79/U32</span>
+        </article>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        holdings: Array<{
+          campus: string;
+          status: string;
+          call_number: string | null;
+        }>;
+      }>;
+    };
+    expect(projection.status).toBe("known");
+    expect(projection.records?.[0]?.holdings).toEqual([
+      expect.objectContaining({
+        campus: "omiya",
+        status: "available",
+        call_number: "830.79/U32",
+      }),
+    ]);
+  });
+
+  it("fails closed for unknown resource references and non-OPAC result pages", async () => {
+    permissionsContains.mockResolvedValue(true);
+    const unknownResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryItemRead,
+        tool_call_id: "unknown-library-ref",
+        resource_ref: "orbit-library://record/0000000000000000",
+      },
+      {},
+      unknownResponse,
+    );
+    await vi.waitFor(() => expect(unknownResponse).toHaveBeenCalledTimes(1));
+    expect(unknownResponse).toHaveBeenCalledWith({
+      status: "unavailable",
+      reason_code: "unknown_resource_ref",
+    });
+    expect(createTab).not.toHaveBeenCalled();
+
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([
+        { result: { status: "known", records: [] } },
+      ]);
+    const captureResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "path-capture",
+        query: "公開資料",
+        limit: 1,
+      },
+      {},
+      captureResponse,
+    );
+    await vi.waitFor(() => expect(captureResponse).toHaveBeenCalledTimes(1));
+    const readCatalogPage = capturedScript(1);
+
+    for (const href of [
+      "https://example.com/opc/",
+      "https://library.shibaura-it.ac.jp/not-opac/",
+    ]) {
+      stubPage("<p>unexpected page</p>", href);
+      expect(readCatalogPage()).toEqual({
+        status: "unavailable",
+        reason_code: "unexpected_opac_result",
+      });
+    }
   });
 
   it("returns only CAST aggregates while keeping notice titles local", async () => {
