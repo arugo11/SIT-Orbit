@@ -319,6 +319,14 @@ CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含�
 
 Career Vaultの暗号化レコードを正本とし、Career Evidence BankからFastAPI、Azure、W&B、Chat履歴へ直接送る経路は設けない。外部Providerが必要な場合は、別途Pseudonymization GatewayとContext Manifestで許可された公開・一般化データだけを使用し、個人証拠はオンデバイス処理に固定する。
 
+### CAST Decision Room
+
+`buildCastDecisionRoom`は、求人またはインターンと、同一企業として確認できた採用実績・選考記録・OB・OG表示を端末内で比較する。技術領域、勤務地、職種、採用実績、選考記録、OB・OG支援、締切、不足情報を独立した判断軸として返し、単一の相性点や順位は生成しない。
+
+各軸は`match`、`partial`、`mismatch`、`unknown`のいずれかと、要約、ローカルEvidence ID、不足項目を持つ。企業名とCASTのlocal IDを含む`subject`、求人の締切、表示件数などの詳細は拡張機能のメモリ内UI専用であり、FastAPI、Azure、W&B、Chat履歴へ送らない。別企業の履歴Snapshotは企業名一致を確認できない限り紐付けず、未知として扱う。
+
+判断結果は、応募・予約・送信を実行する機能ではない。次の一歩は「不足情報を確認する」「締切と必要書類を本人が確認する」といった読み取り専用の案内に限定し、確定操作は後続のAction Adapterで本人確認を要求する。[Human and LLM-Based Resume Matching](https://aclanthology.org/2025.findings-naacl.270/)が示すLLM評価と人間評価の非互換性を踏まえ、説明可能な軸別Evidenceを優先し、総合スコアを採用しない。
+
 ## Connectorの境界
 
 「ScombZへログインすれば関連サイトをすべて読める」とは扱わない。
