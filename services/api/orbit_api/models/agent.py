@@ -607,8 +607,14 @@ def _validate_my_library_scope_items(
         "interlibrary_requests": ("activity_date", "status", "request_type"),
     }
     for item in items:
-        if any(getattr(item, field) is None for field in required_fields[scope]):
-            raise ValueError(f"My Library {scope} items have incomplete fields.")
+        for field in required_fields[scope]:
+            value = getattr(item, field)
+            if value is None or (
+                field in {"status", "request_type"}
+                and isinstance(value, str)
+                and not value.strip()
+            ):
+                raise ValueError(f"My Library {scope} items have incomplete fields.")
 
 
 class LegacyMyLibraryReadResult(StrictApiModel):

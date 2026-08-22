@@ -290,6 +290,32 @@ def test_legacy_aggregate_shape_remains_compatible() -> None:
 
 
 @pytest.mark.parametrize(
+    ("scope", "field"),
+    [
+        ("reservations", "status"),
+        ("loan_history", "status"),
+        ("purchase_requests", "status"),
+        ("purchase_requests", "request_type"),
+        ("interlibrary_requests", "status"),
+        ("interlibrary_requests", "request_type"),
+    ],
+)
+def test_scoped_known_results_reject_empty_required_strings(
+    scope: str,
+    field: str,
+) -> None:
+    complete = result_payload(scope)
+    assert MY_LIBRARY_RESULT_ADAPTER.validate_python(complete).status == "known"
+
+    for blank in ("", "   "):
+        incomplete = copy.deepcopy(complete)
+        incomplete_items = cast(list[dict[str, object]], incomplete["items"])
+        incomplete_items[0][field] = blank
+        with pytest.raises(ValidationError, match="incomplete fields"):
+            MY_LIBRARY_RESULT_ADAPTER.validate_python(incomplete)
+
+
+@pytest.mark.parametrize(
     ("scope", "allowed_fields"),
     [
         ("current_loans", {"loan_count", "overdue_count", "renewable_count"}),
