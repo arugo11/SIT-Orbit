@@ -319,6 +319,12 @@ CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含�
 
 Career Vaultの暗号化レコードを正本とし、Career Evidence BankからFastAPI、Azure、W&B、Chat履歴へ直接送る経路は設けない。外部Providerが必要な場合は、別途Pseudonymization GatewayとContext Manifestで許可された公開・一般化データだけを使用し、個人証拠はオンデバイス処理に固定する。
 
+### Evidence-grounded ES
+
+ES下書きは、利用者が`confirmed`にしたCareer Evidence Bankのprojectionだけを入力にして、Chrome Prompt APIで端末内生成する。モデルの各文は`evidence_id`と、対応するclaim・context・action・resultからの短い`grounding_quote`を必須とし、未知のEvidence ID、引用に存在しない文言、根拠にない数値を決定的に拒否する。生成物には文単位のEvidence IDと検証済みの引用を保持し、どの経験から構成されたかを端末内で追跡できる。
+
+ES生成はAzure、FastAPI、W&Bへ送信せず、Chrome Prompt APIが利用できない場合に別Providerへfallbackしない。材料のlocator、ファイル本体、`person_ref`、対応表、tokenはPrompt入力と生成結果へ含めない。応募先や応募目的の自由記述に連絡先・学籍番号・credentialらしい値が含まれる場合は、モデル呼び出し前に停止する。
+
 ### CAST Decision Room
 
 `buildCastDecisionRoom`は、求人またはインターンと、同一企業として確認できた採用実績・選考記録・OB・OG表示を端末内で比較する。技術領域、勤務地、職種、採用実績、選考記録、OB・OG支援、締切、不足情報を独立した判断軸として返し、単一の相性点や順位は生成しない。
