@@ -109,6 +109,9 @@ function toolLabel(name: string): string {
   }
 }
 
+const LIBRARY_SEARCH_PERMISSION_DISCLOSURE =
+  "検索語をこのサイトへ送信し、表示された結果のみを読み取ります。予約等の変更はしません。";
+
 function evidenceText(proposal: ActionProposal | null | undefined): string[] {
   return proposal?.evidence.map((item) => item.title) ?? [];
 }
@@ -592,6 +595,8 @@ export function ChatPanel({
           library.origin,
           library.origin,
           library.pattern,
+          `${response.run_id}:${call.tool_call_id}:library-catalog-search`,
+          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
         );
       }
       if (library.status === "unavailable") {
@@ -699,6 +704,8 @@ export function ChatPanel({
           library.origin,
           library.origin,
           library.pattern,
+          `${response.run_id}:${call.tool_call_id}:library-discovery-search`,
+          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
         );
       }
       if (library.status === "unavailable") {
@@ -1270,13 +1277,17 @@ export function ChatPanel({
       {permissionPrompt ? (
         <aside className="chat-permission-prompt" role="alert">
           <strong>サイトの読み取り許可</strong>
-          <p>
-            {permissionPrompt.origin}
-            を今回のTool実行で参照します。ページの表示情報だけを使い、送信・変更は行いません。
-          </p>
           {permissionPrompt.disclosure ? (
-            <p>{permissionPrompt.disclosure}</p>
-          ) : null}
+            <p>
+              {permissionPrompt.origin}を今回のTool実行で参照します。
+              {permissionPrompt.disclosure}
+            </p>
+          ) : (
+            <p>
+              {permissionPrompt.origin}
+              を今回のTool実行で参照します。ページの表示情報だけを使い、送信・変更は行いません。
+            </p>
+          )}
           <div className="button-row">
             <button
               type="button"
