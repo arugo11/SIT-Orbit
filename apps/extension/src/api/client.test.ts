@@ -203,6 +203,54 @@ describe("AgentApiClient", () => {
     expect(
       isMyLibraryReadResult({ ...result, earliest_due_date: "2026-99-99" }),
     ).toBe(false);
+    expect(
+      isMyLibraryReadResult({ ...result, earliest_due_date: "2026-9-1" }),
+    ).toBe(false);
+    expect(
+      isMyLibraryReadResult({
+        ...result,
+        status: "unavailable",
+        loan_count: 0,
+        reservation_count: 0,
+        overdue_count: 0,
+        renewable_count: 0,
+        earliest_due_date: null,
+        reason_code: "login_required",
+      }),
+    ).toBe(true);
+
+    const scopedLoan = {
+      ...result,
+      scope: "current_loans",
+      items: [],
+      total_count: 2,
+      next_offset: 0,
+      reservation_count: null,
+    };
+    expect(isMyLibraryReadResult(scopedLoan)).toBe(true);
+    expect(isMyLibraryReadResult({ ...scopedLoan, loan_count: 1 })).toBe(false);
+
+    const scoped = {
+      ...result,
+      scope: "purchase_requests",
+      items: [],
+      total_count: 0,
+      next_offset: null,
+      loan_count: null,
+      reservation_count: null,
+      overdue_count: null,
+      renewable_count: null,
+      earliest_due_date: null,
+    };
+    expect(isMyLibraryReadResult(scoped)).toBe(true);
+    expect(isMyLibraryReadResult({ ...scoped, loan_count: 0 })).toBe(false);
+    expect(
+      isMyLibraryReadResult({
+        ...scoped,
+        status: "unavailable",
+        loan_count: 0,
+      }),
+    ).toBe(false);
   });
 
   it("accepts CAST aggregates and rejects local notice details", () => {
@@ -356,6 +404,32 @@ describe("AgentApiClient", () => {
       method: "GET",
       headers: {},
     });
+  });
+
+  it("reads authenticated Agent capabilities before personal data transfer", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        agent_backend: "azure_openai",
+        my_library_personal_context: true,
+      }),
+    );
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      accessToken: "demo-token",
+      fetcher,
+    });
+
+    await expect(client.capabilities()).resolves.toEqual({
+      agent_backend: "azure_openai",
+      my_library_personal_context: true,
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://agent.example.test/v1/capabilities",
+      {
+        method: "GET",
+        headers: { Authorization: "Bearer demo-token" },
+      },
+    );
   });
 
   it("accepts a google_drive EvidenceLink with an opaque locator", async () => {

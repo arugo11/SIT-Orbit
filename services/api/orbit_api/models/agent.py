@@ -5,6 +5,7 @@ remain backwards compatible.  Run envelopes are a narrower boundary: unknown
 fields are rejected and the response union is discriminated by ``status``.
 """
 
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -27,6 +28,13 @@ class StrictApiModel(BaseModel):
     """Base class for API envelopes that must not accept extra fields."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class AgentCapabilities(StrictApiModel):
+    """Authenticated runtime capabilities used before personal data leaves Chrome."""
+
+    agent_backend: Literal["fixture", "openai", "azure_openai"]
+    my_library_personal_context: StrictBool
 
 
 class CalendarAvailabilityInterval(StrictApiModel):
@@ -533,12 +541,87 @@ class MoodleReadResult(StrictApiModel):
         return self
 
 
-class MyLibraryReadResult(StrictApiModel):
-    """Derived My Library counts safe for an explicitly confirmed run.
+MyLibraryScope = Literal[
+    "current_loans",
+    "reservations",
+    "loan_history",
+    "purchase_requests",
+    "interlibrary_requests",
+]
 
-    Book titles, authors, material identifiers, call numbers, user identity,
-    and SSO data deliberately have no representation in this model.
+
+class MyLibraryItem(StrictApiModel):
+    """One bounded personal-library row safe to share after session consent.
+
+    The connector maps provider-specific identifiers to an opaque reference
+    before this model is constructed.  Material/request IDs, call numbers,
+    form values, and account identity intentionally have no fields here.
     """
+
+    resource_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    title: StrictStr = Field(min_length=1, max_length=300)
+    author: StrictStr | None = Field(default=None, max_length=300)
+    status: StrictStr | None = Field(default=None, max_length=100)
+    due_date: StrictStr | None = Field(default=None, max_length=10)
+    renewable: StrictBool | None = None
+    activity_date: StrictStr | None = Field(default=None, max_length=10)
+    request_type: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def dates_are_iso(self) -> "MyLibraryItem":
+        if not self.title.strip():
+            raise ValueError("My Library titles must not be blank.")
+        for field_name, value in (
+            ("due_date", self.due_date),
+            ("activity_date", self.activity_date),
+        ):
+            try:
+                _validate_my_library_date(value)
+            except ValueError as error:
+                raise ValueError(
+                    f"My Library {field_name} values must use YYYY-MM-DD."
+                ) from error
+        return self
+
+
+def _validate_my_library_date(value: str | None) -> None:
+    if value is None:
+        return
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError("My Library dates must use YYYY-MM-DD.")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as error:
+        raise ValueError("My Library dates must use YYYY-MM-DD.") from error
+
+
+def _validate_my_library_scope_items(
+    scope: MyLibraryScope, items: list[MyLibraryItem]
+) -> None:
+    required_fields: dict[MyLibraryScope, tuple[str, ...]] = {
+        "current_loans": ("due_date",),
+        "reservations": ("due_date", "status"),
+        "loan_history": ("activity_date", "status"),
+        "purchase_requests": ("activity_date", "status", "request_type"),
+        "interlibrary_requests": ("activity_date", "status", "request_type"),
+    }
+    for item in items:
+        for field in required_fields[scope]:
+            value = getattr(item, field)
+            if value is None or (
+                field in {"status", "request_type"}
+                and isinstance(value, str)
+                and not value.strip()
+            ):
+                raise ValueError(f"My Library {scope} items have incomplete fields.")
+
+
+class LegacyMyLibraryReadResult(StrictApiModel):
+    """The original aggregate-only My Library result shape."""
 
     schema_version: Literal["v1"] = "v1"
     status: Literal["known", "reauth_required", "unavailable"]
@@ -546,16 +629,12 @@ class MyLibraryReadResult(StrictApiModel):
     reservation_count: StrictInt = Field(ge=0, le=1000)
     overdue_count: StrictInt = Field(ge=0, le=1000)
     renewable_count: StrictInt = Field(ge=0, le=1000)
-    earliest_due_date: StrictStr | None = Field(default=None, max_length=10)
-    reason_code: StrictStr | None = Field(default=None, max_length=100)
+    earliest_due_date: StrictStr | None = Field(max_length=10)
+    reason_code: StrictStr | None = Field(max_length=100)
 
     @model_validator(mode="after")
-    def values_match_status(self) -> "MyLibraryReadResult":
-        if self.earliest_due_date is not None:
-            try:
-                datetime.strptime(self.earliest_due_date, "%Y-%m-%d")
-            except ValueError as error:
-                raise ValueError("My Library due dates must use YYYY-MM-DD.") from error
+    def values_match_status(self) -> "LegacyMyLibraryReadResult":
+        _validate_my_library_date(self.earliest_due_date)
         if self.status != "known" and (
             self.loan_count
             or self.reservation_count
@@ -569,6 +648,102 @@ class MyLibraryReadResult(StrictApiModel):
         if self.renewable_count > self.loan_count:
             raise ValueError("My Library renewable count cannot exceed loan count.")
         return self
+
+
+class ScopedMyLibraryReadResult(StrictApiModel):
+    """A complete, bounded page for exactly one My Library scope."""
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "reauth_required", "unavailable"]
+    scope: MyLibraryScope
+    items: list[MyLibraryItem] = Field(max_length=20)
+    total_count: StrictInt = Field(ge=0, le=1000)
+    next_offset: StrictInt | None = Field(ge=0, le=1000)
+    loan_count: StrictInt | None = Field(ge=0, le=1000)
+    reservation_count: StrictInt | None = Field(ge=0, le=1000)
+    overdue_count: StrictInt | None = Field(ge=0, le=1000)
+    renewable_count: StrictInt | None = Field(ge=0, le=1000)
+    earliest_due_date: StrictStr | None = Field(max_length=10)
+    reason_code: StrictStr | None = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "ScopedMyLibraryReadResult":
+        _validate_my_library_date(self.earliest_due_date)
+        if self.status == "known":
+            _validate_my_library_scope_items(self.scope, self.items)
+        if self.scope == "current_loans":
+            if self.reservation_count is not None:
+                raise ValueError("Unread reservation count must be null.")
+            if self.status == "known" and any(
+                value is None
+                for value in (
+                    self.loan_count,
+                    self.overdue_count,
+                    self.renewable_count,
+                )
+            ):
+                raise ValueError("Known loan results require loan aggregates.")
+            if self.status == "known" and self.loan_count != self.total_count:
+                raise ValueError("My Library loan_count must equal the scope total_count.")
+        elif self.scope == "reservations":
+            if any(
+                value is not None
+                for value in (
+                    self.loan_count,
+                    self.overdue_count,
+                    self.renewable_count,
+                    self.earliest_due_date,
+                )
+            ):
+                raise ValueError("Unread loan aggregates must be null.")
+            if self.status == "known" and self.reservation_count is None:
+                raise ValueError("Known reservation results require reservation_count.")
+            if self.status == "known" and self.reservation_count != self.total_count:
+                raise ValueError(
+                    "My Library reservation_count must equal the scope total_count."
+                )
+        elif any(
+            value is not None
+            for value in (
+                self.loan_count,
+                self.reservation_count,
+                self.overdue_count,
+                self.renewable_count,
+                self.earliest_due_date,
+            )
+        ):
+            raise ValueError("Aggregates outside the requested scope must be null.")
+        if self.status != "known" and (
+            self.items
+            or self.total_count
+            or self.next_offset is not None
+            or self.loan_count is not None
+            or self.reservation_count is not None
+            or self.overdue_count is not None
+            or self.renewable_count is not None
+            or self.earliest_due_date is not None
+        ):
+            raise ValueError("Unavailable My Library results cannot include derived data.")
+        if self.total_count < len(self.items):
+            raise ValueError("My Library total_count cannot be below the item count.")
+        if self.total_count <= len(self.items) and self.next_offset is not None:
+            raise ValueError("My Library next_offset must be null on the final page.")
+        if (
+            self.overdue_count is not None
+            and self.loan_count is not None
+            and self.overdue_count > self.loan_count
+        ):
+            raise ValueError("My Library overdue count cannot exceed loan count.")
+        if (
+            self.renewable_count is not None
+            and self.loan_count is not None
+            and self.renewable_count > self.loan_count
+        ):
+            raise ValueError("My Library renewable count cannot exceed loan count.")
+        return self
+
+
+MyLibraryReadResult = LegacyMyLibraryReadResult | ScopedMyLibraryReadResult
 
 
 class CastReadResult(StrictApiModel):
@@ -826,6 +1001,7 @@ AgentRunResponse = Annotated[
 
 
 __all__ = [
+    "AgentCapabilities",
     "AgentRunCompleted",
     "AgentRunRequest",
     "AgentRunResponse",
@@ -848,7 +1024,11 @@ __all__ = [
     "SitrusGradeItem",
     "SitrusGradeResult",
     "MoodleReadResult",
+    "LegacyMyLibraryReadResult",
+    "MyLibraryItem",
+    "MyLibraryScope",
     "MyLibraryReadResult",
+    "ScopedMyLibraryReadResult",
     "LibraryHoldingSummary",
     "LibraryRelatedRecordRef",
     "LibraryBibliographicRecord",

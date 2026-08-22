@@ -28,6 +28,24 @@
         }
       }
     },
+    "/v1/capabilities": {
+      "get": {
+        "summary": "Capabilities",
+        "operationId": "capabilities_v1_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCapabilities"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agent/runs": {
       "post": {
         "summary": "Start Agent Run",
@@ -415,6 +433,31 @@
         ],
         "title": "ActionProposal",
         "description": "An evidence-backed next action that remains a proposal until approved."
+      },
+      "AgentCapabilities": {
+        "properties": {
+          "agent_backend": {
+            "type": "string",
+            "enum": [
+              "fixture",
+              "openai",
+              "azure_openai"
+            ],
+            "title": "Agent Backend"
+          },
+          "my_library_personal_context": {
+            "type": "boolean",
+            "title": "My Library Personal Context"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "agent_backend",
+          "my_library_personal_context"
+        ],
+        "title": "AgentCapabilities",
+        "description": "Authenticated runtime capabilities used before personal data leaves Chrome."
       },
       "AgentRunCompleted": {
         "properties": {
@@ -1171,7 +1214,10 @@
                 "$ref": "#/components/schemas/MoodleReadResult"
               },
               {
-                "$ref": "#/components/schemas/MyLibraryReadResult"
+                "$ref": "#/components/schemas/LegacyMyLibraryReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/ScopedMyLibraryReadResult"
               },
               {
                 "$ref": "#/components/schemas/CastReadResult"
@@ -1293,6 +1339,86 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "LegacyMyLibraryReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "loan_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Loan Count"
+          },
+          "reservation_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Reservation Count"
+          },
+          "overdue_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Overdue Count"
+          },
+          "renewable_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Renewable Count"
+          },
+          "earliest_due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Due Date"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "loan_count",
+          "reservation_count",
+          "overdue_count",
+          "renewable_count",
+          "earliest_due_date",
+          "reason_code"
+        ],
+        "title": "LegacyMyLibraryReadResult",
+        "description": "The original aggregate-only My Library result shape."
       },
       "LibraryBibliographicRecord": {
         "properties": {
@@ -1902,60 +2028,34 @@
         "title": "MoodleReadResult",
         "description": "Derived Moodle dashboard counts safe for an explicitly confirmed run.\n\nCourse names, activity titles, course IDs, user identity, submission data,\nand source HTML deliberately have no representation in this model."
       },
-      "MyLibraryReadResult": {
+      "MyLibraryItem": {
         "properties": {
-          "schema_version": {
+          "resource_ref": {
             "type": "string",
-            "const": "v1",
-            "title": "Schema Version",
-            "default": "v1"
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
           },
-          "status": {
+          "title": {
             "type": "string",
-            "enum": [
-              "known",
-              "reauth_required",
-              "unavailable"
-            ],
-            "title": "Status"
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
           },
-          "loan_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Loan Count"
-          },
-          "reservation_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Reservation Count"
-          },
-          "overdue_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Overdue Count"
-          },
-          "renewable_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Renewable Count"
-          },
-          "earliest_due_date": {
+          "author": {
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 10
+                "maxLength": 300
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Earliest Due Date"
+            "title": "Author"
           },
-          "reason_code": {
+          "status": {
             "anyOf": [
               {
                 "type": "string",
@@ -1965,20 +2065,64 @@
                 "type": "null"
               }
             ],
-            "title": "Reason Code"
+            "title": "Status"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "renewable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renewable"
+          },
+          "activity_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activity Date"
+          },
+          "request_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Type"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "status",
-          "loan_count",
-          "reservation_count",
-          "overdue_count",
-          "renewable_count"
+          "resource_ref",
+          "title"
         ],
-        "title": "MyLibraryReadResult",
-        "description": "Derived My Library counts safe for an explicitly confirmed run.\n\nBook titles, authors, material identifiers, call numbers, user identity,\nand SSO data deliberately have no representation in this model."
+        "title": "MyLibraryItem",
+        "description": "One bounded personal-library row safe to share after session consent.\n\nThe connector maps provider-specific identifiers to an opaque reference\nbefore this model is constructed.  Material/request IDs, call numbers,\nform values, and account identity intentionally have no fields here."
       },
       "OrbitEvent": {
         "properties": {
@@ -2301,6 +2445,156 @@
         ],
         "title": "ScombzReadTask",
         "description": "A visible SCombZ assignment projection without HTML or identifiers."
+      },
+      "ScopedMyLibraryReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "current_loans",
+              "reservations",
+              "loan_history",
+              "purchase_requests",
+              "interlibrary_requests"
+            ],
+            "title": "Scope"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MyLibraryItem"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Items"
+          },
+          "total_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Total Count"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "loan_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loan Count"
+          },
+          "reservation_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Count"
+          },
+          "overdue_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overdue Count"
+          },
+          "renewable_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renewable Count"
+          },
+          "earliest_due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Due Date"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "scope",
+          "items",
+          "total_count",
+          "next_offset",
+          "loan_count",
+          "reservation_count",
+          "overdue_count",
+          "renewable_count",
+          "earliest_due_date",
+          "reason_code"
+        ],
+        "title": "ScopedMyLibraryReadResult",
+        "description": "A complete, bounded page for exactly one My Library scope."
       },
       "SitrusGradeItem": {
         "properties": {

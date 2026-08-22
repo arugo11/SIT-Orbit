@@ -149,6 +149,258 @@ function stubPage(html: string, href: string): void {
   vi.stubGlobal("location", new URL(href));
 }
 
+type InlineMyLibraryScope =
+  | "current_loans"
+  | "reservations"
+  | "loan_history"
+  | "purchase_requests"
+  | "interlibrary_requests";
+
+function inlineDefinitionCell(label: string, value: string): string {
+  return `<td><dl><dt>${label}</dt><dd>${value}</dd></dl></td>`;
+}
+
+function inlineMarkedDefinitionCell(label: string, marker: string): string {
+  return `<td><dl><dt>${label}</dt><dd class="${marker}"></dd></dl></td>`;
+}
+
+function inlineCurrentLoansHtml(title: string, dueDate: string): string {
+  return `<table id="lendList"><tbody><tr>${inlineDefinitionCell(
+    "書名 / 著者名",
+    title,
+  )}${inlineDefinitionCell(
+    "貸出返却期限延長回数",
+    dueDate,
+  )}</tr></tbody></table>`;
+}
+
+function inlineReservationsHtml(
+  title: string,
+  status: string,
+  holdUntil: string,
+): string {
+  return `<table id="reservationList"><tbody><tr>${inlineDefinitionCell(
+    "書名 / 著者名",
+    title,
+  )}${inlineDefinitionCell("状態", status)}${inlineDefinitionCell(
+    "受取館取置期限日",
+    holdUntil,
+  )}</tr></tbody></table>`;
+}
+
+function inlineGenericMyLibraryHtml(
+  marker: string,
+  headers: readonly string[],
+  values: readonly string[],
+): string {
+  return `<table><caption>${marker}</caption><thead><tr>${headers
+    .map((header) => `<th>${header}</th>`)
+    .join("")}</tr></thead><tbody><tr>${values
+    .map((value) => `<td>${value}</td>`)
+    .join("")}</tr></tbody></table>`;
+}
+
+const inlineMalformedScopeCases = [
+  {
+    scope: "current_loans",
+    field: "due date",
+    title: "貸出検証資料",
+    html: inlineCurrentLoansHtml("貸出検証資料", ""),
+  },
+  {
+    scope: "reservations",
+    field: "status",
+    title: "予約検証資料",
+    html: inlineReservationsHtml("予約検証資料", "", "2026/08/28"),
+  },
+  {
+    scope: "loan_history",
+    field: "loan date",
+    title: "履歴検証資料",
+    html: inlineGenericMyLibraryHtml(
+      "貸出履歴一覧",
+      ["書名", "貸出日", "状態"],
+      ["履歴検証資料", "2026/99/99", "返却済み"],
+    ),
+  },
+  {
+    scope: "purchase_requests",
+    field: "request type",
+    title: "購入検証資料",
+    html: inlineGenericMyLibraryHtml(
+      "購入依頼状況",
+      ["書名", "申請日", "状態", "申請種別"],
+      ["購入検証資料", "2026/08/01", "受付済み", ""],
+    ),
+  },
+  {
+    scope: "interlibrary_requests",
+    field: "accepted date",
+    title: "ILL検証資料",
+    html: inlineGenericMyLibraryHtml(
+      "ILL（文献複写・貸借）依頼",
+      ["書名", "受付日", "状態", "依頼種別"],
+      ["ILL検証資料", "2026/99/99", "処理中", "文献複写"],
+    ),
+  },
+] as const;
+
+const inlineAuthorlessScopeCases = [
+  {
+    scope: "current_loans",
+    title: "著者なし貸出",
+    html: inlineCurrentLoansHtml("著者なし貸出", "2026/08/24"),
+  },
+  {
+    scope: "reservations",
+    title: "著者なし予約",
+    html: inlineReservationsHtml("著者なし予約", "取置中", "2026/08/28"),
+  },
+  {
+    scope: "loan_history",
+    title: "著者なし履歴",
+    html: inlineGenericMyLibraryHtml(
+      "貸出履歴一覧",
+      ["書名", "貸出日", "状態"],
+      ["著者なし履歴", "2026/07/01", "返却済み"],
+    ),
+  },
+  {
+    scope: "purchase_requests",
+    title: "著者なし購入依頼",
+    html: inlineGenericMyLibraryHtml(
+      "購入依頼状況",
+      ["書名", "申請日", "状態", "申請種別"],
+      ["著者なし購入依頼", "2026/08/01", "受付済み", "図書購入"],
+    ),
+  },
+  {
+    scope: "interlibrary_requests",
+    title: "著者なしILL依頼",
+    html: inlineGenericMyLibraryHtml(
+      "ILL（文献複写・貸借）依頼",
+      ["書名", "受付日", "状態", "依頼種別"],
+      ["著者なしILL依頼", "2026/08/05", "処理中", "文献複写"],
+    ),
+  },
+] as const;
+
+const inlineMarkedRequiredCellCases = [
+  {
+    scope: "current_loans",
+    html: `<table id="lendList"><tbody><tr>${inlineDefinitionCell(
+      "書名 / 著者名",
+      "必須列検証貸出",
+    )}${inlineMarkedDefinitionCell(
+      "貸出返却期限延長回数",
+      "empty",
+    )}</tr></tbody></table>`,
+  },
+  {
+    scope: "reservations",
+    html: `<table id="reservationList"><tbody><tr>${inlineDefinitionCell(
+      "書名 / 著者名",
+      "必須列検証予約",
+    )}${inlineMarkedDefinitionCell("状態", "no-data")}${inlineDefinitionCell(
+      "受取館取置期限日",
+      "2026/08/28",
+    )}</tr></tbody></table>`,
+  },
+  {
+    scope: "loan_history",
+    html: inlineGenericMyLibraryHtml(
+      "貸出履歴一覧",
+      ["書名", "貸出日", "状態"],
+      ["必須列検証履歴", "", "返却済み"],
+    ).replace(
+      "<td></td><td>返却済み</td>",
+      '<td class="empty"></td><td>返却済み</td>',
+    ),
+  },
+  {
+    scope: "purchase_requests",
+    html: inlineGenericMyLibraryHtml(
+      "購入依頼状況",
+      ["書名", "申請日", "状態", "申請種別"],
+      ["必須列検証購入", "2026/08/01", "受付済み", ""],
+    ).replace("<td></td></tr>", '<td class="no-data"></td></tr>'),
+  },
+  {
+    scope: "interlibrary_requests",
+    html: inlineGenericMyLibraryHtml(
+      "ILL（文献複写・貸借）依頼",
+      ["書名", "受付日", "状態", "依頼種別"],
+      ["必須列検証ILL", "2026/08/05", "", "文献複写"],
+    ).replace(
+      "<td></td><td>文献複写</td>",
+      '<td class="empty"></td><td>文献複写</td>',
+    ),
+  },
+] as const;
+
+const inlineEmptyBodyWithoutPlaceholderCases = [
+  {
+    scope: "current_loans",
+    html: '<table id="lendList"><tbody></tbody></table>',
+  },
+  {
+    scope: "reservations",
+    html: '<table id="reservationList"><tbody></tbody></table>',
+  },
+  {
+    scope: "loan_history",
+    html: `<table><caption>貸出履歴一覧</caption><thead><tr><th>書名</th><th>貸出日</th><th>状態</th></tr></thead><tbody></tbody></table>`,
+  },
+  {
+    scope: "purchase_requests",
+    html: `<table><caption>購入依頼状況</caption><thead><tr><th>書名</th><th>申請日</th><th>状態</th><th>申請種別</th></tr></thead><tbody></tbody></table>`,
+  },
+  {
+    scope: "interlibrary_requests",
+    html: `<table><caption>ILL（文献複写・貸借）依頼</caption><thead><tr><th>書名</th><th>受付日</th><th>状態</th><th>依頼種別</th></tr></thead><tbody></tbody></table>`,
+  },
+] as const;
+
+async function runInlineMyLibraryReader(
+  scope: InlineMyLibraryScope,
+  html: string,
+  workerResult: Record<string, unknown>,
+): Promise<unknown> {
+  permissionsContains.mockResolvedValue(true);
+  getTab.mockResolvedValue({
+    id: 91,
+    windowId: 1,
+    status: "complete",
+    url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+  } as chrome.tabs.Tab);
+  executeScript
+    .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+    .mockResolvedValueOnce([{ result: workerResult }]);
+
+  const response = vi.fn();
+  onMessage.dispatch(
+    {
+      type: MESSAGE_TYPES.myLibraryRead,
+      tool_call_id: `inline-reader-${scope}`,
+      scope,
+      offset: 0,
+      limit: 20,
+    },
+    {},
+    response,
+  );
+  await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+  stubPage(
+    html,
+    "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+  );
+  const readStatusPage = capturedScript(1) as unknown as (
+    requestedScope: InlineMyLibraryScope,
+  ) => unknown;
+  return readStatusPage(scope);
+}
+
 await import("./service-worker");
 
 afterAll(() => {
@@ -304,6 +556,400 @@ describe("service worker side panel contract", () => {
     expect(JSON.stringify(storageValues)).not.toContain("分散システム入門");
     expect(JSON.stringify(storageValues)).not.toContain("ロボット工学");
     expect(removeTab).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    "current_loans",
+    "reservations",
+    "loan_history",
+    "purchase_requests",
+    "interlibrary_requests",
+  ] as const)(
+    "projects the %s worker result into the Agent allowlist only",
+    async (scope) => {
+      permissionsContains.mockResolvedValue(true);
+      getTab.mockResolvedValue({
+        id: 91,
+        windowId: 1,
+        status: "complete",
+        url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+      } as chrome.tabs.Tab);
+
+      const rawId = `${scope}-material-secret`;
+      const item = {
+        raw_id: rawId,
+        title: "端末内資料",
+        author: "公開著者",
+        status: "処理中",
+        due_date: null,
+        renewable: null,
+        activity_date: "2026-08-01",
+        request_type: scope === "interlibrary_requests" ? "文献複写" : null,
+      };
+      const readResult: Record<string, unknown> = {
+        status: "known",
+        scope,
+        items: [item],
+      };
+      if (scope === "current_loans") {
+        readResult.kind = "loans";
+        readResult.loans = [
+          {
+            title: item.title,
+            author: item.author,
+            due_date: item.due_date,
+            renewable: false,
+            overdue: false,
+          },
+        ];
+      }
+      if (scope === "reservations") {
+        readResult.kind = "reservations";
+        readResult.reservations = [
+          {
+            title: item.title,
+            author: item.author,
+            hold_until: "2026-08-28",
+            status: "取置中",
+          },
+        ];
+      }
+      executeScript
+        .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+        .mockResolvedValueOnce([{ result: readResult }]);
+
+      const response = vi.fn();
+      onMessage.dispatch(
+        {
+          type: MESSAGE_TYPES.myLibraryRead,
+          tool_call_id: `library-scoped-${scope}`,
+          scope,
+          query: null,
+          offset: 0,
+          limit: 20,
+        },
+        {},
+        response,
+      );
+      await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+      const payload = response.mock.calls[0]?.[0] as {
+        status: string;
+        projection?: Record<string, unknown>;
+        detail?: unknown;
+      };
+      expect(payload.status).toBe("known");
+      expect(Object.keys(payload.projection ?? {}).sort()).toEqual(
+        [
+          "earliest_due_date",
+          "items",
+          "loan_count",
+          "next_offset",
+          "overdue_count",
+          "reason_code",
+          "renewable_count",
+          "reservation_count",
+          "schema_version",
+          "scope",
+          "status",
+          "total_count",
+        ].sort(),
+      );
+      const items = payload.projection?.items as Array<Record<string, unknown>>;
+      expect(items).toHaveLength(1);
+      expect(Object.keys(items[0] ?? {}).sort()).toEqual(
+        [
+          "activity_date",
+          "author",
+          "due_date",
+          "renewable",
+          "request_type",
+          "resource_ref",
+          "status",
+          "title",
+        ].sort(),
+      );
+      expect(items[0]?.resource_ref).toMatch(
+        /^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u,
+      );
+      const serialized = JSON.stringify({ payload, storageValues });
+      for (const marker of [
+        rawId,
+        "secret-call-number",
+        "student-number-secret",
+        "student@example.invalid",
+        "sso-token-secret",
+        "query-secret",
+        "fragment-secret",
+        "tracking-secret-id",
+        "purchase-reason-secret",
+        "contact-note-secret",
+      ]) {
+        expect(serialized).not.toContain(marker);
+      }
+    },
+  );
+
+  it("fails closed when two raw rows map to one worker reference", async () => {
+    permissionsContains.mockResolvedValue(true);
+    getTab.mockResolvedValue({
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+    } as chrome.tabs.Tab);
+    const duplicateRows = [
+      {
+        raw_id: "same-material-secret",
+        title: "資料A",
+        author: null,
+        status: "返却済み",
+        due_date: null,
+        renewable: null,
+        activity_date: "2026-08-01",
+        request_type: null,
+      },
+      {
+        raw_id: "same-material-secret",
+        title: "資料B",
+        author: null,
+        status: "返却済み",
+        due_date: null,
+        renewable: null,
+        activity_date: "2026-08-02",
+        request_type: null,
+      },
+    ];
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            scope: "loan_history",
+            items: duplicateRows,
+          },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.myLibraryRead,
+        tool_call_id: "library-ref-collision",
+        scope: "loan_history",
+        limit: 20,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({
+      status: "unavailable",
+      reason_code: "resource_ref_collision",
+    });
+    expect(JSON.stringify(storageValues)).not.toContain("same-material-secret");
+  });
+
+  it("returns an action-incapable opaque ref when a visible provider ID is absent", async () => {
+    permissionsContains.mockResolvedValue(true);
+    getTab.mockResolvedValue({
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+    } as chrome.tabs.Tab);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            scope: "loan_history",
+            items: [
+              {
+                raw_id: null,
+                title: "識別子のない履歴資料".repeat(30),
+                author: "公開著者",
+                status: "返却済み",
+                due_date: null,
+                renewable: null,
+                activity_date: "2026-08-01",
+                request_type: null,
+              },
+            ],
+          },
+        },
+      ]);
+
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.myLibraryRead,
+        tool_call_id: "library-unresolved-ref",
+        scope: "loan_history",
+        offset: 0,
+        limit: 20,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const payload = response.mock.calls[0]?.[0] as {
+      status: string;
+      projection?: { items?: Array<{ resource_ref?: string }> };
+    };
+    expect(payload.status).toBe("known");
+    expect(payload.projection?.items?.[0]?.resource_ref).toMatch(
+      /^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u,
+    );
+  });
+
+  it.each([
+    {
+      scope: "current_loans",
+      html: `<table id="lendList"><tbody><tr><td>解析不能な貸出行</td></tr></tbody></table>`,
+    },
+    {
+      scope: "reservations",
+      html: `<table id="reservationList"><tbody><tr><td>解析不能な予約行</td></tr></tbody></table>`,
+    },
+    {
+      scope: "purchase_requests",
+      html: `<table><caption>購入依頼状況</caption><thead><tr><th>書名</th><th>状態</th><th>申請日</th></tr></thead><tbody><tr><td></td><td>受付済み</td><td>2026-08-01</td></tr></tbody></table>`,
+    },
+    {
+      scope: "loan_history",
+      html: `<table><caption>貸出履歴一覧</caption><thead><tr><th>書名</th><th>貸出日</th></tr></thead><tbody><tr><td></td><td>2026-08-01</td></tr></tbody></table>`,
+    },
+    {
+      scope: "interlibrary_requests",
+      html: `<table><caption>ILL（文献複写・貸借）依頼</caption><thead><tr><th>書名</th><th>状態</th><th>依頼日</th><th>依頼区分</th></tr></thead><tbody><tr><td></td><td>受付済み</td><td>2026-08-01</td><td>文献複写</td></tr></tbody></table>`,
+    },
+  ] as const)(
+    "fails closed for a non-empty unparseable $scope DOM row",
+    async ({ scope, html }) => {
+      permissionsContains.mockResolvedValue(true);
+      getTab.mockResolvedValue({
+        id: 91,
+        windowId: 1,
+        status: "complete",
+        url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+      } as chrome.tabs.Tab);
+      executeScript
+        .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+        .mockResolvedValueOnce([
+          {
+            result: {
+              status: "unavailable",
+              reason_code: "scope_row_unparseable",
+            },
+          },
+        ]);
+
+      const response = vi.fn();
+      onMessage.dispatch(
+        {
+          type: MESSAGE_TYPES.myLibraryRead,
+          tool_call_id: `library-unparseable-${scope}`,
+          scope,
+          offset: 0,
+          limit: 20,
+        },
+        {},
+        response,
+      );
+      await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+      stubPage(
+        html,
+        "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+      );
+      const readStatusPage = capturedScript(1) as unknown as (
+        requestedScope: typeof scope,
+      ) => unknown;
+      expect(readStatusPage(scope)).toEqual({
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
+  it.each(inlineMalformedScopeCases)(
+    "inline reader fails closed for a valid-title $scope row with malformed $field",
+    async ({ scope, html, title }) => {
+      expect(html).toContain(title);
+      const result = await runInlineMyLibraryReader(scope, html, {
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+      expect(result).toEqual({
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
+  it.each(inlineAuthorlessScopeCases)(
+    "inline reader keeps valid $scope row when author is absent",
+    async ({ scope, html, title }) => {
+      const result = await runInlineMyLibraryReader(scope, html, {
+        status: "known",
+        scope,
+        items: [],
+      });
+      expect(result).toMatchObject({
+        status: "known",
+        items: [{ title, author: null }],
+      });
+    },
+  );
+
+  it.each(inlineMarkedRequiredCellCases)(
+    "inline reader fails closed when a valid-title $scope required cell is marked empty",
+    async ({ scope, html }) => {
+      const result = await runInlineMyLibraryReader(scope, html, {
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+      expect(result).toEqual({
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
+  it.each(inlineEmptyBodyWithoutPlaceholderCases)(
+    "inline reader fails closed for an empty $scope table without an explicit placeholder",
+    async ({ scope, html }) => {
+      const result = await runInlineMyLibraryReader(scope, html, {
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+      expect(result).toEqual({
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
+  it("keeps an official empty placeholder as a known empty inline scope", async () => {
+    const result = await runInlineMyLibraryReader(
+      "reservations",
+      '<table id="reservationList"><tbody><tr><td class="dataTables_empty">データなし</td></tr></tbody></table>',
+      {
+        status: "known",
+        scope: "reservations",
+        kind: "reservations",
+        reservations: [],
+        items: [],
+      },
+    );
+    expect(result).toMatchObject({
+      status: "known",
+      kind: "reservations",
+      items: [],
+    });
   });
 
   it("reads public catalog DOM in an inactive isolated-world tab", async () => {

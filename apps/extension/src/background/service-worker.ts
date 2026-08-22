@@ -40,9 +40,13 @@ import {
 } from "../content/moodle-reader";
 import {
   MY_LIBRARY_ENTRY_URL,
+  MY_LIBRARY_MENU_IDS,
   MY_LIBRARY_ORIGIN,
   MY_LIBRARY_STATUS_PATH,
   type MyLibraryLocalSnapshot,
+  type MyLibraryReadOptions,
+  type MyLibraryScope,
+  type MyLibraryScopedItem,
   projectMyLibraryForAgent,
 } from "../content/my-library-reader";
 import {
@@ -74,6 +78,7 @@ import {
   isLibraryItemReadMessage,
   isMoodleOpenMessage,
   isMoodleReadMessage,
+  isMyLibraryDisconnectMessage,
   isMyLibraryOpenMessage,
   isMyLibraryReadMessage,
   isOpenWorkspaceMessage,
@@ -92,6 +97,7 @@ import {
   type LibraryItemReadResponse,
   MESSAGE_TYPES,
   type MoodleReadResponse,
+  type MyLibraryReadMessage,
   type MyLibraryReadResponse,
   type OpenWorkspaceMessage,
   type OpenWorkspaceResponse,
@@ -125,6 +131,23 @@ const CAST_PERMISSION_PATTERN = `${CAST_ORIGIN}/*`;
 // an opaque resource_ref can be resolved for the next item-read call. A
 // worker restart therefore fails closed instead of guessing a record URL.
 const libraryRecordRefs = new Map<string, string>();
+
+interface MyLibraryResourceTarget {
+  scope: MyLibraryScope;
+  raw_id: string | null;
+}
+
+// Personal material/request identifiers are retained only in this short-lived
+// worker map. A missing visible identifier is deliberately represented as a
+// null target: the opaque ref may be displayed, but a future Branch 3 action
+// must fail closed instead of matching by title or guessing an ID.
+const myLibraryResourceRefs = new Map<string, MyLibraryResourceTarget>();
+const myLibraryResourceRefKeys = new Map<string, string>();
+
+function clearMyLibraryResourceMaps(): void {
+  myLibraryResourceRefs.clear();
+  myLibraryResourceRefKeys.clear();
+}
 
 function browserOrigin(
   value: string,
@@ -1831,11 +1854,15 @@ async function handleMoodleRead(): Promise<MoodleReadResponse> {
 
 interface MyLibraryPageRead {
   status: "known" | "reauth_required" | "unavailable";
+  scope?: MyLibraryScope;
   kind?: "loans" | "reservations";
   loans?: MyLibraryLocalSnapshot["loans"];
   reservations?: MyLibraryLocalSnapshot["reservations"];
+  items?: MyLibraryRawScopedItem[];
   reason_code?: string;
 }
+
+type MyLibraryRawScopedItem = MyLibraryScopedItem & { raw_id: string | null };
 
 function clickMyLibraryMenuInPage(menuId: number): {
   status: "clicked" | "reauth_required" | "unavailable";
@@ -1857,6 +1884,12 @@ function clickMyLibraryMenuInPage(menuId: number): {
     const link = Array.from(
       document.querySelectorAll<HTMLAnchorElement>("a"),
     ).find((element) => {
+      if (
+        element.hasAttribute("hidden") ||
+        element.getAttribute("aria-hidden") === "true"
+      ) {
+        return false;
+      }
       const handler = element.getAttribute("onclick") ?? "";
       return handler.includes("doSelectMainMenu") && handler.includes(marker);
     });
@@ -1870,9 +1903,99 @@ function clickMyLibraryMenuInPage(menuId: number): {
   }
 }
 
-function readMyLibraryStatusInPage(): MyLibraryPageRead {
+function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
   const clean = (value: string | null | undefined, limit: number): string =>
     (value ?? "").replace(/\s+/gu, " ").trim().slice(0, limit);
+  const isVisible = (element: Element): boolean => {
+    for (
+      let current: Element | null = element;
+      current;
+      current = current.parentElement
+    ) {
+      if (
+        current.hasAttribute("hidden") ||
+        current.getAttribute("aria-hidden") === "true"
+      ) {
+        return false;
+      }
+      const style = (current.getAttribute("style") ?? "")
+        .replace(/\s+/gu, "")
+        .toLowerCase();
+      const className = current.getAttribute("class") ?? "";
+      if (
+        /(?:^|;)display:none(?:;|$)/u.test(style) ||
+        /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(style) ||
+        /(?:^|;)opacity:0(?:;|$)/u.test(style) ||
+        /(?:^|\s)(?:hidden|hide|d-none|invisible|is-hidden|visually-hidden)(?:\s|$)/u.test(
+          className,
+        )
+      ) {
+        return false;
+      }
+      if (typeof getComputedStyle === "function") {
+        const computed = getComputedStyle(current);
+        if (
+          computed.display === "none" ||
+          computed.visibility === "hidden" ||
+          computed.visibility === "collapse" ||
+          computed.opacity === "0"
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  const visibleLibraryText = (value: Element | null | undefined): string => {
+    if (!value) return "";
+    const clone = value.cloneNode(true) as Element;
+    clone
+      .querySelectorAll("[hidden], [aria-hidden='true']")
+      .forEach((element) => {
+        element.remove();
+      });
+    clone.querySelectorAll("[style]").forEach((element) => {
+      const style = (element.getAttribute("style") ?? "")
+        .replace(/\s+/gu, "")
+        .toLowerCase();
+      if (
+        /(?:^|;)display:none(?:;|$)/u.test(style) ||
+        /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(style) ||
+        /(?:^|;)opacity:0(?:;|$)/u.test(style) ||
+        /(?:^|\s)(?:hidden|hide|d-none|invisible|is-hidden|visually-hidden)(?:\s|$)/u.test(
+          element.getAttribute("class") ?? "",
+        )
+      ) {
+        element.remove();
+      }
+    });
+    clone.querySelectorAll("[class]").forEach((element) => {
+      if (
+        /(?:^|\s)(?:hidden|hide|d-none|invisible|is-hidden|visually-hidden)(?:\s|$)/u.test(
+          element.getAttribute("class") ?? "",
+        )
+      ) {
+        element.remove();
+      }
+    });
+    return clone.textContent ?? "";
+  };
+  const isEmptyPlaceholderRow = (row: Element): boolean => {
+    const hasEmptyMarker = (element: Element): boolean =>
+      /(?:^|\s)(?:dataTables_empty|empty|no-data)(?:\s|$)/u.test(
+        element.getAttribute("class") ?? "",
+      );
+    const cells = Array.from(row.children).filter(
+      (cell): cell is Element =>
+        cell.tagName.toLowerCase() === "td" ||
+        cell.tagName.toLowerCase() === "th",
+    );
+    const hasActualCellData = cells.some(
+      (cell) => !hasEmptyMarker(cell) && clean(visibleLibraryText(cell), 1000),
+    );
+    if (hasActualCellData) return false;
+    return hasEmptyMarker(row) || cells.some(hasEmptyMarker);
+  };
   const normalizeDate = (value: string): string | null => {
     const match = value.match(/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})/u);
     if (!match) return null;
@@ -1902,81 +2025,360 @@ function readMyLibraryStatusInPage(): MyLibraryPageRead {
   };
   const valueForLabel = (row: Element, label: string): Element | null => {
     for (const cell of Array.from(row.querySelectorAll("td"))) {
-      if (clean(cell.querySelector("dt")?.textContent, 100) === label) {
-        return cell.querySelector("dd");
+      if (!isVisible(cell)) continue;
+      const value = cell.querySelector("dd");
+      if (
+        clean(visibleLibraryText(cell.querySelector("dt")), 100) === label &&
+        value &&
+        isVisible(value)
+      ) {
+        return value;
       }
     }
     return null;
+  };
+  const valueForLabels = (
+    row: Element,
+    labels: readonly string[],
+  ): Element | null => {
+    for (const label of labels) {
+      const value = valueForLabel(row, label);
+      if (value) return value;
+    }
+    for (const heading of Array.from(row.querySelectorAll("th"))) {
+      if (labels.includes(clean(visibleLibraryText(heading), 100))) {
+        const sibling = heading.nextElementSibling;
+        return sibling && isVisible(sibling) ? sibling : null;
+      }
+    }
+    return null;
+  };
+  const rawIdForRow = (
+    row: Element,
+    lookup: (
+      row: Element,
+      labels: readonly string[],
+    ) => Element | null = valueForLabels,
+  ): string | null => {
+    const value = lookup(row, [
+      "資料ID",
+      "資料番号",
+      "受付番号",
+      "依頼番号",
+      "申請番号",
+      "整理番号",
+      "ILL番号",
+    ]);
+    const rawId = clean(visibleLibraryText(value), 200);
+    return rawId || null;
   };
 
   try {
     if (
       location.origin !== "https://library.shibaura-it.ac.jp" ||
-      location.pathname !== "/portal/admin/selectMenu/doSelectPublicUseMainMenu"
+      location.pathname !==
+        "/portal/admin/selectMenu/doSelectPublicUseMainMenu" ||
+      location.search !== "" ||
+      location.hash !== ""
     ) {
       return { status: "unavailable", reason_code: "unexpected_page" };
     }
     if (document.querySelector('input[type="password"]')) {
       return { status: "reauth_required", reason_code: "login_required" };
     }
-    const loanTable = document.querySelector("#lendList");
-    if (loanTable) {
+    const loanTable =
+      scope === "current_loans" ? document.querySelector("#lendList") : null;
+    if (loanTable && isVisible(loanTable)) {
       const today = new Date();
       const todayKey = `${today.getFullYear().toString().padStart(4, "0")}-${(
         today.getMonth() + 1
       )
         .toString()
         .padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
-      const loans = Array.from(loanTable.querySelectorAll("tbody tr"))
-        .filter(
-          (row) => !row.querySelector(".dataTables_empty, .empty, .no-data"),
-        )
+      const visibleLoanRows = Array.from(
+        loanTable.querySelectorAll("tbody tr"),
+      ).filter((row) => isVisible(row));
+      if (visibleLoanRows.length === 0) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const parsedLoanRows = visibleLoanRows
+        .filter((row) => !isEmptyPlaceholderRow(row))
         .map((row) => {
           const titleAuthor = splitTitleAuthor(
-            valueForLabel(row, "書名 / 著者名")?.textContent ?? "",
+            visibleLibraryText(valueForLabel(row, "書名 / 著者名")),
           );
           if (!titleAuthor) return null;
           const dueDate = normalizeDate(
-            valueForLabel(row, "貸出返却期限延長回数")?.textContent ?? "",
+            visibleLibraryText(valueForLabel(row, "貸出返却期限延長回数")),
           );
+          if (!dueDate) return null;
           const checkbox = row.querySelector<HTMLInputElement>(
             'input[type="checkbox"][name="checkBoxBookNumber"]',
           );
-          return {
+          const loan = {
             ...titleAuthor,
             due_date: dueDate,
             renewable: Boolean(checkbox && !checkbox.disabled),
             overdue: dueDate !== null && dueDate < todayKey,
           };
-        })
+          return {
+            loan,
+            item: {
+              ...titleAuthor,
+              status: loan.overdue ? "overdue" : "loaned",
+              due_date: dueDate,
+              renewable: loan.renewable,
+              activity_date: null,
+              request_type: null,
+              raw_id: rawIdForRow(row),
+            } satisfies MyLibraryRawScopedItem,
+          };
+        });
+      if (parsedLoanRows.some((item) => item === null)) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const loanRows = parsedLoanRows
         .filter((item): item is NonNullable<typeof item> => item !== null)
         .slice(0, 1000);
-      return { status: "known", kind: "loans", loans };
+      return {
+        status: "known",
+        scope,
+        kind: "loans",
+        loans: loanRows.map(({ loan }) => loan),
+        items: loanRows.map(({ item }) => item),
+      };
     }
-    const reservationTable = document.querySelector("#reservationList");
-    if (reservationTable) {
-      const reservations = Array.from(
+    const reservationTable =
+      scope === "reservations"
+        ? document.querySelector("#reservationList")
+        : null;
+    if (reservationTable && isVisible(reservationTable)) {
+      const visibleReservationRows = Array.from(
         reservationTable.querySelectorAll("tbody tr"),
-      )
-        .filter(
-          (row) => !row.querySelector(".dataTables_empty, .empty, .no-data"),
-        )
+      ).filter((row) => isVisible(row));
+      if (visibleReservationRows.length === 0) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const parsedReservationRows = visibleReservationRows
+        .filter((row) => !isEmptyPlaceholderRow(row))
         .map((row) => {
           const titleAuthor = splitTitleAuthor(
-            valueForLabel(row, "書名 / 著者名")?.textContent ?? "",
+            visibleLibraryText(valueForLabel(row, "書名 / 著者名")),
           );
           if (!titleAuthor) return null;
+          const holdUntil = normalizeDate(
+            visibleLibraryText(valueForLabel(row, "受取館取置期限日")),
+          );
+          const status =
+            clean(visibleLibraryText(valueForLabel(row, "状態")), 100) || null;
+          if (!holdUntil || !status) return null;
           return {
-            ...titleAuthor,
-            hold_until: normalizeDate(
-              valueForLabel(row, "受取館取置期限日")?.textContent ?? "",
-            ),
-            status: clean(valueForLabel(row, "状態")?.textContent, 100) || null,
+            reservation: {
+              ...titleAuthor,
+              hold_until: holdUntil,
+              status,
+            },
+            item: {
+              ...titleAuthor,
+              status,
+              due_date: holdUntil,
+              renewable: null,
+              activity_date: null,
+              request_type: "reservation",
+              raw_id: rawIdForRow(row),
+            } satisfies MyLibraryRawScopedItem,
           };
-        })
+        });
+      if (parsedReservationRows.some((item) => item === null)) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const reservationRows = parsedReservationRows
         .filter((item): item is NonNullable<typeof item> => item !== null)
         .slice(0, 1000);
-      return { status: "known", kind: "reservations", reservations };
+      return {
+        status: "known",
+        scope,
+        kind: "reservations",
+        reservations: reservationRows.map(({ reservation }) => reservation),
+        items: reservationRows.map(({ item }) => item),
+      };
+    }
+    if (scope !== "current_loans" && scope !== "reservations") {
+      const markers: Record<MyLibraryScope, string[]> = {
+        current_loans: ["貸出状況確認"],
+        reservations: ["予約状況確認"],
+        loan_history: ["貸出履歴一覧"],
+        purchase_requests: ["購入依頼状況", "図書購入リクエスト"],
+        interlibrary_requests: [
+          "ILL（文献複写・貸借）依頼",
+          "文献複写・図書貸借申込",
+        ],
+      };
+      const requiredColumns: Record<
+        Exclude<MyLibraryScope, "current_loans" | "reservations">,
+        readonly (readonly string[])[]
+      > = {
+        loan_history: [
+          ["書名 / 著者名", "書名", "タイトル", "資料名"],
+          ["貸出日"],
+          ["状態", "ステータス", "処理状況"],
+        ],
+        purchase_requests: [
+          ["書名 / 著者名", "書名", "タイトル", "資料名"],
+          ["状態", "ステータス", "処理状況"],
+          ["依頼日", "申請日"],
+          ["依頼種別", "申請種別", "種類", "区分"],
+        ],
+        interlibrary_requests: [
+          ["書名 / 著者名", "書名", "タイトル", "資料名"],
+          ["状態", "ステータス", "処理状況"],
+          ["依頼日", "受付日"],
+          ["依頼区分", "依頼種別", "種類", "区分"],
+        ],
+      };
+      const markerList = markers[scope];
+      const markerTable = Array.from(document.querySelectorAll("table")).find(
+        (candidate) => {
+          if (!isVisible(candidate)) return false;
+          const contextText = clean(
+            Array.from(candidate.querySelectorAll("caption, thead"))
+              .map((element) => visibleLibraryText(element))
+              .concat(
+                candidate.previousElementSibling
+                  ? [visibleLibraryText(candidate.previousElementSibling)]
+                  : [],
+              )
+              .join(" ") || visibleLibraryText(candidate.querySelector("tr")),
+            1000,
+          );
+          return markerList.some((marker) => contextText.includes(marker));
+        },
+      );
+      if (!markerTable) {
+        return { status: "unavailable", reason_code: "scope_table_not_found" };
+      }
+      const table = [markerTable].find((candidate) => {
+        const headerLabels = Array.from(
+          candidate.querySelectorAll("thead th, thead td"),
+        )
+          .map((cell) => clean(visibleLibraryText(cell), 100))
+          .filter(Boolean);
+        return requiredColumns[scope].every((alternatives) =>
+          alternatives.some((label) => headerLabels.includes(label)),
+        );
+      });
+      if (!table) {
+        const hasNonEmptyRow = Array.from(
+          markerTable.querySelectorAll("tbody tr, tr"),
+        ).some(
+          (row) =>
+            isVisible(row) &&
+            !row.querySelector(".dataTables_empty, .empty, .no-data") &&
+            clean(visibleLibraryText(row), 1000),
+        );
+        return {
+          status: "unavailable",
+          reason_code: hasNonEmptyRow
+            ? "scope_row_unparseable"
+            : "scope_table_not_found",
+        };
+      }
+      const headerRow = Array.from(table.querySelectorAll("tr")).find(
+        (row) => isVisible(row) && row.querySelector("th"),
+      );
+      const columnLabels = headerRow
+        ? Array.from(headerRow.querySelectorAll("th, td")).map((cell) =>
+            clean(visibleLibraryText(cell), 100),
+          )
+        : [];
+      const tableValueForLabels = (
+        row: Element,
+        labels: readonly string[],
+      ): Element | null => {
+        const structured = valueForLabels(row, labels);
+        if (structured) return structured;
+        const index = columnLabels.findIndex((label) => labels.includes(label));
+        if (index < 0) return null;
+        const cells = Array.from(row.children).filter(
+          (cell): cell is Element =>
+            cell.tagName.toLowerCase() === "td" ||
+            cell.tagName.toLowerCase() === "th",
+        );
+        const value = cells[index];
+        return value && isVisible(value) ? value : null;
+      };
+      const dateFor = (row: Element, labels: string[]): string | null =>
+        normalizeDate(visibleLibraryText(tableValueForLabels(row, labels)));
+      const visibleRows = Array.from(
+        table.querySelectorAll("tbody tr, tr"),
+      ).filter((row) => row !== headerRow && isVisible(row));
+      if (visibleRows.length === 0) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const parsedItems = visibleRows
+        .filter((row) => !isEmptyPlaceholderRow(row))
+        .map((row): MyLibraryRawScopedItem | null => {
+          const titleAuthor = splitTitleAuthor(
+            visibleLibraryText(
+              tableValueForLabels(row, [
+                "書名 / 著者名",
+                "書名",
+                "タイトル",
+                "資料名",
+              ]),
+            ),
+          );
+          if (!titleAuthor) return null;
+          const renewal = Array.from(row.querySelectorAll("button, a")).find(
+            (element) =>
+              /延長|更新/iu.test(clean(visibleLibraryText(element), 100)),
+          );
+          const status =
+            clean(
+              visibleLibraryText(
+                tableValueForLabels(row, ["状態", "ステータス", "処理状況"]),
+              ),
+              100,
+            ) || null;
+          const activityDate = dateFor(
+            row,
+            scope === "loan_history"
+              ? ["貸出日"]
+              : scope === "purchase_requests"
+                ? ["申請日", "依頼日"]
+                : ["受付日", "依頼日"],
+          );
+          const requestType =
+            clean(
+              visibleLibraryText(
+                tableValueForLabels(row, [
+                  "依頼種別",
+                  "申請種別",
+                  "種類",
+                  "区分",
+                ]),
+              ),
+              100,
+            ) || null;
+          if (!status || !activityDate) return null;
+          if (scope !== "loan_history" && !requestType) return null;
+          return {
+            ...titleAuthor,
+            status,
+            due_date: dateFor(row, ["返却期限", "返却日", "期限"]),
+            renewable: renewal ? !renewal.hasAttribute("disabled") : null,
+            activity_date: activityDate,
+            request_type: requestType,
+            raw_id: rawIdForRow(row, tableValueForLabels),
+          };
+        });
+      if (parsedItems.some((item) => item === null)) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const items = parsedItems
+        .filter((item): item is MyLibraryRawScopedItem => item !== null)
+        .slice(0, 1000);
+      return { status: "known", scope, items };
     }
     return { status: "unavailable", reason_code: "status_table_not_found" };
   } catch {
@@ -1994,7 +2396,9 @@ async function waitForMyLibraryStatusPage(
         const url = new URL(tab.url);
         if (
           url.origin === MY_LIBRARY_ORIGIN &&
-          url.pathname === MY_LIBRARY_STATUS_PATH
+          url.pathname === MY_LIBRARY_STATUS_PATH &&
+          url.search === "" &&
+          url.hash === ""
         ) {
           return tab;
         }
@@ -2007,7 +2411,9 @@ async function waitForMyLibraryStatusPage(
   return null;
 }
 
-async function readMyLibrarySection(menuId: 5 | 6): Promise<MyLibraryPageRead> {
+async function readMyLibrarySection(
+  scope: MyLibraryScope,
+): Promise<MyLibraryPageRead> {
   const tab = await chrome.tabs.create({
     url: MY_LIBRARY_ENTRY_URL,
     active: false,
@@ -2025,7 +2431,7 @@ async function readMyLibrarySection(menuId: 5 | 6): Promise<MyLibraryPageRead> {
     const [clicked] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: clickMyLibraryMenuInPage,
-      args: [menuId],
+      args: [MY_LIBRARY_MENU_IDS[scope]],
     });
     if (clicked?.result?.status === "reauth_required") {
       keepForLogin = true;
@@ -2050,6 +2456,7 @@ async function readMyLibrarySection(menuId: 5 | 6): Promise<MyLibraryPageRead> {
     const [read] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       func: readMyLibraryStatusInPage,
+      args: [scope],
     });
     return (
       read?.result ?? {
@@ -2066,6 +2473,50 @@ async function readMyLibrarySection(menuId: 5 | 6): Promise<MyLibraryPageRead> {
   }
 }
 
+function projectMyLibraryPageItems(
+  scope: MyLibraryScope,
+  rawItems: MyLibraryRawScopedItem[],
+): MyLibraryScopedItem[] {
+  return rawItems.map((rawItem, index) => {
+    const raw_id = rawItem.raw_id;
+    const safeItem: MyLibraryScopedItem = {
+      title: rawItem.title,
+      author: rawItem.author,
+      status: rawItem.status,
+      due_date: rawItem.due_date,
+      renewable: rawItem.renewable,
+      activity_date: rawItem.activity_date,
+      request_type: rawItem.request_type,
+    };
+    if (typeof safeItem.title !== "string" || !safeItem.title.trim()) {
+      throw new Error("My Library title is unavailable.");
+    }
+    const normalizedRawId =
+      typeof raw_id === "string" ? raw_id.trim() || null : null;
+    const key = normalizedRawId
+      ? `${scope}|raw|${encodeURIComponent(normalizedRawId)}`
+      : `${scope}|unresolved|${index}`;
+    const resourceRef = createLibraryResourceRef(key);
+    const previousKey = myLibraryResourceRefKeys.get(resourceRef);
+    const previousTarget = myLibraryResourceRefs.get(resourceRef);
+    const target: MyLibraryResourceTarget = {
+      scope,
+      raw_id: normalizedRawId,
+    };
+    if (
+      (previousKey !== undefined && previousKey !== key) ||
+      (previousTarget !== undefined &&
+        (previousTarget.scope !== target.scope ||
+          previousTarget.raw_id !== target.raw_id))
+    ) {
+      throw new Error("My Library resource_ref collision detected.");
+    }
+    myLibraryResourceRefKeys.set(resourceRef, key);
+    myLibraryResourceRefs.set(resourceRef, target);
+    return { ...safeItem, resource_ref: resourceRef };
+  });
+}
+
 async function openMyLibraryEntry(): Promise<void> {
   const tabs = await chrome.tabs.query({ url: `${MY_LIBRARY_ORIGIN}/*` });
   const existing = tabs.find((tab) => tab.id !== undefined);
@@ -2079,7 +2530,9 @@ async function openMyLibraryEntry(): Promise<void> {
   await chrome.tabs.create({ url: MY_LIBRARY_ENTRY_URL, active: true });
 }
 
-async function handleMyLibraryRead(): Promise<MyLibraryReadResponse> {
+async function handleMyLibraryRead(
+  message: MyLibraryReadMessage,
+): Promise<MyLibraryReadResponse> {
   if (
     !(await hasBrowserPermission(
       MY_LIBRARY_PERMISSION_PATTERN,
@@ -2092,43 +2545,108 @@ async function handleMyLibraryRead(): Promise<MyLibraryReadResponse> {
       pattern: MY_LIBRARY_PERMISSION_PATTERN,
     };
   }
-  const loanPage = await readMyLibrarySection(5);
-  if (loanPage.status !== "known" || loanPage.kind !== "loans") {
-    return loanPage.status === "reauth_required"
+  // Legacy connection checks did not carry a scope and expected both
+  // aggregate sections. Keep that read path for old side-panel builds while
+  // every new Agent call reads exactly one requested scope.
+  if (message.scope === undefined) {
+    const loanPage = await readMyLibrarySection("current_loans");
+    if (loanPage.status !== "known" || loanPage.kind !== "loans") {
+      return loanPage.status === "reauth_required"
+        ? {
+            status: "reauth_required",
+            reason_code: loanPage.reason_code ?? "login_required",
+          }
+        : {
+            status: "unavailable",
+            reason_code: loanPage.reason_code ?? "loan_page_unavailable",
+          };
+    }
+    const reservationPage = await readMyLibrarySection("reservations");
+    if (
+      reservationPage.status !== "known" ||
+      reservationPage.kind !== "reservations"
+    ) {
+      return reservationPage.status === "reauth_required"
+        ? {
+            status: "reauth_required",
+            reason_code: reservationPage.reason_code ?? "login_required",
+          }
+        : {
+            status: "unavailable",
+            reason_code:
+              reservationPage.reason_code ?? "reservation_page_unavailable",
+          };
+    }
+    const detail: MyLibraryLocalSnapshot = {
+      loans: loanPage.loans ?? [],
+      reservations: reservationPage.reservations ?? [],
+    };
+    return {
+      status: "known",
+      detail,
+      projection: projectMyLibraryForAgent(detail),
+    };
+  }
+  const scope = message.scope;
+  const page = await readMyLibrarySection(scope);
+  if (page.status !== "known") {
+    return page.status === "reauth_required"
       ? {
           status: "reauth_required",
-          reason_code: loanPage.reason_code ?? "login_required",
+          reason_code: page.reason_code ?? "login_required",
         }
       : {
           status: "unavailable",
-          reason_code: loanPage.reason_code ?? "loan_page_unavailable",
+          reason_code: page.reason_code ?? "scope_page_unavailable",
         };
   }
-  const reservationPage = await readMyLibrarySection(6);
-  if (
-    reservationPage.status !== "known" ||
-    reservationPage.kind !== "reservations"
-  ) {
-    return reservationPage.status === "reauth_required"
-      ? {
-          status: "reauth_required",
-          reason_code: reservationPage.reason_code ?? "login_required",
-        }
-      : {
-          status: "unavailable",
-          reason_code:
-            reservationPage.reason_code ?? "reservation_page_unavailable",
-        };
+  let projectedItems: MyLibraryScopedItem[];
+  try {
+    projectedItems = projectMyLibraryPageItems(scope, page.items ?? []);
+  } catch {
+    return { status: "unavailable", reason_code: "resource_ref_collision" };
   }
   const detail: MyLibraryLocalSnapshot = {
-    loans: loanPage.loans ?? [],
-    reservations: reservationPage.reservations ?? [],
+    loans: scope === "current_loans" ? (page.loans ?? []) : [],
+    reservations: scope === "reservations" ? (page.reservations ?? []) : [],
   };
-  return {
-    status: "known",
-    detail,
-    projection: projectMyLibraryForAgent(detail),
+  if (scope === "current_loans") {
+    detail.loans = (page.loans ?? []).map((loan, index) => ({
+      ...loan,
+      resource_ref: projectedItems[index]?.resource_ref,
+    }));
+  }
+  if (scope === "reservations") {
+    detail.reservations = (page.reservations ?? []).map(
+      (reservation, index) => ({
+        ...reservation,
+        resource_ref: projectedItems[index]?.resource_ref,
+      }),
+    );
+  }
+  if (scope === "loan_history") detail.loan_history = projectedItems;
+  if (scope === "purchase_requests") detail.purchase_requests = projectedItems;
+  if (scope === "interlibrary_requests") {
+    detail.interlibrary_requests = projectedItems;
+  }
+  const options: MyLibraryReadOptions = {
+    scope,
+    query: message.query ?? null,
+    offset: message.offset ?? 0,
+    limit: message.limit ?? 20,
   };
+  try {
+    const projection = projectMyLibraryForAgent(detail, options);
+    if (projection.status !== "known") {
+      return {
+        status: "unavailable",
+        reason_code: projection.reason_code ?? "projection_failed",
+      };
+    }
+    return { status: "known", detail, projection };
+  } catch {
+    return { status: "unavailable", reason_code: "resource_ref_collision" };
+  }
 }
 
 async function readCastDashboardInPage(): Promise<
@@ -2694,7 +3212,11 @@ function configureActionClick(): void {
 
 configureActionClick();
 chrome.runtime.onInstalled.addListener(configureActionClick);
-chrome.runtime.onStartup.addListener(configureActionClick);
+chrome.runtime.onStartup.addListener(() => {
+  clearMyLibraryResourceMaps();
+  configureActionClick();
+});
+chrome.runtime.onSuspend?.addListener(clearMyLibraryResourceMaps);
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url !== undefined || changeInfo.status !== undefined) {
@@ -2779,7 +3301,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
       return true;
     }
-    void handleMyLibraryRead().then(sendResponse);
+    void handleMyLibraryRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isMyLibraryDisconnectMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    clearMyLibraryResourceMaps();
+    sendResponse({ ok: true });
     return true;
   }
 

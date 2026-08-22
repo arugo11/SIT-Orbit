@@ -1,8 +1,10 @@
 import os
 import secrets
 from contextlib import asynccontextmanager
+from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -21,6 +23,7 @@ from orbit_api.agent.chat import (
 from orbit_api.agent.runs import ConsumedRunError, ExpiredRunError, UnknownRunError
 from orbit_api.models import (
     ActionProposal,
+    AgentCapabilities,
     AgentRunRequest,
     AgentRunResponse,
     AgentToolResultRequest,
@@ -52,6 +55,26 @@ app = FastAPI(
     description="Personal Campus Agent for Shibaura Institute of Technology",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def redact_request_validation_error(
+    _request: Request,
+    _error: RequestValidationError,
+) -> JSONResponse:
+    """Reject malformed API input without reflecting its values.
+
+    Pydantic validation errors normally include the rejected input in the
+    response body. Client-tool payloads can contain private browser data, so
+    returning that diagnostic would turn a successful schema rejection into a
+    disclosure channel. Detailed validation remains available in local tests;
+    the HTTP boundary exposes only a stable, value-free error.
+    """
+
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Request validation failed."},
+    )
 
 
 @app.middleware("http")
@@ -104,6 +127,18 @@ chat_run_service = ChatRunService(backend_factory=get_chat_backend)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/v1/capabilities", response_model=AgentCapabilities)
+async def capabilities() -> AgentCapabilities:
+    backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
+    if backend not in {"fixture", "openai", "azure_openai"}:
+        raise HTTPException(status_code=503, detail="Agent backend is not supported.")
+    supported_backend = cast(Literal["fixture", "openai", "azure_openai"], backend)
+    return AgentCapabilities(
+        agent_backend=supported_backend,
+        my_library_personal_context=supported_backend == "azure_openai",
+    )
 
 
 @app.post("/v1/agent/runs", response_model=AgentRunResponse)

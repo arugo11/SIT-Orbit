@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from orbit_api.agent.chat import ChatRunStore, FixtureChatBackend
+from orbit_api.agent.chat import ChatRunService, ChatRunStore, FixtureChatBackend
 from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
@@ -9,6 +9,7 @@ from orbit_api.agent.pydantic_ai_backend import (
     MY_LIBRARY_TOOL_NAME,
     SCOMBZ_READ_TOOL_NAME,
     SCOMBZ_TOOL_NAME,
+    ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
     cast_read,
@@ -24,14 +25,82 @@ from orbit_api.models import (
     ChatClientTool,
     ChatHistoryMessage,
     ChatRunRequest,
+    ChatRunToolRequired,
+    ChatToolResultRequest,
     EvidenceLink,
+    LegacyMyLibraryReadResult,
     MoodleReadResult,
-    MyLibraryReadResult,
+    MyLibraryItem,
     ScombzPageSummaryResult,
     ScombzReadResult,
+    ScopedMyLibraryReadResult,
 )
 from pydantic_ai import Agent, DeferredToolRequests, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
+
+
+class StubChatBackend:
+    def __init__(self) -> None:
+        self.resume_calls = 0
+
+    async def start_chat(
+        self,
+        *,
+        conversation_id: str,
+        message: str,
+        history: list[ChatHistoryMessage],
+        context: list[EvidenceLink] | None = None,
+        advertised_tools: set[str] | None = None,
+    ) -> ChatAgentExecution:
+        del message, history, context, advertised_tools
+        return ChatAgentExecution(
+            deferred=DeferredChatRun(
+                messages=[],
+                tool_call_id="stub-my-library-call",
+                conversation_id=conversation_id,
+                tool_name=MY_LIBRARY_TOOL_NAME,
+                arguments={
+                    "scope": "current_loans",
+                    "query": "",
+                    "offset": 0,
+                    "limit": 20,
+                },
+            )
+        )
+
+    async def resume_chat(self, **kwargs) -> ChatAgentExecution:
+        del kwargs
+        self.resume_calls += 1
+        return ChatAgentExecution(
+            draft=ChatDraft(content_markdown="Stub continuation", evidence_ids=[])
+        )
+
+
+def scoped_chat_result() -> ScopedMyLibraryReadResult:
+    return ScopedMyLibraryReadResult(
+        status="known",
+        scope="current_loans",
+        items=[
+            MyLibraryItem(
+                resource_ref="orbit-library://record/1234567890abcdef",
+                title="合成貸出資料",
+                author="公開著者",
+                status="loaned",
+                due_date="2026-09-01",
+                renewable=True,
+                activity_date=None,
+                request_type=None,
+            )
+        ],
+        total_count=1,
+        next_offset=None,
+        loan_count=1,
+        reservation_count=None,
+        overdue_count=0,
+        renewable_count=1,
+        earliest_due_date="2026-09-01",
+        reason_code=None,
+    )
 
 
 def test_chat_request_limits_history() -> None:
@@ -64,6 +133,66 @@ def test_fixture_chat_route_returns_completed_message(monkeypatch) -> None:
     assert payload["status"] == "completed"
     assert payload["message"]["evidence"] == []
     assert "今日の学習を相談したい" in payload["message"]["content_markdown"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_name", ["fixture", "openai"])
+async def test_chat_service_rejects_scoped_my_library_before_backend_resume(
+    monkeypatch,
+    backend_name: str,
+) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend_name)
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    backend = StubChatBackend()
+    service = ChatRunService(backend_factory=lambda: backend)
+    pending = await service.start(
+        ChatRunRequest(
+            conversation_id=f"chat-boundary-{backend_name}",
+            message="My Libraryの貸出を確認して",
+            client_tools=[ChatClientTool(name=MY_LIBRARY_TOOL_NAME, version=1)],
+        )
+    )
+    assert isinstance(pending, ChatRunToolRequired)
+
+    with pytest.raises(ValueError, match="requires the explicitly consented Azure Agent"):
+        await service.submit_tool_result(
+            pending.run_id,
+            ChatToolResultRequest(
+                tool_call_id=pending.calls[0].tool_call_id,
+                name=MY_LIBRARY_TOOL_NAME,
+                version=1,
+                result=scoped_chat_result(),
+            ),
+        )
+    assert backend.resume_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_service_accepts_scoped_my_library_for_azure_stub(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    backend = StubChatBackend()
+    service = ChatRunService(backend_factory=lambda: backend)
+    pending = await service.start(
+        ChatRunRequest(
+            conversation_id="chat-boundary-azure",
+            message="My Libraryの貸出を確認して",
+            client_tools=[ChatClientTool(name=MY_LIBRARY_TOOL_NAME, version=1)],
+        )
+    )
+    assert isinstance(pending, ChatRunToolRequired)
+
+    completed = await service.submit_tool_result(
+        pending.run_id,
+        ChatToolResultRequest(
+            tool_call_id=pending.calls[0].tool_call_id,
+            name=MY_LIBRARY_TOOL_NAME,
+            version=1,
+            result=scoped_chat_result(),
+        ),
+    )
+    assert completed.status == "completed"
+    assert backend.resume_calls == 1
 
 
 def test_fixture_chat_route_runs_scombz_tool_loop(monkeypatch) -> None:
@@ -269,7 +398,7 @@ def test_moodle_projection_rejects_detail_and_unavailable_data() -> None:
         )
 
 
-def test_fixture_chat_route_runs_my_library_derived_tool_loop(monkeypatch) -> None:
+def test_fixture_chat_route_rejects_scoped_my_library_result(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     with TestClient(app) as client:
@@ -293,28 +422,37 @@ def test_fixture_chat_route_runs_my_library_derived_tool_loop(monkeypatch) -> No
                 "result": {
                     "schema_version": "v1",
                     "status": "known",
-                    "loan_count": 6,
-                    "reservation_count": 0,
+                    "scope": "current_loans",
+                    "items": [
+                        {
+                            "resource_ref": "orbit-library://record/1234567890abcdef",
+                            "title": "合成貸出資料",
+                            "author": "公開著者",
+                            "status": "loaned",
+                            "due_date": "2026-09-01",
+                            "renewable": True,
+                            "activity_date": None,
+                            "request_type": None,
+                        }
+                    ],
+                    "total_count": 1,
+                    "next_offset": None,
+                    "loan_count": 1,
+                    "reservation_count": None,
                     "overdue_count": 0,
-                    "renewable_count": 5,
+                    "renewable_count": 1,
                     "earliest_due_date": "2026-09-01",
                     "reason_code": None,
                 },
             },
         )
-    assert second.status_code == 200
-    completed = second.json()
-    assert completed["status"] == "completed"
-    assert "貸出中: 6件" in completed["message"]["content_markdown"]
-    assert completed["message"]["evidence"][0]["source_type"] == "library"
-    serialized = second.text
-    assert "分散システム入門" not in serialized
-    assert "material-secret" not in serialized
+    assert second.status_code == 422
+    assert "requires the explicitly consented Azure Agent" in second.text
 
 
 def test_my_library_projection_rejects_detail_and_unavailable_data() -> None:
     with pytest.raises(ValueError):
-        MyLibraryReadResult.model_validate(
+        LegacyMyLibraryReadResult.model_validate(
             {
                 "schema_version": "v1",
                 "status": "known",
@@ -328,7 +466,7 @@ def test_my_library_projection_rejects_detail_and_unavailable_data() -> None:
             }
         )
     with pytest.raises(ValueError, match="cannot include derived data"):
-        MyLibraryReadResult(
+        LegacyMyLibraryReadResult(
             status="reauth_required",
             loan_count=1,
             reservation_count=0,
@@ -675,7 +813,7 @@ async def test_function_model_sends_only_moodle_derived_projection(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_function_model_sends_only_my_library_derived_projection(monkeypatch) -> None:
+async def test_function_model_sends_my_library_projection_only_to_azure(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     calls = [0]
     captured = [""]
@@ -712,7 +850,11 @@ async def test_function_model_sends_only_my_library_derived_projection(monkeypat
         instructions="test",
         tools=[my_library_read],
     )
-    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
     backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
     first = await backend.start_chat(
         conversation_id="conversation-my-library",
@@ -728,17 +870,43 @@ async def test_function_model_sends_only_my_library_derived_projection(monkeypat
         locator="orbit-library://summary/1234567890abcdef",
         data_classification="personal",
     )
+    result = ScopedMyLibraryReadResult(
+        status="known",
+        scope="current_loans",
+        items=[
+            MyLibraryItem(
+                resource_ref="orbit-library://record/1234567890abcdef",
+                title="合成貸出資料",
+                author="公開著者",
+                status="loaned",
+                due_date="2026-09-01",
+                renewable=True,
+                activity_date=None,
+                request_type=None,
+            )
+        ],
+        total_count=1,
+        next_offset=None,
+        loan_count=1,
+        reservation_count=None,
+        overdue_count=0,
+        renewable_count=1,
+        earliest_due_date="2026-09-01",
+        reason_code=None,
+    )
+    openai_backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    openai_backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="requires the explicitly consented Azure Agent"):
+        await openai_backend.resume_chat(
+            deferred=first.deferred,
+            tool_result=result,
+            context=[evidence],
+            advertised_tools={MY_LIBRARY_TOOL_NAME},
+        )
+
     second = await backend.resume_chat(
         deferred=first.deferred,
-        tool_result=MyLibraryReadResult(
-            status="known",
-            loan_count=2,
-            reservation_count=1,
-            overdue_count=0,
-            renewable_count=1,
-            earliest_due_date="2026-09-01",
-            reason_code=None,
-        ),
+        tool_result=result,
         context=[evidence],
         advertised_tools={MY_LIBRARY_TOOL_NAME},
     )
@@ -800,7 +968,11 @@ async def test_function_model_runs_moodle_library_cast_sequence_with_derived_val
         instructions="test",
         tools=[moodle_read, my_library_read, cast_read],
     )
-    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
     backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
     advertised = {MOODLE_TOOL_NAME, MY_LIBRARY_TOOL_NAME, CAST_TOOL_NAME}
     evidence = [
@@ -850,10 +1022,25 @@ async def test_function_model_runs_moodle_library_cast_sequence_with_derived_val
     assert second.deferred is not None
     third = await backend.resume_chat(
         deferred=second.deferred,
-        tool_result=MyLibraryReadResult(
+        tool_result=ScopedMyLibraryReadResult(
             status="known",
-            loan_count=2,
-            reservation_count=1,
+            scope="current_loans",
+            items=[
+                MyLibraryItem(
+                    resource_ref="orbit-library://record/1234567890abcdef",
+                    title="合成貸出資料",
+                    author="公開著者",
+                    status="loaned",
+                    due_date="2026-09-01",
+                    renewable=True,
+                    activity_date=None,
+                    request_type=None,
+                )
+            ],
+            total_count=1,
+            next_offset=None,
+            loan_count=1,
+            reservation_count=None,
             overdue_count=0,
             renewable_count=1,
             earliest_due_date="2026-09-01",

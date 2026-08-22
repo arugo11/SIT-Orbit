@@ -11,6 +11,7 @@ import type {
   LibraryDiscoverySearchArguments,
 } from "../connectors/library-discovery";
 import { isLibraryResourceRef } from "../connectors/library-discovery";
+import type { MyLibraryScope } from "../content/my-library-reader";
 import {
   classifyPageKind,
   type PageContext,
@@ -50,6 +51,7 @@ export const MESSAGE_TYPES = {
   moodleRead: "moodle-read",
   moodleOpen: "moodle-open",
   myLibraryRead: "my-library-read",
+  myLibraryDisconnect: "my-library-disconnect",
   myLibraryOpen: "my-library-open",
   castRead: "cast-read",
   castOpen: "cast-open",
@@ -153,10 +155,19 @@ export type MoodleReadResponse =
 export interface MyLibraryReadMessage {
   type: typeof MESSAGE_TYPES.myLibraryRead;
   tool_call_id: string;
+  /** Optional for the legacy aggregate call; new calls always provide scope. */
+  scope?: MyLibraryScope;
+  query?: string | null;
+  offset?: number;
+  limit?: number;
 }
 
 export interface MyLibraryOpenMessage {
   type: typeof MESSAGE_TYPES.myLibraryOpen;
+}
+
+export interface MyLibraryDisconnectMessage {
+  type: typeof MESSAGE_TYPES.myLibraryDisconnect;
 }
 
 export type MyLibraryReadResponse =
@@ -292,6 +303,7 @@ export type ExtensionMessage =
   | MoodleReadMessage
   | MoodleOpenMessage
   | MyLibraryReadMessage
+  | MyLibraryDisconnectMessage
   | MyLibraryOpenMessage
   | CastReadMessage
   | CastOpenMessage
@@ -367,11 +379,52 @@ export function isMoodleOpenMessage(
 export function isMyLibraryReadMessage(
   message: unknown,
 ): message is MyLibraryReadMessage {
+  if (
+    !isRecord(message) ||
+    message.type !== MESSAGE_TYPES.myLibraryRead ||
+    typeof message.tool_call_id !== "string" ||
+    message.tool_call_id.length === 0 ||
+    Object.keys(message).some(
+      (key) =>
+        !["type", "tool_call_id", "scope", "query", "offset", "limit"].includes(
+          key,
+        ),
+    )
+  ) {
+    return false;
+  }
+  if (
+    message.scope !== undefined &&
+    message.scope !== "current_loans" &&
+    message.scope !== "reservations" &&
+    message.scope !== "loan_history" &&
+    message.scope !== "purchase_requests" &&
+    message.scope !== "interlibrary_requests"
+  ) {
+    return false;
+  }
+  if (
+    message.query !== undefined &&
+    message.query !== null &&
+    (typeof message.query !== "string" || message.query.length > 200)
+  ) {
+    return false;
+  }
+  if (
+    message.offset !== undefined &&
+    (typeof message.offset !== "number" ||
+      !Number.isInteger(message.offset) ||
+      message.offset < 0 ||
+      message.offset > 1000)
+  ) {
+    return false;
+  }
   return (
-    isRecord(message) &&
-    message.type === MESSAGE_TYPES.myLibraryRead &&
-    typeof message.tool_call_id === "string" &&
-    message.tool_call_id.length > 0
+    message.limit === undefined ||
+    (typeof message.limit === "number" &&
+      Number.isInteger(message.limit) &&
+      message.limit >= 1 &&
+      message.limit <= 20)
   );
 }
 
@@ -379,6 +432,12 @@ export function isMyLibraryOpenMessage(
   message: unknown,
 ): message is MyLibraryOpenMessage {
   return isMessageType(message, MESSAGE_TYPES.myLibraryOpen);
+}
+
+export function isMyLibraryDisconnectMessage(
+  message: unknown,
+): message is MyLibraryDisconnectMessage {
+  return isMessageType(message, MESSAGE_TYPES.myLibraryDisconnect);
 }
 
 export function isCastReadMessage(
