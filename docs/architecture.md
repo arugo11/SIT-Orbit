@@ -311,6 +311,14 @@ CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含�
 
 差分UIへ渡す`CastLocalChange`は端末内の詳細表示に限り、Agentへ渡す`CastChangeAgentProjection`は追加・削除・変更の件数とカテゴリ別件数だけにする。VaultのレコードIDはsource keyそのものではなくVault HMACから生成し、定期巡回や差分の外部保存は行わない。
 
+### Career Evidence Bank
+
+`CareerEvidenceBank`は、授業、研究、PBL、サークル、アルバイト、個人開発などを「主張、状況、行動、結果、裏付け資料」の単位で保存する端末内の証拠バンクである。記録の構造はW3C PROVのEntity・Activity・生成結果という概念を参考にするが、RDF、Graph Database、外部検索索引は追加しない。[W3C PROV-O](https://www.w3.org/TR/prov-o/)
+
+記録は`draft`または`confirmed`で管理し、利用者が確認した記録だけをローカルPrompt API向けのallowlist projectionへ変換する。projectionには主張、状況、行動、結果、出典種別、裏付け資料の件数だけを含め、`person_ref`、資料locator、元ファイル、更新時刻、内部対応表は含めない。結果欄の数値や成果は入力された表現をそのまま保持し、Agentが補間・水増ししない。
+
+Career Vaultの暗号化レコードを正本とし、Career Evidence BankからFastAPI、Azure、W&B、Chat履歴へ直接送る経路は設けない。外部Providerが必要な場合は、別途Pseudonymization GatewayとContext Manifestで許可された公開・一般化データだけを使用し、個人証拠はオンデバイス処理に固定する。
+
 ## Connectorの境界
 
 「ScombZへログインすれば関連サイトをすべて読める」とは扱わない。
