@@ -283,6 +283,12 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 企業名、卒業年月、学科、職種、採用形態、選考記録の概要は端末内`CastHistoryLocalSnapshot`に保持する。行中の氏名・指導教員など人物らしい値はPseudonymization Gatewayへ渡し、Career Vaultで対応表を暗号化したうえでmission固有の別名へ置換する。Prompt projectionから元の氏名、企業コード、内部local_id、report href、raw HTML、フォーム値を除外し、外部Providerへ送る経路はこのprojectionに与えない。OB・OG名簿は有無だけを扱い、名簿本文や直接連絡先は取得しない。
 
+### CAST支援リソースの参照
+
+CASTトップ`https://shibaura.pita.services/career/top/student`に表示されたお知らせ、録画・講座、会社説明会・会社見学会、カウンセラー予定表、キャリアサポート課スタッフ紹介のリンクだけをカテゴリ付きSnapshotへ変換する。CASTのnotice detailはお知らせとして扱い、リソース一覧へ重複登録しない。外部リンクは実画面で確認したNotion、大学公式、SPIのoriginだけを許可し、本文の巡回、連絡先の推測、予約操作は行わない。
+
+支援リソースのタイトル・URL・掲載日は端末内に保持し、Agentへはお知らせ数、動画・イベント・相談・サポーターの件数、最終お知らせ日だけをprojectionする。外部ProviderへURL、タイトル、利用者名、CAST内部ID、raw HTML、フォーム値を送らない。top構造、件数selector、ログイン状態が確認できない場合は成功扱いしない。
+
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
 ### CAST Career Agentのプライバシー境界
