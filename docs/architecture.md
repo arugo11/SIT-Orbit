@@ -325,6 +325,12 @@ ES下書きは、利用者が`confirmed`にしたCareer Evidence Bankのprojecti
 
 ES生成はAzure、FastAPI、W&Bへ送信せず、Chrome Prompt APIが利用できない場合に別Providerへfallbackしない。材料のlocator、ファイル本体、`person_ref`、対応表、tokenはPrompt入力と生成結果へ含めない。応募先や応募目的の自由記述に連絡先・学籍番号・credentialらしい値が含まれる場合は、モデル呼び出し前に停止する。
 
+### 多視点キャリアレビュー
+
+`reviewCareerDraft`は、Evidence-grounded ESの下書きと確認済みEvidence projectionだけを入力にして、人事、技術部門、芝浦卒業生、初見の第三者という4つの視点をそれぞれ独立したChrome Prompt API sessionで実行する。各sessionへ他の視点の結果や人物対応表、`person_ref`、資料locator、raw HTML、tokenを渡さない。Prompt APIが利用できない場合はAzureや別Providerへfallbackせず、レビューを未実行として端末内で停止する。
+
+各レビューは`clear`、`needs_revision`、`insufficient_evidence`の判定と、ES文・Evidence IDに紐づくstrength／gapだけを返す。総合点、順位、採用確率は生成しない。視点間で判定が分かれた場合は`disagreements`へそのまま保持し、単一の結論へ統合しない。数値は引用したEvidenceまたは対象文に存在するものだけを許可し、未知の文・Evidence ID、根拠のない数値、credentialらしい文字列は決定的に拒否する。これは位置バイアスを扱う研究の知見を踏まえ、順序依存の一回判定を避けつつ、判断の違いを利用者へ可視化するためである。[Judging the Judges](https://aclanthology.org/2025.ijcnlp-long.18/)
+
 ### CAST Decision Room
 
 `buildCastDecisionRoom`は、求人またはインターンと、同一企業として確認できた採用実績・選考記録・OB・OG表示を端末内で比較する。技術領域、勤務地、職種、採用実績、選考記録、OB・OG支援、締切、不足情報を独立した判断軸として返し、単一の相性点や順位は生成しない。
