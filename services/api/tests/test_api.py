@@ -81,7 +81,9 @@ def test_configured_extension_origin_can_complete_cors_preflight(monkeypatch) ->
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == origin
-    assert "Authorization" in response.headers["access-control-allow-headers"]
+    allowed_headers = response.headers["access-control-allow-headers"]
+    assert "Authorization" in allowed_headers
+    assert "Content-Type" in allowed_headers
 
 
 def test_unconfigured_origin_is_not_allowed_by_cors(monkeypatch) -> None:
@@ -96,9 +98,11 @@ def test_unconfigured_origin_is_not_allowed_by_cors(monkeypatch) -> None:
             headers={
                 "Origin": "https://untrusted.example",
                 "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
             },
         )
 
+    assert response.status_code == 400
     assert "access-control-allow-origin" not in response.headers
 
 
