@@ -16,7 +16,8 @@
     "http://localhost:8000/*",
     "https://www.googleapis.com/*",
     "https://oauth2.googleapis.com/*",
-    "https://syllabus.sic.shibaura-it.ac.jp/*"
+    "https://syllabus.sic.shibaura-it.ac.jp/*",
+    "https://sitrus.sic.shibaura-it.ac.jp/*"
   ],
   "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": {
@@ -27,7 +28,10 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://scombz.shibaura-it.ac.jp/*"],
+      "matches": [
+        "https://scombz.shibaura-it.ac.jp/*",
+        "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/*"
+      ],
       "js": ["content-script.js"],
       "run_at": "document_idle"
     }

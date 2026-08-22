@@ -235,6 +235,12 @@ Composerでは`Ask every time`を既定にし、未許可ホストの読み取�
 
 `browser_read_url`はService Workerが許可済みURLを非アクティブタブへ開き、`scripting.executeScript`で`browser-reader.js`をIsolated Worldへ注入する。抽出結果は表示本文、最大50リンク、opaqueな引用情報だけをAgentへ渡し、結果取得後にタブを閉じる。一般Webの検索やGoogle検索画面のスクレイピングへはfallbackしない。公式シラバス検索は`syllabus.sic.shibaura-it.ac.jp/namazu/`だけを対象とする。
 
+### SITRUS成績通知書の参照
+
+SITRUSの成績は、実在する画面を利用者が開いている場合だけ、専用の`sitrus_read` Toolで参照する。Service Workerは接続元タブが同じorigin・pathnameであることを確認する。優先する`/SITRUS/login/ShutokuTaniShukei.html`では、`MAIN` worldから可視のHTML表を読み、判定・評価・科目名だけをメモリ上で投影する。表にない科目コードや単位数は`null`とし、推測しない。`/SITRUS/login/SeisekiTsutiSho.html`では、表が使えない場合に限り認証済みPDF.jsのテキスト層をメモリ上で処理する。PDFファイル、Base64、学籍番号、認証情報を保存・ダウンロード・APIログへ渡さず、取得できた科目名、科目コード、成績、単位、年度・期・ターム、再履修フラグ、累積GPAだけへ投影する。
+
+成績値は個人情報のため、都度の利用者確認を必須とする。現行のAgent契約ではこの結果を外部LLMやW&Bへ送らず、`fixture` BackendのローカルChatでのみ回答に使う。ページが閉じた、別URLへ遷移した、またはPDF.jsを利用できない場合は成功扱いにしない。
+
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
 ## Connectorの境界

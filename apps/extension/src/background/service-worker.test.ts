@@ -158,8 +158,17 @@ describe("service worker side panel contract", () => {
       { url: "https://example.com/course/calculus" },
       { url: "https://example.com/course/calculus" },
     );
+    onUpdated.dispatch(
+      33,
+      {
+        url: "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/ShutokuTaniShukei.html?N=synthetic",
+      },
+      {
+        url: "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/ShutokuTaniShukei.html?N=synthetic",
+      },
+    );
 
-    await vi.waitFor(() => expect(setOptions).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(setOptions).toHaveBeenCalledTimes(3));
 
     expect(setOptions).toHaveBeenCalledWith({
       tabId: 11,
@@ -170,6 +179,11 @@ describe("service worker side panel contract", () => {
       tabId: 22,
       path: "sidepanel.html",
       enabled: false,
+    });
+    expect(setOptions).toHaveBeenCalledWith({
+      tabId: 33,
+      path: "sidepanel.html",
+      enabled: true,
     });
     expect(setPanelBehavior).not.toHaveBeenCalled();
   });

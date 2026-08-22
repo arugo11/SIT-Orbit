@@ -27,6 +27,7 @@ export type ScombzReadResult = components["schemas"]["ScombzReadResult"];
 export type SyllabusSearchResult =
   components["schemas"]["SyllabusSearchResult"];
 export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
+export type SitrusGradeResult = components["schemas"]["SitrusGradeResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 
@@ -363,6 +364,81 @@ export function isBrowserReadResult(
   );
 }
 
+export function isSitrusGradeResult(
+  value: unknown,
+): value is SitrusGradeResult {
+  if (!isRecord(value)) return false;
+  if (
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "report_label",
+      "grades",
+      "cumulative_gpa",
+      "reason_code",
+    ]) &&
+    value.schema_version === "v1" &&
+    (value.status === "known" || value.status === "unavailable") &&
+    Array.isArray(value.grades) &&
+    value.grades.length <= 200 &&
+    value.grades.every(
+      (item) =>
+        isRecord(item) &&
+        hasExactlyKeys(item, [
+          "subject",
+          "course_code",
+          "credits",
+          "grade",
+          "year",
+          "term",
+          "term_slot",
+          "repeated",
+        ]) &&
+        isNonEmptyString(item.subject) &&
+        item.subject.length <= 200 &&
+        (item.course_code === null ||
+          (isNonEmptyString(item.course_code) &&
+            item.course_code.length <= 20)) &&
+        (item.credits === null ||
+          (isIntegerInRange(item.credits, 0, 20) && item.credits >= 0)) &&
+        isOneOf(item.grade, [
+          "S",
+          "A",
+          "B",
+          "C",
+          "D",
+          "F",
+          "G",
+          "N",
+          "X",
+          "#",
+        ]) &&
+        (item.year === null || isIntegerInRange(item.year, 2000, 2100)) &&
+        (item.term === null || isIntegerInRange(item.term, 1, 3)) &&
+        (item.term_slot === null || isIntegerInRange(item.term_slot, 1, 4)) &&
+        typeof item.repeated === "boolean",
+    ) &&
+    (value.cumulative_gpa === null ||
+      (typeof value.cumulative_gpa === "number" &&
+        Number.isFinite(value.cumulative_gpa) &&
+        value.cumulative_gpa >= 0 &&
+        value.cumulative_gpa <= 4)) &&
+    (value.report_label === null ||
+      (typeof value.report_label === "string" &&
+        value.report_label.length <= 100)) &&
+    (value.reason_code === null ||
+      (typeof value.reason_code === "string" &&
+        value.reason_code.length <= 100))
+  ) {
+    const hasGradeData =
+      value.report_label !== null ||
+      value.grades.length > 0 ||
+      value.cumulative_gpa !== null;
+    return value.status === "known" ? hasGradeData : !hasGradeData;
+  }
+  return false;
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -394,6 +470,7 @@ const chatToolNames = [
   "google_calendar_availability",
   "syllabus_search",
   "browser_read_url",
+  "sitrus_read",
 ] as const;
 
 function isChatEvidenceMessage(value: unknown): boolean {

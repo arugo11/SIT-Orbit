@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -26,6 +27,7 @@ from orbit_api.models import (
     EvidenceLink,
     ScombzPageSummaryResult,
     ScombzReadResult,
+    SitrusGradeResult,
     SyllabusSearchResult,
 )
 
@@ -39,11 +41,18 @@ from .pydantic_ai_backend import (
     ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
+    is_derived_scombz_read_evidence,
+    is_derived_sitrus_evidence,
 )
 
 CHAT_RUN_TTL_SECONDS = 600
 CHAT_MAX_TOOL_CALLS = 8
 CHAT_PROMPT_VERSION = "pydantic-ai-chat-v1"
+_FIXTURE_SCOMBZ_QUERY = re.compile(
+    r"(?:scombz|sc?omb|時間割|授業|講義|課題|締切|休講|補講|お知らせ|成績|出席|評価)",
+    re.IGNORECASE,
+)
+_FIXTURE_SITRUS_QUERY = re.compile(r"(?:成績|単位|GPA|評価|取得済み)", re.IGNORECASE)
 
 
 class ChatBackend(Protocol):
@@ -67,6 +76,7 @@ class ChatBackend(Protocol):
             | ScombzReadResult
             | SyllabusSearchResult
             | BrowserReadResult
+            | SitrusGradeResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
@@ -77,6 +87,28 @@ class ChatBackend(Protocol):
 class FixtureChatBackend:
     """No-network Chat backend used by local development and CI."""
 
+    @staticmethod
+    def _requests_scombz_read(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if SCOMBZ_READ_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_SCOMBZ_QUERY.search(f"{recent_text}\n{message}"))
+
+    @staticmethod
+    def _requests_sitrus_read(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if "sitrus_read" not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_SITRUS_QUERY.search(f"{recent_text}\n{message}"))
+
     async def start_chat(
         self,
         *,
@@ -86,7 +118,26 @@ class FixtureChatBackend:
         context: list[EvidenceLink] | None = None,
         advertised_tools: set[str] | None = None,
     ) -> ChatAgentExecution:
-        del conversation_id, history, context, advertised_tools
+        del context
+        advertised = set(advertised_tools or set())
+        if self._requests_sitrus_read(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-sitrus-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name="sitrus_read",
+                )
+            )
+        if self._requests_scombz_read(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-scombz-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=SCOMBZ_READ_TOOL_NAME,
+                )
+            )
         return ChatAgentExecution(
             draft=ChatDraft(
                 content_markdown=(
@@ -97,8 +148,105 @@ class FixtureChatBackend:
             )
         )
 
-    async def resume_chat(self, **_: object) -> ChatAgentExecution:
-        raise RuntimeError("The fixture Chat backend does not execute live tools.")
+    async def resume_chat(
+        self,
+        *,
+        deferred: DeferredChatRun,
+        tool_result: (
+            CalendarAvailabilityResult
+            | ScombzPageSummaryResult
+            | ScombzReadResult
+            | SyllabusSearchResult
+            | BrowserReadResult
+            | SitrusGradeResult
+        ),
+        context: list[EvidenceLink],
+        advertised_tools: set[str],
+        seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
+    ) -> ChatAgentExecution:
+        del advertised_tools, seen_tool_call_ids
+        if deferred.tool_name == "sitrus_read":
+            if not isinstance(tool_result, SitrusGradeResult):
+                raise ValueError("The fixture SITRUS call requires a SitrusGradeResult.")
+            evidence = next(
+                (item for item in context if is_derived_sitrus_evidence(item)),
+                None,
+            )
+            if evidence is None:
+                raise ValueError("A resumed fixture Chat run requires SITRUS evidence.")
+            lines = [
+                "SITRUSの成績一覧を確認しました。"
+                if tool_result.report_label == "取得済み科目"
+                else "SITRUSの成績通知書を確認しました。"
+            ]
+            if tool_result.grades:
+                lines.append("\n**成績**")
+                lines.extend(
+                    f"- {grade.subject}"
+                    + (f"（{grade.course_code}）" if grade.course_code else "")
+                    + f": {grade.grade}"
+                    + (f" / {grade.credits}単位" if grade.credits is not None else "")
+                    for grade in tool_result.grades
+                )
+            else:
+                lines.append("\n表示できる成績行はありませんでした。")
+            if tool_result.cumulative_gpa is not None:
+                lines.append(f"\n累積GPA: {tool_result.cumulative_gpa:g}")
+            return ChatAgentExecution(
+                draft=ChatDraft(
+                    content_markdown="\n".join(lines),
+                    evidence_ids=[evidence.evidence_id],
+                )
+            )
+        if deferred.tool_name != SCOMBZ_READ_TOOL_NAME:
+            raise RuntimeError("The fixture Chat backend only executes the local SCombZ read tool.")
+        if not isinstance(tool_result, ScombzReadResult):
+            raise ValueError("The fixture SCombZ call requires a ScombzReadResult.")
+        evidence = next(
+            (item for item in context if is_derived_scombz_read_evidence(item)),
+            None,
+        )
+        if evidence is None:
+            raise ValueError("A resumed fixture Chat run requires SCombZ evidence.")
+
+        lines = [f"SCombZの{tool_result.route}ページを確認しました。"]
+        if tool_result.tasks:
+            lines.append("\n**課題**")
+            lines.extend(
+                f"- {task.course}: {task.title}（期限: {task.deadline}）"
+                for task in tool_result.tasks
+            )
+        if tool_result.announcements:
+            lines.append("\n**お知らせ**")
+            lines.extend(f"- {item.title}" for item in tool_result.announcements)
+        if tool_result.timetable:
+            lines.append("\n**時間割**")
+            lines.extend(
+                f"- {item.title}（{item.starts_at or '時刻未取得'}）"
+                for item in tool_result.timetable
+            )
+        if tool_result.current_course:
+            lines.append(f"\n現在の科目: {tool_result.current_course}")
+        if tool_result.restricted_present:
+            lines.append(
+                "\n成績・出席・個人評価に関係する表示を検出しました。"
+                "値はこのローカルChatの結果にも含めません。"
+            )
+        has_structured_items = any(
+            (tool_result.tasks, tool_result.announcements, tool_result.timetable)
+        )
+        if (
+            not has_structured_items
+            and tool_result.current_course is None
+            and not tool_result.restricted_present
+        ):
+            lines.append("\n構造化できる課題・お知らせ・時間割はありませんでした。")
+        return ChatAgentExecution(
+            draft=ChatDraft(
+                content_markdown="\n".join(lines),
+                evidence_ids=[evidence.evidence_id],
+            )
+        )
 
 
 class ChatRunUnknownError(LookupError):
@@ -321,6 +469,10 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "許可されたWebページの表示情報"
         source_type = "web"
         locator = f"orbit-browser://read/{uuid4().hex}"
+    elif request.name == "sitrus_read":
+        title = "SITRUSから取得した成績の最小化表示"
+        source_type = "learning_history"
+        locator = f"orbit-sitrus://grades/{uuid4().hex}"
     else:
         raise ValueError("The chat tool is not enabled in the current API build.")
     evidence_prefix = {
@@ -329,6 +481,7 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         SCOMBZ_READ_TOOL_NAME: "scombz-read-v1",
         SYLLABUS_SEARCH_TOOL_NAME: "syllabus-search-v1",
         BROWSER_READ_TOOL_NAME: "browser-read-v1",
+        "sitrus_read": "sitrus-grades-v1",
     }[request.name]
     return EvidenceLink(
         evidence_id=f"{evidence_prefix}-{run_id}",
@@ -450,9 +603,7 @@ class ChatRunService:
         if os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
             raise ValueError("Live client tools require ORBIT_OBSERVABILITY=off.")
         if getattr(request.result, "status", None) in {"reauth_required", "unavailable"}:
-            raise ValueError(
-                "The client tool was unavailable and cannot resume this chat run."
-            )
+            raise ValueError("The client tool was unavailable and cannot resume this chat run.")
         claimed = self.store.claim(
             run_id,
             tool_call_id=request.tool_call_id,

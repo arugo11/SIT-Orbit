@@ -5,6 +5,7 @@ import {
   AgentApiError,
   type Fetcher,
   isActionProposal,
+  isSitrusGradeResult,
 } from "./client";
 
 const proposal = {
@@ -47,6 +48,58 @@ function createFetcher(response: Response): Fetcher & ReturnType<typeof vi.fn> {
 }
 
 describe("AgentApiClient", () => {
+  it("accepts a minimized SITRUS result but not a PDF or identity field", () => {
+    const result = {
+      schema_version: "v1",
+      status: "known",
+      report_label: "2025年度 秋学期 分まで",
+      grades: [
+        {
+          subject: "合成科目",
+          course_code: "L0410100",
+          credits: 2,
+          grade: "A",
+          year: 2025,
+          term: 2,
+          term_slot: 1,
+          repeated: false,
+        },
+      ],
+      cumulative_gpa: 3.1,
+      reason_code: null,
+    };
+    expect(isSitrusGradeResult(result)).toBe(true);
+    expect(
+      isSitrusGradeResult({
+        ...result,
+        report_label: "取得済み科目",
+        grades: [{ ...result.grades[0], course_code: null, credits: null }],
+        cumulative_gpa: null,
+      }),
+    ).toBe(true);
+    expect(isSitrusGradeResult({ ...result, pdf_base64: "forbidden" })).toBe(
+      false,
+    );
+    expect(isSitrusGradeResult({ ...result, student_number: "AL00000" })).toBe(
+      false,
+    );
+    expect(
+      isSitrusGradeResult({
+        ...result,
+        status: "unavailable",
+        grades: [],
+        cumulative_gpa: null,
+        report_label: null,
+      }),
+    ).toBe(true);
+    expect(
+      isSitrusGradeResult({
+        ...result,
+        status: "unavailable",
+      }),
+    ).toBe(false);
+  });
+
   it("posts the generated proposal request to the explicit API base", async () => {
     const fetcher = createFetcher(jsonResponse(proposal));
     const client = new AgentApiClient({

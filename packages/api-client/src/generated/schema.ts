@@ -346,7 +346,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read";
             /**
              * Version
              * @constant
@@ -404,7 +404,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read";
             /**
              * Version
              * @constant
@@ -423,14 +423,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"];
         };
         /**
          * ClientTool
@@ -618,6 +618,59 @@ export interface components {
             title: string;
             /** Deadline */
             deadline: string;
+        };
+        /**
+         * SitrusGradeItem
+         * @description One minimized grade row extracted from the displayed SITRUS notice.
+         */
+        SitrusGradeItem: {
+            /** Subject */
+            subject: string;
+            /** Course Code */
+            course_code?: string | null;
+            /** Credits */
+            credits?: number | null;
+            /**
+             * Grade
+             * @enum {string}
+             */
+            grade: "S" | "A" | "B" | "C" | "D" | "F" | "G" | "N" | "X" | "#";
+            /** Year */
+            year?: number | null;
+            /** Term */
+            term?: number | null;
+            /** Term Slot */
+            term_slot?: number | null;
+            /**
+             * Repeated
+             * @default false
+             */
+            repeated: boolean;
+        };
+        /**
+         * SitrusGradeResult
+         * @description In-memory SITRUS projection; the PDF and student identity are omitted.
+         */
+        SitrusGradeResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /** Report Label */
+            report_label?: string | null;
+            /** Grades */
+            grades?: components["schemas"]["SitrusGradeItem"][];
+            /** Cumulative Gpa */
+            cumulative_gpa?: number | null;
+            /** Reason Code */
+            reason_code?: string | null;
         };
         /**
          * SyllabusResult

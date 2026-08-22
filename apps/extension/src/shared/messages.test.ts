@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isOpenWorkspaceMessage,
   isPageContext,
+  isSitrusReadMessage,
   isUpdateWorkspaceSessionMessage,
 } from "./messages";
 
@@ -23,6 +24,32 @@ const validContext = {
 } as const;
 
 describe("page context message validation", () => {
+  it("accepts only the observed SITRUS grade notice route", () => {
+    expect(
+      isSitrusReadMessage({
+        type: "sitrus-read",
+        tool_call_id: "tool-1",
+        page_url:
+          "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/SeisekiTsutiSho.html?N=synthetic",
+      }),
+    ).toBe(true);
+    expect(
+      isSitrusReadMessage({
+        type: "sitrus-read",
+        tool_call_id: "tool-2",
+        page_url:
+          "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/ShutokuTaniShukei.html?N=synthetic",
+      }),
+    ).toBe(true);
+    expect(
+      isSitrusReadMessage({
+        type: "sitrus-read",
+        tool_call_id: "tool-1",
+        page_url: "https://sitrus.sic.shibaura-it.ac.jp/404",
+      }),
+    ).toBe(false);
+  });
+
   it("accepts a structurally valid optional ScombZ payload", () => {
     expect(isPageContext(validContext)).toBe(true);
   });
