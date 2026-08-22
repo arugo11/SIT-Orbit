@@ -324,6 +324,12 @@ function sanitizeAggregate(
   };
   const company = compact(aggregate.company, 160);
   const domain = compact(aggregate.technical_domain, 120);
+  if (
+    STUDENT_ID_PATTERN.test(company ?? "") ||
+    STUDENT_ID_PATTERN.test(domain ?? "")
+  ) {
+    throw new PseudonymizationError("CAST aggregate contains a student ID.");
+  }
   const bucket = yearBucket(aggregate.year);
   if (company) result.company = company;
   if (domain) result.technical_domain = domain;
@@ -354,11 +360,7 @@ function scanForLeakage(
       "Gateway payload contains a detected identifier.",
     );
   }
-  if (
-    EMAIL_PATTERN.test(serialized) ||
-    PHONE_PATTERN.test(serialized) ||
-    STUDENT_ID_PATTERN.test(serialized)
-  ) {
+  if (EMAIL_PATTERN.test(serialized) || PHONE_PATTERN.test(serialized)) {
     throw new PseudonymizationError("Gateway payload contains contact data.");
   }
 }
