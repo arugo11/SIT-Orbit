@@ -594,19 +594,75 @@ class MyLibraryReadResult(StrictApiModel):
 
     schema_version: Literal["v1"] = "v1"
     status: Literal["known", "reauth_required", "unavailable"]
-    scope: MyLibraryScope = "current_loans"
-    items: list[MyLibraryItem] = Field(default_factory=list, max_length=20)
-    total_count: StrictInt = Field(default=0, ge=0, le=1000)
+    scope: MyLibraryScope | None = None
+    items: list[MyLibraryItem] | None = Field(default=None, max_length=20)
+    total_count: StrictInt | None = Field(default=None, ge=0, le=1000)
     next_offset: StrictInt | None = Field(default=None, ge=0, le=1000)
-    loan_count: StrictInt | None = Field(default=None, ge=0, le=1000)
-    reservation_count: StrictInt | None = Field(default=None, ge=0, le=1000)
-    overdue_count: StrictInt | None = Field(default=None, ge=0, le=1000)
-    renewable_count: StrictInt | None = Field(default=None, ge=0, le=1000)
-    earliest_due_date: StrictStr | None = Field(default=None, max_length=10)
-    reason_code: StrictStr | None = Field(default=None, max_length=100)
+    loan_count: StrictInt | None = Field(ge=0, le=1000)
+    reservation_count: StrictInt | None = Field(ge=0, le=1000)
+    overdue_count: StrictInt | None = Field(ge=0, le=1000)
+    renewable_count: StrictInt | None = Field(ge=0, le=1000)
+    earliest_due_date: StrictStr | None = Field(max_length=10)
+    reason_code: StrictStr | None = Field(max_length=100)
 
     @model_validator(mode="after")
     def values_match_status(self) -> "MyLibraryReadResult":
+        scoped_fields = {"scope", "items", "total_count", "next_offset"}
+        is_scoped = bool(scoped_fields & self.model_fields_set)
+        if is_scoped and not scoped_fields.issubset(self.model_fields_set):
+            raise ValueError("Scoped My Library results require the complete page shape.")
+        if is_scoped and (self.scope is None or self.items is None or self.total_count is None):
+            raise ValueError("Scoped My Library results require scope, items, and total_count.")
+        if not is_scoped and (
+            self.scope is not None or self.items is not None or self.total_count is not None
+        ):
+            raise ValueError("Legacy My Library results cannot include scoped page fields.")
+        if not is_scoped and any(
+            value is None
+            for value in (
+                self.loan_count,
+                self.reservation_count,
+                self.overdue_count,
+                self.renewable_count,
+            )
+        ):
+            raise ValueError("Legacy My Library results require all aggregate counts.")
+        if is_scoped and self.scope == "current_loans":
+            if self.reservation_count is not None:
+                raise ValueError("Unread reservation count must be null.")
+            if self.status == "known" and any(
+                value is None
+                for value in (
+                    self.loan_count,
+                    self.overdue_count,
+                    self.renewable_count,
+                )
+            ):
+                raise ValueError("Known loan results require loan aggregates.")
+        elif is_scoped and self.scope == "reservations":
+            if any(
+                value is not None
+                for value in (
+                    self.loan_count,
+                    self.overdue_count,
+                    self.renewable_count,
+                    self.earliest_due_date,
+                )
+            ):
+                raise ValueError("Unread loan aggregates must be null.")
+            if self.status == "known" and self.reservation_count is None:
+                raise ValueError("Known reservation results require reservation_count.")
+        elif is_scoped and any(
+            value is not None
+            for value in (
+                self.loan_count,
+                self.reservation_count,
+                self.overdue_count,
+                self.renewable_count,
+                self.earliest_due_date,
+            )
+        ):
+            raise ValueError("Aggregates outside the requested scope must be null.")
         for field_name, value in (("earliest_due_date", self.earliest_due_date),):
             if value is None:
                 continue
@@ -627,10 +683,11 @@ class MyLibraryReadResult(StrictApiModel):
             or self.earliest_due_date is not None
         ):
             raise ValueError("Unavailable My Library results cannot include derived data.")
-        if self.total_count < len(self.items):
-            raise ValueError("My Library total_count cannot be below the item count.")
-        if self.total_count <= len(self.items) and self.next_offset is not None:
-            raise ValueError("My Library next_offset must be null on the final page.")
+        if self.items is not None and self.total_count is not None:
+            if self.total_count < len(self.items):
+                raise ValueError("My Library total_count cannot be below the item count.")
+            if self.total_count <= len(self.items) and self.next_offset is not None:
+                raise ValueError("My Library next_offset must be null on the final page.")
         if (
             self.overdue_count is not None
             and self.loan_count is not None

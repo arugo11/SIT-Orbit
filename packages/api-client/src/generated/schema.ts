@@ -793,33 +793,26 @@ export interface components {
              * @enum {string}
              */
             status: "known" | "reauth_required" | "unavailable";
-            /**
-             * Scope
-             * @default current_loans
-             * @enum {string}
-             */
-            scope: "current_loans" | "reservations" | "loan_history" | "purchase_requests" | "interlibrary_requests";
+            /** Scope */
+            scope?: ("current_loans" | "reservations" | "loan_history" | "purchase_requests" | "interlibrary_requests") | null;
             /** Items */
-            items?: components["schemas"]["MyLibraryItem"][];
-            /**
-             * Total Count
-             * @default 0
-             */
-            total_count: number;
+            items?: components["schemas"]["MyLibraryItem"][] | null;
+            /** Total Count */
+            total_count?: number | null;
             /** Next Offset */
             next_offset?: number | null;
             /** Loan Count */
-            loan_count?: number | null;
+            loan_count: number | null;
             /** Reservation Count */
-            reservation_count?: number | null;
+            reservation_count: number | null;
             /** Overdue Count */
-            overdue_count?: number | null;
+            overdue_count: number | null;
             /** Renewable Count */
-            renewable_count?: number | null;
+            renewable_count: number | null;
             /** Earliest Due Date */
-            earliest_due_date?: string | null;
+            earliest_due_date: string | null;
             /** Reason Code */
-            reason_code?: string | null;
+            reason_code: string | null;
         };
         /**
          * OrbitEvent

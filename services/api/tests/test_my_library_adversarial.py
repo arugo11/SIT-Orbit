@@ -44,6 +44,17 @@ def result_payload(
     items: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     rows = items if items is not None else [item_payload()]
+    aggregates: dict[str, object] = {
+        "loan_count": None,
+        "reservation_count": None,
+        "overdue_count": None,
+        "renewable_count": None,
+        "earliest_due_date": None,
+    }
+    if scope == "current_loans":
+        aggregates.update(loan_count=len(rows), overdue_count=0, renewable_count=0)
+    elif scope == "reservations":
+        aggregates["reservation_count"] = len(rows)
     return {
         "schema_version": "v1",
         "status": "known",
@@ -51,11 +62,7 @@ def result_payload(
         "items": rows,
         "total_count": len(rows),
         "next_offset": None,
-        "loan_count": None,
-        "reservation_count": None,
-        "overdue_count": None,
-        "renewable_count": None,
-        "earliest_due_date": None,
+        **aggregates,
         "reason_code": None,
     }
 
@@ -106,6 +113,7 @@ def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
             result_payload(scope, items=rows),
         )
         assert result.scope == scope
+        assert result.items is not None
         assert len(result.items) == 20
 
     too_many = result_payload(
@@ -180,8 +188,18 @@ def test_fixture_chat_response_contains_only_allowed_book_fields(monkeypatch) ->
 def test_unavailable_scoped_result_rejects_even_zero_aggregate_values() -> None:
     payload = result_payload(items=[])
     payload.update(status="unavailable", loan_count=0, reason_code="unavailable")
-    with pytest.raises(ValidationError, match="cannot include derived data"):
+    with pytest.raises(ValidationError):
         MyLibraryReadResult.model_validate(payload)
+
+
+def test_known_result_requires_a_complete_legacy_or_scoped_shape() -> None:
+    with pytest.raises(ValidationError):
+        MyLibraryReadResult.model_validate({"status": "known"})
+
+    inconsistent = result_payload("purchase_requests")
+    inconsistent["loan_count"] = 0
+    with pytest.raises(ValidationError, match="outside the requested scope"):
+        MyLibraryReadResult.model_validate(inconsistent)
 
 
 @pytest.mark.parametrize(

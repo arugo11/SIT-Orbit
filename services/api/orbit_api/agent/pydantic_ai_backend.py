@@ -1230,12 +1230,16 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == MY_LIBRARY_TOOL_NAME:
             if not isinstance(tool_result, MyLibraryReadResult):
                 raise ValueError("My Library calls require a MyLibraryReadResult.")
-            if tool_result.items and self.provider_name != "Azure OpenAI":
+            if self.provider_name != "Azure OpenAI":
                 raise ValueError(
-                    "My Library item titles require the explicitly consented Azure Agent."
+                    "My Library data requires the explicitly consented Azure Agent."
                 )
             requested_scope = deferred.arguments.get("scope")
-            if requested_scope is not None and tool_result.scope != requested_scope:
+            if (
+                requested_scope is not None
+                and tool_result.scope is not None
+                and tool_result.scope != requested_scope
+            ):
                 raise ValueError("My Library result scope does not match the requested scope.")
             evidence = next(
                 (item for item in context if is_derived_my_library_evidence(item)),

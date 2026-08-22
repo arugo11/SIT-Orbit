@@ -391,4 +391,19 @@ describe("My Library reader adversarial boundaries", () => {
       extractMyLibraryScopePage(document, PAGE_URL, "loan_history"),
     ).toBeNull();
   });
+
+  it.each([
+    ["current_loans", "lendList"],
+    ["reservations", "reservationList"],
+  ] as const)(
+    "rejects a non-empty but unparseable %s table instead of reporting zero",
+    (scope, tableId) => {
+      const document = parseHTML(`
+        <table id="${tableId}">
+          <tbody><tr><td>構造変更後の未解析行</td></tr></tbody>
+        </table>
+      `).document;
+      expect(extractMyLibraryScopePage(document, PAGE_URL, scope)).toBeNull();
+    },
+  );
 });

@@ -675,7 +675,7 @@ async def test_function_model_sends_only_moodle_derived_projection(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_function_model_sends_only_my_library_derived_projection(monkeypatch) -> None:
+async def test_function_model_sends_my_library_projection_only_to_azure(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     calls = [0]
     captured = [""]
@@ -712,7 +712,11 @@ async def test_function_model_sends_only_my_library_derived_projection(monkeypat
         instructions="test",
         tools=[my_library_read],
     )
-    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
     backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
     first = await backend.start_chat(
         conversation_id="conversation-my-library",
@@ -728,17 +732,28 @@ async def test_function_model_sends_only_my_library_derived_projection(monkeypat
         locator="orbit-library://summary/1234567890abcdef",
         data_classification="personal",
     )
+    result = MyLibraryReadResult(
+        status="known",
+        loan_count=2,
+        reservation_count=1,
+        overdue_count=0,
+        renewable_count=1,
+        earliest_due_date="2026-09-01",
+        reason_code=None,
+    )
+    openai_backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    openai_backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    with pytest.raises(ValueError, match="requires the explicitly consented Azure Agent"):
+        await openai_backend.resume_chat(
+            deferred=first.deferred,
+            tool_result=result,
+            context=[evidence],
+            advertised_tools={MY_LIBRARY_TOOL_NAME},
+        )
+
     second = await backend.resume_chat(
         deferred=first.deferred,
-        tool_result=MyLibraryReadResult(
-            status="known",
-            loan_count=2,
-            reservation_count=1,
-            overdue_count=0,
-            renewable_count=1,
-            earliest_due_date="2026-09-01",
-            reason_code=None,
-        ),
+        tool_result=result,
         context=[evidence],
         advertised_tools={MY_LIBRARY_TOOL_NAME},
     )
@@ -800,7 +815,11 @@ async def test_function_model_runs_moodle_library_cast_sequence_with_derived_val
         instructions="test",
         tools=[moodle_read, my_library_read, cast_read],
     )
-    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
     backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
     advertised = {MOODLE_TOOL_NAME, MY_LIBRARY_TOOL_NAME, CAST_TOOL_NAME}
     evidence = [

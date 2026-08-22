@@ -2016,31 +2016,50 @@
             "title": "Status"
           },
           "scope": {
-            "type": "string",
-            "enum": [
-              "current_loans",
-              "reservations",
-              "loan_history",
-              "purchase_requests",
-              "interlibrary_requests"
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "current_loans",
+                  "reservations",
+                  "loan_history",
+                  "purchase_requests",
+                  "interlibrary_requests"
+                ]
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Scope",
-            "default": "current_loans"
+            "title": "Scope"
           },
           "items": {
-            "items": {
-              "$ref": "#/components/schemas/MyLibraryItem"
-            },
-            "type": "array",
-            "maxItems": 20,
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MyLibraryItem"
+                },
+                "type": "array",
+                "maxItems": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Items"
           },
           "total_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Total Count",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Count"
           },
           "next_offset": {
             "anyOf": [
@@ -2135,7 +2154,13 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "status"
+          "status",
+          "loan_count",
+          "reservation_count",
+          "overdue_count",
+          "renewable_count",
+          "earliest_due_date",
+          "reason_code"
         ],
         "title": "MyLibraryReadResult",
         "description": "A bounded, consent-gated My Library scope projection.\n\n``loan_count`` and the other aggregate fields remain for clients of the\noriginal v1 summary.  New callers use one requested ``scope`` and receive\nat most twenty item projections plus a cursor.  Aggregates outside that\nscope are null rather than a misleading zero.  Book titles and authors\nare intentionally present only in this minimized, explicitly consented\nprojection; identifiers, call numbers, forms, identity, and SSO data have\nno representation in the model."

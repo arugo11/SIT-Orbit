@@ -851,6 +851,32 @@ export function isMyLibraryReadResult(
     ) {
       return false;
     }
+    if (value.status === "known" && value.scope === "current_loans") {
+      if (
+        typeof value.loan_count !== "number" ||
+        typeof value.overdue_count !== "number" ||
+        typeof value.renewable_count !== "number" ||
+        value.reservation_count !== null
+      ) {
+        return false;
+      }
+    } else if (value.status === "known" && value.scope === "reservations") {
+      if (
+        value.loan_count !== null ||
+        typeof value.reservation_count !== "number" ||
+        value.overdue_count !== null ||
+        value.renewable_count !== null ||
+        value.earliest_due_date !== null
+      ) {
+        return false;
+      }
+    } else if (
+      value.status === "known" &&
+      (counts.some((count) => count !== null) ||
+        value.earliest_due_date !== null)
+    ) {
+      return false;
+    }
   }
   if (
     value.status !== "known" &&

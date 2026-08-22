@@ -421,9 +421,17 @@ export function extractMyLibraryScopePage(
         compactText(visibleText(cell), 100),
       )
     : [];
-  return Array.from(table.querySelectorAll("tbody tr, tr"))
-    .filter((row) => row !== headerRow)
-    .map((row) => extractGenericMyLibraryItem(row, scope, columnLabels))
+  const rows = Array.from(table.querySelectorAll("tbody tr, tr")).filter(
+    (row) =>
+      row !== headerRow &&
+      isVisibleElement(row) &&
+      !row.querySelector(".dataTables_empty, .empty, .no-data"),
+  );
+  const items = rows.map((row) =>
+    extractGenericMyLibraryItem(row, scope, columnLabels),
+  );
+  if (items.some((item) => item === null)) return null;
+  return items
     .filter((item): item is MyLibraryScopedItem => item !== null)
     .slice(0, 1000);
 }
@@ -446,29 +454,30 @@ export function extractMyLibraryLoanPage(
   )
     .toString()
     .padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
-  return Array.from(table.querySelectorAll("tbody tr"))
-    .filter(
-      (row) =>
-        isVisibleElement(row) &&
-        !row.querySelector(".dataTables_empty, .empty, .no-data"),
-    )
-    .map((row): MyLibraryLoan | null => {
-      const titleAuthor = splitTitleAuthor(
-        visibleText(valueForLabel(row, "書名 / 著者名")),
-      );
-      if (!titleAuthor) return null;
-      const dueContainer = valueForLabel(row, "貸出返却期限延長回数");
-      const dueDate = normalizeDate(visibleText(dueContainer));
-      const checkbox = row.querySelector<HTMLInputElement>(
-        'input[type="checkbox"][name="checkBoxBookNumber"]',
-      );
-      return {
-        ...titleAuthor,
-        due_date: dueDate,
-        renewable: Boolean(checkbox && !checkbox.disabled),
-        overdue: dueDate !== null && dueDate < todayKey,
-      };
-    })
+  const rows = Array.from(table.querySelectorAll("tbody tr")).filter(
+    (row) =>
+      isVisibleElement(row) &&
+      !row.querySelector(".dataTables_empty, .empty, .no-data"),
+  );
+  const loans = rows.map((row): MyLibraryLoan | null => {
+    const titleAuthor = splitTitleAuthor(
+      visibleText(valueForLabel(row, "書名 / 著者名")),
+    );
+    if (!titleAuthor) return null;
+    const dueContainer = valueForLabel(row, "貸出返却期限延長回数");
+    const dueDate = normalizeDate(visibleText(dueContainer));
+    const checkbox = row.querySelector<HTMLInputElement>(
+      'input[type="checkbox"][name="checkBoxBookNumber"]',
+    );
+    return {
+      ...titleAuthor,
+      due_date: dueDate,
+      renewable: Boolean(checkbox && !checkbox.disabled),
+      overdue: dueDate !== null && dueDate < todayKey,
+    };
+  });
+  if (loans.some((item) => item === null)) return null;
+  return loans
     .filter((item): item is MyLibraryLoan => item !== null)
     .slice(0, 1000);
 }
@@ -485,26 +494,26 @@ export function extractMyLibraryReservationPage(
   }
   const table = document.querySelector("#reservationList");
   if (!table) return null;
-  return Array.from(table.querySelectorAll("tbody tr"))
-    .filter(
-      (row) =>
-        isVisibleElement(row) &&
-        !row.querySelector(".dataTables_empty, .empty, .no-data"),
-    )
-    .map((row): MyLibraryReservation | null => {
-      const titleAuthor = splitTitleAuthor(
-        visibleText(valueForLabel(row, "書名 / 著者名")),
-      );
-      if (!titleAuthor) return null;
-      return {
-        ...titleAuthor,
-        hold_until: normalizeDate(
-          visibleText(valueForLabel(row, "受取館取置期限日")),
-        ),
-        status:
-          compactText(visibleText(valueForLabel(row, "状態")), 100) || null,
-      };
-    })
+  const rows = Array.from(table.querySelectorAll("tbody tr")).filter(
+    (row) =>
+      isVisibleElement(row) &&
+      !row.querySelector(".dataTables_empty, .empty, .no-data"),
+  );
+  const reservations = rows.map((row): MyLibraryReservation | null => {
+    const titleAuthor = splitTitleAuthor(
+      visibleText(valueForLabel(row, "書名 / 著者名")),
+    );
+    if (!titleAuthor) return null;
+    return {
+      ...titleAuthor,
+      hold_until: normalizeDate(
+        visibleText(valueForLabel(row, "受取館取置期限日")),
+      ),
+      status: compactText(visibleText(valueForLabel(row, "状態")), 100) || null,
+    };
+  });
+  if (reservations.some((item) => item === null)) return null;
+  return reservations
     .filter((item): item is MyLibraryReservation => item !== null)
     .slice(0, 1000);
 }

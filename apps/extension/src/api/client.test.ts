@@ -217,6 +217,7 @@ describe("AgentApiClient", () => {
       earliest_due_date: null,
     };
     expect(isMyLibraryReadResult(scoped)).toBe(true);
+    expect(isMyLibraryReadResult({ ...scoped, loan_count: 0 })).toBe(false);
     expect(
       isMyLibraryReadResult({
         ...scoped,

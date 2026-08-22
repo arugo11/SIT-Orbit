@@ -485,7 +485,11 @@ class FixtureChatBackend:
             if not isinstance(tool_result, MyLibraryReadResult):
                 raise ValueError("The fixture My Library call requires a MyLibraryReadResult.")
             requested_scope = deferred.arguments.get("scope")
-            if requested_scope is not None and tool_result.scope != requested_scope:
+            if (
+                requested_scope is not None
+                and tool_result.scope is not None
+                and tool_result.scope != requested_scope
+            ):
                 raise ValueError("My Library result scope does not match the requested scope.")
             evidence = next(
                 (item for item in context if is_derived_my_library_evidence(item)),
