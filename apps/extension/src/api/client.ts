@@ -51,6 +51,9 @@ export type LibraryCatalogBrowseResult =
   components["schemas"]["LibraryCatalogBrowseResult"];
 export type LibraryDiscoverySearchResult =
   components["schemas"]["LibraryDiscoverySearchResult"];
+export type LibraryActionOptionsResult =
+  components["schemas"]["LibraryActionOptionsResult"];
+export type LibraryActionOption = components["schemas"]["LibraryActionOption"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 export const AZURE_DEMO_AGENT_API_BASE =
@@ -146,7 +149,12 @@ const dataClassifications = [
 ] as const;
 const eventTypes = ["campus_entered", "action_completed"] as const;
 const campuses = ["omiya", "toyosu", "other"] as const;
-const externalActions = ["none", "calendar_draft", "checklist_update"] as const;
+const externalActions = [
+  "none",
+  "calendar_draft",
+  "checklist_update",
+  "library_write",
+] as const;
 
 function isEvidenceLink(
   value: unknown,
@@ -162,7 +170,7 @@ function isEvidenceLink(
 }
 
 export function isActionProposal(value: unknown): value is ActionProposal {
-  return (
+  if (
     isRecord(value) &&
     isNonEmptyString(value.action_id) &&
     isNonEmptyString(value.title) &&
@@ -174,6 +182,93 @@ export function isActionProposal(value: unknown): value is ActionProposal {
     isOneOf(value.external_action, externalActions) &&
     typeof value.requires_confirmation === "boolean" &&
     isNonEmptyString(value.prompt_version)
+  ) {
+    if (value.operation === undefined || value.operation === null) return true;
+    if (!isLibraryOperation(value.operation)) return false;
+    const write = [
+      "reserve",
+      "intercampus_transfer",
+      "renew",
+      "purchase_request",
+      "ill_loan",
+      "ill_copy",
+    ].includes(value.operation.action_type);
+    if (!value.requires_confirmation) return false;
+    if (write && value.external_action !== "library_write") return false;
+    return !(!write && value.external_action === "library_write");
+  }
+  return false;
+}
+
+function isOpaqueLibraryResourceRef(value: unknown): value is string {
+  return isLibraryResourceRef(value);
+}
+
+function isEmptyOperationArguments(value: unknown): boolean {
+  return isRecord(value) && Object.keys(value).length === 0;
+}
+
+export type LibraryOperation = NonNullable<ActionProposal["operation"]>;
+
+export function isLibraryOperation(value: unknown): value is LibraryOperation {
+  if (!isRecord(value)) return false;
+  if (
+    !hasExactlyKeys(value, ["action_type", "resource_ref", "arguments"]) ||
+    !isOneOf(value.action_type, libraryActionTypes) ||
+    !isOpaqueLibraryResourceRef(value.resource_ref) ||
+    !isRecord(value.arguments)
+  ) {
+    return false;
+  }
+  if (
+    value.action_type === "visit_shelf" ||
+    value.action_type === "open_online"
+  ) {
+    return isEmptyOperationArguments(value.arguments);
+  }
+  if (value.action_type === "renew") {
+    return isEmptyOperationArguments(value.arguments);
+  }
+  if (
+    value.action_type === "reserve" ||
+    value.action_type === "intercampus_transfer"
+  ) {
+    return (
+      hasExactlyKeys(value.arguments, ["pickup_campus"]) &&
+      isOneOf(value.arguments.pickup_campus, ["omiya", "toyosu"])
+    );
+  }
+  if (value.action_type === "purchase_request") {
+    return (
+      hasExactlyKeys(value.arguments, ["reason"]) &&
+      typeof value.arguments.reason === "string" &&
+      value.arguments.reason.trim().length > 0 &&
+      value.arguments.reason.length <= 500
+    );
+  }
+  const common =
+    hasExactlyKeys(value.arguments, ["receiver", "payment", "fee"]) &&
+    typeof value.arguments.receiver === "string" &&
+    value.arguments.receiver.trim().length > 0 &&
+    value.arguments.receiver.length <= 200 &&
+    typeof value.arguments.payment === "string" &&
+    value.arguments.payment.trim().length > 0 &&
+    value.arguments.payment.length <= 100 &&
+    (value.arguments.fee === null ||
+      (typeof value.arguments.fee === "string" &&
+        value.arguments.fee.length <= 100));
+  if (value.action_type === "ill_loan") return common;
+  return (
+    common &&
+    hasExactlyKeys(value.arguments, [
+      "receiver",
+      "payment",
+      "fee",
+      "page_range",
+    ]) &&
+    typeof value.arguments.page_range === "string" &&
+    value.arguments.page_range.trim().length > 0 &&
+    value.arguments.page_range.length <= 100
   );
 }
 
@@ -623,6 +718,76 @@ export function isLibraryDiscoverySearchResult(
   return value.status === "known" || value.items.length === 0;
 }
 
+const libraryActionTypes = [
+  "visit_shelf",
+  "open_online",
+  "reserve",
+  "intercampus_transfer",
+  "renew",
+  "purchase_request",
+  "ill_loan",
+  "ill_copy",
+] as const;
+const libraryActionInputs = [
+  "pickup_campus",
+  "reason",
+  "receiver",
+  "payment",
+  "fee",
+  "page_range",
+] as const;
+
+function isLibraryActionOption(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    hasExactlyKeys(value, [
+      "action_type",
+      "available",
+      "reason_code",
+      "required_inputs",
+    ]) &&
+    isOneOf(value.action_type, libraryActionTypes) &&
+    typeof value.available === "boolean" &&
+    typeof value.reason_code === "string" &&
+    /^[a-z][a-z0-9_]*$/u.test(value.reason_code) &&
+    Array.isArray(value.required_inputs) &&
+    value.required_inputs.length <= 8 &&
+    value.required_inputs.every((item) => isOneOf(item, libraryActionInputs))
+  );
+}
+
+export function isLibraryActionOptionsResult(
+  value: unknown,
+): value is LibraryActionOptionsResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "resource_ref",
+      "options",
+      "data_classification",
+      "reason_code",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isLibraryResourceRef(value.resource_ref) ||
+    !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
+    !isOneOf(value.data_classification, ["public", "personal"]) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string") ||
+    !Array.isArray(value.options) ||
+    value.options.length > libraryActionTypes.length ||
+    !value.options.every(isLibraryActionOption)
+  ) {
+    return false;
+  }
+  const actionTypes = value.options.map((item) => item.action_type);
+  if (new Set(actionTypes).size !== actionTypes.length) return false;
+  return value.status === "known"
+    ? actionTypes.length === libraryActionTypes.length &&
+        libraryActionTypes.every((item) => actionTypes.includes(item))
+    : actionTypes.length === 0;
+}
+
 export function isBrowserReadResult(
   value: unknown,
 ): value is BrowserReadResult {
@@ -1058,6 +1223,7 @@ const chatToolNames = [
   "library_item_read",
   "library_catalog_browse",
   "library_discovery_search",
+  "library_action_options",
 ] as const;
 
 function isChatEvidenceMessage(value: unknown): boolean {

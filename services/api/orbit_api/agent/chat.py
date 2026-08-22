@@ -6,7 +6,7 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Protocol
 from uuid import uuid4
@@ -26,6 +26,7 @@ from orbit_api.models import (
     ChatToolCall,
     ChatToolResultRequest,
     EvidenceLink,
+    LibraryActionOptionsResult,
     LibraryCatalogBrowseResult,
     LibraryCatalogSearchResult,
     LibraryDiscoverySearchResult,
@@ -46,6 +47,7 @@ from .pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     CAST_LOCATOR_PREFIX,
     CAST_TOOL_NAME,
+    LIBRARY_ACTION_OPTIONS_TOOL_NAME,
     LIBRARY_CATALOG_BROWSE_TOOL_NAME,
     LIBRARY_CATALOG_SEARCH_TOOL_NAME,
     LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
@@ -60,11 +62,13 @@ from .pydantic_ai_backend import (
     ChatDraft,
     DeferredChatRun,
     is_derived_cast_evidence,
+    is_derived_library_action_evidence,
     is_derived_library_evidence,
     is_derived_moodle_evidence,
     is_derived_my_library_evidence,
     is_derived_scombz_read_evidence,
     is_derived_sitrus_evidence,
+    validate_library_operation_evidence,
     validate_my_library_result_page,
 )
 
@@ -124,6 +128,7 @@ class ChatBackend(Protocol):
             | LibraryItemReadResult
             | LibraryCatalogBrowseResult
             | LibraryDiscoverySearchResult
+            | LibraryActionOptionsResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
@@ -255,6 +260,17 @@ class FixtureChatBackend:
         del history
         return "orbit-library://record/" in message
 
+    @staticmethod
+    def _requests_library_action_options(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if LIBRARY_ACTION_OPTIONS_TOOL_NAME not in advertised_tools:
+            return False
+        del history
+        return bool(re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message))
+
     async def start_chat(
         self,
         *,
@@ -266,6 +282,18 @@ class FixtureChatBackend:
     ) -> ChatAgentExecution:
         del context
         advertised = set(advertised_tools or set())
+        if self._requests_library_action_options(message, history, advertised):
+            match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
+            if match is not None:
+                return ChatAgentExecution(
+                    deferred=DeferredChatRun(
+                        messages=[],
+                        tool_call_id=f"fixture-library-action-options-{uuid4().hex}",
+                        conversation_id=conversation_id,
+                        tool_name=LIBRARY_ACTION_OPTIONS_TOOL_NAME,
+                        arguments={"resource_ref": match.group(0)},
+                    )
+                )
         if self._requests_library_item_read(message, history, advertised):
             match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
             if match is not None:
@@ -388,6 +416,7 @@ class FixtureChatBackend:
             | LibraryItemReadResult
             | LibraryCatalogBrowseResult
             | LibraryDiscoverySearchResult
+            | LibraryActionOptionsResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
@@ -399,6 +428,7 @@ class FixtureChatBackend:
             LIBRARY_ITEM_READ_TOOL_NAME,
             LIBRARY_CATALOG_BROWSE_TOOL_NAME,
             LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+            LIBRARY_ACTION_OPTIONS_TOOL_NAME,
         }:
             if not isinstance(
                 tool_result,
@@ -407,16 +437,36 @@ class FixtureChatBackend:
                     LibraryItemReadResult,
                     LibraryCatalogBrowseResult,
                     LibraryDiscoverySearchResult,
+                    LibraryActionOptionsResult,
                 ),
             ):
                 raise ValueError("The fixture library call received an invalid result.")
             evidence = next(
-                (item for item in context if is_derived_library_evidence(item)),
+                (
+                    item
+                    for item in context
+                    if (
+                        is_derived_library_action_evidence(item)
+                        and isinstance(tool_result, LibraryActionOptionsResult)
+                        and item.locator == tool_result.resource_ref
+                        if deferred.tool_name == LIBRARY_ACTION_OPTIONS_TOOL_NAME
+                        else is_derived_library_evidence(item)
+                    )
+                ),
                 None,
             )
             if evidence is None:
                 raise ValueError("A resumed fixture Chat run requires library evidence.")
-            if deferred.tool_name == LIBRARY_ITEM_READ_TOOL_NAME:
+            if deferred.tool_name == LIBRARY_ACTION_OPTIONS_TOOL_NAME:
+                if not isinstance(tool_result, LibraryActionOptionsResult):
+                    raise ValueError(
+                        "The fixture action call requires a LibraryActionOptionsResult."
+                    )
+                lines = ["図書館の現在の操作可否を確認しました。"]
+                for option in tool_result.options:
+                    state = "利用可能" if option.available else "利用不可"
+                    lines.append(f"- {option.action_type}: {state}")
+            elif deferred.tool_name == LIBRARY_ITEM_READ_TOOL_NAME:
                 if not isinstance(tool_result, LibraryItemReadResult):
                     raise ValueError("The fixture item call requires a LibraryItemReadResult.")
                 lines = ["図書館の公開カタログ詳細を確認しました。"]
@@ -655,6 +705,7 @@ class StoredChatRun:
     conversation_id: str
     deferred: DeferredChatRun
     context: list[EvidenceLink]
+    library_action_options: dict[str, LibraryActionOptionsResult]
     advertised_tools: tuple[ChatClientTool, ...]
     seen_tool_call_ids: frozenset[str]
     generation: int
@@ -729,6 +780,7 @@ class ChatRunStore:
             conversation_id=conversation_id,
             deferred=deferred,
             context=list(context),
+            library_action_options={},
             advertised_tools=self._validate_tools(advertised_tools),
             seen_tool_call_ids=frozenset(),
             generation=0,
@@ -779,6 +831,7 @@ class ChatRunStore:
         context: list[EvidenceLink],
         generation: int,
         claimed_call_id: str,
+        library_action_options: Mapping[str, LibraryActionOptionsResult] | None = None,
     ) -> None:
         with self._lock:
             self._cleanup_locked()
@@ -800,6 +853,11 @@ class ChatRunStore:
                 run,
                 deferred=deferred,
                 context=list(context),
+                library_action_options=dict(
+                    library_action_options
+                    if library_action_options is not None
+                    else run.library_action_options
+                ),
                 seen_tool_call_ids=run.seen_tool_call_ids | {claimed_call_id},
                 generation=run.generation + 1,
                 state="pending",
@@ -885,6 +943,14 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "芝浦工業大学公式SIT Searchの公開メタデータ"
         source_type = "library"
         locator = f"{LIBRARY_LOCATOR_PREFIX}{run_id}"
+    elif request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME:
+        if not isinstance(request.result, LibraryActionOptionsResult):
+            raise ValueError("Library action evidence requires LibraryActionOptionsResult.")
+        title = "芝浦工業大学公式図書館の現在の操作可否"
+        source_type = "library"
+        # The opaque ref itself is the only locator needed to bind a proposal;
+        # no provider URL, material ID, cookie, or form state crosses this API.
+        locator = request.result.resource_ref
     else:
         raise ValueError("The chat tool is not enabled in the current API build.")
     evidence_prefix = {
@@ -901,6 +967,7 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         LIBRARY_ITEM_READ_TOOL_NAME: "library-item-read-v1",
         LIBRARY_CATALOG_BROWSE_TOOL_NAME: "library-catalog-browse-v1",
         LIBRARY_DISCOVERY_SEARCH_TOOL_NAME: "library-discovery-search-v1",
+        LIBRARY_ACTION_OPTIONS_TOOL_NAME: "library-action-options-v1",
     }[request.name]
     return EvidenceLink(
         evidence_id=f"{evidence_prefix}-{run_id}",
@@ -908,19 +975,23 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         source_type=source_type,  # type: ignore[arg-type]
         locator=locator,
         data_classification=(
-            "public"
-            if request.name
-            in {
-                SYLLABUS_SEARCH_TOOL_NAME,
-                LIBRARY_CATALOG_SEARCH_TOOL_NAME,
-                LIBRARY_ITEM_READ_TOOL_NAME,
-                LIBRARY_CATALOG_BROWSE_TOOL_NAME,
-                LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
-            }
+            request.result.data_classification
+            if isinstance(request.result, LibraryActionOptionsResult)
             else (
-                request.result.data_classification
-                if isinstance(request.result, BrowserReadResult)
-                else "personal"
+                "public"
+                if request.name
+                in {
+                    SYLLABUS_SEARCH_TOOL_NAME,
+                    LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+                    LIBRARY_ITEM_READ_TOOL_NAME,
+                    LIBRARY_CATALOG_BROWSE_TOOL_NAME,
+                    LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+                }
+                else (
+                    request.result.data_classification
+                    if isinstance(request.result, BrowserReadResult)
+                    else "personal"
+                )
             )
         ),
     )
@@ -931,6 +1002,7 @@ def _canonical_response(
     context: list[EvidenceLink],
     *,
     action_id_prefix: str,
+    library_action_options: Mapping[str, LibraryActionOptionsResult] | None = None,
 ) -> ChatRunCompleted:
     evidence_by_id = {item.evidence_id: item for item in context}
     if len(set(draft.evidence_ids)) != len(draft.evidence_ids):
@@ -944,15 +1016,36 @@ def _canonical_response(
         unknown_action = [item for item in draft.action.evidence_ids if item not in evidence_by_id]
         if unknown_action:
             raise ValueError("Chat action contains unknown evidence IDs.")
+        action_evidence = [evidence_by_id[item] for item in draft.action.evidence_ids]
+        if draft.action.operation is not None:
+            validate_library_operation_evidence(draft.action.operation, action_evidence)
+            current_options = (library_action_options or {}).get(
+                draft.action.operation.resource_ref
+            )
+            if current_options is None or current_options.status != "known":
+                raise ValueError(
+                    "Library operations require current known action options."
+                )
+            matching_option = next(
+                (
+                    option
+                    for option in current_options.options
+                    if option.action_type == draft.action.operation.action_type
+                ),
+                None,
+            )
+            if matching_option is None or not matching_option.available:
+                raise ValueError("The proposed library operation is not currently available.")
         proposal = ActionProposal(
             action_id=f"{action_id_prefix}-{uuid4()}",
             title=draft.action.title,
             reason=draft.action.reason,
             duration_minutes=draft.action.duration_minutes,
-            evidence=[evidence_by_id[item] for item in draft.action.evidence_ids],
+            evidence=action_evidence,
             external_action=draft.action.external_action,
             requires_confirmation=draft.action.requires_confirmation,
             prompt_version=CHAT_PROMPT_VERSION,
+            operation=draft.action.operation,
         )
         for item in proposal.evidence:
             if item not in selected:
@@ -1036,6 +1129,7 @@ class ChatRunService:
                 LibraryItemReadResult,
                 LibraryCatalogBrowseResult,
                 LibraryDiscoverySearchResult,
+                LibraryActionOptionsResult,
             ),
         )
         if (
@@ -1059,7 +1153,23 @@ class ChatRunService:
                 raise ValueError(
                     "Scoped My Library data requires the explicitly consented Azure Agent."
                 )
+            if (
+                request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME
+                and isinstance(request.result, LibraryActionOptionsResult)
+                and request.result.data_classification == "personal"
+                and backend_name != "azure_openai"
+            ):
+                raise ValueError(
+                    "Personal library action capabilities require the explicitly "
+                    "consented Azure Agent."
+                )
             context = [*claimed.context, _tool_evidence(request, run_id)]
+            library_action_options = dict(claimed.library_action_options)
+            if (
+                request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME
+                and isinstance(request.result, LibraryActionOptionsResult)
+            ):
+                library_action_options[request.result.resource_ref] = request.result
             if backend_name != claimed.backend_name:
                 raise RuntimeError("The chat backend changed while the run was pending.")
             execution = await self.backend_factory().resume_chat(
@@ -1075,6 +1185,7 @@ class ChatRunService:
                     execution.draft,
                     context,
                     action_id_prefix="act-chat",
+                    library_action_options=library_action_options,
                 )
                 self.store.complete(run_id, generation=claimed.generation)
                 return response
@@ -1086,6 +1197,7 @@ class ChatRunService:
                 context=context,
                 generation=claimed.generation,
                 claimed_call_id=claimed.deferred.tool_call_id,
+                library_action_options=library_action_options,
             )
             return self._tool_required(run_id, execution.deferred)
         except BaseException:

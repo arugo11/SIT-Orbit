@@ -406,7 +406,8 @@
             "enum": [
               "none",
               "calendar_draft",
-              "checklist_update"
+              "checklist_update",
+              "library_write"
             ],
             "title": "External Action",
             "default": "none"
@@ -420,6 +421,55 @@
             "type": "string",
             "minLength": 1,
             "title": "Prompt Version"
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/VisitShelfOperation"
+                  },
+                  {
+                    "$ref": "#/components/schemas/OpenOnlineOperation"
+                  },
+                  {
+                    "$ref": "#/components/schemas/ReserveOperation"
+                  },
+                  {
+                    "$ref": "#/components/schemas/IntercampusTransferOperation"
+                  },
+                  {
+                    "$ref": "#/components/schemas/RenewOperation"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PurchaseRequestOperation"
+                  },
+                  {
+                    "$ref": "#/components/schemas/IllLoanOperation"
+                  },
+                  {
+                    "$ref": "#/components/schemas/IllCopyOperation"
+                  }
+                ],
+                "discriminator": {
+                  "propertyName": "action_type",
+                  "mapping": {
+                    "ill_copy": "#/components/schemas/IllCopyOperation",
+                    "ill_loan": "#/components/schemas/IllLoanOperation",
+                    "intercampus_transfer": "#/components/schemas/IntercampusTransferOperation",
+                    "open_online": "#/components/schemas/OpenOnlineOperation",
+                    "purchase_request": "#/components/schemas/PurchaseRequestOperation",
+                    "renew": "#/components/schemas/RenewOperation",
+                    "reserve": "#/components/schemas/ReserveOperation",
+                    "visit_shelf": "#/components/schemas/VisitShelfOperation"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operation"
           }
         },
         "type": "object",
@@ -837,6 +887,24 @@
         "title": "CalendarAvailabilityResult",
         "description": "Minimal v1 result accepted from the extension's Calendar connector.\n\nEvent IDs, titles, attendees, locations, descriptions, and raw Google\nresponses deliberately have no representation in this model."
       },
+      "CampusPickupArguments": {
+        "properties": {
+          "pickup_campus": {
+            "type": "string",
+            "enum": [
+              "omiya",
+              "toyosu"
+            ],
+            "title": "Pickup Campus"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "pickup_campus"
+        ],
+        "title": "CampusPickupArguments"
+      },
       "CastReadResult": {
         "properties": {
           "schema_version": {
@@ -968,7 +1036,8 @@
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
-              "library_discovery_search"
+              "library_discovery_search",
+              "library_action_options"
             ],
             "title": "Name"
           },
@@ -1134,7 +1203,8 @@
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
-              "library_discovery_search"
+              "library_discovery_search",
+              "library_action_options"
             ],
             "title": "Name"
           },
@@ -1181,7 +1251,8 @@
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
-              "library_discovery_search"
+              "library_discovery_search",
+              "library_action_options"
             ],
             "title": "Name"
           },
@@ -1233,6 +1304,9 @@
               },
               {
                 "$ref": "#/components/schemas/LibraryDiscoverySearchResult"
+              },
+              {
+                "$ref": "#/components/schemas/LibraryActionOptionsResult"
               }
             ],
             "title": "Result"
@@ -1340,6 +1414,164 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "IllCopyArguments": {
+        "properties": {
+          "receiver": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Receiver"
+          },
+          "payment": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Payment"
+          },
+          "fee": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fee"
+          },
+          "page_range": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Page Range"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "receiver",
+          "payment",
+          "page_range"
+        ],
+        "title": "IllCopyArguments"
+      },
+      "IllCopyOperation": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "const": "ill_copy",
+            "title": "Action Type"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "arguments": {
+            "$ref": "#/components/schemas/IllCopyArguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "resource_ref",
+          "arguments"
+        ],
+        "title": "IllCopyOperation"
+      },
+      "IllLoanArguments": {
+        "properties": {
+          "receiver": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Receiver"
+          },
+          "payment": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Payment"
+          },
+          "fee": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fee"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "receiver",
+          "payment"
+        ],
+        "title": "IllLoanArguments"
+      },
+      "IllLoanOperation": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "const": "ill_loan",
+            "title": "Action Type"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "arguments": {
+            "$ref": "#/components/schemas/IllLoanArguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "resource_ref",
+          "arguments"
+        ],
+        "title": "IllLoanOperation"
+      },
+      "IntercampusTransferOperation": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "const": "intercampus_transfer",
+            "title": "Action Type"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "arguments": {
+            "$ref": "#/components/schemas/CampusPickupArguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "resource_ref",
+          "arguments"
+        ],
+        "title": "IntercampusTransferOperation"
+      },
       "LegacyMyLibraryReadResult": {
         "properties": {
           "schema_version": {
@@ -1419,6 +1651,123 @@
         ],
         "title": "LegacyMyLibraryReadResult",
         "description": "The original aggregate-only My Library result shape."
+      },
+      "LibraryActionOption": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "enum": [
+              "visit_shelf",
+              "open_online",
+              "reserve",
+              "intercampus_transfer",
+              "renew",
+              "purchase_request",
+              "ill_loan",
+              "ill_copy"
+            ],
+            "title": "Action Type"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "reason_code": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "pattern": "^[a-z][a-z0-9_]*$",
+            "title": "Reason Code"
+          },
+          "required_inputs": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "pickup_campus",
+                "reason",
+                "receiver",
+                "payment",
+                "fee",
+                "page_range"
+              ]
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Required Inputs"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "available",
+          "reason_code"
+        ],
+        "title": "LibraryActionOption",
+        "description": "One current-provider action capability for an opaque resource."
+      },
+      "LibraryActionOptionsResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryActionOption"
+            },
+            "type": "array",
+            "maxItems": 8,
+            "title": "Options"
+          },
+          "data_classification": {
+            "type": "string",
+            "enum": [
+              "public",
+              "personal"
+            ],
+            "title": "Data Classification",
+            "default": "public"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "resource_ref"
+        ],
+        "title": "LibraryActionOptionsResult",
+        "description": "Read-only action capabilities derived from the current official page."
       },
       "LibraryBibliographicRecord": {
         "properties": {
@@ -2124,6 +2473,39 @@
         "title": "MyLibraryItem",
         "description": "One bounded personal-library row safe to share after session consent.\n\nThe connector maps provider-specific identifiers to an opaque reference\nbefore this model is constructed.  Material/request IDs, call numbers,\nform values, and account identity intentionally have no fields here."
       },
+      "OpenOnlineArguments": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "OpenOnlineArguments",
+        "description": "The extension opens only the official viewer resolved from the ref."
+      },
+      "OpenOnlineOperation": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "const": "open_online",
+            "title": "Action Type"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "arguments": {
+            "$ref": "#/components/schemas/OpenOnlineArguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "resource_ref"
+        ],
+        "title": "OpenOnlineOperation"
+      },
       "OrbitEvent": {
         "properties": {
           "event_id": {
@@ -2203,6 +2585,109 @@
           "context"
         ],
         "title": "ProposeActionRequest"
+      },
+      "PurchaseRequestArguments": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "PurchaseRequestArguments"
+      },
+      "PurchaseRequestOperation": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "const": "purchase_request",
+            "title": "Action Type"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "arguments": {
+            "$ref": "#/components/schemas/PurchaseRequestArguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "resource_ref",
+          "arguments"
+        ],
+        "title": "PurchaseRequestOperation"
+      },
+      "RenewArguments": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RenewArguments",
+        "description": "Renewal uses the currently rendered loan and has no editable input."
+      },
+      "RenewOperation": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "const": "renew",
+            "title": "Action Type"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "arguments": {
+            "$ref": "#/components/schemas/RenewArguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "resource_ref"
+        ],
+        "title": "RenewOperation"
+      },
+      "ReserveOperation": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "const": "reserve",
+            "title": "Action Type"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "arguments": {
+            "$ref": "#/components/schemas/CampusPickupArguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "resource_ref",
+          "arguments"
+        ],
+        "title": "ReserveOperation"
       },
       "ScombzPageSummaryResult": {
         "properties": {
@@ -2985,6 +3470,39 @@
           "completed"
         ],
         "title": "VerifyActionRequest"
+      },
+      "VisitShelfArguments": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "VisitShelfArguments",
+        "description": "No user-editable fields are needed to visit a rendered shelf."
+      },
+      "VisitShelfOperation": {
+        "properties": {
+          "action_type": {
+            "type": "string",
+            "const": "visit_shelf",
+            "title": "Action Type"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "arguments": {
+            "$ref": "#/components/schemas/VisitShelfArguments"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "action_type",
+          "resource_ref"
+        ],
+        "title": "VisitShelfOperation"
       }
     }
   }

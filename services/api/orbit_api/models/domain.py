@@ -1,12 +1,199 @@
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 DataClassification = Literal["synthetic", "public", "personal", "restricted"]
 Campus = Literal["omiya", "toyosu", "other"]
-ExternalAction = Literal["none", "calendar_draft", "checklist_update"]
+ExternalAction = Literal[
+    "none",
+    "calendar_draft",
+    "checklist_update",
+    "library_write",
+]
+
+LibraryActionType = Literal[
+    "visit_shelf",
+    "open_online",
+    "reserve",
+    "intercampus_transfer",
+    "renew",
+    "purchase_request",
+    "ill_loan",
+    "ill_copy",
+]
+LibraryWriteActionType = Literal[
+    "reserve",
+    "intercampus_transfer",
+    "renew",
+    "purchase_request",
+    "ill_loan",
+    "ill_copy",
+]
+LibraryActionInput = Literal[
+    "pickup_campus",
+    "reason",
+    "receiver",
+    "payment",
+    "fee",
+    "page_range",
+]
+
+OpaqueLibraryResourceRef = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    ),
+]
+
+
+class LibraryOperationArguments(BaseModel):
+    """Strict base for bounded, operation-specific library arguments."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class VisitShelfArguments(LibraryOperationArguments):
+    """No user-editable fields are needed to visit a rendered shelf."""
+
+
+class OpenOnlineArguments(LibraryOperationArguments):
+    """The extension opens only the official viewer resolved from the ref."""
+
+
+class CampusPickupArguments(LibraryOperationArguments):
+    pickup_campus: Literal["omiya", "toyosu"]
+
+
+class RenewArguments(LibraryOperationArguments):
+    """Renewal uses the currently rendered loan and has no editable input."""
+
+
+class PurchaseRequestArguments(LibraryOperationArguments):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class IllLoanArguments(LibraryOperationArguments):
+    receiver: str = Field(min_length=1, max_length=200)
+    payment: str = Field(min_length=1, max_length=100)
+    fee: str | None = Field(default=None, max_length=100)
+
+
+class IllCopyArguments(LibraryOperationArguments):
+    receiver: str = Field(min_length=1, max_length=200)
+    payment: str = Field(min_length=1, max_length=100)
+    fee: str | None = Field(default=None, max_length=100)
+    page_range: str = Field(min_length=1, max_length=100)
+
+
+class VisitShelfOperation(LibraryOperationArguments):
+    action_type: Literal["visit_shelf"]
+    resource_ref: OpaqueLibraryResourceRef
+    arguments: VisitShelfArguments = Field(default_factory=VisitShelfArguments)
+
+
+class OpenOnlineOperation(LibraryOperationArguments):
+    action_type: Literal["open_online"]
+    resource_ref: OpaqueLibraryResourceRef
+    arguments: OpenOnlineArguments = Field(default_factory=OpenOnlineArguments)
+
+
+class ReserveOperation(LibraryOperationArguments):
+    action_type: Literal["reserve"]
+    resource_ref: OpaqueLibraryResourceRef
+    arguments: CampusPickupArguments
+
+
+class IntercampusTransferOperation(LibraryOperationArguments):
+    action_type: Literal["intercampus_transfer"]
+    resource_ref: OpaqueLibraryResourceRef
+    arguments: CampusPickupArguments
+
+
+class RenewOperation(LibraryOperationArguments):
+    action_type: Literal["renew"]
+    resource_ref: OpaqueLibraryResourceRef
+    arguments: RenewArguments = Field(default_factory=RenewArguments)
+
+
+class PurchaseRequestOperation(LibraryOperationArguments):
+    action_type: Literal["purchase_request"]
+    resource_ref: OpaqueLibraryResourceRef
+    arguments: PurchaseRequestArguments
+
+
+class IllLoanOperation(LibraryOperationArguments):
+    action_type: Literal["ill_loan"]
+    resource_ref: OpaqueLibraryResourceRef
+    arguments: IllLoanArguments
+
+
+class IllCopyOperation(LibraryOperationArguments):
+    action_type: Literal["ill_copy"]
+    resource_ref: OpaqueLibraryResourceRef
+    arguments: IllCopyArguments
+
+
+LibraryOperation = Annotated[
+    VisitShelfOperation
+    | OpenOnlineOperation
+    | ReserveOperation
+    | IntercampusTransferOperation
+    | RenewOperation
+    | PurchaseRequestOperation
+    | IllLoanOperation
+    | IllCopyOperation,
+    Field(discriminator="action_type"),
+]
+
+
+class LibraryActionOption(BaseModel):
+    """One current-provider action capability for an opaque resource."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    action_type: LibraryActionType
+    available: bool
+    reason_code: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_]*$")
+    required_inputs: list[LibraryActionInput] = Field(default_factory=list, max_length=8)
+
+
+class LibraryActionOptionsResult(BaseModel):
+    """Read-only action capabilities derived from the current official page."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "reauth_required", "unavailable"]
+    resource_ref: OpaqueLibraryResourceRef
+    options: list[LibraryActionOption] = Field(default_factory=list, max_length=8)
+    data_classification: Literal["public", "personal"] = "public"
+    reason_code: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def options_match_status(self) -> "LibraryActionOptionsResult":
+        action_types = [item.action_type for item in self.options]
+        if len(set(action_types)) != len(action_types):
+            raise ValueError("Library action options must contain unique action types.")
+        if self.status == "known" and set(action_types) != {
+            "visit_shelf",
+            "open_online",
+            "reserve",
+            "intercampus_transfer",
+            "renew",
+            "purchase_request",
+            "ill_loan",
+            "ill_copy",
+        }:
+            raise ValueError("Known library action options must list all action types.")
+        if self.status != "known" and self.options:
+            raise ValueError(
+                "Unavailable library action options cannot include provider capabilities."
+            )
+        return self
 
 
 class EvidenceLink(BaseModel):
@@ -52,11 +239,33 @@ class ActionProposal(BaseModel):
     external_action: ExternalAction = "none"
     requires_confirmation: bool = True
     prompt_version: str = Field(min_length=1)
+    operation: LibraryOperation | None = None
 
     @model_validator(mode="after")
     def external_actions_require_confirmation(self) -> "ActionProposal":
         if self.external_action != "none" and not self.requires_confirmation:
             raise ValueError("External actions must require explicit confirmation.")
+        if self.operation is not None:
+            if not self.requires_confirmation:
+                raise ValueError("Library operations require explicit confirmation.")
+            write_action = self.operation.action_type in {
+                "reserve",
+                "intercampus_transfer",
+                "renew",
+                "purchase_request",
+                "ill_loan",
+                "ill_copy",
+            }
+            if write_action and self.external_action != "library_write":
+                raise ValueError(
+                    "Library write operations must use external_action=library_write."
+                )
+            if not write_action and self.external_action == "library_write":
+                raise ValueError(
+                    "Read-only library operations cannot use external_action=library_write."
+                )
+        elif self.external_action == "library_write":
+            raise ValueError("library_write requires a library operation.")
         return self
 
 

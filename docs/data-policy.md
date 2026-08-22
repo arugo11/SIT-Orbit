@@ -90,9 +90,13 @@ ScombZへのログイン状態を、Google Drive、Google Calendar、Microsoft G
 
 `library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`は、利用者が現在のChatターンで図書館利用を明示的に要求した場合だけ広告し、公開されたOPACまたは公式SIT Searchの表示DOMを読む。必要なoptional host permissionがなくても、この明示要求に限ってToolを広告する。AgentがToolを選んだ後、読み取り前にChat内でサイト単位の許可を求め、拒否された場合は実行しない。OPACの検索・レコード・新着図書・貸出ランキング、およびSIT Searchのフォームと結果リンクは、確認済みの公式origin/pathに限定する。フォーム・DOM・origin・pathの不一致、ログイン画面、エラー、availabilityの未解決は`unavailable`として扱う。
 
+`library_action_options(resource_ref)`は、短命Service Worker mapで解決できたopaque refだけを対象に、公式ページを非アクティブ一時タブで再読するread-only Toolである。結果は8つのaction type、`available`、構造化`reason_code`、`required_inputs`、および公開／個人の`data_classification`だけをAPIへ渡す。元のmaterial ID、cookie、token、CSRF、raw HTML、推測URLはruntime message、IndexedDB、ログ、FastAPIへ渡さない。個人由来のoptions evidenceはMy Libraryと同じくAzure Agentかつ`ORBIT_OBSERVABILITY=off`に限定する。
+
+図書館の`ActionProposal`は承認しても送信を開始しない。Chromeは公式origin/path、対象の現在状態、form/CSRFの形を再検証した短命previewだけをService Workerメモリに保持し、表示可能な公式書誌・所蔵・入力候補だけをChatへ投影する。入力は操作別のbounded allowlistに限定し、再読込でstate fingerprintが変わった場合、previewが期限切れの場合、または別操作のIDが渡された場合はfail closedとする。write providerの確認・submit DOMが未検証の間は`write_form_not_verified`を返し、`この内容で送信`ボタンを表示せず、実送信や成功報告を行わない。fixture専用のsubmit→read-back state machineはlive providerの代替ではない。
+
 Agent APIへ送るのは、厳格な公開書誌メタデータ、表示されたholdingのcampus/location/call number/status/due date/reservation count、公式リンク、検索結果の短い表示スニペットだけである。material ID、copy ID、内部AJAXの応答、Cookie、session token、認証情報、個人の貸出・予約情報は送らない。`resource_ref`は公開レコードIDから導出したopaque値で、元IDはService Workerの短命な対応表にのみ保持し、再起動後や衝突時は解決しない。SIT Searchでは契約本文の全文取得、ダウンロード、保存、一般Web検索へのfallbackを行わない。
 
-図書館ToolのEvidenceは`source_type=library`、`data_classification=public`、検証済みの`library-*` IDと`orbit-library://public/` locatorだけを許可する。raw HTMLとTool生レスポンスはChat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存しない。これは公開ディスカバリーのBranch 1であり、個人向けMy Libraryの貸出・予約操作や書き込みを追加するものではない。
+公開図書館ディスカバリーのEvidenceは`source_type=library`、`data_classification=public`、検証済みの`library-*` IDと`orbit-library://public/` locatorだけを許可する。Branch 3のaction-options Evidenceはopaque `resource_ref`をlocatorにした専用IDへ分離し、公開OPACはpublic、My Library由来はpersonalとして扱う。raw HTMLとTool生レスポンスはChat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存しない。
 
 Connectorは、`not_connected`、`connected`、`reauth_required`、`unavailable`の状態を表示する。
 
@@ -104,7 +108,7 @@ Chatは利用者が明示的に送信した一つの発言を起点にする。�
 
 Side Panelと全画面ワークスペースで共有するChat履歴は、拡張機能originのIndexedDBへ保存する。保存するのは発言、回答、引用メタデータ、ActionProposalと承認状態だけである。raw HTML、フォーム入力値、Cookie、OAuth token、Toolの生レスポンス、PydanticAIのmessage historyは保存しない。履歴はFastAPIやChrome Syncへ送信せず、利用者の操作で会話単位または全件を削除できる。
 
-Composerのアクセスモードは`Ask every time`を既定とし、未許可ホストの読み取り前に今回のみ許可・サイト許可・拒否へ接続する。Chrome optional host permissionはユーザー操作の中でだけ要求する。`Full access`もread-onlyの範囲に限り、提出・送信・更新・削除・ダウンロード・アップロードは常にActionProposalと本人確認を要求する。成績、出欠、個人評価を含むページは、許可済みサイトであっても`Ask every time`では毎回確認する。blocklistはFull accessより優先する。
+Composerのアクセスモードは`Ask every time`を既定とし、未許可ホストの読み取り前に今回のみ許可・サイト許可・拒否へ接続する。Chrome optional host permissionはユーザー操作の中でだけ要求する。`Full access`もread-onlyの範囲に限り、提出・送信・更新・削除・ダウンロード・アップロードは常にActionProposal、公式preview、別UIの本人確認を要求する。成績、出欠、個人評価を含むページは、許可済みサイトであっても`Ask every time`では毎回確認する。blocklistはFull accessより優先する。
 
 Chat APIへ送るTool結果は、Toolごとの厳密な最小Schemaだけにする。SCombZは表示項目の構造化値、Calendarは空き時間の区間と分数、シラバスは公式公開結果、Browser Readerは本文30,000文字とリンク50件までであり、予定名・ID・参加者・説明、SCombZのHTML、Cookie、パスワード、第三者のフォーム入力、OAuth tokenは表現できない。ページ中の命令文はTool命令として実行せず引用データとして扱う。Tool待ちのrunはAPIプロセス内に600秒だけ保持し、完了・失敗・期限切れで削除する。
 
