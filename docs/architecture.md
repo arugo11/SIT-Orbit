@@ -237,7 +237,7 @@ Composerでは`Ask every time`を既定にし、未許可ホストの読み取�
 
 ### Branch 1 公開図書館ディスカバリー
 
-Branch 1では、個人のMy Libraryを拡張せず、公開ページの検索・閲覧だけを4つのChat client tool（`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`）として追加する。OPACは確認済みの`https://library.shibaura-it.ac.jp/opc/`、レコードは`/opc/recordID/catalog.bib/<record>`、新着図書と貸出ランキングはそれぞれ確認済みの`/cgi-bin/nbk/nbk_seek.cgi?ulang=jpn`と`/cgi-bin/loan_best10/loan_best10.cgi?ulang=jpn`だけを使う。SIT SearchはOPACから到達する`https://slib.shibaura-it.ac.jp/sublib/`だけを使い、表示された書誌メタデータとリンク以外（契約本文、ダウンロード、保存）は扱わない。
+Branch 1では、公開ページの検索・閲覧だけを4つのChat client tool（`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`）として扱う。個人My Libraryは次節の明示接続・同意境界で別に扱う。OPACは確認済みの`https://library.shibaura-it.ac.jp/opc/`、レコードは`/opc/recordID/catalog.bib/<record>`、新着図書と貸出ランキングはそれぞれ確認済みの`/cgi-bin/nbk/nbk_seek.cgi?ulang=jpn`と`/cgi-bin/loan_best10/loan_best10.cgi?ulang=jpn`だけを使う。SIT SearchはOPACから到達する`https://slib.shibaura-it.ac.jp/sublib/`だけを使い、表示された書誌メタデータとリンク以外（契約本文、ダウンロード、保存）は扱わない。
 
 現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。optional host permissionが未付与でもTool要求までは進め、読み取り直前にChat内でサイト単位の許可を求める。許可後、Service Workerは公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
 
@@ -261,9 +261,11 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。送信前には、Full accessでもrunごとに確認し、Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
 
-`my_library_read`は、確認済みの正規入口`library.shibaura-it.ac.jp/portal/portal/selectLogin/?lang=ja`から、画面内の貸出状況・予約状況メニューだけを操作する。確認済みの`/portal/admin/selectMenu/doSelectPublicUseMainMenu`以外は読まず、代替URLを推測しない。読み取り用に開いた非アクティブタブは結果取得後に閉じ、未認証時だけ正規入口を表示して利用者のログインを待つ。資格情報の入力、貸出延長、予約取消は行わない。
+`my_library_read`は、利用者が接続設定で明示的に接続・許可した後、確認済みの正規入口`library.shibaura-it.ac.jp/portal/portal/selectLogin/?lang=ja`から、指定された一つのscopeだけを読む。scopeは`current_loans`（menu ID 5）、`reservations`（6）、`loan_history`（7）、`purchase_requests`（3）、`interlibrary_requests`（2）であり、その他のmenu IDやURLを推測しない。status pathは確認済みの`/portal/admin/selectMenu/doSelectPublicUseMainMenu`だけとする。貸出・予約はそれぞれ可視の`#lendList`・`#reservationList`、履歴・購入・ILLは表示されたtable見出しを検証して読む。hidden要素やinputのvalueは読まず、origin・path・table構造・見出しが一致しない場合や、非空行を一件でも解析できない場合はfail closedで`unavailable`を返す。資格情報の入力、貸出延長、予約取消、購入・ILL申請は行わない。
 
-書名、著者、返却期限、延長可否、予約状態は拡張機能のReact stateにだけ保持する。Agentへ渡す`MyLibraryReadResult`は貸出件数、予約件数、延滞件数、延長可能件数、最短返却期限だけで、Evidence locatorは`orbit-library://summary/<opaque>`とする。資料ID、請求記号、氏名、メールアドレス、SSO URLのtoken、query、fragmentにはAPI Schema上の表現を与えない。
+各要求は`scope`、任意の`query`（最大200文字）、`offset`（0〜1000）、`limit`（1〜20）を持ち、DOM全件を拡張機能内で検索・ページングしてから最大20件だけを返す。`MyLibraryReadResult`のitemはopaqueな`resource_ref`、表示された書名・著者・状態・返却期限・延長可否・活動日・申請種別だけで、`total_count`と`next_offset`を添える。scope外で読んでいない集計値は0ではなく`null`にする。従来の貸出・予約集計shapeは後方互換のため残す。資料ID、請求記号、氏名、学籍番号、メールアドレス、SSO URLのtoken/query/fragment、フォーム値、購入理由、連絡事項、整理番号にはAPI Schema上の表現を与えない。表示セルから取得した元のmaterial/request IDはService Workerの短命なメモリ対応表にだけ保持し、hidden/inputの値は読まない。`createLibraryResourceRef`相当のopaque化で衝突を検出した場合、またはIDが表示されない場合はactionを推測せずfail closedし、再起動後も解決しない。
+
+接続後は会話ごとの再確認を行わず、最初の明示的な接続・許可時だけ`chrome.storage.session`へAIへのタイトル等共有を許可するsession consentフラグを保存する。Full accessだけではこの同意を代用しない。タイトル等の回答に現れた項目は拡張機能originのローカルChat履歴へ保存され、利用者が会話単位または全件で削除できることを接続設定Drawerに表示する。raw snapshotはReactのメモリだけに置き、IndexedDB・`chrome.storage`・API・W&Bへ保存しない。切断またはChromeセッション終了時にconsentを無効化する。
 
 ### CASTトップ画面の参照
 

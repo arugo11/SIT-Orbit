@@ -34,6 +34,26 @@ def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
     assert response.json() == {"status": "ok"}
 
 
+@pytest.mark.parametrize(
+    ("backend", "allowed"),
+    [("fixture", False), ("openai", False), ("azure_openai", True)],
+)
+def test_capabilities_report_the_configured_personal_data_boundary(
+    monkeypatch,
+    backend: str,
+    allowed: bool,
+) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
+    with TestClient(app) as client:
+        response = client.get("/v1/capabilities")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "agent_backend": backend,
+        "my_library_personal_context": allowed,
+    }
+
+
 def test_api_token_protects_v1_routes_but_not_health(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_API_TOKEN", "test-agent-token")
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")

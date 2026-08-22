@@ -6,6 +6,7 @@ export type ProposeActionRequest =
   components["schemas"]["ProposeActionRequest"];
 export type VerifyActionRequest = components["schemas"]["VerifyActionRequest"];
 export type AgentRunRequest = components["schemas"]["AgentRunRequest"];
+export type AgentCapabilities = components["schemas"]["AgentCapabilities"];
 export type AgentRunResponse =
   | components["schemas"]["AgentRunCompleted"]
   | components["schemas"]["AgentRunToolRequired"];
@@ -29,7 +30,12 @@ export type SyllabusSearchResult =
 export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
 export type SitrusGradeResult = components["schemas"]["SitrusGradeResult"];
 export type MoodleReadResult = components["schemas"]["MoodleReadResult"];
-export type MyLibraryReadResult = components["schemas"]["MyLibraryReadResult"];
+export type MyLibraryItem = components["schemas"]["MyLibraryItem"];
+export type MyLibraryScope =
+  components["schemas"]["ScopedMyLibraryReadResult"]["scope"];
+export type MyLibraryReadResult =
+  | components["schemas"]["LegacyMyLibraryReadResult"]
+  | components["schemas"]["ScopedMyLibraryReadResult"];
 export type CastReadResult = components["schemas"]["CastReadResult"];
 export type LibraryHoldingSummary =
   components["schemas"]["LibraryHoldingSummary"];
@@ -110,6 +116,15 @@ function isOneOf<T extends string>(
   values: readonly T[],
 ): value is T {
   return typeof value === "string" && values.includes(value as T);
+}
+
+function isAgentCapabilities(value: unknown): value is AgentCapabilities {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, ["agent_backend", "my_library_personal_context"]) &&
+    isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) &&
+    typeof value.my_library_personal_context === "boolean"
+  );
 }
 
 const sourceTypes = [
@@ -767,42 +782,204 @@ function isIsoDateOnly(value: unknown): value is string {
   );
 }
 
+function isMyLibraryIsoDateOnly(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    return false;
+  }
+  const date = new Date(`${value}T00:00:00Z`);
+  return (
+    !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+  );
+}
+
 export function isMyLibraryReadResult(
   value: unknown,
 ): value is MyLibraryReadResult {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const legacyKeys = [
+    "schema_version",
+    "status",
+    "loan_count",
+    "reservation_count",
+    "overdue_count",
+    "renewable_count",
+    "earliest_due_date",
+    "reason_code",
+  ] as const;
+  const scopedKeys = [
+    ...legacyKeys.slice(0, 2),
+    "scope",
+    "items",
+    "total_count",
+    "next_offset",
+    ...legacyKeys.slice(2),
+  ] as const;
+  const isLegacy = hasExactlyKeys(value, legacyKeys);
+  const isScoped = hasExactlyKeys(value, scopedKeys);
+  if (!isLegacy && !isScoped) return false;
+  const counts = [
+    value.loan_count,
+    value.reservation_count,
+    value.overdue_count,
+    value.renewable_count,
+  ];
   if (
-    !isRecord(value) ||
-    !hasExactlyKeys(value, [
-      "schema_version",
-      "status",
-      "loan_count",
-      "reservation_count",
-      "overdue_count",
-      "renewable_count",
-      "earliest_due_date",
-      "reason_code",
-    ]) ||
     value.schema_version !== "v1" ||
     !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
-    !isIntegerInRange(value.loan_count, 0, 1000) ||
-    !isIntegerInRange(value.reservation_count, 0, 1000) ||
-    !isIntegerInRange(value.overdue_count, 0, 1000) ||
-    !isIntegerInRange(value.renewable_count, 0, 1000) ||
-    value.overdue_count > value.loan_count ||
-    value.renewable_count > value.loan_count ||
+    (isLegacy && !counts.every((count) => isIntegerInRange(count, 0, 1000))) ||
+    (isScoped &&
+      !counts.every(
+        (count) => count === null || isIntegerInRange(count, 0, 1000),
+      )) ||
+    (typeof value.overdue_count === "number" &&
+      typeof value.loan_count === "number" &&
+      value.overdue_count > value.loan_count) ||
+    (typeof value.renewable_count === "number" &&
+      typeof value.loan_count === "number" &&
+      value.renewable_count > value.loan_count) ||
     (value.earliest_due_date !== null &&
-      !isIsoDateOnly(value.earliest_due_date)) ||
+      !isMyLibraryIsoDateOnly(value.earliest_due_date)) ||
     (value.reason_code !== null && typeof value.reason_code !== "string")
   ) {
     return false;
   }
-  const hasData =
-    value.loan_count > 0 ||
-    value.reservation_count > 0 ||
-    value.overdue_count > 0 ||
-    value.renewable_count > 0 ||
-    value.earliest_due_date !== null;
-  return value.status === "known" || !hasData;
+  if (isScoped) {
+    if (
+      !isOneOf(value.scope, [
+        "current_loans",
+        "reservations",
+        "loan_history",
+        "purchase_requests",
+        "interlibrary_requests",
+      ]) ||
+      !isIntegerInRange(value.total_count, 0, 1000) ||
+      (value.next_offset !== null &&
+        !isIntegerInRange(value.next_offset, 0, 1000)) ||
+      !Array.isArray(value.items) ||
+      value.items.length > 20 ||
+      !value.items.every(isMyLibraryItem) ||
+      (value.status === "known" &&
+        !value.items.every((item) =>
+          isMyLibraryItemForScope(item, value.scope as MyLibraryScope),
+        )) ||
+      value.total_count < value.items.length ||
+      (value.total_count <= value.items.length && value.next_offset !== null)
+    ) {
+      return false;
+    }
+    if (
+      value.status !== "known" &&
+      (value.items.length > 0 ||
+        value.total_count > 0 ||
+        value.next_offset !== null)
+    ) {
+      return false;
+    }
+    if (value.status === "known" && value.scope === "current_loans") {
+      if (
+        typeof value.loan_count !== "number" ||
+        value.loan_count !== value.total_count ||
+        typeof value.overdue_count !== "number" ||
+        typeof value.renewable_count !== "number" ||
+        value.reservation_count !== null
+      ) {
+        return false;
+      }
+    } else if (value.status === "known" && value.scope === "reservations") {
+      if (
+        value.loan_count !== null ||
+        typeof value.reservation_count !== "number" ||
+        value.reservation_count !== value.total_count ||
+        value.overdue_count !== null ||
+        value.renewable_count !== null ||
+        value.earliest_due_date !== null
+      ) {
+        return false;
+      }
+    } else if (
+      value.status === "known" &&
+      (counts.some((count) => count !== null) ||
+        value.earliest_due_date !== null)
+    ) {
+      return false;
+    }
+  }
+  if (
+    value.status !== "known" &&
+    ((isLegacy && counts.some((count) => count !== 0)) ||
+      (isScoped && counts.some((count) => count !== null)) ||
+      value.earliest_due_date !== null)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isMyLibraryItem(value: unknown): value is MyLibraryItem {
+  if (!isRecord(value)) return false;
+  const allowed = new Set([
+    "resource_ref",
+    "title",
+    "author",
+    "status",
+    "due_date",
+    "renewable",
+    "activity_date",
+    "request_type",
+  ]);
+  if (
+    !Object.keys(value).every((key) => allowed.has(key)) ||
+    !isLibraryResourceRef(value.resource_ref) ||
+    !isNonEmptyString(value.title) ||
+    value.title.length > 300 ||
+    (value.author !== undefined &&
+      value.author !== null &&
+      (typeof value.author !== "string" || value.author.length > 300)) ||
+    (value.status !== undefined &&
+      value.status !== null &&
+      (typeof value.status !== "string" || value.status.length > 100)) ||
+    (value.due_date !== undefined &&
+      value.due_date !== null &&
+      !isMyLibraryIsoDateOnly(value.due_date)) ||
+    (value.renewable !== undefined &&
+      value.renewable !== null &&
+      typeof value.renewable !== "boolean") ||
+    (value.activity_date !== undefined &&
+      value.activity_date !== null &&
+      !isMyLibraryIsoDateOnly(value.activity_date)) ||
+    (value.request_type !== undefined &&
+      value.request_type !== null &&
+      (typeof value.request_type !== "string" ||
+        value.request_type.length > 100))
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function isMyLibraryItemForScope(
+  value: MyLibraryItem,
+  scope: MyLibraryScope,
+): boolean {
+  if (scope === "current_loans") return isMyLibraryIsoDateOnly(value.due_date);
+  if (scope === "reservations") {
+    return (
+      isMyLibraryIsoDateOnly(value.due_date) && isNonEmptyString(value.status)
+    );
+  }
+  if (scope === "loan_history") {
+    return (
+      isMyLibraryIsoDateOnly(value.activity_date) &&
+      isNonEmptyString(value.status)
+    );
+  }
+  return (
+    isMyLibraryIsoDateOnly(value.activity_date) &&
+    isNonEmptyString(value.status) &&
+    isNonEmptyString(value.request_type)
+  );
 }
 
 export function isCastReadResult(value: unknown): value is CastReadResult {
@@ -1006,6 +1183,36 @@ export class AgentApiClient {
       throw new AgentApiError(`Agent API request failed: ${message}`, 0, error);
     }
     return responseIsOk(response);
+  }
+
+  async capabilities(): Promise<AgentCapabilities> {
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/v1/capabilities`, {
+        method: "GET",
+        headers: this.headers(false),
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "The request failed.";
+      throw new AgentApiError(`Agent API request failed: ${message}`, 0, error);
+    }
+    const payload = await readJson(response);
+    if (!responseIsOk(response)) {
+      throw new AgentApiError(
+        `Agent API returned HTTP ${response.status}.`,
+        response.status,
+        payload,
+      );
+    }
+    if (!isAgentCapabilities(payload)) {
+      throw new AgentApiError(
+        "Agent API returned invalid capabilities.",
+        response.status,
+        payload,
+      );
+    }
+    return payload;
   }
 
   propose(request: ProposeActionRequest): Promise<ActionProposal> {

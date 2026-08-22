@@ -34,6 +34,11 @@ import {
   type MoodleLocalSnapshot,
 } from "../content/moodle-reader";
 import {
+  clearMyLibrarySessionConsent,
+  grantMyLibrarySessionConsent,
+  hasMyLibrarySessionConsent,
+} from "../content/my-library-consent";
+import {
   MY_LIBRARY_ENTRY_URL,
   type MyLibraryLocalSnapshot,
 } from "../content/my-library-reader";
@@ -54,6 +59,7 @@ import type {
   MyLibraryReadResponse,
   SitrusReadResponse,
 } from "../shared/messages";
+import { MESSAGE_TYPES } from "../shared/messages";
 import {
   type AccessMode,
   containsOriginPermission,
@@ -349,7 +355,6 @@ export function ChatPanel({
         call.name === "google_calendar_availability" ||
         call.name === "sitrus_read" ||
         call.name === "moodle_read" ||
-        call.name === "my_library_read" ||
         call.name === "cast_read") &&
       Object.keys(argumentsObject).length > 0
     ) {
@@ -365,6 +370,36 @@ export function ChatPanel({
         ))
     ) {
       throw new Error("シラバス検索の引数を検証できません。");
+    }
+    if (
+      call.name === "my_library_read" &&
+      (Object.keys(argumentsObject).some(
+        (key) => !["scope", "query", "offset", "limit"].includes(key),
+      ) ||
+        (argumentsObject.scope !== undefined &&
+          ![
+            "current_loans",
+            "reservations",
+            "loan_history",
+            "purchase_requests",
+            "interlibrary_requests",
+          ].includes(argumentsObject.scope as string)) ||
+        (argumentsObject.query !== undefined &&
+          argumentsObject.query !== null &&
+          (typeof argumentsObject.query !== "string" ||
+            argumentsObject.query.length > 200)) ||
+        (argumentsObject.offset !== undefined &&
+          (typeof argumentsObject.offset !== "number" ||
+            !Number.isInteger(argumentsObject.offset) ||
+            argumentsObject.offset < 0 ||
+            argumentsObject.offset > 1000)) ||
+        (argumentsObject.limit !== undefined &&
+          (typeof argumentsObject.limit !== "number" ||
+            !Number.isInteger(argumentsObject.limit) ||
+            argumentsObject.limit < 1 ||
+            argumentsObject.limit > 20)))
+    ) {
+      throw new Error("My Libraryのscope・ページ引数を検証できません。");
     }
     if (
       call.name === "syllabus_search" &&
@@ -837,8 +872,9 @@ export function ChatPanel({
       if (!access) throw new Error("My Libraryの参照先URLを検証できません。");
       const approvalKey = `${response.run_id}:${call.tool_call_id}:my-library-derived`;
       const disclosure =
-        "My Libraryの貸出・予約状況を端末内で読み取り、貸出件数・予約件数・延滞件数・延長可能件数・最短返却期限だけを選択中のAIへ送ります。書名や著者名は送信しません。";
-      if (!sensitiveApproval.current.has(approvalKey)) {
+        "指定scopeのMy Library表示を端末内で読み取り、opaque参照・書名・著者・状態・期限など許可された最小項目だけを選択中のAzure Agentへ送ります。Agent回答に現れた書名はローカルChat履歴へ保存され、履歴の削除操作で消せます。Full access権限だけではこの同意になりません。";
+      const sessionConsented = await hasMyLibrarySessionConsent();
+      if (!sessionConsented && !sensitiveApproval.current.has(approvalKey)) {
         throw new BrowserAccessRequiredError(
           MY_LIBRARY_ENTRY_URL,
           access.origin,
@@ -847,9 +883,38 @@ export function ChatPanel({
           disclosure,
         );
       }
+      const requestedScope =
+        typeof argumentsObject.scope === "string"
+          ? (argumentsObject.scope as
+              | "current_loans"
+              | "reservations"
+              | "loan_history"
+              | "purchase_requests"
+              | "interlibrary_requests")
+          : "current_loans";
+      const requestedOffset =
+        typeof argumentsObject.offset === "number" ? argumentsObject.offset : 0;
+      const requestedLimit =
+        typeof argumentsObject.limit === "number" ? argumentsObject.limit : 20;
+      const capabilities = await apiClient.capabilities();
+      if (
+        capabilities.agent_backend !== "azure_openai" ||
+        !capabilities.my_library_personal_context
+      ) {
+        throw new Error(
+          "My Libraryの個人情報はAzure OpenAI Agentに接続している場合だけ送信できます。",
+        );
+      }
       const library = await sendExtensionMessage<MyLibraryReadResponse>({
         type: "my-library-read",
         tool_call_id: call.tool_call_id,
+        scope: requestedScope,
+        query:
+          typeof argumentsObject.query === "string"
+            ? argumentsObject.query
+            : null,
+        offset: requestedOffset,
+        limit: requestedLimit,
       });
       if (library.status === "permission_required") {
         throw new BrowserAccessRequiredError(
@@ -865,9 +930,26 @@ export function ChatPanel({
           "My Libraryを開きました。ログイン後、もう一度質問してください。",
         );
       }
+      const projection = library.status === "known" ? library.projection : null;
       if (
         library.status !== "known" ||
-        !isMyLibraryReadResult(library.projection)
+        !isMyLibraryReadResult(projection) ||
+        !("scope" in projection) ||
+        projection.scope !== requestedScope
+      ) {
+        throw new Error("My Libraryの利用状況を読み取れませんでした。");
+      }
+      const expectedItemCount = Math.min(
+        requestedLimit,
+        Math.max(projection.total_count - requestedOffset, 0),
+      );
+      const expectedNextOffset =
+        requestedOffset + expectedItemCount < projection.total_count
+          ? requestedOffset + expectedItemCount
+          : null;
+      if (
+        projection.items.length !== expectedItemCount ||
+        projection.next_offset !== expectedNextOffset
       ) {
         throw new Error("My Libraryの利用状況を読み取れませんでした。");
       }
@@ -875,11 +957,7 @@ export function ChatPanel({
         ...items,
         [activity.id]: library.detail,
       }));
-      request = toolResultRequest(
-        call.tool_call_id,
-        call.name,
-        library.projection,
-      );
+      request = toolResultRequest(call.tool_call_id, call.name, projection);
       sensitiveApproval.current.delete(approvalKey);
     } else if (call.name === "cast_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
@@ -1106,8 +1184,15 @@ export function ChatPanel({
         setError("サイトの読み取り許可が得られませんでした。");
         return;
       }
-      sensitiveApproval.current.add(pending.approvalKey);
       const pendingTool = pending.response.calls[0]?.name;
+      if (pendingTool === "my_library_read") {
+        const stored = await grantMyLibrarySessionConsent();
+        if (!stored) {
+          setError("My Libraryのsession consentを保存できませんでした。");
+          return;
+        }
+      }
+      sensitiveApproval.current.add(pending.approvalKey);
       setPermissionPrompt(null);
       await finishResponse(
         pending.response,
@@ -1119,6 +1204,7 @@ export function ChatPanel({
       // cleared below, which keeps the next sensitive read confirmation-based.
       if (
         !remember &&
+        pendingTool !== "my_library_read" &&
         (pendingTool === "browser_read_url" ||
           pendingTool === "library_catalog_search" ||
           pendingTool === "library_item_read" ||
@@ -1162,6 +1248,15 @@ export function ChatPanel({
   function useAskMode(): void {
     setAccessMode("ask");
     globalThis.localStorage?.setItem("sit-orbit-access-mode", "ask");
+  }
+
+  async function disconnectMyLibrary(): Promise<void> {
+    await clearMyLibrarySessionConsent();
+    await sendExtensionMessage<{ ok: boolean }>({
+      type: MESSAGE_TYPES.myLibraryDisconnect,
+    });
+    sensitiveApproval.current.clear();
+    setError("My Libraryの共有同意を解除しました。次回は再確認が必要です。");
   }
 
   async function selectConversation(id: string): Promise<void> {
@@ -1298,6 +1393,28 @@ export function ChatPanel({
           一般Web検索を使う場合、公開情報の検索語はGrounding with
           Bingへ送信され、Azureの通常の地理・DPA境界外で処理されます。
         </small>
+        <details className="chat-connection-settings">
+          <summary>My Library接続設定</summary>
+          <p>
+            My
+            Libraryでは、明示的な接続・許可後に、opaque参照、書名、著者、状態、
+            返却期限、延長可否、活動日、申請種別だけをAzure
+            Agentへ共有できます。 raw snapshotは端末メモリだけに置きます。
+          </p>
+          <p>
+            Agent回答に現れた書名はローカルChat履歴へ残ります。会話ごとの削除または
+            「すべて削除」で削除できます。Full accessだけではMy
+            Libraryへの共有同意に
+            ならず、切断またはセッション終了で同意は無効になります。
+          </p>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => void disconnectMyLibrary()}
+          >
+            My Libraryの共有同意を解除
+          </button>
+        </details>
       </fieldset>
 
       {permissionPrompt ? (
@@ -1305,7 +1422,10 @@ export function ChatPanel({
           <strong>サイトの読み取り許可</strong>
           {permissionPrompt.disclosure ? (
             <p>
-              {permissionPrompt.origin}を今回のTool実行で参照します。
+              {permissionPrompt.origin}
+              {permissionPrompt.response.calls[0]?.name === "my_library_read"
+                ? "をこのブラウザセッション中、必要なTool実行で参照します。"
+                : "を今回のTool実行で参照します。"}
               {permissionPrompt.disclosure}
             </p>
           ) : (
@@ -1321,7 +1441,9 @@ export function ChatPanel({
               disabled={busy}
               onClick={() => void continueWithPermission(false)}
             >
-              今回だけ許可
+              {permissionPrompt.response.calls[0]?.name === "my_library_read"
+                ? "このセッションで許可"
+                : "今回だけ許可"}
             </button>
             {!permissionPrompt.disclosure ? (
               <button
@@ -1418,6 +1540,47 @@ export function ChatPanel({
                             : ""}
                         </li>
                       ),
+                    )}
+                    {(
+                      [
+                        [
+                          "貸出履歴",
+                          localMyLibraryDetails[message.id]?.loan_history ?? [],
+                        ],
+                        [
+                          "購入依頼",
+                          localMyLibraryDetails[message.id]
+                            ?.purchase_requests ?? [],
+                        ],
+                        [
+                          "ILL依頼",
+                          localMyLibraryDetails[message.id]
+                            ?.interlibrary_requests ?? [],
+                        ],
+                      ] as const
+                    ).map(([label, items]) =>
+                      items.length > 0 ? (
+                        <li key={label}>
+                          <strong>{label}</strong>
+                          <ul>
+                            {items.map((item) => (
+                              <li
+                                key={`${item.title}-${item.activity_date ?? item.due_date ?? "none"}`}
+                              >
+                                {item.title}
+                                {item.author ? ` / ${item.author}` : ""}
+                                {item.status ? `（${item.status}）` : ""}
+                                {item.activity_date
+                                  ? `（日付: ${item.activity_date}）`
+                                  : ""}
+                                {item.due_date
+                                  ? `（期限: ${item.due_date}）`
+                                  : ""}
+                              </li>
+                            ))}
+                          </ul>
+                        </li>
+                      ) : null,
                     )}
                   </ul>
                 </div>

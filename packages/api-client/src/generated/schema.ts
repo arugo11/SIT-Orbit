@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Capabilities */
+        get: operations["capabilities_v1_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agent/runs": {
         parameters: {
             query?: never;
@@ -155,6 +172,19 @@ export interface components {
             requires_confirmation: boolean;
             /** Prompt Version */
             prompt_version: string;
+        };
+        /**
+         * AgentCapabilities
+         * @description Authenticated runtime capabilities used before personal data leaves Chrome.
+         */
+        AgentCapabilities: {
+            /**
+             * Agent Backend
+             * @enum {string}
+             */
+            agent_backend: "fixture" | "openai" | "azure_openai";
+            /** My Library Personal Context */
+            my_library_personal_context: boolean;
         };
         /** AgentRunCompleted */
         AgentRunCompleted: {
@@ -464,7 +494,7 @@ export interface components {
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["MyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"];
         };
         /**
          * ClientTool
@@ -509,6 +539,35 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * LegacyMyLibraryReadResult
+         * @description The original aggregate-only My Library result shape.
+         */
+        LegacyMyLibraryReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /** Loan Count */
+            loan_count: number;
+            /** Reservation Count */
+            reservation_count: number;
+            /** Overdue Count */
+            overdue_count: number;
+            /** Renewable Count */
+            renewable_count: number;
+            /** Earliest Due Date */
+            earliest_due_date: string | null;
+            /** Reason Code */
+            reason_code: string | null;
         };
         /**
          * LibraryBibliographicRecord
@@ -744,36 +803,30 @@ export interface components {
             reason_code?: string | null;
         };
         /**
-         * MyLibraryReadResult
-         * @description Derived My Library counts safe for an explicitly confirmed run.
+         * MyLibraryItem
+         * @description One bounded personal-library row safe to share after session consent.
          *
-         *     Book titles, authors, material identifiers, call numbers, user identity,
-         *     and SSO data deliberately have no representation in this model.
+         *     The connector maps provider-specific identifiers to an opaque reference
+         *     before this model is constructed.  Material/request IDs, call numbers,
+         *     form values, and account identity intentionally have no fields here.
          */
-        MyLibraryReadResult: {
-            /**
-             * Schema Version
-             * @default v1
-             * @constant
-             */
-            schema_version: "v1";
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "known" | "reauth_required" | "unavailable";
-            /** Loan Count */
-            loan_count: number;
-            /** Reservation Count */
-            reservation_count: number;
-            /** Overdue Count */
-            overdue_count: number;
-            /** Renewable Count */
-            renewable_count: number;
-            /** Earliest Due Date */
-            earliest_due_date?: string | null;
-            /** Reason Code */
-            reason_code?: string | null;
+        MyLibraryItem: {
+            /** Resource Ref */
+            resource_ref: string;
+            /** Title */
+            title: string;
+            /** Author */
+            author?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Due Date */
+            due_date?: string | null;
+            /** Renewable */
+            renewable?: boolean | null;
+            /** Activity Date */
+            activity_date?: string | null;
+            /** Request Type */
+            request_type?: string | null;
         };
         /**
          * OrbitEvent
@@ -917,6 +970,46 @@ export interface components {
             title: string;
             /** Deadline */
             deadline: string;
+        };
+        /**
+         * ScopedMyLibraryReadResult
+         * @description A complete, bounded page for exactly one My Library scope.
+         */
+        ScopedMyLibraryReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "current_loans" | "reservations" | "loan_history" | "purchase_requests" | "interlibrary_requests";
+            /** Items */
+            items: components["schemas"]["MyLibraryItem"][];
+            /** Total Count */
+            total_count: number;
+            /** Next Offset */
+            next_offset: number | null;
+            /** Loan Count */
+            loan_count: number | null;
+            /** Reservation Count */
+            reservation_count: number | null;
+            /** Overdue Count */
+            overdue_count: number | null;
+            /** Renewable Count */
+            renewable_count: number | null;
+            /** Earliest Due Date */
+            earliest_due_date: string | null;
+            /** Reason Code */
+            reason_code: string | null;
         };
         /**
          * SitrusGradeItem
@@ -1073,6 +1166,26 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    capabilities_v1_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentCapabilities"];
                 };
             };
         };
