@@ -163,6 +163,14 @@ ES下書きは、確認済みEvidenceの`evidence_id`、claim、context、action
 
 面談メモは利用者の明示操作を起点にCareer Vaultへレコード単位で暗号化保存する。暗号文、IV、schema versionだけがIndexedDBに残り、メモ本文、候補別名、面談目的、知見、次の行動はChat履歴、FastAPI、Azure、W&B、runtime messageへ出ない。Prompt APIが利用できないときは外部Providerへfallbackせず、OBOG支援を未実行として表示する。
 
+### 応募準備ミッション
+
+応募準備の状態は、CASTの`job:`または`internship:` local IDに結び付いた`ApplicationMissionRecord`としてCareer Vaultへ暗号化保存する。締切、必要書類、確認済みの履歴・Evidence・ES・相談枠参照は端末内のミッション詳細にだけ保持し、raw HTML、人物名、メール、学籍番号、URL query／fragment、OAuth token、応募書類本体は記録しない。mission IDはランダムなopaque値であり、企業名や人物IDを埋め込まない。
+
+ミッションは`requirements`、`history`、`evidence`、`es`、`counseling`、`calendar`の順序を決定的に検証する。不足情報や権限不足は`blocked`と理由を表示し、勝手に再試行して成功扱いにしない。Calendarのpreviewは提案の表示と参照の保存までで、確定イベントを利用者が確認するまで外部APIを呼ばない。応募、予約、添付、送信、Calendar登録は後続Action Adapterの別確認として扱う。
+
+ReActの計画・観測・例外の分離はイベント履歴の設計根拠にするが、モデルのmessage historyや未確認の推論は保存・送信しない。[ReAct](https://arxiv.org/abs/2210.03629) XStateは調査したが、現段階では既存のtyped reducerとCareer Vaultで必要な線形状態を満たすため導入しない。[XState](https://stately.ai/docs)
+
 ### 多視点キャリアレビュー
 
 ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはなく、Prompt APIが利用できない場合も外部Providerへfallbackしない。

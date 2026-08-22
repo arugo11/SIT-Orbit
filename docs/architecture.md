@@ -335,6 +335,14 @@ ES生成はAzure、FastAPI、W&Bへ送信せず、Chrome Prompt APIが利用で�
 
 面談後の知見は利用者が明示的に保存した場合だけ、`ObogMeetingMemoStore`を通じてCareer Vaultへ暗号化保存する。メモの本文、候補別名、目的、次の行動はIndexedDBの暗号文以外へ出さず、Chat履歴、FastAPI、Azure、W&B、runtime messageへ送信しない。直接連絡先を扱う正式なCAST APIまたは大学側の許可が得られるまでは、コンシェルジュは下書きと確認案内で停止する。
 
+### 応募準備ミッション
+
+`ApplicationMissionStore`は、確認済みCASTのlocal IDを対象に、`requirements`→`history`→`evidence`→`es`→`counseling`→`calendar`の順で応募準備の状態だけを追跡する。締切、必要書類、Evidence参照、ES下書き、相談枠参照はCareer Vaultの暗号化レコードへ保存し、元HTML、人物名、URL、token、提出物本体は保存しない。状態は`active`、`blocked`、`ready_for_confirmation`、`completed`、`cancelled`を持ち、阻害理由を暗黙の再試行で消費しない。
+
+`calendar-previewed`はCalendar登録案を`ready_for_confirmation`として表示するだけで、外部書込みを行わない。`calendar-confirmed`を利用者が明示した場合だけ完了状態へ遷移する。応募、予約、添付、送信、Calendar登録の実行はこのreducerに実装せず、後続Action Adapterがpreviewと本人確認を担当する。ReActが示す計画・観測・例外の分離は状態イベントへ反映するが、モデルの自由な推論履歴を保存しない。[ReAct](https://arxiv.org/abs/2210.03629)
+
+実装は既存の小さなtyped reducerとCareer Vaultを再利用する。XStateは調査したが、現段階の線形な6段階と明示イベントには既存境界より大きな依存・抽象化を追加するため採用しない。[XState](https://stately.ai/docs)
+
 ### 多視点キャリアレビュー
 
 `reviewCareerDraft`は、Evidence-grounded ESの下書きと確認済みEvidence projectionだけを入力にして、人事、技術部門、芝浦卒業生、初見の第三者という4つの視点をそれぞれ独立したChrome Prompt API sessionで実行する。各sessionへ他の視点の結果や人物対応表、`person_ref`、資料locator、raw HTML、tokenを渡さない。Prompt APIが利用できない場合はAzureや別Providerへfallbackせず、レビューを未実行として端末内で停止する。
