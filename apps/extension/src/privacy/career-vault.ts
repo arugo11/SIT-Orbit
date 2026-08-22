@@ -474,6 +474,7 @@ export class CareerVault {
   private readonly autoLockMs: number;
   private metadata: VaultMetadata | null = null;
   private key: CryptoKey | null = null;
+  private keyBytes: Uint8Array | null = null;
   private lockTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: CareerVaultOptions = {}) {
@@ -562,7 +563,33 @@ export class CareerVault {
       this.lockTimer = null;
     }
     this.key = null;
+    this.keyBytes?.fill(0);
+    this.keyBytes = null;
     await this.sessionKeyStore.clear();
+  }
+
+  async hmac(value: string): Promise<Uint8Array> {
+    if (typeof value !== "string") {
+      throw new TypeError("Career Vault HMAC input must be text.");
+    }
+    const keyBytes = this.keyBytes;
+    if (!keyBytes) {
+      throw new Error("Career Vault is locked.");
+    }
+    const hmacKey = await getWebCrypto().subtle.importKey(
+      "raw",
+      ownedBuffer(keyBytes),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const digest = await getWebCrypto().subtle.sign(
+      "HMAC",
+      hmacKey,
+      ownedBuffer(textBytes(value)),
+    );
+    this.touch();
+    return new Uint8Array(digest);
   }
 
   async put(recordId: string, value: unknown): Promise<void> {
@@ -650,6 +677,8 @@ export class CareerVault {
     const activeKey = key ?? (await importAesKey(keyBytes));
     await this.sessionKeyStore.set(keyBytes);
     this.key = activeKey;
+    this.keyBytes?.fill(0);
+    this.keyBytes = new Uint8Array(keyBytes);
     this.touch();
   }
 
