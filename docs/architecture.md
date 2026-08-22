@@ -305,6 +305,12 @@ CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含�
 
 構造化後はMiniSearch 7.2のBM25+ランキングを使い、完全一致のフィルタ（種別、年度、勤務地、技術領域、職種、OB・OG条件）を先に適用し、prefix・fuzzy検索を補助的に使う。結果カードの詳細は端末内のlocal payloadから表示し、検索結果をAzureやChat履歴へ送らない。意味埋め込み、外部検索API、常時索引、推測URL、フォーム送信はこの段階では追加しない。
 
+### CAST差分表示
+
+`CastChangeFeed`は、利用者が同じCAST情報を再確認した時だけ、暗号化Career Vaultに保存した前回Snapshotと今回Snapshotを比較する。配列は`local_id`、URL、タイトルなどのローカル安定キーで対応づけ、締切、インターン、採用・選考記録、支援リソースのfield差分を生成する。初回はbaseline、同一Snapshotは差分なしとする。
+
+差分UIへ渡す`CastLocalChange`は端末内の詳細表示に限り、Agentへ渡す`CastChangeAgentProjection`は追加・削除・変更の件数とカテゴリ別件数だけにする。VaultのレコードIDはsource keyそのものではなくVault HMACから生成し、定期巡回や差分の外部保存は行わない。
+
 ## Connectorの境界
 
 「ScombZへログインすれば関連サイトをすべて読める」とは扱わない。
