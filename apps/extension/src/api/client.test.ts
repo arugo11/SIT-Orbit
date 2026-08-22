@@ -323,6 +323,55 @@ describe("AgentApiClient", () => {
     ).toBe(false);
   });
 
+  it.each([
+    "visit_shelf",
+    "open_online",
+    "reserve",
+    "intercampus_transfer",
+    "renew",
+    "purchase_request",
+    "ill_loan",
+    "ill_copy",
+  ] as const)(
+    "keeps %s operation form values out of the API shape",
+    (action_type) => {
+      const libraryEvidence = {
+        evidence_id: "library-action-options-v1-test-all",
+        title: "図書館の現在の操作可否",
+        source_type: "library",
+        locator: "orbit-library://record/0123456789abcdef",
+        data_classification: "public",
+      } as const;
+      const operation = {
+        action_type,
+        resource_ref: libraryEvidence.locator,
+      } as const;
+      const write = !["visit_shelf", "open_online"].includes(action_type);
+      const candidate = {
+        ...proposal,
+        evidence: [libraryEvidence],
+        external_action: write ? ("library_write" as const) : ("none" as const),
+        operation,
+      };
+      expect(isActionProposal(candidate)).toBe(true);
+      for (const field of [
+        "reason",
+        "pickup_campus",
+        "payment",
+        "fee",
+        "page_range",
+        "arguments",
+      ]) {
+        expect(
+          isActionProposal({
+            ...candidate,
+            operation: { ...operation, [field]: "secret" },
+          }),
+        ).toBe(false);
+      }
+    },
+  );
+
   it("accepts a minimized SITRUS result but not a PDF or identity field", () => {
     const result = {
       schema_version: "v1",

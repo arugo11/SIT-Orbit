@@ -144,6 +144,32 @@ function capturedScript(index: number): () => unknown {
   return details.func as () => unknown;
 }
 
+function publicActionRecord() {
+  return {
+    record_id: "ACTION-RECORD-1",
+    title: "公開操作検証資料",
+    authors: ["公開著者"],
+    subjects: ["ロボット"],
+    isbn: null,
+    publisher: "公開出版社",
+    publication_year: 2026,
+    format: "book",
+    campus: "omiya",
+    url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ACTION-RECORD-1",
+    holdings: [
+      {
+        campus: "omiya",
+        location: "大宮図書館",
+        call_number: "548.3/U32",
+        status: "available",
+        due_date: null,
+        reservation_count: 0,
+      },
+    ],
+    related_records: [],
+  };
+}
+
 function stubPage(html: string, href: string): void {
   vi.stubGlobal("document", parseHTML(html).document);
   vi.stubGlobal("location", new URL(href));
@@ -1763,4 +1789,119 @@ describe("service worker side panel contract", () => {
     );
     expect(createTab).not.toHaveBeenCalled();
   });
+
+  it.each([
+    {
+      action_type: "visit_shelf" as const,
+      surface: {
+        status: "known" as const,
+        holding_visible: true,
+        official_viewer_visible: false,
+        official_viewer_url: null,
+      },
+      expected_url:
+        "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ACTION-RECORD-1",
+    },
+    {
+      action_type: "open_online" as const,
+      surface: {
+        status: "known" as const,
+        holding_visible: false,
+        official_viewer_visible: true,
+        official_viewer_url:
+          "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ACTION-RECORD-1/viewer",
+      },
+      expected_url:
+        "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ACTION-RECORD-1/viewer",
+    },
+  ])(
+    "previews and opens the exact official URL for read-only %s",
+    async ({ action_type, surface, expected_url }) => {
+      permissionsContains.mockResolvedValue(true);
+      getTab.mockResolvedValue({
+        id: 91,
+        windowId: 1,
+        status: "complete",
+        url: "https://library.shibaura-it.ac.jp/opc/",
+      } as chrome.tabs.Tab);
+      const record = publicActionRecord();
+      executeScript
+        .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+        .mockResolvedValueOnce([
+          { result: { status: "known", records: [record] } },
+        ]);
+      const searchResponse = vi.fn();
+      onMessage.dispatch(
+        {
+          type: MESSAGE_TYPES.libraryCatalogSearch,
+          tool_call_id: "library-action-record",
+          query: "公開操作検証資料",
+          limit: 1,
+        },
+        {},
+        searchResponse,
+      );
+      await vi.waitFor(() => expect(searchResponse).toHaveBeenCalledTimes(1));
+      const resourceRef = searchResponse.mock.calls[0]?.[0]?.projection
+        ?.items?.[0]?.resource_ref as string | undefined;
+      expect(resourceRef).toMatch(
+        /^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u,
+      );
+
+      createTab.mockClear();
+      executeScript.mockReset();
+      executeScript
+        .mockResolvedValueOnce([
+          { result: { status: "known", records: [record] } },
+        ])
+        .mockResolvedValueOnce([{ result: surface }]);
+      const previewResponse = vi.fn();
+      onMessage.dispatch(
+        {
+          type: MESSAGE_TYPES.libraryActionPreview,
+          tool_call_id: "library-action-preview",
+          operation: { action_type, resource_ref: resourceRef },
+        },
+        {},
+        previewResponse,
+      );
+      await vi.waitFor(() => expect(previewResponse).toHaveBeenCalledTimes(1));
+      const preview = previewResponse.mock.calls[0]?.[0] as {
+        status: string;
+        preview_id?: string;
+      };
+      expect(preview.status).toBe("ready");
+      expect(preview.preview_id).toMatch(
+        /^orbit-library:\/\/preview\/[A-Za-z0-9_-]{16,128}$/u,
+      );
+
+      executeScript.mockReset();
+      executeScript
+        .mockResolvedValueOnce([
+          { result: { status: "known", records: [record] } },
+        ])
+        .mockResolvedValueOnce([{ result: surface }]);
+      const submitResponse = vi.fn();
+      onMessage.dispatch(
+        {
+          type: MESSAGE_TYPES.libraryActionSubmit,
+          tool_call_id: "library-action-preview",
+          preview_id: preview.preview_id,
+          inputs: { action_type, values: {} },
+          confirmation_label: "公式ページを開く",
+        },
+        {},
+        submitResponse,
+      );
+      await vi.waitFor(() => expect(submitResponse).toHaveBeenCalledTimes(1));
+      expect(submitResponse).toHaveBeenCalledWith({
+        status: "verified",
+        action_type,
+      });
+      expect(createTab).toHaveBeenLastCalledWith({
+        url: expected_url,
+        active: true,
+      });
+    },
+  );
 });

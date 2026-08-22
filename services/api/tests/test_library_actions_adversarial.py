@@ -13,16 +13,18 @@ from orbit_api.models import (
     IllLoanOperation,
     IntercampusTransferOperation,
     LibraryActionOptionsResult,
+    LibraryOperation,
     OpenOnlineOperation,
     PurchaseRequestOperation,
     RenewOperation,
     ReserveOperation,
 )
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 RESOURCE_REF = "orbit-library://record/ABCDEFGHIJKLMNOP"
 OTHER_RESOURCE_REF = "orbit-library://record/QRSTUVWXYZabcdef"
 ACTION_EVIDENCE_ID = "library-action-options-v1-ABCDEFGHIJKLMNOP"
+LIBRARY_OPERATION_ADAPTER = TypeAdapter(LibraryOperation)
 
 
 def action_evidence(
@@ -250,15 +252,39 @@ def test_write_capability_cannot_be_advertised_until_live_readback_is_verified(
         options_result(available_action=action_type)
 
 
-def test_library_operation_api_rejects_confirmation_form_values() -> None:
-    with pytest.raises(ValidationError):
-        IllCopyOperation.model_validate(
-            {
-                "action_type": "ill_copy",
-                "resource_ref": RESOURCE_REF,
-                "arguments": {"page_range": "12-18"},
-            }
-        )
+@pytest.mark.parametrize(
+    "form_field",
+    ["reason", "pickup_campus", "payment", "fee", "page_range", "arguments"],
+)
+def test_library_operation_api_rejects_all_confirmation_form_values(
+    form_field: str,
+) -> None:
+    form_values = {
+        "reason": "local reason",
+        "pickup_campus": "omiya",
+        "payment": "private",
+        "fee": "100",
+        "page_range": "12-18",
+        "arguments": {"page_range": "12-18"},
+    }
+    for action_type in (
+        "visit_shelf",
+        "open_online",
+        "reserve",
+        "intercampus_transfer",
+        "renew",
+        "purchase_request",
+        "ill_loan",
+        "ill_copy",
+    ):
+        with pytest.raises(ValidationError):
+            LIBRARY_OPERATION_ADAPTER.validate_python(
+                {
+                    "action_type": action_type,
+                    "resource_ref": RESOURCE_REF,
+                    form_field: form_values[form_field],
+                }
+            )
 
 
 def test_library_action_boundary_rejects_provider_state_and_keeps_tool_evidence_minimal() -> None:

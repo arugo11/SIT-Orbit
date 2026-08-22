@@ -192,29 +192,45 @@ describe("Google Drive command message boundaries", () => {
 });
 
 describe("library action preview message boundaries", () => {
-  const operation = {
-    action_type: "ill_copy",
-    resource_ref: "orbit-library://record/ABCDEFGHIJKLMNOP",
-  } as const;
-
-  it("accepts only an operation reference and rejects form values", () => {
-    expect(
-      isLibraryActionPreviewMessage({
-        type: MESSAGE_TYPES.libraryActionPreview,
-        tool_call_id: "library-preview-call",
-        operation,
-      }),
-    ).toBe(true);
-    expect(
-      isLibraryActionPreviewMessage({
-        type: MESSAGE_TYPES.libraryActionPreview,
-        tool_call_id: "library-preview-call",
-        operation,
-        inputs: {
-          action_type: "ill_copy",
-          values: { page_range: "12-18", payment: "private" },
-        },
-      }),
-    ).toBe(false);
-  });
+  it.each([
+    "visit_shelf",
+    "open_online",
+    "reserve",
+    "intercampus_transfer",
+    "renew",
+    "purchase_request",
+    "ill_loan",
+    "ill_copy",
+  ] as const)(
+    "accepts only an opaque %s operation reference",
+    (action_type) => {
+      const operation = {
+        action_type,
+        resource_ref: "orbit-library://record/ABCDEFGHIJKLMNOP",
+      } as const;
+      expect(
+        isLibraryActionPreviewMessage({
+          type: MESSAGE_TYPES.libraryActionPreview,
+          tool_call_id: "library-preview-call",
+          operation,
+        }),
+      ).toBe(true);
+      expect(
+        isLibraryActionPreviewMessage({
+          type: MESSAGE_TYPES.libraryActionPreview,
+          tool_call_id: "library-preview-call",
+          operation,
+          reason: "must-stay-in-local-confirmation-memory",
+        }),
+      ).toBe(false);
+      expect(
+        isLibraryActionPreviewMessage({
+          type: MESSAGE_TYPES.libraryActionPreview,
+          tool_call_id: "library-preview-call",
+          operation,
+          arguments: { page_range: "12-18", payment: "private" },
+        }),
+      ).toBe(false);
+    },
+  );
 });
