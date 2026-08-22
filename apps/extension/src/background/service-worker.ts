@@ -710,7 +710,10 @@ function readLibraryDiscoveryInPage(): {
       .filter((item): item is NonNullable<typeof item> => item !== null)
       .filter(
         (item, index, all) =>
-          all.findIndex((candidate) => candidate.url === item.url) === index,
+          all.findIndex(
+            (candidate) =>
+              candidate.url === item.url && candidate.title === item.title,
+          ) === index,
       )
       .slice(0, 10);
     const noResults = /該当する|結果はありません|no\s+results/i.test(

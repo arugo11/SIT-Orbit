@@ -593,6 +593,47 @@ describe("service worker side panel contract", () => {
     }
   });
 
+  it("strips SIT Search session state without collapsing distinct titles", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", items: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryDiscoverySearch,
+        tool_call_id: "library-discovery-capture",
+        query: "機械学習",
+        limit: 10,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const readDiscoveryPage = capturedScript(1);
+    stubPage(
+      `
+        <article class="result-row"><a href="/sublib/?session=one#result">機械学習 A</a></article>
+        <article class="result-row"><a href="/sublib/?session=two#result">機械学習 B</a></article>
+      `,
+      "https://slib.shibaura-it.ac.jp/sublib/",
+    );
+
+    expect(readDiscoveryPage()).toEqual({
+      status: "known",
+      items: [
+        expect.objectContaining({
+          title: "機械学習 A",
+          url: "https://slib.shibaura-it.ac.jp/sublib/",
+        }),
+        expect.objectContaining({
+          title: "機械学習 B",
+          url: "https://slib.shibaura-it.ac.jp/sublib/",
+        }),
+      ],
+    });
+  });
+
   it("returns only CAST aggregates while keeping notice titles local", async () => {
     permissionsContains.mockResolvedValue(true);
     queryTabs.mockResolvedValue([
