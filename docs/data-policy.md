@@ -171,6 +171,12 @@ ES下書きは、確認済みEvidenceの`evidence_id`、claim、context、action
 
 ReActの計画・観測・例外の分離はイベント履歴の設計根拠にするが、モデルのmessage historyや未確認の推論は保存・送信しない。[ReAct](https://arxiv.org/abs/2210.03629) XStateは調査したが、現段階では既存のtyped reducerとCareer Vaultで必要な線形状態を満たすため導入しない。[XState](https://stately.ai/docs)
 
+### CAST Action Adapter
+
+応募、相談依頼、添付、Calendar登録のpreviewは拡張機能のメモリ内にだけ置き、Career Vault、Chat履歴、FastAPI、Azure、W&Bへ保存・送信しない。previewへ入れるのは、opaqueなmission／target／attachment reference、利用者へ見せる要約、締切・書類件数・予約枠・Calendarの日時などのallowlist値だけであり、CASTのフォーム本文、ファイルバイト、URL query／fragment、token、Cookie、個人連絡先は含めない。
+
+通常の確定操作は明示確認、推薦応募は一次確認と赤色二次確認を経なければexecutorを呼び出せない。既定executorは大学側の正式なwrite API・test account・確認済み書込み経路が存在しないことを`unavailable`として返す。未確認URL、404、構造変更、権限不足を空成功やfixture成功へ置き換えない。期限切れ、拒否済み、実行済みpreviewの再利用も拒否する。
+
 ### 多視点キャリアレビュー
 
 ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはなく、Prompt APIが利用できない場合も外部Providerへfallbackしない。
