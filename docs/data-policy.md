@@ -147,6 +147,10 @@ Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM�
 
 Career Evidence Bankの記録、資料locator、人物対応表は、Azure、OpenAI、W&B、FastAPI、Chat履歴、runtime messageへ送信しない。個人証拠を外部モデルで扱う必要が生じた場合は、この例外を暗黙に広げず、Pseudonymization Gateway、Context Manifest、大学の許可範囲を満たす別変更として再審査する。raw PDFや添付ファイルは保存・アップロードせず、利用者が明示した表示情報だけを端末内で参照する。
 
+### Evidence-grounded ES
+
+ES下書きは、確認済みEvidenceの`evidence_id`、claim、context、action、resultだけをChrome Prompt APIへ渡す。材料locator、ファイル名、`person_ref`、元の人物名、内部対応表、raw PDF、tokenは渡さない。各文にEvidence IDと、入力フィールドに実在するgrounding quoteを要求し、未知ID、未引用文、根拠にない数値、credential・連絡先・学籍番号らしい文字列を受け取った場合は生成結果を採用しない。Prompt APIが利用できない場合にAzureや別Providerへfallbackしない。
+
 ### CAST Decision Room
 
 Decision Roomは端末内の求人比較表示であり、入力された求人・インターンと企業名が一致する履歴Snapshotだけを利用する。技術領域、勤務地、職種、採用実績、選考記録、OB・OG支援、締切、不足情報を別々に評価し、単一の相性点、順位、採用可能性を外部へ送信・保存しない。
