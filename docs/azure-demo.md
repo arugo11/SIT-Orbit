@@ -138,6 +138,21 @@ scripts/azure/health.sh
 `configure-openai.sh`はAzure OpenAI accountとdeploymentが`Succeeded`であることを確認し、API keyをContainer Apps Secretへ登録する。
 その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。
 
+### Chrome拡張機能から接続する
+
+外部公開したAgent APIは、`ORBIT_API_TOKEN`が設定されている場合だけ`/v1/*`へBearer認証を要求する。ランダムなデモ用tokenをContainer Apps Secretへ登録する。
+
+```bash
+export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
+export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
+export ORBIT_AZURE_API_TOKEN="$(openssl rand -hex 32)"
+scripts/azure/configure-api-auth.sh
+```
+
+拡張機能の「接続設定 → Agent API」で「Azureデモを選択」を押し、同じtokenを入力して「保存して接続確認」を押す。endpointとtokenは`chrome.storage.session`だけに保持され、Chrome終了後には復元しない。TokenをChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。
+
+`/health`は監視用に認証なしで応答する。Bearer tokenの正否は実際のChat送信時に検証され、無効なtokenでは`401`となる。ローカル開発とCIは`ORBIT_API_TOKEN`を設定しないため、従来どおり認証なしでfixture APIを利用できる。
+
 ## 2026年8月22日のProvider Acceptance
 
 Azure for Students subscriptionのJapan Eastに、専用OpenAI account `sit-orbit-aoai-argo11`と`gpt-5.6-terra` version `2026-07-09`のGlobalStandard deployment `gpt-5-6-terra`を作成した。

@@ -32,6 +32,31 @@ def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_api_token_protects_v1_routes_but_not_health(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_API_TOKEN", "test-agent-token")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    request = {"event": load_fixture("event.json"), "context": load_fixture("context.json")}
+
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        missing = client.post("/v1/actions/propose", json=request)
+        wrong = client.post(
+            "/v1/actions/propose",
+            json=request,
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        accepted = client.post(
+            "/v1/actions/propose",
+            json=request,
+            headers={"Authorization": "Bearer test-agent-token"},
+        )
+
+    assert missing.status_code == 401
+    assert missing.headers["www-authenticate"] == "Bearer"
+    assert wrong.status_code == 401
+    assert accepted.status_code == 200
+
+
 def test_propose_and_verify_action(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")

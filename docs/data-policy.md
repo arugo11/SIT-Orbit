@@ -76,6 +76,8 @@ Side Panelから全画面ワークスペースへ移る場合、`chrome.storage.
 
 OAuth token、Google APIの生レスポンス、Calendarの予定名・参加者・説明、ScombZのHTML、PydanticAIのmessage history、`pendingRunId`、保留中のDeferred Tool callは保存しない。全画面タブを開く操作は、AgentまたはToolが実行中でない場合だけ許可する。接続元タブを失った場合は、他のScombZタブを自動選択せず再接続を求める。
 
+Agent APIのendpointとデモ用Bearer tokenは、Side Panelと全画面で共有するため`chrome.storage.session`にだけ保持する。Chat履歴、IndexedDB、Chrome Sync、W&B、PR、ログへ保存せず、Chrome終了後に復元しない。TokenはAgent APIへのAuthorization header以外へ送信しない。
+
 ページのHTML全体、Cookie、OAuth token、パスワード、ブラウザ履歴をAgent APIへ送信しない。
 
 ScombZ以外のサービスは、サービスごとのOAuth同意、正式API、または利用者が明示的に開いたページの読み取りを必要とする。

@@ -1,12 +1,19 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   type ActionProposal,
   AgentApiClient,
   type AgentRunResponse,
   type AgentToolResultRequest,
-  DEFAULT_AGENT_API_BASE,
   type OrbitEvent,
 } from "../api/client";
+import {
+  type AgentApiConnection,
+  AZURE_DEMO_AGENT_API_BASE,
+  DEFAULT_AGENT_API_CONNECTION,
+  isAgentApiConnectionChange,
+  loadAgentApiConnection,
+  saveAgentApiConnection,
+} from "../api/settings";
 import { requestOriginPermission } from "../chat/access-policy";
 import { ChatPanel } from "../chat/ChatPanel";
 import {
@@ -84,10 +91,6 @@ const DRIVE_FIXTURE_CANDIDATE: DriveSelectionCandidate = {
   isShortcut: false,
   dataClassification: "synthetic",
 };
-
-const agentApiClient = new AgentApiClient({
-  baseUrl: DEFAULT_AGENT_API_BASE,
-});
 
 function requestPageContext(): Promise<PageContext | null> {
   return new Promise((resolve) => {
@@ -794,6 +797,25 @@ export function App({
   mode = "sidepanel",
   workspaceSession,
 }: AppProps) {
+  const [apiConnection, setApiConnection] = useState<AgentApiConnection>(
+    DEFAULT_AGENT_API_CONNECTION,
+  );
+  const [apiBaseDraft, setApiBaseDraft] = useState(
+    DEFAULT_AGENT_API_CONNECTION.baseUrl,
+  );
+  const [apiTokenDraft, setApiTokenDraft] = useState("");
+  const [apiConnectionStatus, setApiConnectionStatus] = useState<string | null>(
+    null,
+  );
+  const [apiConnectionBusy, setApiConnectionBusy] = useState(false);
+  const agentApiClient = useMemo(
+    () =>
+      new AgentApiClient({
+        baseUrl: apiConnection.baseUrl,
+        accessToken: apiConnection.accessToken,
+      }),
+    [apiConnection],
+  );
   const [pageContext, setPageContext] = useState<PageContext | null>(
     workspaceSession?.pageContext ?? null,
   );
@@ -847,6 +869,59 @@ export function App({
       selections: [],
     });
   const [driveFixtureBusy, setDriveFixtureBusy] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    void loadAgentApiConnection().then((connection) => {
+      if (!mounted) return;
+      setApiConnection(connection);
+      setApiBaseDraft(connection.baseUrl);
+      setApiTokenDraft(connection.accessToken);
+    });
+    const onChanged = (
+      changes: Record<string, chrome.storage.StorageChange>,
+      areaName: string,
+    ) => {
+      if (areaName !== "session") return;
+      const connection = isAgentApiConnectionChange(changes);
+      if (!connection) return;
+      setApiConnection(connection);
+      setApiBaseDraft(connection.baseUrl);
+      setApiTokenDraft(connection.accessToken);
+    };
+    chrome.storage?.onChanged?.addListener(onChanged);
+    return () => {
+      mounted = false;
+      chrome.storage?.onChanged?.removeListener(onChanged);
+    };
+  }, []);
+
+  async function applyApiConnection(): Promise<void> {
+    setApiConnectionBusy(true);
+    setApiConnectionStatus(null);
+    try {
+      const saved = await saveAgentApiConnection({
+        baseUrl: apiBaseDraft,
+        accessToken: apiTokenDraft,
+      });
+      setApiConnection(saved);
+      const reachable = await new AgentApiClient({
+        baseUrl: saved.baseUrl,
+        accessToken: saved.accessToken,
+      }).health();
+      setApiConnectionStatus(
+        reachable
+          ? "Agent APIへ接続できました。認証はChat送信時に確認します。"
+          : "Agent APIの応答を確認できませんでした。",
+      );
+    } catch (error) {
+      setApiConnectionStatus(
+        error instanceof Error ? error.message : "接続設定を保存できません。",
+      );
+    } finally {
+      setApiConnectionBusy(false);
+    }
+  }
 
   const runCalendarAction = async (
     action: "connect" | "refresh" | "reauthenticate" | "disconnect",
@@ -1513,6 +1588,59 @@ export function App({
 
           <details className="connector-settings">
             <summary>接続設定</summary>
+            <section className="connector-card agent-api-settings">
+              <div className="section-heading">
+                <h2>Agent API</h2>
+                <span className="section-note">ブラウザセッション内のみ</span>
+              </div>
+              <label>
+                Endpoint
+                <input
+                  type="url"
+                  value={apiBaseDraft}
+                  onChange={(event) => setApiBaseDraft(event.target.value)}
+                  disabled={apiConnectionBusy || interactionLocked}
+                  spellCheck={false}
+                />
+              </label>
+              <label>
+                Access token
+                <input
+                  type="password"
+                  value={apiTokenDraft}
+                  onChange={(event) => setApiTokenDraft(event.target.value)}
+                  disabled={apiConnectionBusy || interactionLocked}
+                  autoComplete="off"
+                />
+              </label>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setApiBaseDraft(AZURE_DEMO_AGENT_API_BASE)}
+                  disabled={apiConnectionBusy || interactionLocked}
+                >
+                  Azureデモを選択
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void applyApiConnection()}
+                  disabled={apiConnectionBusy || interactionLocked}
+                >
+                  保存して接続確認
+                </button>
+              </div>
+              <p className="connector-description">
+                TokenはChromeのsession
+                storageだけに保持し、ブラウザ終了後は復元しません。
+              </p>
+              {apiConnectionStatus ? (
+                <p className="connector-description" role="status">
+                  {apiConnectionStatus}
+                </p>
+              ) : null}
+            </section>
             <CalendarCard
               state={calendarState}
               busy={calendarBusy || interactionLocked}
@@ -1580,6 +1708,7 @@ export function App({
         </aside>
         <section className="orbit-conversation" aria-label="Agentとの対話">
           <ChatPanel
+            apiClient={agentApiClient}
             pageContext={pageContext}
             calendarState={calendarState}
             calendarConnector={calendarConnector}

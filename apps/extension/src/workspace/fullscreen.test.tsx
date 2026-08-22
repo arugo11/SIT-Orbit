@@ -40,7 +40,7 @@ describe("full-page workspace", () => {
     }
   });
 
-  it("renders the bound ScombZ context and a supported-action bar without a fake chat input", async () => {
+  it("renders the bound ScombZ context, Chat composer, and session-only API settings", async () => {
     mounted = await mountSidePanel(() => (
       <App mode="workspace" workspaceSession={workspaceSession} />
     ));
@@ -50,7 +50,14 @@ describe("full-page workspace", () => {
     ).not.toBeNull();
     expect(mounted.document.body.textContent).toContain("ScombZ Home");
     expect(mounted.document.body.textContent).toContain("次の一歩を提案");
-    expect(mounted.document.querySelector("input")).toBeNull();
+    expect(
+      mounted.document.querySelector(
+        'textarea[placeholder="SIT ORBITに相談する"]',
+      ),
+    ).not.toBeNull();
+    expect(
+      mounted.document.querySelector('input[type="password"]'),
+    ).not.toBeNull();
     expect(
       mounted.document.querySelector('[aria-label="全画面で開く"]'),
     ).toBeNull();

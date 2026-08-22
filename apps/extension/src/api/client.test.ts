@@ -211,6 +211,42 @@ describe("AgentApiClient", () => {
     );
   });
 
+  it("adds the configured bearer token without changing the request body", async () => {
+    const fetcher = createFetcher(jsonResponse(proposal));
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      accessToken: "demo-token",
+      fetcher,
+    });
+
+    await client.propose({ event: B1_OMIYA_EVENT, context: B1_OMIYA_CONTEXT });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://agent.example.test/v1/actions/propose",
+      expect.objectContaining({
+        headers: {
+          Authorization: "Bearer demo-token",
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+  });
+
+  it("checks health without requiring a JSON response", async () => {
+    const fetcher = vi.fn(async () => new Response(null, { status: 200 }));
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      accessToken: "demo-token",
+      fetcher,
+    });
+
+    await expect(client.health()).resolves.toBe(true);
+    expect(fetcher).toHaveBeenCalledWith("https://agent.example.test/health", {
+      method: "GET",
+      headers: { Authorization: "Bearer demo-token" },
+    });
+  });
+
   it("accepts a google_drive EvidenceLink with an opaque locator", async () => {
     const driveProposal = {
       ...proposal,
