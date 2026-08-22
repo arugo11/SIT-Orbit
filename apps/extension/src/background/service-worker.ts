@@ -518,8 +518,15 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     if (!recordId) return null;
     const row = rowFor(link);
     if (!isVisible(link) || !isVisible(row)) return null;
+    const titleElement = Array.from(row.querySelectorAll(".xc-title")).find(
+      isVisible,
+    );
+    const renderedTitle =
+      titleElement && isVisible(titleElement)
+        ? visibleText(titleElement, 300)
+        : "";
     const title = clean(
-      link.getAttribute("title") || visibleText(link, 300),
+      renderedTitle || link.getAttribute("title") || visibleText(link, 300),
       300,
     );
     if (!title) return null;
@@ -543,7 +550,10 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     return {
       record_id: recordId,
       title,
-      authors: visibleValues(".author, .authors, .creator, [data-author]", 200),
+      authors: visibleValues(
+        ".xc-creator, .author, .authors, .creator, [data-author]",
+        200,
+      ),
       subjects: visibleValues(".subject, .subjects, [data-subject]", 200),
       isbn:
         text.match(/(?:ISBN(?:-\d+)?\s*[:：]?\s*)([0-9Xx-]{10,17})/u)?.[1] ??
@@ -874,32 +884,68 @@ function readLibraryDiscoveryInPage(): {
     ) {
       return { status: "loading" };
     }
-    const items = Array.from(
-      document.querySelectorAll<HTMLAnchorElement>("a[href]"),
-    )
+    const resultRows = Array.from(
+      document.querySelectorAll<Element>(".result-row"),
+    ).filter(isVisible);
+    const resultLinks = resultRows.flatMap((row) =>
+      row.matches("a[href]")
+        ? [row as HTMLAnchorElement]
+        : Array.from(row.querySelectorAll<HTMLAnchorElement>("a[href]")),
+    );
+    const items = resultLinks
       .map((link) => {
         if (!isVisible(link)) return null;
+        const row = link.closest(".result-row");
+        if (!row || !isVisible(row)) return null;
+        if (
+          link.closest(
+            "nav, header, footer, .facet, .facets, .filter, .refine, .navigation, .pagination",
+          )
+        ) {
+          return null;
+        }
         const url = new URL(link.href, location.href);
+        const normalizedOpacPath = url.pathname.replace(
+          /^\/opc\/{2,}/u,
+          "/opc/",
+        );
         const official =
           url.origin === "https://slib.shibaura-it.ac.jp" &&
           url.pathname.startsWith("/sublib/");
         const opac =
           url.origin === "https://library.shibaura-it.ac.jp" &&
-          url.pathname.startsWith("/opc/recordID/catalog.bib/");
+          normalizedOpacPath.startsWith("/opc/recordID/catalog.bib/");
         if ((!official && !opac) || url.username || url.password) return null;
+        const title = visibleText(link, 300);
+        const navigationText = clean(
+          `${title} ${link.getAttribute("aria-label") ?? ""} ${link.getAttribute("title") ?? ""}`,
+          500,
+        );
+        const lowerPath = url.pathname.toLowerCase();
+        const lowerState = `${url.search}${url.hash}`.toLowerCase();
+        if (
+          /(?:^|\/)(?:help|english|facet|facets|filter|refine|navigation|menu|login)(?:\/|$)/u.test(
+            lowerPath,
+          ) ||
+          /(?:^|[?&#])(?:facet|filter|refine|page|help|lang|language|english)(?:=|&|#|$)/u.test(
+            lowerState,
+          ) ||
+          /^(?:help|english|language|menu|navigation|facet|facets|filter|refine|home|ログイン|検索|ヘルプ|絞り込み|ナビゲーション)$/iu.test(
+            navigationText,
+          )
+        ) {
+          return null;
+        }
         // SIT Search may render per-session query parameters. They are not
         // needed by the model and must never cross the Agent API boundary.
+        if (opac) url.pathname = normalizedOpacPath;
         url.search = "";
         url.hash = "";
-        const title = visibleText(link, 300);
-        if (!title || /検索|ログイン|language|menu/i.test(title)) return null;
-        const row =
-          link.closest(".result-row, article, li, tr, .record") ?? link;
-        if (!isVisible(row)) return null;
+        if (!title) return null;
         const text = visibleText(row, 600);
         const record_id = opac
           ? decodeURIComponent(
-              url.pathname.slice("/opc/recordID/catalog.bib/".length),
+              normalizedOpacPath.slice("/opc/recordID/catalog.bib/".length),
             )
           : null;
         return {

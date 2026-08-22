@@ -601,6 +601,59 @@ describe("service worker side panel contract", () => {
     ]);
   });
 
+  it("uses the live OPAC title and creator instead of the cover anchor", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-live-opac-row",
+        query: "分散ロボット工学",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <article class="result-row">
+          <a
+            href="/opc/recordID/catalog.bib/LIVE123"
+            title="Cover image of 分散ロボット工学"
+          ><img alt="Cover image of 分散ロボット工学"></a>
+          <a class="xc-title" href="/opc/recordID/catalog.bib/LIVE123">分散ロボット工学の実タイトル</a>
+          <span class="xc-creator">実在著者</span>
+        </article>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        record_id: string;
+        title: string;
+        authors: string[];
+      }>;
+    };
+    expect(projection).toEqual({
+      status: "known",
+      records: [
+        expect.objectContaining({
+          record_id: "LIVE123",
+          title: "分散ロボット工学の実タイトル",
+          authors: ["実在著者"],
+        }),
+      ],
+    });
+  });
+
   it("fails closed for unknown resource references and non-OPAC result pages", async () => {
     permissionsContains.mockResolvedValue(true);
     const unknownResponse = vi.fn();
@@ -692,6 +745,51 @@ describe("service worker side panel contract", () => {
         expect.objectContaining({
           title: "機械学習 B",
           url: "https://slib.shibaura-it.ac.jp/sublib/",
+        }),
+      ],
+    });
+  });
+
+  it("keeps the live SIT Search hit and normalizes a doubled OPAC path", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", items: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryDiscoverySearch,
+        tool_call_id: "library-live-discovery-row",
+        query: "分散ロボット工学",
+        limit: 10,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readDiscoveryPage = capturedScript(1);
+    stubPage(
+      `
+        <article class="result-row">
+          <nav>
+            <a href="/sublib/help">Help</a>
+            <a href="/sublib/english">English</a>
+          </nav>
+          <div class="facet"><a href="/sublib/?facet=subject">Facet navigation</a></div>
+          <a href="https://library.shibaura-it.ac.jp/opc//recordID/catalog.bib/LIVE456">実際の検索ヒット</a>
+        </article>
+      `,
+      "https://slib.shibaura-it.ac.jp/sublib/",
+    );
+
+    expect(readDiscoveryPage()).toEqual({
+      status: "known",
+      items: [
+        expect.objectContaining({
+          title: "実際の検索ヒット",
+          url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/LIVE456",
+          record_id: "LIVE456",
         }),
       ],
     });
