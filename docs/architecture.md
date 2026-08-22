@@ -6,7 +6,7 @@
 
 実装ブランチの順序と完了条件は[implementation-plan.md](./implementation-plan.md)に記録する。
 
-ScombZ、SIT Portfolio、CAST、OPACなどの正式な連携は、大学の許可と仕様確認が完了するまで実装済みとは扱わない。
+ScombZ、SIT Portfolio、CAST、OPACのうち、大学の許可と仕様確認がない連携は実装済みとは扱わない。CASTの就活サポーター読取は、Issue 17で明示許可された読み取り範囲に限って実装する。
 
 ## 設計判断
 
@@ -293,11 +293,17 @@ CASTトップ`https://shibaura.pita.services/career/top/student`に表示され�
 
 支援リソースのタイトル・URL・掲載日は端末内に保持し、Agentへはお知らせ数、動画・イベント・相談・サポーターの件数、最終お知らせ日だけをprojectionする。外部ProviderへURL、タイトル、利用者名、CAST内部ID、raw HTML、フォーム値を送らない。top構造、件数selector、ログイン状態が確認できない場合は成功扱いしない。
 
-### CAST Alumni Portal（blocked:institutional）
+### CAST Alumni Portal
 
-卒業生側の回答可能テーマ、面談可能頻度、匿名共有可能な知見を管理するポータルは、大学側の正式なAPI仕様、利用許可、専用test account、データ保持・削除規則が揃うまで実装しない。現時点で確認できる学生向けCAST表示は、就活サポーターの有無をキャリアサポート課へ問い合わせる案内までであり、卒業生側の登録・更新・回答取得を許可する書込み経路やAPIは確認できていない。
+大学のキャリアサポート課または情報管理担当から、外部拡張機能によるCASTデータの読み取り許可を得た。許可対象は、就活サポーターの回答可能テーマ、面談可能頻度、面談形式、匿名共有可能な知見である。氏名・連絡先を扱う場合は、端末内の表示とマスキングのためだけに保持し、モデル、FastAPI、Azure、W&B、Chat履歴へ送らない。Service WorkerとSide Panel間のruntime messageには端末内詳細表示用の短命なlocal snapshotが含まれ得るが、外部へ転送せずrun終了時に破棄する。認証済みの利用者アカウントをProvider Acceptanceに使用し、専用sandboxやtest accountは前提にしない。
 
-この状態ではURLやendpointを推測せず、DOM書込み、直接連絡、予約、匿名共有設定の変更をfixtureや成功レスポンスで代替しない。再開に必要なのは、大学承認のscope、正式APIまたは許可されたExport、read/write境界、test account、監査・削除手順である。必要な入力が得られるまでIssue 17は`blocked:institutional`として扱う。
+CASTは公式APIを提供していないため、読取は利用者が開いた`https://shibaura.pita.services/career/`配下の認証済み画面を対象とする。Service Workerは現在のタブへ問い合わせ、content scriptが表示中のDOMだけを抽出する。URLは画面上の同一originリンクから発見したものだけを使用し、pathやendpointを推測しない。query・fragment、404、ログイン画面、構造不一致、DNS・権限エラーは成功や空データに置換せず、`reauth_required`または`unavailable`として扱う。[大学公式FAQ](https://www.shibaura-it.ac.jp/career_support/guide/question.html)が示す就活サポーター確認・キャリアサポート課への問い合わせ手順と、[CASTログイン](https://shibaura.pita.services/career/login)を起点にする。
+
+ローカルSnapshotには、表示名（取得できた場合）、回答可能テーマ、面談可能頻度・形式、匿名共有可能な知見のカテゴリ、連絡先の有無、実画面で発見したリンクを保持する。モデルへ渡す`CastAlumniReadResult`は、プロフィール件数、カテゴリ、頻度、形式、知見カテゴリ、連絡先の有無、発見リンク件数だけを持つ。氏名、連絡先、CAST内部ID、SSO token、自由記述本文、source URLはSchema上表現できない。
+
+人物単位の端末内Promptが必要な処理では、同じlocal snapshotを既存のPseudonymization Gatewayへ渡し、Career Vaultの対応表からmission固有の別名を生成する。現在のChat API経路は人物単位の情報を必要としないため、別名を送るのではなく集計projectionだけを送る。これにより、個人名を外部へ出さずに、将来の端末内検索やOBOG支援で同一人物を同一mission内だけ追跡できる。
+
+Issue 17は読み取り専用であり、卒業生設定の更新、直接連絡、面談予約、応募、フォーム送信、ファイル添付は実行しない。将来の確定操作は別のpreview／本人確認境界で扱う。保持期間と削除手順は大学の正式規則が確定するまで暫定的に無期限とするが、raw HTML、Cookie、OAuth token、PDF本体は保存しない。現行実装の通常CIはsynthetic fixtureだけで実行し、実アカウントの確認はProvider Acceptanceに分離する。
 
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
@@ -305,7 +311,7 @@ CASTトップ`https://shibaura.pita.services/career/top/student`に表示され�
 
 CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含むTyped SnapshotをPseudonymization Gatewayへ通してから実行する。Gatewayは氏名の表記揺れ、メール、電話、学籍番号、CAST内部ID、SSO token、URL query/fragment、自由記述中の署名や連絡先を検出し、内部人物ID、ミッション固有の別名、一般化属性へ変換する。これは対応表で復元可能な仮名化であり、完全匿名化とは扱わない。
 
-内部人物IDと元の氏名の対応表は、Argon2idとAES-256-GCMを用いるCareer Vaultの暗号化レコードだけに保存する。鍵は`chrome.storage.session`とメモリに限り、15分の無操作またはChrome終了で破棄する。FastAPI、Azure、W&B、Chat履歴、ログ、runtime messageには、元の氏名、内部人物ID、対応表、HMAC、raw HTML、tokenを渡さない。外部別名はmission nonceから生成し、同一mission内だけで安定させる。
+内部人物IDと元の氏名の対応表は、Argon2idとAES-256-GCMを用いるCareer Vaultの暗号化レコードだけに保存する。鍵は`chrome.storage.session`とメモリに限り、15分の無操作またはChrome終了で破棄する。FastAPI、Azure、W&B、Chat履歴、ログへ、元の氏名、内部人物ID、対応表、HMAC、raw HTML、tokenを渡さない。Service WorkerとSide Panelのruntime messageには、利用者へ端末内詳細を表示するための短命なlocal snapshotが含まれ得るが、外部ページ・API・履歴へ転送せず、run終了時に破棄する。外部別名はmission nonceから生成し、同一mission内だけで安定させる。
 
 個人・第三者のCAST記録はChrome Prompt APIのオンデバイス実行へ固定し、APIが利用できない場合にAzureへfallbackしない。Azureへ送れるのは公開情報、匿名集計、一般化属性だけである。Context Manifestで処理先と送信payloadを表示し、外部書込み、応募、予約、添付、Calendar登録はpreview後の本人確認を必須とする。個人情報を安全に仮名化できない自由記述は送信せず、端末内で停止する。
 

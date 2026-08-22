@@ -5,6 +5,7 @@ import {
   AgentApiError,
   type Fetcher,
   isActionProposal,
+  isCastAlumniReadResult,
   isCastReadResult,
   isLibraryCatalogBrowseResult,
   isLibraryCatalogSearchResult,
@@ -274,6 +275,33 @@ describe("AgentApiClient", () => {
     );
     expect(
       isCastReadResult({ ...result, nearest_notice_date: "2026-99-99" }),
+    ).toBe(false);
+  });
+
+  it("accepts only generalized CAST alumni aggregates", () => {
+    const result = {
+      schema_version: "v1",
+      status: "known",
+      data_classification: "personal",
+      profile_count: 2,
+      topic_categories: ["技術・研究"],
+      availability_frequencies: ["monthly"],
+      meeting_modes: ["online"],
+      shareable_insight_categories: ["選考体験"],
+      contact_present: true,
+      discovered_link_count: 1,
+      reason_code: null,
+    };
+    expect(isCastAlumniReadResult(result)).toBe(true);
+    expect(isCastAlumniReadResult({ ...result, names: ["local only"] })).toBe(
+      false,
+    );
+    expect(
+      isCastAlumniReadResult({
+        ...result,
+        status: "unavailable",
+        profile_count: 0,
+      }),
     ).toBe(false);
   });
 

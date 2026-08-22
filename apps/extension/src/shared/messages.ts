@@ -61,6 +61,7 @@ export const MESSAGE_TYPES = {
   myLibraryOpen: "my-library-open",
   castRead: "cast-read",
   castOpen: "cast-open",
+  castAlumniRead: "cast-alumni-read",
   libraryCatalogSearch: "library-catalog-search",
   libraryItemRead: "library-item-read",
   libraryCatalogBrowse: "library-catalog-browse",
@@ -198,6 +199,11 @@ export interface CastOpenMessage {
   type: typeof MESSAGE_TYPES.castOpen;
 }
 
+export interface CastAlumniReadMessage {
+  type: typeof MESSAGE_TYPES.castAlumniRead;
+  tool_call_id: string;
+}
+
 export interface LibraryCatalogSearchMessage
   extends Omit<LibraryCatalogSearchArguments, "limit"> {
   type: typeof MESSAGE_TYPES.libraryCatalogSearch;
@@ -299,6 +305,16 @@ export type CastReadResponse =
   | { status: "reauth_required"; reason_code: string }
   | { status: "unavailable"; reason_code: string };
 
+export type CastAlumniReadResponse =
+  | {
+      status: "known";
+      projection: import("../content/cast-alumni-reader").CastAlumniAgentProjection;
+      detail: import("../content/cast-alumni-reader").CastAlumniLocalSnapshot;
+    }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
 export interface OpenWorkspaceResponse {
   ok: boolean;
   session?: WorkspaceSession;
@@ -362,6 +378,7 @@ export type ExtensionMessage =
   | MyLibraryOpenMessage
   | CastReadMessage
   | CastOpenMessage
+  | CastAlumniReadMessage
   | LibraryCatalogSearchMessage
   | LibraryItemReadMessage
   | LibraryCatalogBrowseMessage
@@ -513,6 +530,17 @@ export function isCastOpenMessage(
   message: unknown,
 ): message is CastOpenMessage {
   return isMessageType(message, MESSAGE_TYPES.castOpen);
+}
+
+export function isCastAlumniReadMessage(
+  message: unknown,
+): message is CastAlumniReadMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.castAlumniRead &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0
+  );
 }
 
 export function isLibraryCatalogSearchMessage(

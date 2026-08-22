@@ -1517,6 +1517,67 @@ describe("service worker side panel contract", () => {
     expect(JSON.stringify(storageValues)).not.toContain("合成キャリア講座");
   });
 
+  it("returns generalized CAST alumni aggregates while keeping names in local detail", async () => {
+    permissionsContains.mockResolvedValue(true);
+    queryTabs.mockResolvedValue([
+      {
+        id: 78,
+        url: "https://shibaura.pita.services/career/supporter/list",
+      },
+    ] as chrome.tabs.Tab[]);
+    tabSendMessage.mockResolvedValue({
+      status: "known",
+      detail: {
+        schema_version: "v1",
+        page_path: "/career/supporter/list",
+        profiles: [
+          {
+            local_id: "cast-alumni-local-1",
+            display_name: "山田太郎",
+            role: "alumni",
+            answerable_topics: ["技術・研究"],
+            availability_frequency: "monthly",
+            meeting_modes: ["online"],
+            shareable_insights: ["選考体験"],
+            contact_present: true,
+          },
+        ],
+        discovered_links: [],
+      },
+    });
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.castAlumniRead,
+        tool_call_id: "cast-alumni-call-1",
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        status: "known",
+        projection: {
+          schema_version: "v1",
+          status: "known",
+          data_classification: "personal",
+          profile_count: 1,
+          topic_categories: ["技術・研究"],
+          availability_frequencies: ["monthly"],
+          meeting_modes: ["online"],
+          shareable_insight_categories: ["選考体験"],
+          contact_present: true,
+          discovered_link_count: 0,
+          reason_code: null,
+        },
+      }),
+    );
+    expect(payload.detail.profiles[0].display_name).toBe("山田太郎");
+    expect(JSON.stringify(payload.projection)).not.toContain("山田太郎");
+  });
+
   it("enables the panel per tab and preserves its path for ScombZ and other origins", async () => {
     onUpdated.dispatch(
       11,

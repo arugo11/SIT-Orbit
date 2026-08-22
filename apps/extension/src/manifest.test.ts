@@ -47,6 +47,7 @@ describe("production extension contract", () => {
         matches: [
           "https://scombz.shibaura-it.ac.jp/*",
           "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/*",
+          "https://shibaura.pita.services/career/*",
         ],
         js: ["content-script.js"],
         run_at: "document_idle",

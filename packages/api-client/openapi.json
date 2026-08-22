@@ -887,6 +887,112 @@
         "title": "CalendarAvailabilityResult",
         "description": "Minimal v1 result accepted from the extension's Calendar connector.\n\nEvent IDs, titles, attendees, locations, descriptions, and raw Google\nresponses deliberately have no representation in this model."
       },
+      "CastAlumniReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "data_classification": {
+            "type": "string",
+            "const": "personal",
+            "title": "Data Classification",
+            "default": "personal"
+          },
+          "profile_count": {
+            "type": "integer",
+            "maximum": 64.0,
+            "minimum": 0.0,
+            "title": "Profile Count"
+          },
+          "topic_categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "title": "Topic Categories"
+          },
+          "availability_frequencies": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "weekly",
+                "monthly",
+                "occasional",
+                "unknown"
+              ]
+            },
+            "type": "array",
+            "maxItems": 4,
+            "title": "Availability Frequencies"
+          },
+          "meeting_modes": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "online",
+                "in_person",
+                "unknown"
+              ]
+            },
+            "type": "array",
+            "maxItems": 3,
+            "title": "Meeting Modes"
+          },
+          "shareable_insight_categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "title": "Shareable Insight Categories"
+          },
+          "contact_present": {
+            "type": "boolean",
+            "title": "Contact Present",
+            "default": false
+          },
+          "discovered_link_count": {
+            "type": "integer",
+            "maximum": 32.0,
+            "minimum": 0.0,
+            "title": "Discovered Link Count"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "profile_count",
+          "discovered_link_count"
+        ],
+        "title": "CastAlumniReadResult",
+        "description": "Generalized CAST supporter data with no person or contact fields.\n\nThe extension keeps the authenticated page and local detail card.  Only\nthese bounded categories cross the Chat API; names, contact values, CAST\nidentifiers, URLs, and free text have no representation here."
+      },
       "CastReadResult": {
         "properties": {
           "schema_version": {
@@ -1015,6 +1121,7 @@
               "moodle_read",
               "my_library_read",
               "cast_read",
+              "cast_alumni_read",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -1182,6 +1289,7 @@
               "moodle_read",
               "my_library_read",
               "cast_read",
+              "cast_alumni_read",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -1230,6 +1338,7 @@
               "moodle_read",
               "my_library_read",
               "cast_read",
+              "cast_alumni_read",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -1274,6 +1383,9 @@
               },
               {
                 "$ref": "#/components/schemas/CastReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/CastAlumniReadResult"
               },
               {
                 "$ref": "#/components/schemas/LibraryCatalogSearchResult"
