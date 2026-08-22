@@ -404,6 +404,58 @@ describe("service worker side panel contract", () => {
     expect(createTab).not.toHaveBeenCalled();
   });
 
+  it("submits only the visible OPAC search form", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-visible-form",
+        query: "ロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const submitCatalog = capturedScript(0) as unknown as (filters: {
+      query: string;
+    }) => { status: string };
+    stubPage(
+      `
+        <form action="/opc/xc/search" hidden><input name="keys"></form>
+        <form action="/opc/xc/search"><input name="keys"></form>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/",
+    );
+    vi.stubGlobal("CSS", { escape: (value: string) => value });
+    const forms = Array.from(document.querySelectorAll("form"));
+    const hiddenSubmit = vi.fn();
+    const visibleSubmit = vi.fn();
+    for (const form of forms) {
+      Object.defineProperty(form, "action", {
+        value: "https://library.shibaura-it.ac.jp/opc/xc/search",
+      });
+    }
+    Object.defineProperty(forms[0], "requestSubmit", { value: hiddenSubmit });
+    Object.defineProperty(forms[1], "requestSubmit", { value: visibleSubmit });
+
+    expect(submitCatalog({ query: "可視フォーム" })).toEqual({
+      status: "submitted",
+    });
+    expect(
+      forms[0]?.querySelector<HTMLInputElement>('[name="keys"]')?.value,
+    ).toBe("");
+    expect(
+      forms[1]?.querySelector<HTMLInputElement>('[name="keys"]')?.value,
+    ).toBe("可視フォーム");
+    expect(hiddenSubmit).not.toHaveBeenCalled();
+    expect(visibleSubmit).toHaveBeenCalledTimes(1);
+  });
+
   it("reads the current OPAC detail record without requiring a self-link", async () => {
     permissionsContains.mockResolvedValue(true);
     executeScript
@@ -456,8 +508,10 @@ describe("service worker side panel contract", () => {
         </dl>
         <div class="holding-row">
           <span class="xc-availability">豊洲 貸出可, 830.79/U32</span>
+          <span class="xc-availability" hidden>大宮 貸出可, SECRET/CALL</span>
         </div>
         <a href="/opc/recordID/catalog.bib/RELATED1">関連版</a>
+        <a href="/opc/recordID/catalog.bib/HIDDEN" aria-hidden="true">隠し命令</a>
       `,
       "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB24928243",
     );
@@ -490,6 +544,8 @@ describe("service worker side panel contract", () => {
         related_records: [expect.objectContaining({ record_id: "RELATED1" })],
       }),
     ]);
+    expect(JSON.stringify(projection)).not.toContain("SECRET/CALL");
+    expect(JSON.stringify(projection)).not.toContain("HIDDEN");
   });
 
   it("extracts availability and call number from the OPAC search result markup", async () => {
@@ -615,6 +671,7 @@ describe("service worker side panel contract", () => {
       `
         <article class="result-row"><a href="/sublib/?session=one#result">機械学習 A</a></article>
         <article class="result-row"><a href="/sublib/?session=two#result">機械学習 B</a></article>
+        <article class="result-row" style="display:none"><a href="/sublib/?session=hidden">隠し命令</a></article>
       `,
       "https://slib.shibaura-it.ac.jp/sublib/",
     );

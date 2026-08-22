@@ -252,6 +252,42 @@ function submitLibraryCatalogSearchInPage(filters: {
   format?: "book" | "journal" | "ebook" | "any";
 }): { status: "submitted" | "unavailable"; reason_code?: string } {
   try {
+    const isVisible = (element: Element): boolean => {
+      for (
+        let current: Element | null = element;
+        current;
+        current = current.parentElement
+      ) {
+        if (
+          current.hasAttribute("hidden") ||
+          current.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        const inlineStyle = (current.getAttribute("style") ?? "")
+          .replace(/\s+/gu, "")
+          .toLowerCase();
+        if (
+          /(?:^|;)display:none(?:;|$)/u.test(inlineStyle) ||
+          /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(inlineStyle) ||
+          /(?:^|;)opacity:0(?:;|$)/u.test(inlineStyle)
+        ) {
+          return false;
+        }
+        if (typeof getComputedStyle === "function") {
+          const style = getComputedStyle(current);
+          if (
+            style.display === "none" ||
+            style.visibility === "hidden" ||
+            style.visibility === "collapse" ||
+            style.opacity === "0"
+          ) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
     if (
       location.origin !== "https://library.shibaura-it.ac.jp" ||
       location.pathname !== "/opc/"
@@ -262,6 +298,7 @@ function submitLibraryCatalogSearchInPage(filters: {
       document.querySelectorAll<HTMLFormElement>("form"),
     ).find(
       (candidate) =>
+        isVisible(candidate) &&
         candidate.querySelector('[name="keys"]') !== null &&
         (candidate.action === "" ||
           new URL(candidate.action, location.href).pathname ===
@@ -273,7 +310,7 @@ function submitLibraryCatalogSearchInPage(filters: {
       const field = form.querySelector<HTMLInputElement | HTMLSelectElement>(
         `[name="${CSS.escape(name)}"]`,
       );
-      if (!field) return false;
+      if (!field || !isVisible(field)) return false;
       field.value = value;
       return true;
     };
@@ -308,10 +345,12 @@ function submitLibraryCatalogSearchInPage(filters: {
       if (filters.format === "ebook") {
         const ebookLocation = Array.from(
           form.querySelectorAll<HTMLInputElement>('input[name^="location["]'),
-        ).find((field) =>
-          /eBook|電子図書/iu.test(
-            field.closest("label")?.textContent ?? field.value,
-          ),
+        ).find(
+          (field) =>
+            isVisible(field) &&
+            /eBook|電子図書/iu.test(
+              field.closest("label")?.textContent ?? field.value,
+            ),
         );
         if (!ebookLocation) {
           return {
@@ -325,7 +364,7 @@ function submitLibraryCatalogSearchInPage(filters: {
         const formatField = form.querySelector<HTMLInputElement>(
           `[name="${CSS.escape(fieldName)}"]`,
         );
-        if (!formatField) {
+        if (!formatField || !isVisible(formatField)) {
           return {
             status: "unavailable",
             reason_code: "format_filter_unavailable",
@@ -339,7 +378,7 @@ function submitLibraryCatalogSearchInPage(filters: {
       const campusField = form.querySelector<HTMLInputElement>(
         `[name="${CSS.escape(fieldName)}"]`,
       );
-      if (!campusField) {
+      if (!campusField || !isVisible(campusField)) {
         return {
           status: "unavailable",
           reason_code: "campus_filter_unavailable",
@@ -358,6 +397,62 @@ function submitLibraryCatalogSearchInPage(filters: {
 function readLibraryCatalogSearchInPage(): LibraryPageProjection {
   const clean = (value: string | null | undefined, limit: number): string =>
     (value ?? "").replace(/\s+/gu, " ").trim().slice(0, limit);
+  const isVisible = (element: Element): boolean => {
+    for (
+      let current: Element | null = element;
+      current;
+      current = current.parentElement
+    ) {
+      if (
+        current.hasAttribute("hidden") ||
+        current.getAttribute("aria-hidden") === "true"
+      ) {
+        return false;
+      }
+      const inlineStyle = (current.getAttribute("style") ?? "")
+        .replace(/\s+/gu, "")
+        .toLowerCase();
+      if (
+        /(?:^|;)display:none(?:;|$)/u.test(inlineStyle) ||
+        /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(inlineStyle) ||
+        /(?:^|;)opacity:0(?:;|$)/u.test(inlineStyle)
+      ) {
+        return false;
+      }
+      if (typeof getComputedStyle === "function") {
+        const style = getComputedStyle(current);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          style.visibility === "collapse" ||
+          style.opacity === "0"
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  const visibleText = (root: Element, limit: number): string => {
+    const parts: string[] = [];
+    let length = 0;
+    const visit = (node: Node): void => {
+      if (length >= limit) return;
+      if (node.nodeType === 3) {
+        const parent = node.parentElement;
+        if (parent && isVisible(parent)) {
+          const text = node.textContent ?? "";
+          parts.push(text);
+          length += text.length + 1;
+        }
+        return;
+      }
+      if (node.nodeType === 1 && !isVisible(node as Element)) return;
+      for (const child of Array.from(node.childNodes)) visit(child);
+    };
+    visit(root);
+    return clean(parts.join(" "), limit);
+  };
   const recordIdFromUrl = (value: string): string | null => {
     try {
       const url = new URL(value, location.href);
@@ -377,7 +472,8 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     link.closest(".result-row, article, li, tr, .record, .search-result") ??
     link;
   const parseHolding = (element: Element): LibraryRawHolding | null => {
-    const text = clean(element.textContent, 500);
+    if (!isVisible(element)) return null;
+    const text = visibleText(element, 500);
     if (!text) return null;
     const status = /利用可|貸出可|available/i.test(text)
       ? "available"
@@ -421,12 +517,17 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     const recordId = recordIdFromUrl(link.href);
     if (!recordId) return null;
     const row = rowFor(link);
-    const title = clean(link.getAttribute("title") || link.textContent, 300);
+    if (!isVisible(link) || !isVisible(row)) return null;
+    const title = clean(
+      link.getAttribute("title") || visibleText(link, 300),
+      300,
+    );
     if (!title) return null;
-    const text = clean(row.textContent, 2_000);
+    const text = visibleText(row, 2_000);
     const visibleValues = (selector: string, limit: number): string[] =>
       Array.from(row.querySelectorAll(selector))
-        .map((element) => clean(element.textContent, limit))
+        .filter(isVisible)
+        .map((element) => visibleText(element, limit))
         .filter((value) => value.length > 0)
         .filter((value, index, values) => values.indexOf(value) === index)
         .slice(0, 20);
@@ -476,9 +577,13 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     ) {
       return { status: "unavailable", reason_code: "unexpected_opac_result" };
     }
+    const loadingElement = document.querySelector(
+      '[aria-busy="true"], .loading, .spinner',
+    );
     if (
-      document.querySelector('[aria-busy="true"], .loading, .spinner') ||
-      /読み込み中|loading/i.test(document.body?.textContent ?? "")
+      (loadingElement && isVisible(loadingElement)) ||
+      (document.body &&
+        /読み込み中|loading/i.test(visibleText(document.body, 100_000)))
     ) {
       return { status: "loading" };
     }
@@ -498,23 +603,33 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     if (location.pathname.startsWith("/opc/recordID/catalog.bib/")) {
       const currentId = recordIdFromUrl(location.href);
       const mainTable = document.querySelector("dl.mainTable");
-      const title = clean(
-        document.querySelector("h1.page-title, #content h3, .node h3")
-          ?.textContent,
-        300,
+      const titleElement = document.querySelector(
+        "h1.page-title, #content h3, .node h3",
       );
-      if (!currentId || !mainTable || !title) {
+      const title = titleElement ? visibleText(titleElement, 300) : "";
+      if (
+        !currentId ||
+        !mainTable ||
+        !isVisible(mainTable) ||
+        !titleElement ||
+        !isVisible(titleElement) ||
+        !title
+      ) {
         return {
           status: "unavailable",
           reason_code: "record_structure_not_found",
         };
       }
       const definition = (labels: RegExp): string | null => {
-        const term = Array.from(mainTable.querySelectorAll("dt")).find((item) =>
-          labels.test(clean(item.textContent, 100).replace(/[:：]$/u, "")),
+        const term = Array.from(mainTable.querySelectorAll("dt")).find(
+          (item) =>
+            isVisible(item) &&
+            labels.test(visibleText(item, 100).replace(/[:：]$/u, "")),
         );
         const value = term?.nextElementSibling;
-        return value?.tagName === "DD" ? clean(value.textContent, 500) : null;
+        return value?.tagName === "DD" && isVisible(value)
+          ? visibleText(value, 500)
+          : null;
       };
       const splitValues = (value: string | null): string[] =>
         (value ?? "")
@@ -525,7 +640,7 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
       const publication = definition(/^(?:出版情報|publication)$/iu);
       const yearMatch = publication?.match(/(?:19|20)\d{2}/u);
       const formatText = definition(/^(?:フォーマット|format)$/iu) ?? "";
-      const pageText = document.body?.textContent ?? "";
+      const pageText = document.body ? visibleText(document.body, 100_000) : "";
       const current: LibraryRawRecord = {
         record_id: currentId,
         title,
@@ -570,7 +685,7 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     }
     const noResults =
       /該当する資料はありません|検索結果はありません|no\s+results/i.test(
-        document.body?.textContent ?? "",
+        document.body ? visibleText(document.body, 100_000) : "",
       );
     if (!records.length && !noResults) {
       return {
@@ -589,6 +704,42 @@ function submitLibraryDiscoverySearchInPage(query: string): {
   reason_code?: string;
 } {
   try {
+    const isVisible = (element: Element): boolean => {
+      for (
+        let current: Element | null = element;
+        current;
+        current = current.parentElement
+      ) {
+        if (
+          current.hasAttribute("hidden") ||
+          current.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        const inlineStyle = (current.getAttribute("style") ?? "")
+          .replace(/\s+/gu, "")
+          .toLowerCase();
+        if (
+          /(?:^|;)display:none(?:;|$)/u.test(inlineStyle) ||
+          /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(inlineStyle) ||
+          /(?:^|;)opacity:0(?:;|$)/u.test(inlineStyle)
+        ) {
+          return false;
+        }
+        if (typeof getComputedStyle === "function") {
+          const style = getComputedStyle(current);
+          if (
+            style.display === "none" ||
+            style.visibility === "hidden" ||
+            style.visibility === "collapse" ||
+            style.opacity === "0"
+          ) {
+            return false;
+          }
+        }
+      }
+      return true;
+    };
     if (
       location.origin !== "https://slib.shibaura-it.ac.jp" ||
       !location.pathname.startsWith("/sublib/")
@@ -602,6 +753,7 @@ function submitLibraryDiscoverySearchInPage(query: string): {
       document.querySelectorAll<HTMLFormElement>("form"),
     ).find(
       (candidate) =>
+        isVisible(candidate) &&
         candidate.querySelector('[name="kw"]') !== null &&
         candidate.querySelector('[name="searchTarget"]') !== null &&
         candidate.querySelector('[name="form_id"]') !== null,
@@ -609,7 +761,7 @@ function submitLibraryDiscoverySearchInPage(query: string): {
     if (!form)
       return { status: "unavailable", reason_code: "discovery_form_not_found" };
     const keyword = form.querySelector<HTMLInputElement>('[name="kw"]');
-    if (!keyword)
+    if (!keyword || !isVisible(keyword))
       return {
         status: "unavailable",
         reason_code: "discovery_query_not_found",
@@ -618,7 +770,7 @@ function submitLibraryDiscoverySearchInPage(query: string): {
     const target = form.querySelector<HTMLSelectElement | HTMLInputElement>(
       '[name="searchTarget"]',
     );
-    if (!target)
+    if (!target || !isVisible(target))
       return {
         status: "unavailable",
         reason_code: "discovery_target_not_found",
@@ -646,6 +798,62 @@ function readLibraryDiscoveryInPage(): {
 } {
   const clean = (value: string | null | undefined, limit: number): string =>
     (value ?? "").replace(/\s+/gu, " ").trim().slice(0, limit);
+  const isVisible = (element: Element): boolean => {
+    for (
+      let current: Element | null = element;
+      current;
+      current = current.parentElement
+    ) {
+      if (
+        current.hasAttribute("hidden") ||
+        current.getAttribute("aria-hidden") === "true"
+      ) {
+        return false;
+      }
+      const inlineStyle = (current.getAttribute("style") ?? "")
+        .replace(/\s+/gu, "")
+        .toLowerCase();
+      if (
+        /(?:^|;)display:none(?:;|$)/u.test(inlineStyle) ||
+        /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(inlineStyle) ||
+        /(?:^|;)opacity:0(?:;|$)/u.test(inlineStyle)
+      ) {
+        return false;
+      }
+      if (typeof getComputedStyle === "function") {
+        const style = getComputedStyle(current);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          style.visibility === "collapse" ||
+          style.opacity === "0"
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
+  };
+  const visibleText = (root: Element, limit: number): string => {
+    const parts: string[] = [];
+    let length = 0;
+    const visit = (node: Node): void => {
+      if (length >= limit) return;
+      if (node.nodeType === 3) {
+        const parent = node.parentElement;
+        if (parent && isVisible(parent)) {
+          const text = node.textContent ?? "";
+          parts.push(text);
+          length += text.length + 1;
+        }
+        return;
+      }
+      if (node.nodeType === 1 && !isVisible(node as Element)) return;
+      for (const child of Array.from(node.childNodes)) visit(child);
+    };
+    visit(root);
+    return clean(parts.join(" "), limit);
+  };
   try {
     if (
       location.origin !== "https://slib.shibaura-it.ac.jp" ||
@@ -656,9 +864,13 @@ function readLibraryDiscoveryInPage(): {
         reason_code: "unexpected_discovery_result",
       };
     }
+    const loadingElement = document.querySelector(
+      '[aria-busy="true"], .loading, .spinner',
+    );
     if (
-      document.querySelector('[aria-busy="true"], .loading, .spinner') ||
-      /読み込み中|loading/i.test(document.body?.textContent ?? "")
+      (loadingElement && isVisible(loadingElement)) ||
+      (document.body &&
+        /読み込み中|loading/i.test(visibleText(document.body, 100_000)))
     ) {
       return { status: "loading" };
     }
@@ -666,6 +878,7 @@ function readLibraryDiscoveryInPage(): {
       document.querySelectorAll<HTMLAnchorElement>("a[href]"),
     )
       .map((link) => {
+        if (!isVisible(link)) return null;
         const url = new URL(link.href, location.href);
         const official =
           url.origin === "https://slib.shibaura-it.ac.jp" &&
@@ -678,11 +891,12 @@ function readLibraryDiscoveryInPage(): {
         // needed by the model and must never cross the Agent API boundary.
         url.search = "";
         url.hash = "";
-        const title = clean(link.textContent, 300);
+        const title = visibleText(link, 300);
         if (!title || /検索|ログイン|language|menu/i.test(title)) return null;
         const row =
           link.closest(".result-row, article, li, tr, .record") ?? link;
-        const text = clean(row.textContent, 600);
+        if (!isVisible(row)) return null;
+        const text = visibleText(row, 600);
         const record_id = opac
           ? decodeURIComponent(
               url.pathname.slice("/opc/recordID/catalog.bib/".length),
@@ -693,13 +907,21 @@ function readLibraryDiscoveryInPage(): {
           authors: Array.from(
             row.querySelectorAll(".author, .authors, .creator, [data-author]"),
           )
-            .map((element) => clean(element.textContent, 200))
+            .filter(isVisible)
+            .map((element) => visibleText(element, 200))
             .filter((value) => value.length > 0)
             .filter((value, index, values) => values.indexOf(value) === index)
             .slice(0, 20),
           source_label:
             clean(
-              row.querySelector(".source, .database, .publisher")?.textContent,
+              (() => {
+                const source = row.querySelector(
+                  ".source, .database, .publisher",
+                );
+                return source && isVisible(source)
+                  ? visibleText(source, 200)
+                  : null;
+              })(),
               200,
             ) || null,
           url: url.href,
@@ -717,7 +939,7 @@ function readLibraryDiscoveryInPage(): {
       )
       .slice(0, 10);
     const noResults = /該当する|結果はありません|no\s+results/i.test(
-      document.body?.textContent ?? "",
+      document.body ? visibleText(document.body, 100_000) : "",
     );
     if (!items.length && !noResults) {
       return {
