@@ -32,6 +32,7 @@ describe("production extension contract", () => {
       "https://www.googleapis.com/*",
       "https://oauth2.googleapis.com/*",
       "https://syllabus.sic.shibaura-it.ac.jp/*",
+      "https://sitrus.sic.shibaura-it.ac.jp/*",
     ]);
     expect(manifest.optional_host_permissions).toEqual([
       "https://*/*",
@@ -42,7 +43,10 @@ describe("production extension contract", () => {
     expect(manifest.oauth2).toBeUndefined();
     expect(manifest.content_scripts).toEqual([
       {
-        matches: ["https://scombz.shibaura-it.ac.jp/*"],
+        matches: [
+          "https://scombz.shibaura-it.ac.jp/*",
+          "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/*",
+        ],
         js: ["content-script.js"],
         run_at: "document_idle",
       },

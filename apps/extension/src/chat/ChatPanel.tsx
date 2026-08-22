@@ -6,6 +6,7 @@ import {
   type ChatToolResultRequest,
   DEFAULT_AGENT_API_BASE,
   isBrowserReadResult,
+  isSitrusGradeResult,
   isSyllabusSearchResult,
   type SyllabusSearchResult,
 } from "../api/client";
@@ -15,11 +16,15 @@ import {
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
 import {
+  isSitrusGradeUrl,
   type PageContext,
   projectScombzPageSummary,
   projectScombzRead,
 } from "../content/page-context";
-import type { BrowserReadResponse } from "../shared/messages";
+import type {
+  BrowserReadResponse,
+  SitrusReadResponse,
+} from "../shared/messages";
 import {
   type AccessMode,
   containsOriginPermission,
@@ -61,6 +66,8 @@ function toolLabel(name: string): string {
       return "シラバスを検索中";
     case "browser_read_url":
       return "ページを参照中";
+    case "sitrus_read":
+      return "SITRUSの成績を確認中";
     default:
       return "情報を確認中";
   }
@@ -91,7 +98,8 @@ function toolResultRequest(
     | "scombz_read"
     | "google_calendar_availability"
     | "syllabus_search"
-    | "browser_read_url",
+    | "browser_read_url"
+    | "sitrus_read",
   result: ChatToolResultRequest["result"],
 ): ChatToolResultRequest {
   return {
@@ -198,7 +206,8 @@ export function ChatPanel({
         | "scombz_read"
         | "google_calendar_availability"
         | "syllabus_search"
-        | "browser_read_url";
+        | "browser_read_url"
+        | "sitrus_read";
       version: 1;
     }> = [];
     if (projectScombzRead(pageContext)) {
@@ -209,6 +218,9 @@ export function ChatPanel({
     }
     tools.push({ name: "syllabus_search", version: 1 });
     tools.push({ name: "browser_read_url", version: 1 });
+    if (isSitrusGradeUrl(pageContext?.url)) {
+      tools.push({ name: "sitrus_read", version: 1 });
+    }
     return tools;
   }
 
@@ -229,14 +241,16 @@ export function ChatPanel({
       call.name !== "scombz_read" &&
       call.name !== "google_calendar_availability" &&
       call.name !== "syllabus_search" &&
-      call.name !== "browser_read_url"
+      call.name !== "browser_read_url" &&
+      call.name !== "sitrus_read"
     ) {
       throw new Error("このChatではまだ対応していないToolです。");
     }
     if (
       (call.name === "scombz_page_summary" ||
         call.name === "scombz_read" ||
-        call.name === "google_calendar_availability") &&
+        call.name === "google_calendar_availability" ||
+        call.name === "sitrus_read") &&
       Object.keys(argumentsObject).length > 0
     ) {
       throw new Error("このToolには引数を指定できません。");
@@ -350,6 +364,43 @@ export function ChatPanel({
         throw new Error("シラバス検索結果を検証できません。");
       }
       request = toolResultRequest(call.tool_call_id, call.name, syllabus);
+    } else if (call.name === "sitrus_read") {
+      if (!pageContext || !isSitrusGradeUrl(pageContext.url)) {
+        throw new Error("表示中のSITRUS成績ページを読み取れません。");
+      }
+      const access = hostAccessRequest(pageContext.url);
+      if (!access) throw new Error("SITRUSの参照先URLを検証できません。");
+      await containsOriginPermission(access.pattern);
+      if (!sensitiveApproval.current.has(pageContext.url)) {
+        throw new BrowserAccessRequiredError(
+          pageContext.url,
+          access.origin,
+          access.pattern,
+        );
+      }
+      const sitrus = await sendExtensionMessage<SitrusReadResponse>({
+        type: "sitrus-read",
+        tool_call_id: call.tool_call_id,
+        page_url: pageContext.url,
+      });
+      if (sitrus.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          pageContext.url,
+          sitrus.origin,
+          sitrus.pattern,
+        );
+      }
+      if (
+        sitrus.status !== "known" ||
+        !isSitrusGradeResult(sitrus.projection)
+      ) {
+        throw new Error("SITRUSの成績を読み取れませんでした。");
+      }
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        sitrus.projection,
+      );
     } else {
       const url = argumentsObject.url as string;
       const access = hostAccessRequest(url);
@@ -440,13 +491,20 @@ export function ChatPanel({
         caught instanceof BrowserAccessRequiredError &&
         response.status === "tool_required"
       ) {
+        // The call is marked as seen before runTool() so a successful tool
+        // response cannot be replayed accidentally. Permission checks throw
+        // before the tool is executed, however, so remove this pending call
+        // from the retry set and let the explicit permission action resume it.
+        const retrySeenCallIds = new Set(seenCallIds);
+        const pendingCall = response.calls[0];
+        if (pendingCall) retrySeenCallIds.delete(pendingCall.tool_call_id);
         setPermissionPrompt({
           url: caught.url,
           origin: caught.origin,
           pattern: caught.pattern,
           response,
           conversation: current,
-          seenCallIds: [...seenCallIds],
+          seenCallIds: [...retrySeenCallIds],
         });
         setError("このサイトを読む前に、Chat内でアクセスを許可してください。");
         return;
@@ -527,7 +585,15 @@ export function ChatPanel({
         pending.conversation,
         new Set(pending.seenCallIds),
       );
-      if (!remember && typeof chrome.permissions?.remove === "function") {
+      // SCombZ is a required host permission so Chrome rejects removing it.
+      // The sensitive approval itself is still scoped to this URL and is
+      // cleared below, which keeps the next sensitive read confirmation-based.
+      const pendingTool = pending.response.calls[0]?.name;
+      if (
+        !remember &&
+        pendingTool === "browser_read_url" &&
+        typeof chrome.permissions?.remove === "function"
+      ) {
         await chrome.permissions.remove({ origins: [pending.pattern] });
       }
       sensitiveApproval.current.delete(pending.url);

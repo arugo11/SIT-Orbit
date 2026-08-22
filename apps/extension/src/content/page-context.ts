@@ -1,4 +1,9 @@
 export const SCOMBZ_ORIGIN = "https://scombz.shibaura-it.ac.jp";
+export const SITRUS_ORIGIN = "https://sitrus.sic.shibaura-it.ac.jp";
+export const SITRUS_GRADE_PATHS = new Set([
+  "/SITRUS/login/SeisekiTsutiSho.html",
+  "/SITRUS/login/ShutokuTaniShukei.html",
+]);
 
 export type PageKind = "scombz" | "other";
 
@@ -38,6 +43,13 @@ export interface ScombzCourse {
   url: string;
 }
 
+export interface ScombzTimetableItem {
+  title: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  status: "class" | "cancelled" | "makeup" | "unknown";
+}
+
 export interface ScombzPageData {
   route: ScombzRoute;
   tasks: ScombzTask[];
@@ -45,6 +57,8 @@ export interface ScombzPageData {
   calendar: ScombzCalendar;
   currentCourse: ScombzCourse | null;
   relatedLinks: ScombzLink[];
+  /** Present only when the visible page is the timetable route. */
+  timetable?: ScombzTimetableItem[];
 }
 
 /** The only ScombZ values permitted in a deferred Agent tool result. */
@@ -122,7 +136,12 @@ export function projectScombzRead(
     announcements: context.scombz.announcements.slice(0, 100).map((item) => ({
       title: item.title.slice(0, 300),
     })),
-    timetable: [],
+    timetable: (context.scombz.timetable ?? []).slice(0, 100).map((item) => ({
+      title: item.title.slice(0, 300),
+      starts_at: item.startsAt,
+      ends_at: item.endsAt,
+      status: item.status,
+    })),
     current_course: context.scombz.currentCourse?.name.slice(0, 200) ?? null,
     restricted_present: /(?:grade|score|attendance|成績|出席|評価)/iu.test(
       context.url,
@@ -139,6 +158,22 @@ export function isScombzUrl(value: string | undefined): boolean {
   try {
     const url = new URL(value);
     return url.origin === SCOMBZ_ORIGIN;
+  } catch {
+    return false;
+  }
+}
+
+/** Accept only the grade pages that are linked from the visible SITRUS UI. */
+export function isSitrusGradeUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.origin === SITRUS_ORIGIN &&
+      SITRUS_GRADE_PATHS.has(url.pathname) &&
+      !url.username &&
+      !url.password
+    );
   } catch {
     return false;
   }
@@ -186,6 +221,7 @@ export function parseScombzPageContext(
         route === "course" ? parseCurrentCourse(document, context.url) : null,
       relatedLinks:
         route === "home" ? parseRelatedLinks(document, context.url) : [],
+      ...(route === "timetable" ? { timetable: parseTimetable(document) } : {}),
     },
   };
 }
@@ -382,6 +418,44 @@ function parseCurrentCourse(
   const name = normalizedText(document.querySelector(".course-title-txt"));
   const url = safeHttpUrl(baseUrl, baseUrl);
   return name && url ? { name, url } : null;
+}
+
+function parseTimetable(document: Document): ScombzTimetableItem[] {
+  const seen = new Set<string>();
+  return Array.from(document.querySelectorAll(".timetable-course-top-btn"))
+    .flatMap((course) => {
+      if (isHidden(course)) {
+        return [];
+      }
+
+      const courseTitle = normalizedText(course);
+      if (!courseTitle) {
+        return [];
+      }
+
+      const row = course.closest(".div-table-data-row");
+      const rowText = normalizedText(row);
+      const period = rowText.match(/[０-９0-9]+限/u)?.[0] ?? null;
+      const status = /休講/u.test(rowText)
+        ? "cancelled"
+        : /補講/u.test(rowText)
+          ? "makeup"
+          : "class";
+      const title = period ? `${period} ${courseTitle}` : courseTitle;
+      if (seen.has(title)) {
+        return [];
+      }
+      seen.add(title);
+      return [
+        {
+          title,
+          startsAt: null,
+          endsAt: null,
+          status,
+        } satisfies ScombzTimetableItem,
+      ];
+    })
+    .slice(0, 100);
 }
 
 function emptyCalendar(): ScombzCalendar {

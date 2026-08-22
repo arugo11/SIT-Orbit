@@ -24,6 +24,8 @@ from .agent import (
     ScombzReadResult,
     ScombzReadScheduleItem,
     ScombzReadTask,
+    SitrusGradeItem,
+    SitrusGradeResult,
     SyllabusResult,
     SyllabusSearchResult,
 )
@@ -68,4 +70,6 @@ __all__ = [
     "ScombzReadTask",
     "SyllabusResult",
     "SyllabusSearchResult",
+    "SitrusGradeItem",
+    "SitrusGradeResult",
 ]

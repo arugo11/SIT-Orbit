@@ -146,6 +146,7 @@ if (
       "https://www.googleapis.com/*",
       "https://oauth2.googleapis.com/*",
       "https://syllabus.sic.shibaura-it.ac.jp/*",
+      "https://sitrus.sic.shibaura-it.ac.jp/*",
     ]) ||
   JSON.stringify(manifest.optional_host_permissions) !==
     JSON.stringify(["https://*/*", "http://*/*"]) ||

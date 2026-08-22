@@ -9,6 +9,7 @@ import {
   type ScombzPageData,
   type ScombzRoute,
   type ScombzTask,
+  type ScombzTimetableItem,
 } from "../content/page-context";
 import type { StableAgentLoopSnapshot } from "../sidepanel/loop-state";
 import type { WorkspaceSession, WorkspaceStatus } from "./workspace-session";
@@ -33,6 +34,7 @@ export const MESSAGE_TYPES = {
   workspaceSourceUnavailable: "workspace-source-unavailable",
   browserRead: "browser-read",
   syllabusSearch: "syllabus-search",
+  sitrusRead: "sitrus-read",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -96,6 +98,17 @@ export interface SyllabusSearchMessage {
   faculty?: string | null;
 }
 
+export interface SitrusReadMessage {
+  type: typeof MESSAGE_TYPES.sitrusRead;
+  tool_call_id: string;
+  page_url: string;
+}
+
+export type SitrusReadResponse =
+  | { status: "known"; projection: unknown }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "unavailable"; reason_code: string };
+
 export interface OpenWorkspaceResponse {
   ok: boolean;
   session?: WorkspaceSession;
@@ -150,7 +163,8 @@ export type ExtensionMessage =
   | WorkspaceOwnershipChangedMessage
   | WorkspaceSourceUnavailableMessage
   | BrowserReadMessage
-  | SyllabusSearchMessage;
+  | SyllabusSearchMessage
+  | SitrusReadMessage;
 
 export function isBrowserReadMessage(
   message: unknown,
@@ -181,6 +195,21 @@ export function isSyllabusSearchMessage(
     (message.faculty === undefined ||
       message.faculty === null ||
       typeof message.faculty === "string")
+  );
+}
+
+export function isSitrusReadMessage(
+  message: unknown,
+): message is SitrusReadMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.sitrusRead &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    typeof message.page_url === "string" &&
+    /^https:\/\/sitrus\.sic\.shibaura-it\.ac\.jp\/SITRUS\/login\/(?:SeisekiTsutiSho|ShutokuTaniShukei)\.html(?:\?|#|$)/u.test(
+      message.page_url,
+    )
   );
 }
 
@@ -392,7 +421,10 @@ function isScombzPageData(value: unknown): value is ScombzPageData {
     isScombzCalendar(value.calendar) &&
     (value.currentCourse === null || isScombzCourse(value.currentCourse)) &&
     Array.isArray(value.relatedLinks) &&
-    value.relatedLinks.every(isScombzLink)
+    value.relatedLinks.every(isScombzLink) &&
+    (value.timetable === undefined ||
+      (Array.isArray(value.timetable) &&
+        value.timetable.every(isScombzTimetableItem)))
   );
 }
 
@@ -447,6 +479,19 @@ function isScombzLink(value: unknown): value is ScombzLink {
     isRecord(value) &&
     typeof value.label === "string" &&
     isSafeHttpUrl(value.url)
+  );
+}
+
+function isScombzTimetableItem(value: unknown): value is ScombzTimetableItem {
+  return (
+    isRecord(value) &&
+    typeof value.title === "string" &&
+    (value.startsAt === null || typeof value.startsAt === "string") &&
+    (value.endsAt === null || typeof value.endsAt === "string") &&
+    (value.status === "class" ||
+      value.status === "cancelled" ||
+      value.status === "makeup" ||
+      value.status === "unknown")
   );
 }
 

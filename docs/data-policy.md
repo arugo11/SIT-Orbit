@@ -43,7 +43,7 @@ OpenAIへ送信できるのは`synthetic`と`public`だけである。
 
 Calendarの予定名、ID、参加者、場所、説明、元レスポンス、SCombZのHTML、Cookie、パスワード、ブラウザtokenは送信しない。Web本文はユーザーが明示したrunの間だけ使い、rawページはrun終了時に破棄する。個人データを広く許可するものではなく、これらの固定prefixとサーバー生成のEvidence IDをruntimeで検証する。
 
-Chat中心化branchでは、明示的なChat送信とアクセス許可を条件に、SCombZの構造化表示情報（`orbit-scombz://read/<opaque>`）、公式シラバス検索の公開結果（`orbit-syllabus://search/<opaque>`）、許可済みURLから抽出した表示本文とリンク（`orbit-browser://read/<opaque>`）も扱う。成績、出欠、個人評価の値はSchemaに含めない。
+Chat中心化branchでは、明示的なChat送信とアクセス許可を条件に、SCombZの構造化表示情報（`orbit-scombz://read/<opaque>`）、公式シラバス検索の公開結果（`orbit-syllabus://search/<opaque>`）、許可済みURLから抽出した表示本文とリンク（`orbit-browser://read/<opaque>`）も扱う。成績、出欠、個人評価の値は、SITRUS専用のローカル読取Toolを除きSchemaに含めない。
 
 W&Bについても、初期版では同じ区分だけを対象とする。
 
@@ -95,6 +95,8 @@ Side Panelと全画面ワークスペースで共有するChat履歴は、拡張
 Composerのアクセスモードは`Ask every time`を既定とし、未許可ホストの読み取り前に今回のみ許可・サイト許可・拒否へ接続する。Chrome optional host permissionはユーザー操作の中でだけ要求する。`Full access`もread-onlyの範囲に限り、提出・送信・更新・削除・ダウンロード・アップロードは常にActionProposalと本人確認を要求する。成績、出欠、個人評価を含むページは、許可済みサイトであっても`Ask every time`では毎回確認する。blocklistはFull accessより優先する。
 
 Chat APIへ送るTool結果は、Toolごとの厳密な最小Schemaだけにする。SCombZは表示項目の構造化値、Calendarは空き時間の区間と分数、シラバスは公式公開結果、Browser Readerは本文30,000文字とリンク50件までであり、予定名・ID・参加者・説明、SCombZのHTML、Cookie、パスワード、第三者のフォーム入力、OAuth tokenは表現できない。ページ中の命令文はTool命令として実行せず引用データとして扱う。Tool待ちのrunはAPIプロセス内に600秒だけ保持し、完了・失敗・期限切れで削除する。
+
+SITRUSの成績は保存・ダウンロードせず、利用者が実際に開いている画面を参照する。優先経路は、SITRUS画面から確認できた`/SITRUS/login/ShutokuTaniShukei.html`のHTML表である。Service Workerは表示中の表の「判定・評価・科目名」だけをメモリ上で抽出し、科目コードや単位数が表にない場合は`null`のまま扱い、値を推測しない。成績通知書の`/SITRUS/login/SeisekiTsutiSho.html`は、HTML表が利用できない場合のメモリ内PDF.jsテキスト層フォールバックであり、PDF本体やBase64を保存・返却しない。いずれも氏名、学籍番号、予定情報、Cookie、tokenは返さない。この個人データは現在のプロジェクト契約上、外部LLM、W&B、共有ログへ送信しない。`ORBIT_AGENT_BACKEND=fixture`のローカルChat/toolだけで表示し、外部Provider実行時はSITRUS Toolを広告しない。ページが閉じた、別URLへ遷移した、表やPDF.jsを利用できない場合は成功扱いにせず、利用者へ再表示を案内する。
 
 拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
 

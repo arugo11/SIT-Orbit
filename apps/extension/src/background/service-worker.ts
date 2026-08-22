@@ -10,7 +10,16 @@ import {
   SYLLABUS_SEARCH_ORIGIN,
   searchOfficialSyllabus,
 } from "../connectors/syllabus-search";
-import { isScombzUrl, type PageContext } from "../content/page-context";
+import {
+  isScombzUrl,
+  isSitrusGradeUrl,
+  type PageContext,
+} from "../content/page-context";
+import {
+  parseSitrusGradeProjection,
+  parseSitrusGradeTableProjection,
+  type SitrusTableRow,
+} from "../content/sitrus-reader";
 import {
   type BrowserReadResponse,
   type CalendarCommandMessage,
@@ -24,11 +33,13 @@ import {
   isOpenWorkspaceMessage,
   isPageContext,
   isPageContextUpdatedMessage,
+  isSitrusReadMessage,
   isSyllabusSearchMessage,
   isUpdateWorkspaceSessionMessage,
   MESSAGE_TYPES,
   type OpenWorkspaceMessage,
   type OpenWorkspaceResponse,
+  type SitrusReadResponse,
   type UpdateWorkspaceSessionMessage,
   type WorkspaceSessionResponse,
   type WorkspaceStatusResponse,
@@ -46,6 +57,7 @@ const googleDriveConnector = new GoogleDriveConnector();
 const BUILT_IN_ORIGINS = new Set([
   "https://scombz.shibaura-it.ac.jp",
   "https://syllabus.sic.shibaura-it.ac.jp",
+  "https://sitrus.sic.shibaura-it.ac.jp",
   "http://localhost:8000",
 ]);
 
@@ -163,6 +175,226 @@ async function handleBrowserRead(
         // The temporary tab may already have been closed by the user.
       }
     }
+  }
+}
+
+async function readSitrusGradeTextInPage(): Promise<
+  | {
+      status: "known";
+      text_items: Array<{
+        str: string;
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+      }>;
+    }
+  | { status: "unavailable"; reason_code: string }
+> {
+  try {
+    const current = window as Window & {
+      id_data?: { GakusekiNo?: unknown };
+      gakuseiInfo?: Array<{ gakuseki_no?: unknown }>;
+      pdfjsLib?: {
+        getDocument: (source: { data: Uint8Array }) => {
+          promise: Promise<{
+            getPage: (pageNumber: number) => Promise<{
+              getTextContent: () => Promise<{
+                items: Array<Record<string, unknown>>;
+              }>;
+            }>;
+          }>;
+        };
+      };
+      "pdfjs-dist/build/pdf"?: {
+        getDocument: (source: { data: Uint8Array }) => {
+          promise: Promise<{
+            getPage: (pageNumber: number) => Promise<{
+              getTextContent: () => Promise<{
+                items: Array<Record<string, unknown>>;
+              }>;
+            }>;
+          }>;
+        };
+      };
+    };
+    const studentId =
+      current.id_data?.GakusekiNo ??
+      current.gakuseiInfo?.[0]?.gakuseki_no ??
+      new URL(current.location.href).searchParams.get("N");
+    if (
+      typeof studentId !== "string" ||
+      !/^[A-Za-z0-9_-]{3,32}$/u.test(studentId)
+    ) {
+      return { status: "unavailable", reason_code: "student_id_unavailable" };
+    }
+    const response = await fetch(
+      `../../app/SITRUS/Seiseki?gakusei_no=${encodeURIComponent(studentId)}`,
+      { credentials: "include" },
+    );
+    if (!response.ok) {
+      return { status: "unavailable", reason_code: "grade_endpoint_failed" };
+    }
+    const raw: unknown = await response.json();
+    const payload = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (
+      !payload ||
+      typeof payload !== "object" ||
+      (payload as { Result?: unknown }).Result !== "true" ||
+      typeof (payload as { Message?: unknown }).Message !== "string"
+    ) {
+      return { status: "unavailable", reason_code: "grade_data_unavailable" };
+    }
+    const pdfjs = current.pdfjsLib ?? current["pdfjs-dist/build/pdf"];
+    if (!pdfjs?.getDocument) {
+      return { status: "unavailable", reason_code: "pdfjs_unavailable" };
+    }
+    const binary = atob((payload as { Message: string }).Message);
+    const bytes = Uint8Array.from(binary, (character) =>
+      character.charCodeAt(0),
+    );
+    const pdf = await pdfjs.getDocument({ data: bytes }).promise;
+    const page = await pdf.getPage(1);
+    const content = await page.getTextContent();
+    const text_items = content.items
+      .map((item) => {
+        const transform = Array.isArray(item.transform) ? item.transform : [];
+        return {
+          str: typeof item.str === "string" ? item.str : "",
+          x: Number(transform[4]) || 0,
+          y: Number(transform[5]) || 0,
+          width: Number(item.width) || 0,
+          height: Number(item.height) || 0,
+        };
+      })
+      .filter((item) => item.str)
+      .slice(0, 10_000);
+    return { status: "known", text_items };
+  } catch {
+    return { status: "unavailable", reason_code: "grade_read_failed" };
+  }
+}
+
+/** Read only the visible grade table on the exact SITRUS summary page. */
+async function readSitrusGradeTableInPage(): Promise<
+  | { status: "known"; rows: SitrusTableRow[] }
+  | { status: "unavailable"; reason_code: string }
+> {
+  try {
+    const rows: SitrusTableRow[] = [];
+    const allowedGrades = new Set([
+      "S",
+      "A",
+      "B",
+      "C",
+      "D",
+      "F",
+      "G",
+      "N",
+      "X",
+      "#",
+    ]);
+    for (const row of Array.from(
+      document.querySelectorAll('[role="grid"] [role="row"]'),
+    )) {
+      const cells = Array.from(row.querySelectorAll('[role="gridcell"]'))
+        .map((cell) => (cell.textContent ?? "").replace(/\s+/gu, " ").trim())
+        .filter(Boolean);
+      if (cells.length < 3) continue;
+      const result = cells[0] ?? "";
+      const grade = (cells[1] ?? "").toUpperCase();
+      const subject = cells[2] ?? "";
+      if (result && subject && allowedGrades.has(grade)) {
+        rows.push({ result, grade, subject });
+      }
+      if (rows.length >= 200) break;
+    }
+    return rows.length > 0
+      ? { status: "known", rows }
+      : { status: "unavailable", reason_code: "grade_table_not_visible" };
+  } catch {
+    return { status: "unavailable", reason_code: "grade_table_read_failed" };
+  }
+}
+
+async function handleSitrusRead(
+  message: import("../shared/messages").SitrusReadMessage,
+): Promise<SitrusReadResponse> {
+  if (!isSitrusGradeUrl(message.page_url)) {
+    return { status: "unavailable", reason_code: "invalid_grade_url" };
+  }
+  const target = browserOrigin(message.page_url);
+  if (!target || !(await hasBrowserPermission(target.pattern, target.origin))) {
+    return {
+      status: "permission_required",
+      origin: target?.origin ?? "https://sitrus.sic.shibaura-it.ac.jp",
+      pattern: target?.pattern ?? "https://sitrus.sic.shibaura-it.ac.jp/*",
+    };
+  }
+  try {
+    const [activeTab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
+    if (
+      !activeTab ||
+      activeTab.id === undefined ||
+      !isSitrusGradeUrl(activeTab.url)
+    ) {
+      return { status: "unavailable", reason_code: "grade_page_not_active" };
+    }
+    const requested = new URL(message.page_url);
+    const active = new URL(activeTab.url ?? "");
+    if (
+      requested.origin !== active.origin ||
+      requested.pathname !== active.pathname
+    ) {
+      return { status: "unavailable", reason_code: "grade_page_changed" };
+    }
+    const isSummaryPage =
+      active.pathname === "/SITRUS/login/ShutokuTaniShukei.html";
+    if (isSummaryPage) {
+      const [injected] = await chrome.scripting.executeScript({
+        target: { tabId: activeTab.id },
+        world: "MAIN",
+        func: readSitrusGradeTableInPage,
+      });
+      const value = injected?.result;
+      if (value?.status !== "known" || !Array.isArray(value.rows)) {
+        return { status: "unavailable", reason_code: "invalid_projection" };
+      }
+      return {
+        status: "known",
+        projection: parseSitrusGradeTableProjection(
+          value.rows,
+          message.page_url,
+        ),
+      };
+    }
+    const [injected] = await chrome.scripting.executeScript({
+      target: { tabId: activeTab.id },
+      world: "MAIN",
+      func: readSitrusGradeTextInPage,
+    });
+    const value = injected?.result;
+    if (!value) {
+      return { status: "unavailable", reason_code: "invalid_projection" };
+    }
+    if (value.status !== "known") {
+      return { status: "unavailable", reason_code: value.reason_code };
+    }
+    if (!Array.isArray(value.text_items)) {
+      return { status: "unavailable", reason_code: "invalid_projection" };
+    }
+    return {
+      status: "known",
+      projection: parseSitrusGradeProjection(
+        value.text_items,
+        message.page_url,
+      ),
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "grade_read_failed" };
   }
 }
 
@@ -475,7 +707,7 @@ async function setTabPanelEnabled(
     await chrome.sidePanel.setOptions({
       tabId,
       path: "sidepanel.html",
-      enabled: isScombzUrl(url),
+      enabled: isScombzUrl(url) || isSitrusGradeUrl(url),
     });
   } catch {
     // The tab can disappear while Chrome is switching windows.
@@ -608,6 +840,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleBrowserRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isSitrusReadMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleSitrusRead(message).then(sendResponse);
     return true;
   }
 

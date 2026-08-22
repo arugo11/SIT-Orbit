@@ -133,7 +133,7 @@ describe("ScombZ page context extraction", () => {
     ]);
   });
 
-  it("recognizes course and timetable routes without inventing timetable courses", () => {
+  it("extracts visible timetable courses without inventing hidden rows", () => {
     const course = parseScombzPageContext(
       { title: "コース", url: `${SCOMBZ_URL}/course/synthetic-a` },
       fixtureDocument("course"),
@@ -150,6 +150,20 @@ describe("ScombZ page context extraction", () => {
     });
     expect(timetable.scombz?.route).toBe("timetable");
     expect(timetable.scombz?.currentCourse).toBeNull();
+    expect(timetable.scombz?.timetable).toEqual([
+      {
+        title: "２限 合成コースA",
+        startsAt: null,
+        endsAt: null,
+        status: "class",
+      },
+      {
+        title: "曜日時限不定コース",
+        startsAt: null,
+        endsAt: null,
+        status: "class",
+      },
+    ]);
   });
 
   it("keeps unsafe links out while preserving nullable link fields", () => {

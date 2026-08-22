@@ -14,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
+    StrictFloat,
     StrictInt,
     StrictStr,
     model_validator,
@@ -173,10 +174,7 @@ class ScombzReadResult(StrictApiModel):
     @model_validator(mode="after")
     def unavailable_has_no_page_data(self) -> "ScombzReadResult":
         if self.status == "unavailable" and (
-            self.tasks
-            or self.announcements
-            or self.timetable
-            or self.current_course is not None
+            self.tasks or self.announcements or self.timetable or self.current_course is not None
         ):
             raise ValueError("Unavailable SCombZ results cannot include page data.")
         return self
@@ -266,6 +264,38 @@ class BrowserReadResult(StrictApiModel):
         return self
 
 
+class SitrusGradeItem(StrictApiModel):
+    """One minimized grade row extracted from the displayed SITRUS notice."""
+
+    subject: StrictStr = Field(min_length=1, max_length=200)
+    course_code: StrictStr | None = Field(default=None, max_length=20)
+    credits: StrictInt | None = Field(default=None, ge=0, le=20)
+    grade: Literal["S", "A", "B", "C", "D", "F", "G", "N", "X", "#"]
+    year: StrictInt | None = Field(default=None, ge=2000, le=2100)
+    term: StrictInt | None = Field(default=None, ge=1, le=3)
+    term_slot: StrictInt | None = Field(default=None, ge=1, le=4)
+    repeated: StrictBool = False
+
+
+class SitrusGradeResult(StrictApiModel):
+    """In-memory SITRUS projection; the PDF and student identity are omitted."""
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    report_label: StrictStr | None = Field(default=None, max_length=100)
+    grades: list[SitrusGradeItem] = Field(default_factory=list, max_length=200)
+    cumulative_gpa: StrictFloat | None = Field(default=None, ge=0, le=4)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_grade_data(self) -> "SitrusGradeResult":
+        if self.status == "unavailable" and (
+            self.report_label is not None or self.grades or self.cumulative_gpa is not None
+        ):
+            raise ValueError("Unavailable SITRUS results cannot include grade data.")
+        return self
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
@@ -349,6 +379,7 @@ ChatToolName = Literal[
     "google_calendar_availability",
     "syllabus_search",
     "browser_read_url",
+    "sitrus_read",
 ]
 
 
@@ -395,6 +426,7 @@ class ChatToolResultRequest(StrictApiModel):
         | ScombzReadResult
         | SyllabusSearchResult
         | BrowserReadResult
+        | SitrusGradeResult
     )
 
     @model_validator(mode="after")
@@ -409,14 +441,12 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("SCombZ tool results must use ScombzPageSummaryResult.")
         if self.name == "scombz_read" and not isinstance(self.result, ScombzReadResult):
             raise ValueError("SCombZ read results must use ScombzReadResult.")
-        if self.name == "syllabus_search" and not isinstance(
-            self.result, SyllabusSearchResult
-        ):
+        if self.name == "syllabus_search" and not isinstance(self.result, SyllabusSearchResult):
             raise ValueError("Syllabus results must use SyllabusSearchResult.")
-        if self.name == "browser_read_url" and not isinstance(
-            self.result, BrowserReadResult
-        ):
+        if self.name == "browser_read_url" and not isinstance(self.result, BrowserReadResult):
             raise ValueError("Browser results must use BrowserReadResult.")
+        if self.name == "sitrus_read" and not isinstance(self.result, SitrusGradeResult):
+            raise ValueError("SITRUS results must use SitrusGradeResult.")
         return self
 
 
@@ -469,6 +499,8 @@ __all__ = [
     "ChatToolResultRequest",
     "BrowserReadLink",
     "BrowserReadResult",
+    "SitrusGradeItem",
+    "SitrusGradeResult",
     "CalendarAvailabilityInterval",
     "CalendarAvailabilityResult",
     "ClientTool",

@@ -29,6 +29,7 @@ from orbit_api.models import (
     OrbitEvent,
     ScombzPageSummaryResult,
     ScombzReadResult,
+    SitrusGradeResult,
     SyllabusSearchResult,
 )
 
@@ -45,6 +46,8 @@ SAFE_CLASSIFICATIONS = {"synthetic", "public"}
 SCOMBZ_READ_TOOL_NAME = "scombz_read"
 SYLLABUS_SEARCH_TOOL_NAME = "syllabus_search"
 BROWSER_READ_TOOL_NAME = "browser_read_url"
+SITRUS_TOOL_NAME = "sitrus_read"
+SITRUS_GRADES_LOCATOR_PREFIX = "orbit-sitrus://grades/"
 SUPPORTED_TOOL_NAMES = frozenset(
     {
         CALENDAR_TOOL_NAME,
@@ -60,6 +63,7 @@ ToolName = Literal[
     "google_calendar_availability",
     "syllabus_search",
     "browser_read_url",
+    "sitrus_read",
 ]
 ActionToolName = Literal["scombz_page_summary", "google_calendar_availability"]
 ToolResult = (
@@ -68,6 +72,7 @@ ToolResult = (
     | ScombzReadResult
     | SyllabusSearchResult
     | BrowserReadResult
+    | SitrusGradeResult
 )
 
 
@@ -193,6 +198,15 @@ def is_derived_browser_evidence(evidence: EvidenceLink) -> bool:
     )
 
 
+def is_derived_sitrus_evidence(evidence: EvidenceLink) -> bool:
+    return (
+        evidence.source_type == "learning_history"
+        and evidence.data_classification == "personal"
+        and _is_opaque_locator(evidence.locator, SITRUS_GRADES_LOCATOR_PREFIX)
+        and evidence.evidence_id.startswith("sitrus-grades-v1-")
+    )
+
+
 def validate_agent_data(
     event: OrbitEvent,
     context: list[EvidenceLink],
@@ -202,6 +216,7 @@ def validate_agent_data(
     allow_scombz_read: bool = False,
     allow_syllabus_search: bool = False,
     allow_browser_read: bool = False,
+    allow_sitrus_read: bool = False,
 ) -> None:
     if event.data_classification not in SAFE_CLASSIFICATIONS:
         raise ValueError("The agent backend accepts only synthetic or public event data.")
@@ -217,6 +232,8 @@ def validate_agent_data(
         if allow_syllabus_search and is_derived_syllabus_evidence(evidence):
             continue
         if allow_browser_read and is_derived_browser_evidence(evidence):
+            continue
+        if allow_sitrus_read and is_derived_sitrus_evidence(evidence):
             continue
         raise ValueError(
             "The agent backend rejects personal or restricted evidence unless it is "
@@ -257,6 +274,12 @@ async def browser_read_url(url: str) -> BrowserReadResult:
     """Deferred read of a user-authorized visible URL."""
 
     del url
+    raise CallDeferred()
+
+
+async def sitrus_read() -> SitrusGradeResult:
+    """Deferred read of the currently displayed SITRUS grade notice."""
+
     raise CallDeferred()
 
 
@@ -576,6 +599,8 @@ class PydanticAIAgentBackend(AgentBackend):
             tools.append(syllabus_search)
         if BROWSER_READ_TOOL_NAME in advertised:
             tools.append(browser_read_url)
+        if SITRUS_TOOL_NAME in advertised:
+            tools.append(sitrus_read)
         model_settings: OpenAIResponsesModelSettings = {"openai_store": False}
         return Agent(
             self.model,
@@ -656,6 +681,7 @@ class PydanticAIAgentBackend(AgentBackend):
             CALENDAR_TOOL_NAME,
             SCOMBZ_TOOL_NAME,
             SCOMBZ_READ_TOOL_NAME,
+            SITRUS_TOOL_NAME,
         } and arguments:
             raise RuntimeError("This client tool does not accept arguments.")
         if call.tool_name == BROWSER_READ_TOOL_NAME:
@@ -716,6 +742,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_scombz_read=True,
             allow_syllabus_search=True,
             allow_browser_read=True,
+            allow_sitrus_read=True,
         )
         advertised = set(advertised_tools or set()) & set(SUPPORTED_TOOL_NAMES)
         if advertised and os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
@@ -737,6 +764,10 @@ class PydanticAIAgentBackend(AgentBackend):
         advertised_tools: set[str],
         seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
     ) -> ChatAgentExecution:
+        if deferred.tool_name == SITRUS_TOOL_NAME:
+            raise ValueError(
+                "SITRUS grade data is local-only and cannot be sent to an external model."
+            )
         if deferred.tool_name == CALENDAR_TOOL_NAME:
             if not isinstance(tool_result, CalendarAvailabilityResult):
                 raise ValueError("Calendar deferred calls require a CalendarAvailabilityResult.")
@@ -786,6 +817,17 @@ class PydanticAIAgentBackend(AgentBackend):
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "browser_read": tool_result.model_dump(mode="json"),
             }
+        elif deferred.tool_name == SITRUS_TOOL_NAME:
+            if not isinstance(tool_result, SitrusGradeResult):
+                raise ValueError("SITRUS calls require a SitrusGradeResult.")
+            evidence = next(
+                (item for item in context if is_derived_sitrus_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "sitrus_grades": tool_result.model_dump(mode="json"),
+            }
         else:
             raise ValueError("The deferred chat tool is unsupported.")
         if evidence is None:
@@ -803,6 +845,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_scombz_read=True,
             allow_syllabus_search=True,
             allow_browser_read=True,
+            allow_sitrus_read=True,
         )
         result = await self._chat_agent(advertised_tools=advertised_tools).run(
             message_history=deferred.messages,
@@ -832,6 +875,8 @@ __all__ = [
     "CALENDAR_TOOL_NAME",
     "CALENDAR_TOOL_VERSION",
     "BROWSER_READ_TOOL_NAME",
+    "SITRUS_TOOL_NAME",
+    "SITRUS_GRADES_LOCATOR_PREFIX",
     "SCOMBZ_READ_TOOL_NAME",
     "SYLLABUS_SEARCH_TOOL_NAME",
     "DeferredActionRun",
@@ -845,7 +890,9 @@ __all__ = [
     "is_derived_scombz_read_evidence",
     "is_derived_syllabus_evidence",
     "is_derived_browser_evidence",
+    "is_derived_sitrus_evidence",
     "browser_read_url",
+    "sitrus_read",
     "scombz_read",
     "scombz_page_summary",
     "syllabus_search",
