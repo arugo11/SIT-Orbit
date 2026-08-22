@@ -155,6 +155,12 @@ Career Evidence Bankの記録、資料locator、人物対応表は、Azure、Ope
 
 ES下書きは、確認済みEvidenceの`evidence_id`、claim、context、action、resultだけをChrome Prompt APIへ渡す。材料locator、ファイル名、`person_ref`、元の人物名、内部対応表、raw PDF、tokenは渡さない。各文にEvidence IDと、入力フィールドに実在するgrounding quoteを要求し、未知ID、未引用文、根拠にない数値、credential・連絡先・学籍番号らしい文字列を受け取った場合は生成結果を採用しない。Prompt APIが利用できない場合にAzureや別Providerへfallbackしない。
 
+### 多視点キャリアレビュー
+
+ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはなく、Prompt APIが利用できない場合も外部Providerへfallbackしない。
+
+レビューは視点ごとの判定と、根拠を参照するstrength／gapだけを保持する。総合点、順位、採用確率、視点を混ぜた単一スコアは保存・表示しない。判定が分かれたときは`disagreements`として各視点と判定を併記し、利用者が理由を比較できる状態を維持する。未知のEvidence ID・ES文、根拠にない数値、credentialらしい文字列、未許可フィールドを含む応答は採用しない。独立sessionと不一致保持は、LLM-as-a-judgeの位置バイアスを避け、評価軸を混同しないための最小構成である。[Judging the Judges](https://aclanthology.org/2025.ijcnlp-long.18/)
+
 ### CAST Decision Room
 
 Decision Roomは端末内の求人比較表示であり、入力された求人・インターンと企業名が一致する履歴Snapshotだけを利用する。技術領域、勤務地、職種、採用実績、選考記録、OB・OG支援、締切、不足情報を別々に評価し、単一の相性点、順位、採用可能性を外部へ送信・保存しない。
