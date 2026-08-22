@@ -271,6 +271,12 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 お知らせの件名と掲載日、新着求人・インターン・会社説明会の件数、個人向け通知領域に表示された相談予約の有無は、拡張機能のReact stateにだけ保持する。Agentへ渡す`CastReadResult`はお知らせ件数、各新着件数、相談予約の有無、直近掲載日だけで、Evidence locatorは`orbit-cast://summary/<opaque>`とする。進路希望、自己PR、応募履歴、氏名、前回ログイン、提出内容にはAPI Schema上の表現を与えない。
 
+### CAST求人・インターン検索の参照
+
+求人は実ログイン環境で確認した`https://shibaura.pita.services/career/job_offer_search/search`、インターンは`https://shibaura.pita.services/career/internship_search`だけを許可する。検索結果カードの確認済みの`panel-heading`、`cell-th`/`cell-td`行、`linkTo`企業リンクだけをtyped snapshotへ変換し、検索フォームの送信、詳細画面への推測遷移、ページング、応募操作は行わない。query、fragment、未知origin、404、ログイン画面、構造変更は成功扱いしない。
+
+カードの企業名、仕事内容、職種、勤務地、対象学科、締切、CAST上の関連表示は端末内の`CastOpportunityLocalSnapshot`にだけ保持する。Agentへ渡す`CastOpportunityAgentProjection`は求人・インターンの件数、状態別件数、最短締切、状態コードだけで、企業名、仕事内容、企業コード、求人番号、raw HTMLは表現できない。projectionをPseudonymization Gateway以外の経路からモデルへ渡さない。PDF、添付、フォーム値、法人番号は抽出しない。
+
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
 ### CAST Career Agentのプライバシー境界
