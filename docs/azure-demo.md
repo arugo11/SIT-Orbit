@@ -88,7 +88,7 @@ Azure OpenAIの設定は、次の3つがすべて揃った場合だけ有効で�
 
 ```text
 ORBIT_AGENT_BACKEND=azure_openai
-ORBIT_WEB_SEARCH=off
+ORBIT_WEB_SEARCH=azure
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
 AZURE_OPENAI_MODEL=<deployment-name>
 AZURE_OPENAI_API_KEY=<secret>
@@ -119,6 +119,33 @@ az containerapp update \
 このProvider確認は通常のCIと分離します。実行する場合も、公開・合成データだけを使い、応答、キー、OAuth token、個人情報をPR、ログ、W&Bへ残しません。Azure認証をManaged Identityへ移行する場合は、権限範囲を確認してから別の変更として扱います。[Managed Identity](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity)
 
 設定不足時は`RuntimeError`となり、fixtureやOpenAIへ暗黙に切り替わりません。
+
+既存Container AppへAzure OpenAIと一般Web検索を設定する場合は、API keyをシェルへ手入力せず、Azure CLIからContainer Apps Secretへ移す次のスクリプトを使います。
+`deploy.sh`は安全側の既定としてBackendを`fixture`へ戻すため、モデルを使うデモではimage配置後に実行します。
+
+```bash
+export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
+export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
+export ORBIT_AZURE_OPENAI_ACCOUNT="<azure-openai-account-name>"
+export ORBIT_AZURE_OPENAI_DEPLOYMENT="<deployment-name>"
+# 必要な場合だけ指定
+export ORBIT_AZURE_SUBSCRIPTION="<subscription-name-or-id>"
+
+scripts/azure/configure-openai.sh
+scripts/azure/health.sh
+```
+
+`configure-openai.sh`はAzure OpenAI accountとdeploymentが`Succeeded`であることを確認し、API keyをContainer Apps Secretへ登録する。
+その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。
+
+## 2026年8月22日のProvider Acceptance
+
+Azure for Students subscriptionのJapan Eastに、専用OpenAI account `sit-orbit-aoai-argo11`と`gpt-5.6-terra` version `2026-07-09`のGlobalStandard deployment `gpt-5-6-terra`を作成した。
+capacity 1では親ChatのpromptがTPM上限を超えて429になったため、従量課金のままcapacity 10へ変更した。
+
+Container App `sit-orbit-demo-api`へmain commit `49963f203ff1`のimageを配置し、revision `sit-orbit-demo-api--0000003`で一般Web検索を有効化した。
+外部FQDNから公開情報だけを使ったChat requestを実行し、HTTP 200、`completed`、`web-search-v1-*` Evidence 2件、公式`www.shibaura-it.ac.jp`出典を確認した。
+応答本文、検索の生レスポンス、API keyは文書やW&Bへ保存していない。
 
 ## モデル選定の暫定方針
 
