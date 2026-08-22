@@ -158,6 +158,14 @@ describe("Side Panel B1 agent loop behavior", () => {
 
   afterEach(cleanup);
 
+  it("discloses the Azure Grounding with Bing data boundary in shared Chat UI", async () => {
+    mounted = await mountSidePanel(() => <App />);
+
+    expect(mounted.document.body.textContent).toContain(
+      "一般Web検索を使う場合、公開情報の検索語はGrounding with Bingへ送信され、Azureの通常の地理・DPA境界外で処理されます。",
+    );
+  });
+
   it("requests the synthetic campus_entered proposal once, only after an explicit click", async () => {
     const fetcher = responseSequence([jsonResponse(completedRun)]);
     mounted = await openProposal(fetcher);

@@ -88,6 +88,7 @@ Azure OpenAIの設定は、次の3つがすべて揃った場合だけ有効で�
 
 ```text
 ORBIT_AGENT_BACKEND=azure_openai
+ORBIT_WEB_SEARCH=off
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
 AZURE_OPENAI_MODEL=<deployment-name>
 AZURE_OPENAI_API_KEY=<secret>

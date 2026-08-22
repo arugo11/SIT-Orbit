@@ -750,10 +750,11 @@ class ChatRunService:
             context=[],
             advertised_tools=advertised,
         )
+        context = list(execution.generated_evidence)
         if execution.draft is not None:
             return _canonical_response(
                 execution.draft,
-                [],
+                context,
                 action_id_prefix="act-chat",
             )
         if execution.deferred is None:
@@ -762,7 +763,7 @@ class ChatRunService:
             backend_name=os.getenv("ORBIT_AGENT_BACKEND", "fixture"),
             conversation_id=request.conversation_id,
             deferred=execution.deferred,
-            context=[],
+            context=context,
             advertised_tools=request.client_tools,
         )
         return self._tool_required(run_id, execution.deferred)
@@ -795,6 +796,7 @@ class ChatRunService:
                 advertised_tools={tool.name for tool in claimed.advertised_tools},
                 seen_tool_call_ids=claimed.seen_tool_call_ids,
             )
+            context.extend(execution.generated_evidence)
             if execution.draft is not None:
                 response = _canonical_response(
                     execution.draft,

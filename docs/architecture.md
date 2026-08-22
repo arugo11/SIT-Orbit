@@ -235,6 +235,12 @@ Composerでは`Ask every time`を既定にし、未許可ホストの読み取�
 
 `browser_read_url`はService Workerが許可済みURLを非アクティブタブへ開き、`scripting.executeScript`で`browser-reader.js`をIsolated Worldへ注入する。抽出結果は表示本文、最大50リンク、opaqueな引用情報だけをAgentへ渡し、結果取得後にタブを閉じる。一般Webの検索やGoogle検索画面のスクレイピングへはfallbackしない。公式シラバス検索は`syllabus.sic.shibaura-it.ac.jp/namazu/`だけを対象とする。
 
+### Azure一般Web検索
+
+`ORBIT_WEB_SEARCH=azure`かつ`ORBIT_AGENT_BACKEND=azure_openai`の場合だけ、Chat Agentへサーバー内部の`general_web_search`を追加する。検索専用のPydanticAI runはAzure Responsesの`NativeTool(WebSearchTool)`を使用し、Grounding with Bingへ渡す入力を検証済みの検索語だけに限定する。親Chatの履歴、SCombZ、成績、学内Tool結果は検索runへ渡さない。
+
+検索結果は要約と最大10件の公開URLへ正規化し、`web-search-v1-*` Evidenceとして元のChatへ戻す。URL本文がさらに必要な場合だけ既存`browser_read_url`を使用する。検索も既存の1ターン最大8 Toolに含め、Azure側で利用できない場合は別Providerや検索画面スクレイピングへfallbackしない。
+
 ### SITRUS成績通知書の参照
 
 SITRUSの成績は、実在する画面を利用者が開いている場合だけ、専用の`sitrus_read` Toolで参照する。Service Workerは接続元タブが同じorigin・pathnameであることを確認する。優先する`/SITRUS/login/ShutokuTaniShukei.html`では、`MAIN` worldから可視のHTML表を読み、判定・評価・科目名だけをメモリ上で投影する。表にない科目コードや単位数は`null`とし、推測しない。`/SITRUS/login/SeisekiTsutiSho.html`では、表が使えない場合に限り認証済みPDF.jsのテキスト層をメモリ上で処理する。PDFファイル、Base64、学籍番号、認証情報を保存・ダウンロード・APIログへ渡さず、取得できた科目名、科目コード、成績、単位、年度・期・ターム、再履修フラグ、累積GPAだけへ投影する。
