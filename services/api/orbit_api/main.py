@@ -1,6 +1,10 @@
+import os
+import secrets
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from orbit_api.agent import (
     AgentRunService,
@@ -48,6 +52,50 @@ app = FastAPI(
     description="Personal Campus Agent for Shibaura Institute of Technology",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def require_api_token(request: Request, call_next):
+    """Protect remote Agent routes when ORBIT_API_TOKEN is configured."""
+    expected = os.getenv("ORBIT_API_TOKEN", "").strip()
+    if expected and request.url.path.startswith("/v1/"):
+        authorization = request.headers.get("authorization", "")
+        scheme, separator, provided = authorization.partition(" ")
+        if (
+            separator != " "
+            or scheme.lower() != "bearer"
+            or not provided
+            or not secrets.compare_digest(provided, expected)
+        ):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Valid Agent API credentials are required."},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    return await call_next(request)
+
+
+def configure_cors(application: FastAPI) -> None:
+    """Allow only explicitly configured browser-extension origins."""
+    origins = [
+        origin.strip().rstrip("/")
+        for origin in os.getenv("ORBIT_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if not origins:
+        return
+    if "*" in origins:
+        raise RuntimeError("ORBIT_CORS_ORIGINS must list explicit origins.")
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+
+configure_cors(app)
 
 agent_run_service = AgentRunService()
 chat_run_service = ChatRunService(backend_factory=get_chat_backend)

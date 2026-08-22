@@ -2,8 +2,10 @@ import json
 from pathlib import Path
 
 import orbit_api.main as orbit_main
+import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from orbit_api.main import app
+from orbit_api.main import app, configure_cors
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -30,6 +32,85 @@ def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_api_token_protects_v1_routes_but_not_health(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_API_TOKEN", "test-agent-token")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    request = {"event": load_fixture("event.json"), "context": load_fixture("context.json")}
+
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        missing = client.post("/v1/actions/propose", json=request)
+        wrong = client.post(
+            "/v1/actions/propose",
+            json=request,
+            headers={"Authorization": "Bearer wrong-token"},
+        )
+        accepted = client.post(
+            "/v1/actions/propose",
+            json=request,
+            headers={"Authorization": "Bearer test-agent-token"},
+        )
+
+    assert missing.status_code == 401
+    assert missing.headers["www-authenticate"] == "Bearer"
+    assert wrong.status_code == 401
+    assert accepted.status_code == 200
+
+
+def test_configured_extension_origin_can_complete_cors_preflight(monkeypatch) -> None:
+    origin = "chrome-extension://onlkblmignmbeaogocmhgkiecmdlihci"
+    monkeypatch.setenv("ORBIT_CORS_ORIGINS", origin)
+    cors_app = FastAPI()
+    configure_cors(cors_app)
+
+    @cors_app.post("/v1/chat/runs")
+    async def chat_run() -> dict[str, str]:
+        return {"status": "ok"}
+
+    with TestClient(cors_app) as client:
+        response = client.options(
+            "/v1/chat/runs",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == origin
+    allowed_headers = response.headers["access-control-allow-headers"]
+    assert "Authorization" in allowed_headers
+    assert "Content-Type" in allowed_headers
+
+
+def test_unconfigured_origin_is_not_allowed_by_cors(monkeypatch) -> None:
+    allowed = "chrome-extension://onlkblmignmbeaogocmhgkiecmdlihci"
+    monkeypatch.setenv("ORBIT_CORS_ORIGINS", allowed)
+    cors_app = FastAPI()
+    configure_cors(cors_app)
+
+    with TestClient(cors_app) as client:
+        response = client.options(
+            "/v1/chat/runs",
+            headers={
+                "Origin": "https://untrusted.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_cors_rejects_wildcard_origin(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_CORS_ORIGINS", "*")
+
+    with pytest.raises(RuntimeError, match="explicit origins"):
+        configure_cors(FastAPI())
 
 
 def test_propose_and_verify_action(monkeypatch) -> None:

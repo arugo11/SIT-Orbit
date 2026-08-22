@@ -143,6 +143,7 @@ if (
     JSON.stringify([
       "https://scombz.shibaura-it.ac.jp/*",
       "http://localhost:8000/*",
+      "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io/*",
       "https://www.googleapis.com/*",
       "https://oauth2.googleapis.com/*",
       "https://syllabus.sic.shibaura-it.ac.jp/*",

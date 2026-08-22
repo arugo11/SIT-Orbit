@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   type ActionProposal,
-  AgentApiClient,
+  type AgentApiClient,
   type ChatRunResponse,
   type ChatToolResultRequest,
-  DEFAULT_AGENT_API_BASE,
   isBrowserReadResult,
   isCastReadResult,
   isMoodleReadResult,
@@ -59,9 +58,8 @@ import {
   toChatHistory,
 } from "./chat-history";
 
-const chatApiClient = new AgentApiClient({ baseUrl: DEFAULT_AGENT_API_BASE });
-
 export interface ChatPanelProps {
+  apiClient: AgentApiClient;
   pageContext: PageContext | null;
   calendarState: CalendarConnectorResult;
   calendarConnector?: CalendarConnector;
@@ -182,6 +180,7 @@ interface PendingPermission {
 }
 
 export function ChatPanel({
+  apiClient,
   pageContext,
   calendarState,
   calendarConnector,
@@ -640,7 +639,7 @@ export function ChatPanel({
         browser.projection,
       );
     }
-    const nextResponse = await chatApiClient.submitChatToolResult(
+    const nextResponse = await apiClient.submitChatToolResult(
       response.run_id,
       request,
     );
@@ -735,7 +734,7 @@ export function ChatPanel({
     await persist(withUser);
     const current = withUser;
     try {
-      const response = await chatApiClient.startChat({
+      const response = await apiClient.startChat({
         conversation_id: withUser.conversationId,
         message,
         history: toChatHistory(beforeSend.messages),

@@ -33,6 +33,8 @@ export type MyLibraryReadResult = components["schemas"]["MyLibraryReadResult"];
 export type CastReadResult = components["schemas"]["CastReadResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
+export const AZURE_DEMO_AGENT_API_BASE =
+  "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io";
 
 export type Fetcher = (
   input: RequestInfo | URL,
@@ -53,6 +55,7 @@ export class AgentApiError extends Error {
 
 export interface AgentApiClientOptions {
   baseUrl?: string;
+  accessToken?: string;
   fetcher?: Fetcher;
 }
 
@@ -699,11 +702,30 @@ async function readJson(response: Response): Promise<unknown> {
 
 export class AgentApiClient {
   private readonly baseUrl: string;
+  private readonly accessToken: string | null;
   private readonly fetcher: Fetcher;
 
   constructor(options: AgentApiClientOptions = {}) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_AGENT_API_BASE);
+    this.accessToken = options.accessToken?.trim() || null;
     this.fetcher = options.fetcher ?? defaultFetcher;
+  }
+
+  async health(): Promise<boolean> {
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/health`, {
+        method: "GET",
+        // `/health` is intentionally public. Sending the bearer token here
+        // needlessly triggers a CORS preflight from extension pages.
+        headers: {},
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "The request failed.";
+      throw new AgentApiError(`Agent API request failed: ${message}`, 0, error);
+    }
+    return responseIsOk(response);
   }
 
   propose(request: ProposeActionRequest): Promise<ActionProposal> {
@@ -784,9 +806,7 @@ export class AgentApiClient {
     try {
       response = await this.fetcher(`${this.baseUrl}${path}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: this.headers(true),
         body: JSON.stringify(body),
       });
     } catch (error) {
@@ -821,5 +841,14 @@ export class AgentApiClient {
     }
 
     return payload;
+  }
+
+  private headers(json: boolean): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (json) headers["Content-Type"] = "application/json";
+    if (this.accessToken) {
+      headers.Authorization = `Bearer ${this.accessToken}`;
+    }
+    return headers;
   }
 }
