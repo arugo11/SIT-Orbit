@@ -142,6 +142,24 @@ describe("AgentApiClient", () => {
         items: [item],
       }),
     ).toBe(false);
+    expect(
+      isLibraryDiscoverySearchResult({
+        schema_version: "v1",
+        status: "known",
+        query: "ロボット",
+        items: [
+          {
+            title: "公開論文",
+            authors: [],
+            source_label: "SIT Search",
+            url: "https://slib.shibaura-it.ac.jp/sublib/?session=secret",
+            snippet: null,
+            resource_ref: null,
+          },
+        ],
+        reason_code: null,
+      }),
+    ).toBe(false);
   });
 
   it("accepts Moodle aggregates and rejects local course details", () => {

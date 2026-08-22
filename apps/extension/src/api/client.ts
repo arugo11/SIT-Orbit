@@ -371,6 +371,26 @@ function isOfficialLibraryRecordUrl(value: unknown): value is string {
   }
 }
 
+function isOfficialLibraryDiscoveryUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      ((url.origin === "https://slib.shibaura-it.ac.jp" &&
+        url.pathname.startsWith("/sublib/")) ||
+        (url.origin === "https://library.shibaura-it.ac.jp" &&
+          url.pathname.startsWith("/opc/recordID/catalog.bib/")))
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isLibraryHoldingSummary(value: unknown): boolean {
   if (!isRecord(value)) return false;
   if (
@@ -558,9 +578,7 @@ function isLibraryDiscoveryItem(value: unknown): boolean {
       (typeof value.snippet !== "string" || value.snippet.length > 500)) ||
     (value.resource_ref !== null &&
       !isLibraryResourceRef(value.resource_ref)) ||
-    typeof value.url !== "string" ||
-    (!value.url.startsWith("https://slib.shibaura-it.ac.jp/sublib/") &&
-      !isOfficialLibraryRecordUrl(value.url))
+    !isOfficialLibraryDiscoveryUrl(value.url)
   ) {
     return false;
   }

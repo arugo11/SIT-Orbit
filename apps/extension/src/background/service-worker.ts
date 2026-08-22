@@ -673,7 +673,11 @@ function readLibraryDiscoveryInPage(): {
         const opac =
           url.origin === "https://library.shibaura-it.ac.jp" &&
           url.pathname.startsWith("/opc/recordID/catalog.bib/");
-        if (!official && !opac) return null;
+        if ((!official && !opac) || url.username || url.password) return null;
+        // SIT Search may render per-session query parameters. They are not
+        // needed by the model and must never cross the Agent API boundary.
+        url.search = "";
+        url.hash = "";
         const title = clean(link.textContent, 300);
         if (!title || /検索|ログイン|language|menu/i.test(title)) return null;
         const row =

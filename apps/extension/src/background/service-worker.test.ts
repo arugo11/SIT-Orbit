@@ -382,6 +382,28 @@ describe("service worker side panel contract", () => {
     expect(removeTab).toHaveBeenCalledWith(91);
   });
 
+  it("returns an explicit permission request before the first OPAC read", async () => {
+    permissionsContains.mockResolvedValue(false);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-permission-1",
+        query: "ロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({
+      status: "permission_required",
+      origin: "https://library.shibaura-it.ac.jp",
+      pattern: "https://library.shibaura-it.ac.jp/*",
+    });
+    expect(createTab).not.toHaveBeenCalled();
+  });
+
   it("reads the current OPAC detail record without requiring a self-link", async () => {
     permissionsContains.mockResolvedValue(true);
     executeScript

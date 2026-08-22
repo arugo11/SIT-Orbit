@@ -107,7 +107,9 @@ export function isOfficialDiscoveryUrl(value: unknown): value is string {
     return (
       url.protocol === "https:" &&
       ((url.origin === LIBRARY_SIT_SEARCH_ORIGIN &&
-        url.pathname.startsWith("/sublib/")) ||
+        url.pathname.startsWith("/sublib/") &&
+        url.search === "" &&
+        url.hash === "") ||
         (url.origin === LIBRARY_OPAC_ORIGIN &&
           url.pathname.startsWith(LIBRARY_RECORD_PATH_PREFIX) &&
           url.pathname.slice(LIBRARY_RECORD_PATH_PREFIX.length).length > 0 &&
@@ -126,3 +128,12 @@ export type LibraryToolResult =
   | LibraryItemReadResult
   | LibraryCatalogBrowseResult
   | LibraryDiscoverySearchResult;
+
+/** Advertise public-library tools only for the current explicit user turn. */
+export function requestsLibraryTools(message: string): boolean {
+  return (
+    /図書館|図書|本|蔵書|書籍|論文|電子(?:書籍|ブック)|OPAC|SIT\s*Search|貸出|請求記号|新着図書|貸出ランキング/iu.test(
+      message,
+    ) || /orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}/u.test(message)
+  );
+}

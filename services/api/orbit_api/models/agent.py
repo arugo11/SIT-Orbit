@@ -436,6 +436,8 @@ class LibraryDiscoveryItem(StrictApiModel):
         official_path = (
             parsed.netloc == "slib.shibaura-it.ac.jp"
             and parsed.path.startswith("/sublib/")
+            and not parsed.query
+            and not parsed.fragment
         ) or (
             parsed.netloc == "library.shibaura-it.ac.jp"
             and parsed.path.startswith("/opc/recordID/catalog.bib/")
@@ -515,9 +517,7 @@ class MoodleReadResult(StrictApiModel):
     def values_match_status(self) -> "MoodleReadResult":
         if self.earliest_due_at is not None:
             try:
-                due_at = datetime.fromisoformat(
-                    self.earliest_due_at.replace("Z", "+00:00")
-                )
+                due_at = datetime.fromisoformat(self.earliest_due_at.replace("Z", "+00:00"))
             except ValueError as error:
                 raise ValueError("Moodle due dates must use RFC3339 timestamps.") from error
             if due_at.tzinfo is None:
@@ -555,9 +555,7 @@ class MyLibraryReadResult(StrictApiModel):
             try:
                 datetime.strptime(self.earliest_due_date, "%Y-%m-%d")
             except ValueError as error:
-                raise ValueError(
-                    "My Library due dates must use YYYY-MM-DD."
-                ) from error
+                raise ValueError("My Library due dates must use YYYY-MM-DD.") from error
         if self.status != "known" and (
             self.loan_count
             or self.reservation_count
@@ -776,9 +774,7 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("SITRUS results must use SitrusGradeResult.")
         if self.name == "moodle_read" and not isinstance(self.result, MoodleReadResult):
             raise ValueError("Moodle results must use MoodleReadResult.")
-        if self.name == "my_library_read" and not isinstance(
-            self.result, MyLibraryReadResult
-        ):
+        if self.name == "my_library_read" and not isinstance(self.result, MyLibraryReadResult):
             raise ValueError("My Library results must use MyLibraryReadResult.")
         if self.name == "cast_read" and not isinstance(self.result, CastReadResult):
             raise ValueError("CAST results must use CastReadResult.")
@@ -786,9 +782,7 @@ class ChatToolResultRequest(StrictApiModel):
             self.result, LibraryCatalogSearchResult
         ):
             raise ValueError("Library catalog search results must use LibraryCatalogSearchResult.")
-        if self.name == "library_item_read" and not isinstance(
-            self.result, LibraryItemReadResult
-        ):
+        if self.name == "library_item_read" and not isinstance(self.result, LibraryItemReadResult):
             raise ValueError("Library item results must use LibraryItemReadResult.")
         if self.name == "library_catalog_browse" and not isinstance(
             self.result, LibraryCatalogBrowseResult
@@ -797,9 +791,7 @@ class ChatToolResultRequest(StrictApiModel):
         if self.name == "library_discovery_search" and not isinstance(
             self.result, LibraryDiscoverySearchResult
         ):
-            raise ValueError(
-                "Library discovery results must use LibraryDiscoverySearchResult."
-            )
+            raise ValueError("Library discovery results must use LibraryDiscoverySearchResult.")
         return self
 
 

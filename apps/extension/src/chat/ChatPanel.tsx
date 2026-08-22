@@ -21,10 +21,7 @@ import {
   type CalendarConnectorResult,
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
-import {
-  LIBRARY_OPAC_PERMISSION_PATTERN,
-  LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
-} from "../connectors/library-discovery";
+import { requestsLibraryTools } from "../connectors/library-discovery";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
   MOODLE_DASHBOARD_URL,
@@ -235,10 +232,6 @@ export function ChatPanel({
   const [localCastDetails, setLocalCastDetails] = useState<
     Record<string, CastLocalSnapshot>
   >({});
-  const [libraryPermissions, setLibraryPermissions] = useState({
-    catalog: false,
-    discovery: false,
-  });
   const sensitiveApproval = useRef(new Set<string>());
 
   const pageSummary = useMemo(
@@ -258,19 +251,6 @@ export function ChatPanel({
     };
   }, []);
 
-  useEffect(() => {
-    let mounted = true;
-    void Promise.all([
-      containsOriginPermission(LIBRARY_OPAC_PERMISSION_PATTERN),
-      containsOriginPermission(LIBRARY_SIT_SEARCH_PERMISSION_PATTERN),
-    ]).then(([catalog, discovery]) => {
-      if (mounted) setLibraryPermissions({ catalog, discovery });
-    });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
   async function persist(next: ChatConversation): Promise<void> {
     setConversation(next);
     setConversations((items) => {
@@ -284,7 +264,7 @@ export function ChatPanel({
     await saveConversation(next);
   }
 
-  function clientTools() {
+  function clientTools(message: string) {
     const tools: Array<{
       name:
         | "scombz_page_summary"
@@ -316,12 +296,10 @@ export function ChatPanel({
     tools.push({ name: "moodle_read", version: 1 });
     tools.push({ name: "my_library_read", version: 1 });
     tools.push({ name: "cast_read", version: 1 });
-    if (libraryPermissions.catalog) {
+    if (requestsLibraryTools(message)) {
       tools.push({ name: "library_catalog_search", version: 1 });
       tools.push({ name: "library_item_read", version: 1 });
       tools.push({ name: "library_catalog_browse", version: 1 });
-    }
-    if (libraryPermissions.discovery) {
       tools.push({ name: "library_discovery_search", version: 1 });
     }
     return tools;
@@ -1058,7 +1036,7 @@ export function ChatPanel({
         conversation_id: withUser.conversationId,
         message,
         history: toChatHistory(beforeSend.messages),
-        client_tools: clientTools(),
+        client_tools: clientTools(message),
       });
       await finishResponse(response, current);
     } catch (caught) {
@@ -1097,16 +1075,6 @@ export function ChatPanel({
       }
       sensitiveApproval.current.add(pending.approvalKey);
       const pendingTool = pending.response.calls[0]?.name;
-      if (
-        pendingTool === "library_catalog_search" ||
-        pendingTool === "library_item_read" ||
-        pendingTool === "library_catalog_browse"
-      ) {
-        setLibraryPermissions((current) => ({ ...current, catalog: true }));
-      }
-      if (pendingTool === "library_discovery_search") {
-        setLibraryPermissions((current) => ({ ...current, discovery: true }));
-      }
       setPermissionPrompt(null);
       await finishResponse(
         pending.response,

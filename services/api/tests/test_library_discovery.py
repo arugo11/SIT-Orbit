@@ -7,6 +7,7 @@ from orbit_api.models import (
     EvidenceLink,
     LibraryBibliographicRecord,
     LibraryCatalogSearchResult,
+    LibraryDiscoveryItem,
     LibraryHoldingSummary,
     LibraryItemReadResult,
 )
@@ -58,13 +59,20 @@ def test_public_library_result_is_strict_and_has_no_internal_ids() -> None:
             due_date="2026-09-01",
             reservation_count=None,
         )
+    with pytest.raises(ValueError):
+        LibraryDiscoveryItem(
+            title="公開論文",
+            authors=[],
+            source_label="SIT Search",
+            url="https://slib.shibaura-it.ac.jp/sublib/?session=secret",
+            snippet=None,
+            resource_ref=None,
+        )
 
 
 def test_library_tool_result_matching_and_public_evidence_allowlist() -> None:
     item = _item()
-    result = LibraryItemReadResult(
-        status="known", resource_ref=item.resource_ref, item=item
-    )
+    result = LibraryItemReadResult(status="known", resource_ref=item.resource_ref, item=item)
     request = ChatToolResultRequest(
         tool_call_id="library-item-call",
         name="library_item_read",
@@ -100,7 +108,7 @@ def test_fixture_library_catalog_tool_loop(monkeypatch) -> None:
                 "conversation_id": "library-fixture",
                 "message": "図書館の蔵書を検索して",
                 "client_tools": [{"name": "library_catalog_search", "version": 1}],
-            }
+            },
         )
         assert first.status_code == 200
         pending = first.json()
@@ -126,3 +134,23 @@ def test_fixture_library_catalog_tool_loop(monkeypatch) -> None:
     assert "公開ロボット工学" in payload["message"]["content_markdown"]
     assert payload["message"]["evidence"][0]["data_classification"] == "public"
     assert "material" not in second.text.lower()
+
+
+def test_fixture_does_not_repeat_library_search_from_history(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "library-history-gate",
+                "message": "ありがとう。今日はここまでで大丈夫です。",
+                "history": [
+                    {"role": "user", "content": "図書館の蔵書を検索して"},
+                    {"role": "assistant", "content": "検索します。"},
+                ],
+                "client_tools": [{"name": "library_catalog_search", "version": 1}],
+            },
+        )
+    assert response.status_code == 200
+    assert response.json()["status"] == "completed"

@@ -73,9 +73,7 @@ _FIXTURE_SCOMBZ_QUERY = re.compile(
     re.IGNORECASE,
 )
 _FIXTURE_SITRUS_QUERY = re.compile(r"(?:成績|単位|GPA|評価|取得済み)", re.IGNORECASE)
-_FIXTURE_MOODLE_QUERY = re.compile(
-    r"(?:moodle|ムードル|教材|コース|活動|未提出)", re.IGNORECASE
-)
+_FIXTURE_MOODLE_QUERY = re.compile(r"(?:moodle|ムードル|教材|コース|活動|未提出)", re.IGNORECASE)
 _FIXTURE_MY_LIBRARY_QUERY = re.compile(
     r"(?:my\s*library|図書館|貸出|返却|延滞|予約図書)", re.IGNORECASE
 )
@@ -195,8 +193,8 @@ class FixtureChatBackend:
     ) -> bool:
         if LIBRARY_CATALOG_SEARCH_TOOL_NAME not in advertised_tools:
             return False
-        recent_text = "\n".join(item.content for item in history[-4:])
-        text = f"{recent_text}\n{message}"
+        del history
+        text = message
         return bool(_FIXTURE_LIBRARY_CATALOG_QUERY.search(text)) and not bool(
             _FIXTURE_LIBRARY_DISCOVERY_QUERY.search(text)
         )
@@ -209,8 +207,8 @@ class FixtureChatBackend:
     ) -> bool:
         if LIBRARY_CATALOG_BROWSE_TOOL_NAME not in advertised_tools:
             return False
-        recent_text = "\n".join(item.content for item in history[-4:])
-        return bool(_FIXTURE_LIBRARY_BROWSE_QUERY.search(f"{recent_text}\n{message}"))
+        del history
+        return bool(_FIXTURE_LIBRARY_BROWSE_QUERY.search(message))
 
     @staticmethod
     def _requests_library_discovery_search(
@@ -220,8 +218,8 @@ class FixtureChatBackend:
     ) -> bool:
         if LIBRARY_DISCOVERY_SEARCH_TOOL_NAME not in advertised_tools:
             return False
-        recent_text = "\n".join(item.content for item in history[-4:])
-        return bool(_FIXTURE_LIBRARY_DISCOVERY_QUERY.search(f"{recent_text}\n{message}"))
+        del history
+        return bool(_FIXTURE_LIBRARY_DISCOVERY_QUERY.search(message))
 
     @staticmethod
     def _requests_library_item_read(
@@ -231,8 +229,8 @@ class FixtureChatBackend:
     ) -> bool:
         if LIBRARY_ITEM_READ_TOOL_NAME not in advertised_tools:
             return False
-        recent_text = "\n".join(item.content for item in history[-4:])
-        return "orbit-library://record/" in f"{recent_text}\n{message}"
+        del history
+        return "orbit-library://record/" in message
 
     async def start_chat(
         self,
@@ -268,9 +266,11 @@ class FixtureChatBackend:
                 )
             )
         if self._requests_library_catalog_browse(message, history, advertised):
-            kind = "loan_ranking" if re.search(
-                r"ランキング|loan\s*ranking", message, re.IGNORECASE
-            ) else "new_books"
+            kind = (
+                "loan_ranking"
+                if re.search(r"ランキング|loan\s*ranking", message, re.IGNORECASE)
+                else "new_books"
+            )
             return ChatAgentExecution(
                 deferred=DeferredChatRun(
                     messages=[],
@@ -356,13 +356,13 @@ class FixtureChatBackend:
             | SyllabusSearchResult
             | BrowserReadResult
             | SitrusGradeResult
-        | MoodleReadResult
-        | MyLibraryReadResult
-        | CastReadResult
-        | LibraryCatalogSearchResult
-        | LibraryItemReadResult
-        | LibraryCatalogBrowseResult
-        | LibraryDiscoverySearchResult
+            | MoodleReadResult
+            | MyLibraryReadResult
+            | CastReadResult
+            | LibraryCatalogSearchResult
+            | LibraryItemReadResult
+            | LibraryCatalogBrowseResult
+            | LibraryDiscoverySearchResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
@@ -448,9 +448,7 @@ class FixtureChatBackend:
             lines.append(f"- 新着インターン: {tool_result.new_internship_count}件")
             lines.append(f"- 新着説明会: {tool_result.new_event_count}件")
             lines.append(
-                "- 相談予約: あり"
-                if tool_result.has_counseling_reservation
-                else "- 相談予約: なし"
+                "- 相談予約: あり" if tool_result.has_counseling_reservation else "- 相談予約: なし"
             )
             if tool_result.nearest_notice_date:
                 lines.append(f"- 直近掲載日: {tool_result.nearest_notice_date}")
@@ -462,9 +460,7 @@ class FixtureChatBackend:
             )
         if deferred.tool_name == MY_LIBRARY_TOOL_NAME:
             if not isinstance(tool_result, MyLibraryReadResult):
-                raise ValueError(
-                    "The fixture My Library call requires a MyLibraryReadResult."
-                )
+                raise ValueError("The fixture My Library call requires a MyLibraryReadResult.")
             evidence = next(
                 (item for item in context if is_derived_my_library_evidence(item)),
                 None,
@@ -866,7 +862,8 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         locator=locator,
         data_classification=(
             "public"
-            if request.name in {
+            if request.name
+            in {
                 SYLLABUS_SEARCH_TOOL_NAME,
                 LIBRARY_CATALOG_SEARCH_TOOL_NAME,
                 LIBRARY_ITEM_READ_TOOL_NAME,
