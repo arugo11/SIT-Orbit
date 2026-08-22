@@ -114,6 +114,8 @@ My Libraryは、利用者が`my_library_read`を明示実行した場合だけ�
 
 CASTは、利用者が`cast_read`を明示実行した場合だけ、正規入口から`/career/top/student`を参照する。お知らせ件名・掲載日を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`CastReadResult`のお知らせ件数、新着求人・インターン・会社説明会件数、相談予約の有無、直近掲載日だけである。`Full access`でもrunごとに送信確認を行い、進路希望、自己PR、応募履歴、氏名、前回ログイン、個別企業への提出内容を結果へ含めない。ライブCAST Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
 
+求人・インターン検索は、実ログイン環境で確認した求人検索結果`/career/job_offer_search/search`とインターン検索`/career/internship_search`だけを対象にする。カードの詳細は端末内へ投影し、モデルへ送る値は`CastOpportunityAgentProjection`の件数、状態別件数、最短締切だけに限定する。企業名、仕事内容、企業コード、求人番号、応募方法、添付、raw HTML、フォーム値を外部payloadへ含めない。未確認path、query/fragment付きURL、404、未検索フォーム、ログイン画面、構造不一致は`unavailable`として扱い、空データの成功や推測URLへのfallbackを行わない。
+
 ### CAST Career Vaultと仮名化Gateway
 
 CAST Career Agentの人物情報は「完全匿名化」ではなく、対応表で復元可能な「仮名化＋間接識別子の一般化」として扱う。モデル入力を作る前に、Typed Snapshotを必ず次のGatewayへ通す。
