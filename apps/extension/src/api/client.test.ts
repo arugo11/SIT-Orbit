@@ -243,7 +243,7 @@ describe("AgentApiClient", () => {
     await expect(client.health()).resolves.toBe(true);
     expect(fetcher).toHaveBeenCalledWith("https://agent.example.test/health", {
       method: "GET",
-      headers: { Authorization: "Bearer demo-token" },
+      headers: {},
     });
   });
 

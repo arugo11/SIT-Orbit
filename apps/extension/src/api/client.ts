@@ -716,7 +716,9 @@ export class AgentApiClient {
     try {
       response = await this.fetcher(`${this.baseUrl}/health`, {
         method: "GET",
-        headers: this.headers(false),
+        // `/health` is intentionally public. Sending the bearer token here
+        // needlessly triggers a CORS preflight from extension pages.
+        headers: {},
       });
     } catch (error) {
       const message =
