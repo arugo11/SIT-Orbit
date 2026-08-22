@@ -1,4 +1,16 @@
+import type {
+  LibraryCatalogBrowseResult,
+  LibraryCatalogSearchResult,
+  LibraryDiscoverySearchResult,
+  LibraryItemReadResult,
+} from "../api/client";
 import { isOpaqueDriveSelectionId } from "../connectors/google-drive";
+import type {
+  LibraryCatalogBrowseArguments,
+  LibraryCatalogSearchArguments,
+  LibraryDiscoverySearchArguments,
+} from "../connectors/library-discovery";
+import { isLibraryResourceRef } from "../connectors/library-discovery";
 import {
   classifyPageKind,
   type PageContext,
@@ -41,6 +53,10 @@ export const MESSAGE_TYPES = {
   myLibraryOpen: "my-library-open",
   castRead: "cast-read",
   castOpen: "cast-open",
+  libraryCatalogSearch: "library-catalog-search",
+  libraryItemRead: "library-item-read",
+  libraryCatalogBrowse: "library-catalog-browse",
+  libraryDiscoverySearch: "library-discovery-search",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -162,6 +178,51 @@ export interface CastOpenMessage {
   type: typeof MESSAGE_TYPES.castOpen;
 }
 
+export interface LibraryCatalogSearchMessage
+  extends Omit<LibraryCatalogSearchArguments, "limit"> {
+  type: typeof MESSAGE_TYPES.libraryCatalogSearch;
+  tool_call_id: string;
+  limit?: number;
+}
+
+export interface LibraryItemReadMessage {
+  type: typeof MESSAGE_TYPES.libraryItemRead;
+  tool_call_id: string;
+  resource_ref: string;
+}
+
+export interface LibraryCatalogBrowseMessage
+  extends LibraryCatalogBrowseArguments {
+  type: typeof MESSAGE_TYPES.libraryCatalogBrowse;
+  tool_call_id: string;
+}
+
+export interface LibraryDiscoverySearchMessage
+  extends LibraryDiscoverySearchArguments {
+  type: typeof MESSAGE_TYPES.libraryDiscoverySearch;
+  tool_call_id: string;
+}
+
+export type LibraryCatalogSearchResponse =
+  | { status: "known"; projection: LibraryCatalogSearchResult }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "unavailable"; reason_code: string };
+
+export type LibraryItemReadResponse =
+  | { status: "known"; projection: LibraryItemReadResult }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "unavailable"; reason_code: string };
+
+export type LibraryCatalogBrowseResponse =
+  | { status: "known"; projection: LibraryCatalogBrowseResult }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "unavailable"; reason_code: string };
+
+export type LibraryDiscoverySearchResponse =
+  | { status: "known"; projection: LibraryDiscoverySearchResult }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "unavailable"; reason_code: string };
+
 export type CastReadResponse =
   | {
       status: "known";
@@ -233,7 +294,11 @@ export type ExtensionMessage =
   | MyLibraryReadMessage
   | MyLibraryOpenMessage
   | CastReadMessage
-  | CastOpenMessage;
+  | CastOpenMessage
+  | LibraryCatalogSearchMessage
+  | LibraryItemReadMessage
+  | LibraryCatalogBrowseMessage
+  | LibraryDiscoverySearchMessage;
 
 export function isBrowserReadMessage(
   message: unknown,
@@ -331,6 +396,129 @@ export function isCastOpenMessage(
   message: unknown,
 ): message is CastOpenMessage {
   return isMessageType(message, MESSAGE_TYPES.castOpen);
+}
+
+export function isLibraryCatalogSearchMessage(
+  message: unknown,
+): message is LibraryCatalogSearchMessage {
+  if (
+    !isRecord(message) ||
+    message.type !== MESSAGE_TYPES.libraryCatalogSearch ||
+    typeof message.tool_call_id !== "string" ||
+    !message.tool_call_id ||
+    typeof message.query !== "string" ||
+    !message.query.trim() ||
+    message.query.length > 200
+  ) {
+    return false;
+  }
+  if (
+    message.author !== undefined &&
+    message.author !== null &&
+    (typeof message.author !== "string" || message.author.length > 200)
+  ) {
+    return false;
+  }
+  if (
+    message.subject !== undefined &&
+    message.subject !== null &&
+    (typeof message.subject !== "string" || message.subject.length > 200)
+  ) {
+    return false;
+  }
+  if (
+    message.isbn !== undefined &&
+    message.isbn !== null &&
+    (typeof message.isbn !== "string" || message.isbn.length > 32)
+  ) {
+    return false;
+  }
+  if (
+    message.pub_year !== undefined &&
+    message.pub_year !== null &&
+    (typeof message.pub_year !== "number" ||
+      !Number.isInteger(message.pub_year) ||
+      message.pub_year < 1000 ||
+      message.pub_year > 2100)
+  ) {
+    return false;
+  }
+  if (
+    message.campus !== undefined &&
+    message.campus !== "toyosu" &&
+    message.campus !== "omiya" &&
+    message.campus !== "any"
+  ) {
+    return false;
+  }
+  if (
+    message.format !== undefined &&
+    message.format !== "book" &&
+    message.format !== "journal" &&
+    message.format !== "ebook" &&
+    message.format !== "any"
+  ) {
+    return false;
+  }
+  return (
+    message.limit === undefined ||
+    (typeof message.limit === "number" &&
+      Number.isInteger(message.limit) &&
+      message.limit >= 1 &&
+      message.limit <= 10)
+  );
+}
+
+export function isLibraryItemReadMessage(
+  message: unknown,
+): message is LibraryItemReadMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.libraryItemRead &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    isLibraryResourceRef(message.resource_ref)
+  );
+}
+
+export function isLibraryCatalogBrowseMessage(
+  message: unknown,
+): message is LibraryCatalogBrowseMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.libraryCatalogBrowse &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    (message.kind === "new_books" || message.kind === "loan_ranking") &&
+    (message.campus === undefined ||
+      message.campus === "toyosu" ||
+      message.campus === "omiya" ||
+      message.campus === "any") &&
+    (message.limit === undefined ||
+      (typeof message.limit === "number" &&
+        Number.isInteger(message.limit) &&
+        message.limit >= 1 &&
+        message.limit <= 10))
+  );
+}
+
+export function isLibraryDiscoverySearchMessage(
+  message: unknown,
+): message is LibraryDiscoverySearchMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.libraryDiscoverySearch &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    typeof message.query === "string" &&
+    message.query.trim().length > 0 &&
+    message.query.length <= 200 &&
+    (message.limit === undefined ||
+      (typeof message.limit === "number" &&
+        Number.isInteger(message.limit) &&
+        message.limit >= 1 &&
+        message.limit <= 10))
+  );
 }
 
 export function isOpenWorkspaceMessage(

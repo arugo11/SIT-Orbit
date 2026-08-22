@@ -264,6 +264,207 @@ class BrowserReadResult(StrictApiModel):
         return self
 
 
+LibrarySearchCampus = Literal["toyosu", "omiya", "any"]
+LibrarySearchFormat = Literal["book", "journal", "ebook", "any"]
+LibraryRecordFormat = Literal["book", "journal", "ebook", "unknown"]
+LibraryHoldingCampus = Literal["toyosu", "omiya", "unknown"]
+LibraryHoldingStatus = Literal["available", "unavailable", "unknown"]
+
+
+class LibraryHoldingSummary(StrictApiModel):
+    """Public holding status rendered by the official OPAC.
+
+    Internal material, copy, and holding identifiers deliberately have no
+    representation in this model.
+    """
+
+    campus: LibraryHoldingCampus
+    location: StrictStr | None = Field(default=None, max_length=200)
+    call_number: StrictStr | None = Field(default=None, max_length=100)
+    status: LibraryHoldingStatus
+    due_date: StrictStr | None = Field(default=None, max_length=10)
+    reservation_count: StrictInt | None = Field(default=None, ge=0, le=10000)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "LibraryHoldingSummary":
+        if self.due_date is not None:
+            try:
+                datetime.strptime(self.due_date, "%Y-%m-%d")
+            except ValueError as error:
+                raise ValueError("Library holding due dates must use YYYY-MM-DD.") from error
+        if self.status == "unknown" and (
+            self.due_date is not None or self.reservation_count is not None
+        ):
+            raise ValueError("Unknown library holdings cannot include derived counts or dates.")
+        return self
+
+
+class LibraryRelatedRecordRef(StrictApiModel):
+    """A public related-record reference without material identifiers."""
+
+    resource_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    title: StrictStr = Field(min_length=1, max_length=300)
+    relation: Literal["related", "edition", "translation", "other"] = "related"
+
+
+class LibraryBibliographicRecord(StrictApiModel):
+    """Public bibliographic metadata and rendered holdings from the OPAC."""
+
+    resource_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    title: StrictStr = Field(min_length=1, max_length=300)
+    authors: list[StrictStr] = Field(default_factory=list, max_length=20)
+    subjects: list[StrictStr] = Field(default_factory=list, max_length=20)
+    isbn: StrictStr | None = Field(default=None, max_length=32)
+    publisher: StrictStr | None = Field(default=None, max_length=300)
+    publication_year: StrictInt | None = Field(default=None, ge=1000, le=2100)
+    format: LibraryRecordFormat = "unknown"
+    campus: LibrarySearchCampus = "any"
+    url: StrictStr = Field(min_length=1, max_length=500)
+    holdings: list[LibraryHoldingSummary] = Field(
+        default_factory=list,
+        min_length=1,
+        max_length=20,
+    )
+    related_records: list[LibraryRelatedRecordRef] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def official_record_url(self) -> "LibraryBibliographicRecord":
+        parsed = urlparse(self.url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "library.shibaura-it.ac.jp"
+            or not parsed.path.startswith("/opc/recordID/catalog.bib/")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("Library records must link to an official OPAC record.")
+        return self
+
+
+# A shorter name is useful at API call sites while retaining one canonical
+# schema definition for OpenAPI and the client guards.
+LibraryCatalogItem = LibraryBibliographicRecord
+
+
+class LibraryCatalogSearchResult(StrictApiModel):
+    """Bounded public results from the official OPAC search form."""
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    query: StrictStr = Field(min_length=1, max_length=200)
+    items: list[LibraryCatalogItem] = Field(default_factory=list, max_length=10)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_items(self) -> "LibraryCatalogSearchResult":
+        if self.status == "unavailable" and self.items:
+            raise ValueError("Unavailable library searches cannot include items.")
+        return self
+
+
+class LibraryItemReadResult(StrictApiModel):
+    """Detailed public OPAC record resolved from an opaque resource reference."""
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    resource_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    item: LibraryCatalogItem | None = None
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def item_matches_status(self) -> "LibraryItemReadResult":
+        if self.status == "known" and self.item is None:
+            raise ValueError("Known library item reads require an item.")
+        if self.status == "unavailable" and self.item is not None:
+            raise ValueError("Unavailable library item reads cannot include an item.")
+        if self.item is not None and self.item.resource_ref != self.resource_ref:
+            raise ValueError("Library item resource references must match.")
+        return self
+
+
+class LibraryCatalogBrowseResult(StrictApiModel):
+    """Public new-book or loan-ranking rows from the official catalog pages."""
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    kind: Literal["new_books", "loan_ranking"]
+    campus: LibrarySearchCampus = "any"
+    items: list[LibraryCatalogItem] = Field(default_factory=list, max_length=10)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_items(self) -> "LibraryCatalogBrowseResult":
+        if self.status == "unavailable" and self.items:
+            raise ValueError("Unavailable library browse results cannot include items.")
+        return self
+
+
+class LibraryDiscoveryItem(StrictApiModel):
+    """Displayed public metadata/link from the official SIT Search page.
+
+    This schema intentionally has no full-text, download, or persistence field.
+    """
+
+    title: StrictStr = Field(min_length=1, max_length=300)
+    authors: list[StrictStr] = Field(default_factory=list, max_length=20)
+    source_label: StrictStr | None = Field(default=None, max_length=200)
+    url: StrictStr = Field(min_length=1, max_length=500)
+    snippet: StrictStr | None = Field(default=None, max_length=500)
+    resource_ref: StrictStr | None = Field(
+        default=None,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+
+    @model_validator(mode="after")
+    def official_discovery_url(self) -> "LibraryDiscoveryItem":
+        parsed = urlparse(self.url)
+        if parsed.scheme != "https" or parsed.username or parsed.password:
+            raise ValueError("Library discovery links must be HTTPS without credentials.")
+        official_path = (
+            parsed.netloc == "slib.shibaura-it.ac.jp"
+            and parsed.path.startswith("/sublib/")
+            and not parsed.query
+            and not parsed.fragment
+        ) or (
+            parsed.netloc == "library.shibaura-it.ac.jp"
+            and parsed.path.startswith("/opc/recordID/catalog.bib/")
+            and not parsed.query
+            and not parsed.fragment
+        )
+        if not official_path:
+            raise ValueError("Library discovery links must use an official SIT origin.")
+        return self
+
+
+class LibraryDiscoverySearchResult(StrictApiModel):
+    """Bounded metadata-only results from official SIT Search."""
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    query: StrictStr = Field(min_length=1, max_length=200)
+    items: list[LibraryDiscoveryItem] = Field(default_factory=list, max_length=10)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_items(self) -> "LibraryDiscoverySearchResult":
+        if self.status == "unavailable" and self.items:
+            raise ValueError("Unavailable library discovery results cannot include items.")
+        return self
+
+
 class SitrusGradeItem(StrictApiModel):
     """One minimized grade row extracted from the displayed SITRUS notice."""
 
@@ -316,9 +517,7 @@ class MoodleReadResult(StrictApiModel):
     def values_match_status(self) -> "MoodleReadResult":
         if self.earliest_due_at is not None:
             try:
-                due_at = datetime.fromisoformat(
-                    self.earliest_due_at.replace("Z", "+00:00")
-                )
+                due_at = datetime.fromisoformat(self.earliest_due_at.replace("Z", "+00:00"))
             except ValueError as error:
                 raise ValueError("Moodle due dates must use RFC3339 timestamps.") from error
             if due_at.tzinfo is None:
@@ -356,9 +555,7 @@ class MyLibraryReadResult(StrictApiModel):
             try:
                 datetime.strptime(self.earliest_due_date, "%Y-%m-%d")
             except ValueError as error:
-                raise ValueError(
-                    "My Library due dates must use YYYY-MM-DD."
-                ) from error
+                raise ValueError("My Library due dates must use YYYY-MM-DD.") from error
         if self.status != "known" and (
             self.loan_count
             or self.reservation_count
@@ -497,6 +694,10 @@ ChatToolName = Literal[
     "moodle_read",
     "my_library_read",
     "cast_read",
+    "library_catalog_search",
+    "library_item_read",
+    "library_catalog_browse",
+    "library_discovery_search",
 ]
 
 
@@ -547,6 +748,10 @@ class ChatToolResultRequest(StrictApiModel):
         | MoodleReadResult
         | MyLibraryReadResult
         | CastReadResult
+        | LibraryCatalogSearchResult
+        | LibraryItemReadResult
+        | LibraryCatalogBrowseResult
+        | LibraryDiscoverySearchResult
     )
 
     @model_validator(mode="after")
@@ -569,12 +774,24 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("SITRUS results must use SitrusGradeResult.")
         if self.name == "moodle_read" and not isinstance(self.result, MoodleReadResult):
             raise ValueError("Moodle results must use MoodleReadResult.")
-        if self.name == "my_library_read" and not isinstance(
-            self.result, MyLibraryReadResult
-        ):
+        if self.name == "my_library_read" and not isinstance(self.result, MyLibraryReadResult):
             raise ValueError("My Library results must use MyLibraryReadResult.")
         if self.name == "cast_read" and not isinstance(self.result, CastReadResult):
             raise ValueError("CAST results must use CastReadResult.")
+        if self.name == "library_catalog_search" and not isinstance(
+            self.result, LibraryCatalogSearchResult
+        ):
+            raise ValueError("Library catalog search results must use LibraryCatalogSearchResult.")
+        if self.name == "library_item_read" and not isinstance(self.result, LibraryItemReadResult):
+            raise ValueError("Library item results must use LibraryItemReadResult.")
+        if self.name == "library_catalog_browse" and not isinstance(
+            self.result, LibraryCatalogBrowseResult
+        ):
+            raise ValueError("Library browse results must use LibraryCatalogBrowseResult.")
+        if self.name == "library_discovery_search" and not isinstance(
+            self.result, LibraryDiscoverySearchResult
+        ):
+            raise ValueError("Library discovery results must use LibraryDiscoverySearchResult.")
         return self
 
 
@@ -632,6 +849,15 @@ __all__ = [
     "SitrusGradeResult",
     "MoodleReadResult",
     "MyLibraryReadResult",
+    "LibraryHoldingSummary",
+    "LibraryRelatedRecordRef",
+    "LibraryBibliographicRecord",
+    "LibraryCatalogItem",
+    "LibraryCatalogSearchResult",
+    "LibraryItemReadResult",
+    "LibraryCatalogBrowseResult",
+    "LibraryDiscoveryItem",
+    "LibraryDiscoverySearchResult",
     "CalendarAvailabilityInterval",
     "CalendarAvailabilityResult",
     "ClientTool",

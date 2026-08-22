@@ -26,6 +26,10 @@ from orbit_api.models import (
     ChatToolCall,
     ChatToolResultRequest,
     EvidenceLink,
+    LibraryCatalogBrowseResult,
+    LibraryCatalogSearchResult,
+    LibraryDiscoverySearchResult,
+    LibraryItemReadResult,
     MoodleReadResult,
     MyLibraryReadResult,
     ScombzPageSummaryResult,
@@ -40,6 +44,11 @@ from .pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     CAST_LOCATOR_PREFIX,
     CAST_TOOL_NAME,
+    LIBRARY_CATALOG_BROWSE_TOOL_NAME,
+    LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+    LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+    LIBRARY_ITEM_READ_TOOL_NAME,
+    LIBRARY_LOCATOR_PREFIX,
     MOODLE_TOOL_NAME,
     MY_LIBRARY_TOOL_NAME,
     SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX,
@@ -49,6 +58,7 @@ from .pydantic_ai_backend import (
     ChatDraft,
     DeferredChatRun,
     is_derived_cast_evidence,
+    is_derived_library_evidence,
     is_derived_moodle_evidence,
     is_derived_my_library_evidence,
     is_derived_scombz_read_evidence,
@@ -63,14 +73,21 @@ _FIXTURE_SCOMBZ_QUERY = re.compile(
     re.IGNORECASE,
 )
 _FIXTURE_SITRUS_QUERY = re.compile(r"(?:成績|単位|GPA|評価|取得済み)", re.IGNORECASE)
-_FIXTURE_MOODLE_QUERY = re.compile(
-    r"(?:moodle|ムードル|教材|コース|活動|未提出)", re.IGNORECASE
-)
+_FIXTURE_MOODLE_QUERY = re.compile(r"(?:moodle|ムードル|教材|コース|活動|未提出)", re.IGNORECASE)
 _FIXTURE_MY_LIBRARY_QUERY = re.compile(
     r"(?:my\s*library|図書館|貸出|返却|延滞|予約図書)", re.IGNORECASE
 )
 _FIXTURE_CAST_QUERY = re.compile(
     r"(?:cast|キャリア|就活|求人|インターン|会社説明会|相談予約)", re.IGNORECASE
+)
+_FIXTURE_LIBRARY_CATALOG_QUERY = re.compile(
+    r"(?:opac|蔵書|図書館|書籍|本を?検索|資料を?検索|catalog|isbn)", re.IGNORECASE
+)
+_FIXTURE_LIBRARY_BROWSE_QUERY = re.compile(
+    r"(?:新着図書|新着本|貸出ランキング|ランキング|loan\s*ranking)", re.IGNORECASE
+)
+_FIXTURE_LIBRARY_DISCOVERY_QUERY = re.compile(
+    r"(?:sit\s*search|電子ジャーナル|電子書籍|論文|文献|discovery)", re.IGNORECASE
 )
 
 
@@ -99,6 +116,10 @@ class ChatBackend(Protocol):
             | MoodleReadResult
             | MyLibraryReadResult
             | CastReadResult
+            | LibraryCatalogSearchResult
+            | LibraryItemReadResult
+            | LibraryCatalogBrowseResult
+            | LibraryDiscoverySearchResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
@@ -164,6 +185,53 @@ class FixtureChatBackend:
         recent_text = "\n".join(item.content for item in history[-4:])
         return bool(_FIXTURE_CAST_QUERY.search(f"{recent_text}\n{message}"))
 
+    @staticmethod
+    def _requests_library_catalog_search(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if LIBRARY_CATALOG_SEARCH_TOOL_NAME not in advertised_tools:
+            return False
+        del history
+        text = message
+        return bool(_FIXTURE_LIBRARY_CATALOG_QUERY.search(text)) and not bool(
+            _FIXTURE_LIBRARY_DISCOVERY_QUERY.search(text)
+        )
+
+    @staticmethod
+    def _requests_library_catalog_browse(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if LIBRARY_CATALOG_BROWSE_TOOL_NAME not in advertised_tools:
+            return False
+        del history
+        return bool(_FIXTURE_LIBRARY_BROWSE_QUERY.search(message))
+
+    @staticmethod
+    def _requests_library_discovery_search(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if LIBRARY_DISCOVERY_SEARCH_TOOL_NAME not in advertised_tools:
+            return False
+        del history
+        return bool(_FIXTURE_LIBRARY_DISCOVERY_QUERY.search(message))
+
+    @staticmethod
+    def _requests_library_item_read(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if LIBRARY_ITEM_READ_TOOL_NAME not in advertised_tools:
+            return False
+        del history
+        return "orbit-library://record/" in message
+
     async def start_chat(
         self,
         *,
@@ -175,6 +243,53 @@ class FixtureChatBackend:
     ) -> ChatAgentExecution:
         del context
         advertised = set(advertised_tools or set())
+        if self._requests_library_item_read(message, history, advertised):
+            match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
+            if match is not None:
+                return ChatAgentExecution(
+                    deferred=DeferredChatRun(
+                        messages=[],
+                        tool_call_id=f"fixture-library-item-{uuid4().hex}",
+                        conversation_id=conversation_id,
+                        tool_name=LIBRARY_ITEM_READ_TOOL_NAME,
+                        arguments={"resource_ref": match.group(0)},
+                    )
+                )
+        if self._requests_library_discovery_search(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-library-discovery-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+                    arguments={"query": message.strip()[:200], "limit": 10},
+                )
+            )
+        if self._requests_library_catalog_browse(message, history, advertised):
+            kind = (
+                "loan_ranking"
+                if re.search(r"ランキング|loan\s*ranking", message, re.IGNORECASE)
+                else "new_books"
+            )
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-library-browse-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=LIBRARY_CATALOG_BROWSE_TOOL_NAME,
+                    arguments={"kind": kind, "campus": "any", "limit": 10},
+                )
+            )
+        if self._requests_library_catalog_search(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-library-catalog-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+                    arguments={"query": message.strip()[:200], "limit": 10},
+                )
+            )
         if self._requests_cast_read(message, history, advertised):
             return ChatAgentExecution(
                 deferred=DeferredChatRun(
@@ -244,12 +359,80 @@ class FixtureChatBackend:
             | MoodleReadResult
             | MyLibraryReadResult
             | CastReadResult
+            | LibraryCatalogSearchResult
+            | LibraryItemReadResult
+            | LibraryCatalogBrowseResult
+            | LibraryDiscoverySearchResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
         seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
     ) -> ChatAgentExecution:
         del advertised_tools, seen_tool_call_ids
+        if deferred.tool_name in {
+            LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+            LIBRARY_ITEM_READ_TOOL_NAME,
+            LIBRARY_CATALOG_BROWSE_TOOL_NAME,
+            LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+        }:
+            if not isinstance(
+                tool_result,
+                (
+                    LibraryCatalogSearchResult,
+                    LibraryItemReadResult,
+                    LibraryCatalogBrowseResult,
+                    LibraryDiscoverySearchResult,
+                ),
+            ):
+                raise ValueError("The fixture library call received an invalid result.")
+            evidence = next(
+                (item for item in context if is_derived_library_evidence(item)),
+                None,
+            )
+            if evidence is None:
+                raise ValueError("A resumed fixture Chat run requires library evidence.")
+            if deferred.tool_name == LIBRARY_ITEM_READ_TOOL_NAME:
+                if not isinstance(tool_result, LibraryItemReadResult):
+                    raise ValueError("The fixture item call requires a LibraryItemReadResult.")
+                lines = ["図書館の公開カタログ詳細を確認しました。"]
+                if tool_result.item is not None:
+                    lines.append(f"- 書名: {tool_result.item.title}")
+                    if tool_result.item.authors:
+                        lines.append(f"- 著者: {', '.join(tool_result.item.authors)}")
+                    if tool_result.item.publication_year:
+                        lines.append(f"- 出版年: {tool_result.item.publication_year}")
+                else:
+                    lines.append("- 公開レコードの詳細は取得できませんでした。")
+            elif deferred.tool_name == LIBRARY_DISCOVERY_SEARCH_TOOL_NAME:
+                if not isinstance(tool_result, LibraryDiscoverySearchResult):
+                    raise ValueError(
+                        "The fixture discovery call requires a LibraryDiscoverySearchResult."
+                    )
+                lines = ["SIT Searchの公開メタデータを確認しました。"]
+                for item in tool_result.items:
+                    lines.append(f"- {item.title}")
+                if not tool_result.items:
+                    lines.append("- 表示された公開メタデータはありませんでした。")
+            else:
+                if isinstance(tool_result, LibraryCatalogSearchResult):
+                    heading = "図書館の公開カタログ検索結果を確認しました。"
+                    items = tool_result.items
+                elif isinstance(tool_result, LibraryCatalogBrowseResult):
+                    heading = "図書館の公開カタログ一覧を確認しました。"
+                    items = tool_result.items
+                else:
+                    raise ValueError("The fixture library result type does not match the call.")
+                lines = [heading]
+                for item in items:
+                    lines.append(f"- {item.title}")
+                if not items:
+                    lines.append("- 表示された公開レコードはありませんでした。")
+            return ChatAgentExecution(
+                draft=ChatDraft(
+                    content_markdown="\n".join(lines),
+                    evidence_ids=[evidence.evidence_id],
+                )
+            )
         if deferred.tool_name == CAST_TOOL_NAME:
             if not isinstance(tool_result, CastReadResult):
                 raise ValueError("The fixture CAST call requires a CastReadResult.")
@@ -265,9 +448,7 @@ class FixtureChatBackend:
             lines.append(f"- 新着インターン: {tool_result.new_internship_count}件")
             lines.append(f"- 新着説明会: {tool_result.new_event_count}件")
             lines.append(
-                "- 相談予約: あり"
-                if tool_result.has_counseling_reservation
-                else "- 相談予約: なし"
+                "- 相談予約: あり" if tool_result.has_counseling_reservation else "- 相談予約: なし"
             )
             if tool_result.nearest_notice_date:
                 lines.append(f"- 直近掲載日: {tool_result.nearest_notice_date}")
@@ -279,9 +460,7 @@ class FixtureChatBackend:
             )
         if deferred.tool_name == MY_LIBRARY_TOOL_NAME:
             if not isinstance(tool_result, MyLibraryReadResult):
-                raise ValueError(
-                    "The fixture My Library call requires a MyLibraryReadResult."
-                )
+                raise ValueError("The fixture My Library call requires a MyLibraryReadResult.")
             evidence = next(
                 (item for item in context if is_derived_my_library_evidence(item)),
                 None,
@@ -643,6 +822,22 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "CASTから導出したキャリア情報の概要"
         source_type = "career"
         locator = f"{CAST_LOCATOR_PREFIX}{uuid4().hex}"
+    elif request.name == LIBRARY_CATALOG_SEARCH_TOOL_NAME:
+        title = "芝浦工業大学公式OPACの公開カタログ検索"
+        source_type = "library"
+        locator = f"{LIBRARY_LOCATOR_PREFIX}{run_id}"
+    elif request.name == LIBRARY_ITEM_READ_TOOL_NAME:
+        title = "芝浦工業大学公式OPACの公開書誌レコード"
+        source_type = "library"
+        locator = f"{LIBRARY_LOCATOR_PREFIX}{run_id}"
+    elif request.name == LIBRARY_CATALOG_BROWSE_TOOL_NAME:
+        title = "芝浦工業大学公式OPACの新着・貸出ランキング"
+        source_type = "library"
+        locator = f"{LIBRARY_LOCATOR_PREFIX}{run_id}"
+    elif request.name == LIBRARY_DISCOVERY_SEARCH_TOOL_NAME:
+        title = "芝浦工業大学公式SIT Searchの公開メタデータ"
+        source_type = "library"
+        locator = f"{LIBRARY_LOCATOR_PREFIX}{run_id}"
     else:
         raise ValueError("The chat tool is not enabled in the current API build.")
     evidence_prefix = {
@@ -655,6 +850,10 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         MOODLE_TOOL_NAME: "moodle-summary-v1",
         MY_LIBRARY_TOOL_NAME: "my-library-summary-v1",
         CAST_TOOL_NAME: "cast-summary-v1",
+        LIBRARY_CATALOG_SEARCH_TOOL_NAME: "library-catalog-search-v1",
+        LIBRARY_ITEM_READ_TOOL_NAME: "library-item-read-v1",
+        LIBRARY_CATALOG_BROWSE_TOOL_NAME: "library-catalog-browse-v1",
+        LIBRARY_DISCOVERY_SEARCH_TOOL_NAME: "library-discovery-search-v1",
     }[request.name]
     return EvidenceLink(
         evidence_id=f"{evidence_prefix}-{run_id}",
@@ -663,7 +862,14 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         locator=locator,
         data_classification=(
             "public"
-            if request.name == SYLLABUS_SEARCH_TOOL_NAME
+            if request.name
+            in {
+                SYLLABUS_SEARCH_TOOL_NAME,
+                LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+                LIBRARY_ITEM_READ_TOOL_NAME,
+                LIBRARY_CATALOG_BROWSE_TOOL_NAME,
+                LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+            }
             else (
                 request.result.data_classification
                 if isinstance(request.result, BrowserReadResult)
@@ -776,7 +982,19 @@ class ChatRunService:
         self.store.peek(run_id)
         if os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
             raise ValueError("Live client tools require ORBIT_OBSERVABILITY=off.")
-        if getattr(request.result, "status", None) in {"reauth_required", "unavailable"}:
+        unavailable_library_result = isinstance(
+            request.result,
+            (
+                LibraryCatalogSearchResult,
+                LibraryItemReadResult,
+                LibraryCatalogBrowseResult,
+                LibraryDiscoverySearchResult,
+            ),
+        )
+        if (
+            getattr(request.result, "status", None) in {"reauth_required", "unavailable"}
+            and not unavailable_library_result
+        ):
             raise ValueError("The client tool was unavailable and cannot resume this chat run.")
         claimed = self.store.claim(
             run_id,

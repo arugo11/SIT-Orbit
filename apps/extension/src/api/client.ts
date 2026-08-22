@@ -31,6 +31,20 @@ export type SitrusGradeResult = components["schemas"]["SitrusGradeResult"];
 export type MoodleReadResult = components["schemas"]["MoodleReadResult"];
 export type MyLibraryReadResult = components["schemas"]["MyLibraryReadResult"];
 export type CastReadResult = components["schemas"]["CastReadResult"];
+export type LibraryHoldingSummary =
+  components["schemas"]["LibraryHoldingSummary"];
+export type LibraryRelatedRecordRef =
+  components["schemas"]["LibraryRelatedRecordRef"];
+export type LibraryBibliographicRecord =
+  components["schemas"]["LibraryBibliographicRecord"];
+export type LibraryCatalogSearchResult =
+  components["schemas"]["LibraryCatalogSearchResult"];
+export type LibraryItemReadResult =
+  components["schemas"]["LibraryItemReadResult"];
+export type LibraryCatalogBrowseResult =
+  components["schemas"]["LibraryCatalogBrowseResult"];
+export type LibraryDiscoverySearchResult =
+  components["schemas"]["LibraryDiscoverySearchResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 export const AZURE_DEMO_AGENT_API_BASE =
@@ -332,6 +346,268 @@ export function isSyllabusSearchResult(
   );
 }
 
+const libraryResourceRefPattern =
+  /^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u;
+const libraryRecordPath = "/opc/recordID/catalog.bib/";
+
+function isLibraryResourceRef(value: unknown): value is string {
+  return typeof value === "string" && libraryResourceRefPattern.test(value);
+}
+
+function isOfficialLibraryRecordUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      url.origin === "https://library.shibaura-it.ac.jp" &&
+      url.pathname.startsWith(libraryRecordPath) &&
+      url.pathname.slice(libraryRecordPath.length).length > 0 &&
+      url.search === "" &&
+      url.hash === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isOfficialLibraryDiscoveryUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      ((url.origin === "https://slib.shibaura-it.ac.jp" &&
+        url.pathname.startsWith("/sublib/")) ||
+        (url.origin === "https://library.shibaura-it.ac.jp" &&
+          url.pathname.startsWith("/opc/recordID/catalog.bib/")))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isLibraryHoldingSummary(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (
+    !hasExactlyKeys(value, [
+      "campus",
+      "location",
+      "call_number",
+      "status",
+      "due_date",
+      "reservation_count",
+    ]) ||
+    !isOneOf(value.campus, ["toyosu", "omiya", "unknown"]) ||
+    !isOneOf(value.status, ["available", "unavailable", "unknown"]) ||
+    (value.location !== null && typeof value.location !== "string") ||
+    (value.call_number !== null && typeof value.call_number !== "string") ||
+    (value.due_date !== null && !isIsoDateOnly(value.due_date)) ||
+    (value.reservation_count !== null &&
+      !isIntegerInRange(value.reservation_count, 0, 10_000))
+  ) {
+    return false;
+  }
+  return !(
+    value.status === "unknown" &&
+    (value.due_date !== null || value.reservation_count !== null)
+  );
+}
+
+function isLibraryRelatedRecordRef(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, ["resource_ref", "title", "relation"]) &&
+    isLibraryResourceRef(value.resource_ref) &&
+    isNonEmptyString(value.title) &&
+    isOneOf(value.relation, ["related", "edition", "translation", "other"])
+  );
+}
+
+function isLibraryBibliographicRecord(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    hasExactlyKeys(value, [
+      "resource_ref",
+      "title",
+      "authors",
+      "subjects",
+      "isbn",
+      "publisher",
+      "publication_year",
+      "format",
+      "campus",
+      "url",
+      "holdings",
+      "related_records",
+    ]) &&
+    isLibraryResourceRef(value.resource_ref) &&
+    isNonEmptyString(value.title) &&
+    Array.isArray(value.authors) &&
+    value.authors.length <= 20 &&
+    value.authors.every(
+      (item) => typeof item === "string" && item.length <= 200,
+    ) &&
+    Array.isArray(value.subjects) &&
+    value.subjects.length <= 20 &&
+    value.subjects.every(
+      (item) => typeof item === "string" && item.length <= 200,
+    ) &&
+    (value.isbn === null ||
+      (typeof value.isbn === "string" && value.isbn.length <= 32)) &&
+    (value.publisher === null ||
+      (typeof value.publisher === "string" && value.publisher.length <= 300)) &&
+    (value.publication_year === null ||
+      isIntegerInRange(value.publication_year, 1000, 2100)) &&
+    isOneOf(value.format, ["book", "journal", "ebook", "unknown"]) &&
+    isOneOf(value.campus, ["toyosu", "omiya", "any"]) &&
+    isOfficialLibraryRecordUrl(value.url) &&
+    Array.isArray(value.holdings) &&
+    value.holdings.length >= 1 &&
+    value.holdings.length <= 20 &&
+    value.holdings.every(isLibraryHoldingSummary) &&
+    Array.isArray(value.related_records) &&
+    value.related_records.length <= 20 &&
+    value.related_records.every(isLibraryRelatedRecordRef)
+  );
+}
+
+function libraryResultEnvelope(value: unknown): value is JsonRecord {
+  return (
+    isRecord(value) &&
+    value.schema_version === "v1" &&
+    (value.status === "known" || value.status === "unavailable") &&
+    (value.reason_code === null || typeof value.reason_code === "string")
+  );
+}
+
+export function isLibraryCatalogSearchResult(
+  value: unknown,
+): value is LibraryCatalogSearchResult {
+  if (
+    !libraryResultEnvelope(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "query",
+      "items",
+      "reason_code",
+    ])
+  ) {
+    return false;
+  }
+  const items = Array.isArray(value.items) ? value.items : [];
+  const valid =
+    isNonEmptyString(value.query) &&
+    value.query.length <= 200 &&
+    items.length <= 10 &&
+    items.every(isLibraryBibliographicRecord);
+  return valid && (value.status === "known" || items.length === 0);
+}
+
+export function isLibraryItemReadResult(
+  value: unknown,
+): value is LibraryItemReadResult {
+  if (
+    !libraryResultEnvelope(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "resource_ref",
+      "item",
+      "reason_code",
+    ]) ||
+    !isLibraryResourceRef(value.resource_ref) ||
+    (value.item !== null && !isLibraryBibliographicRecord(value.item))
+  ) {
+    return false;
+  }
+  if (value.status === "known" && value.item === null) return false;
+  if (value.status === "unavailable" && value.item !== null) return false;
+  if (value.item === null || !isRecord(value.item)) return true;
+  return value.item.resource_ref === value.resource_ref;
+}
+
+export function isLibraryCatalogBrowseResult(
+  value: unknown,
+): value is LibraryCatalogBrowseResult {
+  if (
+    !libraryResultEnvelope(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "kind",
+      "campus",
+      "items",
+      "reason_code",
+    ]) ||
+    !isOneOf(value.kind, ["new_books", "loan_ranking"]) ||
+    !isOneOf(value.campus, ["toyosu", "omiya", "any"]) ||
+    !Array.isArray(value.items) ||
+    value.items.length > 10 ||
+    !value.items.every(isLibraryBibliographicRecord)
+  ) {
+    return false;
+  }
+  return value.status === "known" || value.items.length === 0;
+}
+
+function isLibraryDiscoveryItem(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (
+    !hasExactlyKeys(value, [
+      "title",
+      "authors",
+      "source_label",
+      "url",
+      "snippet",
+      "resource_ref",
+    ]) ||
+    !isNonEmptyString(value.title) ||
+    !Array.isArray(value.authors) ||
+    value.authors.length > 20 ||
+    !value.authors.every(
+      (item) => typeof item === "string" && item.length <= 200,
+    ) ||
+    (value.source_label !== null && typeof value.source_label !== "string") ||
+    (value.snippet !== null &&
+      (typeof value.snippet !== "string" || value.snippet.length > 500)) ||
+    (value.resource_ref !== null &&
+      !isLibraryResourceRef(value.resource_ref)) ||
+    !isOfficialLibraryDiscoveryUrl(value.url)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+export function isLibraryDiscoverySearchResult(
+  value: unknown,
+): value is LibraryDiscoverySearchResult {
+  if (
+    !libraryResultEnvelope(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "query",
+      "items",
+      "reason_code",
+    ]) ||
+    !isNonEmptyString(value.query) ||
+    value.query.length > 200 ||
+    !Array.isArray(value.items) ||
+    value.items.length > 10 ||
+    !value.items.every(isLibraryDiscoveryItem)
+  ) {
+    return false;
+  }
+  return value.status === "known" || value.items.length === 0;
+}
+
 export function isBrowserReadResult(
   value: unknown,
 ): value is BrowserReadResult {
@@ -601,6 +877,10 @@ const chatToolNames = [
   "moodle_read",
   "my_library_read",
   "cast_read",
+  "library_catalog_search",
+  "library_item_read",
+  "library_catalog_browse",
+  "library_discovery_search",
 ] as const;
 
 function isChatEvidenceMessage(value: unknown): boolean {

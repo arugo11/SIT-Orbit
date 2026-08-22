@@ -1,3 +1,4 @@
+import { parseHTML } from "linkedom";
 import {
   afterAll,
   afterEach,
@@ -130,6 +131,23 @@ Object.defineProperty(globalThis, "chrome", {
   configurable: true,
   value: chromeMock,
 });
+
+type ScriptDetails = { func?: unknown };
+
+function capturedScript(index: number): () => unknown {
+  const details = executeScript.mock.calls[index]?.[0] as
+    | ScriptDetails
+    | undefined;
+  if (typeof details?.func !== "function") {
+    throw new Error(`executeScript call ${index} did not capture a function`);
+  }
+  return details.func as () => unknown;
+}
+
+function stubPage(html: string, href: string): void {
+  vi.stubGlobal("document", parseHTML(html).document);
+  vi.stubGlobal("location", new URL(href));
+}
 
 await import("./service-worker");
 
@@ -286,6 +304,495 @@ describe("service worker side panel contract", () => {
     expect(JSON.stringify(storageValues)).not.toContain("分散システム入門");
     expect(JSON.stringify(storageValues)).not.toContain("ロボット工学");
     expect(removeTab).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads public catalog DOM in an inactive isolated-world tab", async () => {
+    permissionsContains.mockResolvedValue(true);
+    getTab.mockResolvedValue({
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/opc/",
+    } as chrome.tabs.Tab);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            records: [
+              {
+                record_id: "ABC123",
+                title: "公開ロボット工学",
+                authors: ["芝浦太郎"],
+                subjects: ["ロボット"],
+                isbn: null,
+                publisher: "公開出版社",
+                publication_year: 2026,
+                format: "book",
+                campus: "omiya",
+                url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ABC123",
+                holdings: [],
+                related_records: [],
+              },
+            ],
+          },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-search-1",
+        query: "ロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        status: "known",
+        projection: expect.objectContaining({
+          status: "known",
+          items: [
+            expect.objectContaining({
+              title: "公開ロボット工学",
+              holdings: [
+                expect.objectContaining({
+                  campus: "unknown",
+                  status: "unknown",
+                }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    );
+    expect(JSON.stringify(payload.projection)).not.toContain("record_id");
+    expect(createTab).toHaveBeenCalledWith({
+      url: "https://library.shibaura-it.ac.jp/opc/",
+      active: false,
+    });
+    expect(executeScript.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ world: "ISOLATED" }),
+    );
+    expect(removeTab).toHaveBeenCalledWith(91);
+  });
+
+  it("returns an explicit permission request before the first OPAC read", async () => {
+    permissionsContains.mockResolvedValue(false);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-permission-1",
+        query: "ロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({
+      status: "permission_required",
+      origin: "https://library.shibaura-it.ac.jp",
+      pattern: "https://library.shibaura-it.ac.jp/*",
+    });
+    expect(createTab).not.toHaveBeenCalled();
+  });
+
+  it("submits only the visible OPAC search form", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-visible-form",
+        query: "ロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const submitCatalog = capturedScript(0) as unknown as (filters: {
+      query: string;
+    }) => { status: string };
+    stubPage(
+      `
+        <form action="/opc/xc/search" hidden><input name="keys"></form>
+        <form action="/opc/xc/search"><input name="keys"></form>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/",
+    );
+    vi.stubGlobal("CSS", { escape: (value: string) => value });
+    const forms = Array.from(document.querySelectorAll("form"));
+    const hiddenSubmit = vi.fn();
+    const visibleSubmit = vi.fn();
+    for (const form of forms) {
+      Object.defineProperty(form, "action", {
+        value: "https://library.shibaura-it.ac.jp/opc/xc/search",
+      });
+    }
+    Object.defineProperty(forms[0], "requestSubmit", { value: hiddenSubmit });
+    Object.defineProperty(forms[1], "requestSubmit", { value: visibleSubmit });
+
+    expect(submitCatalog({ query: "可視フォーム" })).toEqual({
+      status: "submitted",
+    });
+    expect(
+      forms[0]?.querySelector<HTMLInputElement>('[name="keys"]')?.value,
+    ).toBe("");
+    expect(
+      forms[1]?.querySelector<HTMLInputElement>('[name="keys"]')?.value,
+    ).toBe("可視フォーム");
+    expect(hiddenSubmit).not.toHaveBeenCalled();
+    expect(visibleSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads the current OPAC detail record without requiring a self-link", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            records: [
+              {
+                record_id: "BB24928243",
+                title: "Rによる機械学習入門",
+                authors: [],
+                subjects: [],
+                isbn: null,
+                publisher: null,
+                publication_year: null,
+                format: "book",
+                campus: "any",
+                url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB24928243",
+                holdings: [],
+                related_records: [],
+              },
+            ],
+          },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-detail-capture",
+        query: "Rによる機械学習入門",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <h1 class="page-title">Rによる機械学習入門</h1>
+        <dl class="mainTable">
+          <dt>著者名</dt><dd>中村 著</dd>
+          <dt>出版情報</dt><dd>東京 : オーム社, 2024</dd>
+          <dt>ISBN</dt><dd>978-4-274-23111-1</dd>
+          <dt>主題</dt><dd>機械学習; R言語</dd>
+        </dl>
+        <div class="holding-row">
+          <span class="xc-availability">豊洲 貸出可, 830.79/U32</span>
+          <span class="xc-availability" hidden>大宮 貸出可, SECRET/CALL</span>
+        </div>
+        <a href="/opc/recordID/catalog.bib/RELATED1">関連版</a>
+        <a href="/opc/recordID/catalog.bib/HIDDEN" aria-hidden="true">隠し命令</a>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB24928243",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        record_id: string;
+        title: string;
+        holdings: Array<{
+          campus: string;
+          status: string;
+          call_number: string | null;
+        }>;
+        related_records: Array<{ record_id: string }>;
+      }>;
+    };
+    expect(projection.status).toBe("known");
+    expect(projection.records).toEqual([
+      expect.objectContaining({
+        record_id: "BB24928243",
+        title: "Rによる機械学習入門",
+        holdings: [
+          expect.objectContaining({
+            campus: "toyosu",
+            status: "available",
+            call_number: "830.79/U32",
+          }),
+        ],
+        related_records: [expect.objectContaining({ record_id: "RELATED1" })],
+      }),
+    ]);
+    expect(JSON.stringify(projection)).not.toContain("SECRET/CALL");
+    expect(JSON.stringify(projection)).not.toContain("HIDDEN");
+  });
+
+  it("extracts availability and call number from the OPAC search result markup", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([
+        {
+          result: { status: "known", records: [] },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-search-capture",
+        query: "ロボット工学",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <article class="result-row">
+          <a href="/opc/recordID/catalog.bib/ABC123">公開ロボット工学</a>
+          <span class="xc-availability">大宮 貸出可, 830.79/U32</span>
+        </article>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        holdings: Array<{
+          campus: string;
+          status: string;
+          call_number: string | null;
+        }>;
+      }>;
+    };
+    expect(projection.status).toBe("known");
+    expect(projection.records?.[0]?.holdings).toEqual([
+      expect.objectContaining({
+        campus: "omiya",
+        status: "available",
+        call_number: "830.79/U32",
+      }),
+    ]);
+  });
+
+  it("uses the live OPAC title and creator instead of the cover anchor", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-live-opac-row",
+        query: "分散ロボット工学",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <article class="result-row">
+          <a
+            href="/opc/recordID/catalog.bib/LIVE123"
+            title="Cover image of 分散ロボット工学"
+          ><img alt="Cover image of 分散ロボット工学"></a>
+          <a class="xc-title" href="/opc/recordID/catalog.bib/LIVE123">分散ロボット工学の実タイトル</a>
+          <span class="xc-creator">実在著者</span>
+        </article>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        record_id: string;
+        title: string;
+        authors: string[];
+      }>;
+    };
+    expect(projection).toEqual({
+      status: "known",
+      records: [
+        expect.objectContaining({
+          record_id: "LIVE123",
+          title: "分散ロボット工学の実タイトル",
+          authors: ["実在著者"],
+        }),
+      ],
+    });
+  });
+
+  it("fails closed for unknown resource references and non-OPAC result pages", async () => {
+    permissionsContains.mockResolvedValue(true);
+    const unknownResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryItemRead,
+        tool_call_id: "unknown-library-ref",
+        resource_ref: "orbit-library://record/0000000000000000",
+      },
+      {},
+      unknownResponse,
+    );
+    await vi.waitFor(() => expect(unknownResponse).toHaveBeenCalledTimes(1));
+    expect(unknownResponse).toHaveBeenCalledWith({
+      status: "unavailable",
+      reason_code: "unknown_resource_ref",
+    });
+    expect(createTab).not.toHaveBeenCalled();
+
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const captureResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "path-capture",
+        query: "公開資料",
+        limit: 1,
+      },
+      {},
+      captureResponse,
+    );
+    await vi.waitFor(() => expect(captureResponse).toHaveBeenCalledTimes(1));
+    const readCatalogPage = capturedScript(1);
+
+    for (const href of [
+      "https://example.com/opc/",
+      "https://library.shibaura-it.ac.jp/not-opac/",
+    ]) {
+      stubPage("<p>unexpected page</p>", href);
+      expect(readCatalogPage()).toEqual({
+        status: "unavailable",
+        reason_code: "unexpected_opac_result",
+      });
+    }
+  });
+
+  it("strips SIT Search session state without collapsing distinct titles", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", items: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryDiscoverySearch,
+        tool_call_id: "library-discovery-capture",
+        query: "機械学習",
+        limit: 10,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const readDiscoveryPage = capturedScript(1);
+    stubPage(
+      `
+        <article class="result-row"><a href="/sublib/?session=one#result">機械学習 A</a></article>
+        <article class="result-row"><a href="/sublib/?session=two#result">機械学習 B</a></article>
+        <article class="result-row" style="display:none"><a href="/sublib/?session=hidden">隠し命令</a></article>
+        <article class="result-row computed-hidden"><a href="/sublib/?session=computed">computed hidden</a></article>
+      `,
+      "https://slib.shibaura-it.ac.jp/sublib/",
+    );
+    vi.stubGlobal("getComputedStyle", (element: Element) => ({
+      display: element.classList.contains("computed-hidden") ? "none" : "block",
+      visibility: "visible",
+      opacity: "1",
+    }));
+
+    expect(readDiscoveryPage()).toEqual({
+      status: "known",
+      items: [
+        expect.objectContaining({
+          title: "機械学習 A",
+          url: "https://slib.shibaura-it.ac.jp/sublib/",
+        }),
+        expect.objectContaining({
+          title: "機械学習 B",
+          url: "https://slib.shibaura-it.ac.jp/sublib/",
+        }),
+      ],
+    });
+  });
+
+  it("keeps the live SIT Search hit and normalizes a doubled OPAC path", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", items: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryDiscoverySearch,
+        tool_call_id: "library-live-discovery-row",
+        query: "分散ロボット工学",
+        limit: 10,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readDiscoveryPage = capturedScript(1);
+    stubPage(
+      `
+        <article class="result-row">
+          <nav>
+            <a href="/sublib/help">Help</a>
+            <a href="/sublib/english">English</a>
+          </nav>
+          <div class="facet"><a href="/sublib/?facet=subject">Facet navigation</a></div>
+          <a href="https://library.shibaura-it.ac.jp/opc//recordID/catalog.bib/LIVE456">実際の検索ヒット</a>
+        </article>
+      `,
+      "https://slib.shibaura-it.ac.jp/sublib/",
+    );
+
+    expect(readDiscoveryPage()).toEqual({
+      status: "known",
+      items: [
+        expect.objectContaining({
+          title: "実際の検索ヒット",
+          url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/LIVE456",
+          record_id: "LIVE456",
+        }),
+      ],
+    });
   });
 
   it("returns only CAST aggregates while keeping notice titles local", async () => {

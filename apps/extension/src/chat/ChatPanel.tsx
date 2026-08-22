@@ -6,6 +6,10 @@ import {
   type ChatToolResultRequest,
   isBrowserReadResult,
   isCastReadResult,
+  isLibraryCatalogBrowseResult,
+  isLibraryCatalogSearchResult,
+  isLibraryDiscoverySearchResult,
+  isLibraryItemReadResult,
   isMoodleReadResult,
   isMyLibraryReadResult,
   isSitrusGradeResult,
@@ -17,6 +21,13 @@ import {
   type CalendarConnectorResult,
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
+import {
+  LIBRARY_OPAC_ORIGIN,
+  LIBRARY_OPAC_PERMISSION_PATTERN,
+  LIBRARY_SIT_SEARCH_ORIGIN,
+  LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
+  requestsLibraryTools,
+} from "../connectors/library-discovery";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
   MOODLE_DASHBOARD_URL,
@@ -35,6 +46,10 @@ import {
 import type {
   BrowserReadResponse,
   CastReadResponse,
+  LibraryCatalogBrowseResponse,
+  LibraryCatalogSearchResponse,
+  LibraryDiscoverySearchResponse,
+  LibraryItemReadResponse,
   MoodleReadResponse,
   MyLibraryReadResponse,
   SitrusReadResponse,
@@ -87,10 +102,21 @@ function toolLabel(name: string): string {
       return "My Libraryを確認中";
     case "cast_read":
       return "CASTを確認中";
+    case "library_catalog_search":
+      return "OPACを検索中";
+    case "library_item_read":
+      return "OPACの書誌詳細を確認中";
+    case "library_catalog_browse":
+      return "OPACの新着・ランキングを確認中";
+    case "library_discovery_search":
+      return "SIT Searchを検索中";
     default:
       return "情報を確認中";
   }
 }
+
+const LIBRARY_SEARCH_PERMISSION_DISCLOSURE =
+  "検索語をこのサイトへ送信し、表示された結果のみを読み取ります。予約等の変更はしません。";
 
 function evidenceText(proposal: ActionProposal | null | undefined): string[] {
   return proposal?.evidence.map((item) => item.title) ?? [];
@@ -121,7 +147,11 @@ function toolResultRequest(
     | "sitrus_read"
     | "moodle_read"
     | "my_library_read"
-    | "cast_read",
+    | "cast_read"
+    | "library_catalog_search"
+    | "library_item_read"
+    | "library_catalog_browse"
+    | "library_discovery_search",
   result: ChatToolResultRequest["result"],
 ): ChatToolResultRequest {
   return {
@@ -243,7 +273,7 @@ export function ChatPanel({
     await saveConversation(next);
   }
 
-  function clientTools() {
+  function clientTools(message: string) {
     const tools: Array<{
       name:
         | "scombz_page_summary"
@@ -254,7 +284,11 @@ export function ChatPanel({
         | "sitrus_read"
         | "moodle_read"
         | "my_library_read"
-        | "cast_read";
+        | "cast_read"
+        | "library_catalog_search"
+        | "library_item_read"
+        | "library_catalog_browse"
+        | "library_discovery_search";
       version: 1;
     }> = [];
     if (projectScombzRead(pageContext)) {
@@ -271,6 +305,12 @@ export function ChatPanel({
     tools.push({ name: "moodle_read", version: 1 });
     tools.push({ name: "my_library_read", version: 1 });
     tools.push({ name: "cast_read", version: 1 });
+    if (requestsLibraryTools(message)) {
+      tools.push({ name: "library_catalog_search", version: 1 });
+      tools.push({ name: "library_item_read", version: 1 });
+      tools.push({ name: "library_catalog_browse", version: 1 });
+      tools.push({ name: "library_discovery_search", version: 1 });
+    }
     return tools;
   }
 
@@ -295,7 +335,11 @@ export function ChatPanel({
       call.name !== "sitrus_read" &&
       call.name !== "moodle_read" &&
       call.name !== "my_library_read" &&
-      call.name !== "cast_read"
+      call.name !== "cast_read" &&
+      call.name !== "library_catalog_search" &&
+      call.name !== "library_item_read" &&
+      call.name !== "library_catalog_browse" &&
+      call.name !== "library_discovery_search"
     ) {
       throw new Error("このChatではまだ対応していないToolです。");
     }
@@ -348,6 +392,104 @@ export function ChatPanel({
         Object.keys(argumentsObject).length !== 1)
     ) {
       throw new Error("参照先URLを検証できません。");
+    }
+    if (
+      call.name === "library_catalog_search" &&
+      (typeof argumentsObject.query !== "string" ||
+        !argumentsObject.query.trim() ||
+        argumentsObject.query.length > 200 ||
+        Object.keys(argumentsObject).some(
+          (key) =>
+            ![
+              "query",
+              "author",
+              "subject",
+              "isbn",
+              "pub_year",
+              "campus",
+              "format",
+              "limit",
+            ].includes(key),
+        ) ||
+        (argumentsObject.author !== undefined &&
+          argumentsObject.author !== null &&
+          (typeof argumentsObject.author !== "string" ||
+            argumentsObject.author.length > 200)) ||
+        (argumentsObject.subject !== undefined &&
+          argumentsObject.subject !== null &&
+          (typeof argumentsObject.subject !== "string" ||
+            argumentsObject.subject.length > 200)) ||
+        (argumentsObject.isbn !== undefined &&
+          argumentsObject.isbn !== null &&
+          (typeof argumentsObject.isbn !== "string" ||
+            argumentsObject.isbn.length > 32)) ||
+        (argumentsObject.pub_year !== undefined &&
+          argumentsObject.pub_year !== null &&
+          (typeof argumentsObject.pub_year !== "number" ||
+            !Number.isInteger(argumentsObject.pub_year) ||
+            argumentsObject.pub_year < 1000 ||
+            argumentsObject.pub_year > 2100)) ||
+        (argumentsObject.campus !== undefined &&
+          !["toyosu", "omiya", "any"].includes(
+            argumentsObject.campus as string,
+          )) ||
+        (argumentsObject.format !== undefined &&
+          !["book", "journal", "ebook", "any"].includes(
+            argumentsObject.format as string,
+          )) ||
+        (argumentsObject.limit !== undefined &&
+          (typeof argumentsObject.limit !== "number" ||
+            !Number.isInteger(argumentsObject.limit) ||
+            argumentsObject.limit < 1 ||
+            argumentsObject.limit > 10)))
+    ) {
+      throw new Error("OPAC検索の引数を検証できません。");
+    }
+    if (
+      call.name === "library_item_read" &&
+      (Object.keys(argumentsObject).length !== 1 ||
+        typeof argumentsObject.resource_ref !== "string" ||
+        !/^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u.test(
+          argumentsObject.resource_ref,
+        ))
+    ) {
+      throw new Error("OPAC書誌参照の引数を検証できません。");
+    }
+    if (
+      call.name === "library_catalog_browse" &&
+      (Object.keys(argumentsObject).some(
+        (key) => !["kind", "campus", "limit"].includes(key),
+      ) ||
+        !["new_books", "loan_ranking"].includes(
+          argumentsObject.kind as string,
+        ) ||
+        (argumentsObject.campus !== undefined &&
+          !["toyosu", "omiya", "any"].includes(
+            argumentsObject.campus as string,
+          )) ||
+        (argumentsObject.limit !== undefined &&
+          (typeof argumentsObject.limit !== "number" ||
+            !Number.isInteger(argumentsObject.limit) ||
+            argumentsObject.limit < 1 ||
+            argumentsObject.limit > 10)))
+    ) {
+      throw new Error("OPAC一覧の引数を検証できません。");
+    }
+    if (
+      call.name === "library_discovery_search" &&
+      (Object.keys(argumentsObject).some(
+        (key) => !["query", "limit"].includes(key),
+      ) ||
+        typeof argumentsObject.query !== "string" ||
+        !argumentsObject.query.trim() ||
+        argumentsObject.query.length > 200 ||
+        (argumentsObject.limit !== undefined &&
+          (typeof argumentsObject.limit !== "number" ||
+            !Number.isInteger(argumentsObject.limit) ||
+            argumentsObject.limit < 1 ||
+            argumentsObject.limit > 10)))
+    ) {
+      throw new Error("SIT Searchの引数を検証できません。");
     }
     const activity: ChatTimelineMessage = {
       id: `tool-${call.tool_call_id}`,
@@ -420,6 +562,195 @@ export function ChatPanel({
         throw new Error("シラバス検索結果を検証できません。");
       }
       request = toolResultRequest(call.tool_call_id, call.name, syllabus);
+    } else if (call.name === "library_catalog_search") {
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-catalog-search`;
+      if (!sensitiveApproval.current.has(approvalKey)) {
+        throw new BrowserAccessRequiredError(
+          LIBRARY_OPAC_ORIGIN,
+          LIBRARY_OPAC_ORIGIN,
+          LIBRARY_OPAC_PERMISSION_PATTERN,
+          approvalKey,
+          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
+        );
+      }
+      const library = await sendExtensionMessage<LibraryCatalogSearchResponse>({
+        type: "library-catalog-search",
+        tool_call_id: call.tool_call_id,
+        query: argumentsObject.query as string,
+        author:
+          typeof argumentsObject.author === "string"
+            ? argumentsObject.author
+            : null,
+        subject:
+          typeof argumentsObject.subject === "string"
+            ? argumentsObject.subject
+            : null,
+        isbn:
+          typeof argumentsObject.isbn === "string"
+            ? argumentsObject.isbn
+            : null,
+        pub_year:
+          typeof argumentsObject.pub_year === "number"
+            ? argumentsObject.pub_year
+            : null,
+        campus:
+          typeof argumentsObject.campus === "string"
+            ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
+            : "any",
+        format:
+          typeof argumentsObject.format === "string"
+            ? (argumentsObject.format as "book" | "journal" | "ebook" | "any")
+            : "any",
+        limit:
+          typeof argumentsObject.limit === "number"
+            ? argumentsObject.limit
+            : 10,
+      });
+      if (library.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          library.origin,
+          library.origin,
+          library.pattern,
+          approvalKey,
+          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
+        );
+      }
+      if (library.status === "unavailable") {
+        request = toolResultRequest(call.tool_call_id, call.name, {
+          schema_version: "v1",
+          status: "unavailable",
+          query: argumentsObject.query as string,
+          items: [],
+          reason_code: library.reason_code,
+        });
+      } else if (!isLibraryCatalogSearchResult(library.projection)) {
+        throw new Error("OPAC検索結果を検証できませんでした。");
+      } else {
+        request = toolResultRequest(
+          call.tool_call_id,
+          call.name,
+          library.projection,
+        );
+      }
+    } else if (call.name === "library_item_read") {
+      const library = await sendExtensionMessage<LibraryItemReadResponse>({
+        type: "library-item-read",
+        tool_call_id: call.tool_call_id,
+        resource_ref: argumentsObject.resource_ref as string,
+      });
+      if (library.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          library.origin,
+          library.origin,
+          library.pattern,
+        );
+      }
+      if (library.status === "unavailable") {
+        request = toolResultRequest(call.tool_call_id, call.name, {
+          schema_version: "v1",
+          status: "unavailable",
+          resource_ref: argumentsObject.resource_ref as string,
+          item: null,
+          reason_code: library.reason_code,
+        });
+      } else if (!isLibraryItemReadResult(library.projection)) {
+        throw new Error("OPAC書誌詳細を検証できませんでした。");
+      } else {
+        request = toolResultRequest(
+          call.tool_call_id,
+          call.name,
+          library.projection,
+        );
+      }
+    } else if (call.name === "library_catalog_browse") {
+      const library = await sendExtensionMessage<LibraryCatalogBrowseResponse>({
+        type: "library-catalog-browse",
+        tool_call_id: call.tool_call_id,
+        kind: argumentsObject.kind as "new_books" | "loan_ranking",
+        campus:
+          typeof argumentsObject.campus === "string"
+            ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
+            : "any",
+        limit:
+          typeof argumentsObject.limit === "number"
+            ? argumentsObject.limit
+            : 10,
+      });
+      if (library.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          library.origin,
+          library.origin,
+          library.pattern,
+        );
+      }
+      if (library.status === "unavailable") {
+        request = toolResultRequest(call.tool_call_id, call.name, {
+          schema_version: "v1",
+          status: "unavailable",
+          kind: argumentsObject.kind as "new_books" | "loan_ranking",
+          campus:
+            typeof argumentsObject.campus === "string"
+              ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
+              : "any",
+          items: [],
+          reason_code: library.reason_code,
+        });
+      } else if (!isLibraryCatalogBrowseResult(library.projection)) {
+        throw new Error("OPAC一覧結果を検証できませんでした。");
+      } else {
+        request = toolResultRequest(
+          call.tool_call_id,
+          call.name,
+          library.projection,
+        );
+      }
+    } else if (call.name === "library_discovery_search") {
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-discovery-search`;
+      if (!sensitiveApproval.current.has(approvalKey)) {
+        throw new BrowserAccessRequiredError(
+          LIBRARY_SIT_SEARCH_ORIGIN,
+          LIBRARY_SIT_SEARCH_ORIGIN,
+          LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
+          approvalKey,
+          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
+        );
+      }
+      const library =
+        await sendExtensionMessage<LibraryDiscoverySearchResponse>({
+          type: "library-discovery-search",
+          tool_call_id: call.tool_call_id,
+          query: argumentsObject.query as string,
+          limit:
+            typeof argumentsObject.limit === "number"
+              ? argumentsObject.limit
+              : 10,
+        });
+      if (library.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          library.origin,
+          library.origin,
+          library.pattern,
+          approvalKey,
+          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
+        );
+      }
+      if (library.status === "unavailable") {
+        request = toolResultRequest(call.tool_call_id, call.name, {
+          schema_version: "v1",
+          status: "unavailable",
+          query: argumentsObject.query as string,
+          items: [],
+          reason_code: library.reason_code,
+        });
+      } else if (!isLibraryDiscoverySearchResult(library.projection)) {
+        throw new Error("SIT Search結果を検証できませんでした。");
+      } else {
+        request = toolResultRequest(
+          call.tool_call_id,
+          call.name,
+          library.projection,
+        );
+      }
     } else if (call.name === "sitrus_read") {
       if (!pageContext || !isSitrusGradeUrl(pageContext.url)) {
         throw new Error("表示中のSITRUS成績ページを読み取れません。");
@@ -738,7 +1069,7 @@ export function ChatPanel({
         conversation_id: withUser.conversationId,
         message,
         history: toChatHistory(beforeSend.messages),
-        client_tools: clientTools(),
+        client_tools: clientTools(message),
       });
       await finishResponse(response, current);
     } catch (caught) {
@@ -776,6 +1107,7 @@ export function ChatPanel({
         return;
       }
       sensitiveApproval.current.add(pending.approvalKey);
+      const pendingTool = pending.response.calls[0]?.name;
       setPermissionPrompt(null);
       await finishResponse(
         pending.response,
@@ -785,10 +1117,14 @@ export function ChatPanel({
       // SCombZ is a required host permission so Chrome rejects removing it.
       // The sensitive approval itself is still scoped to this URL and is
       // cleared below, which keeps the next sensitive read confirmation-based.
-      const pendingTool = pending.response.calls[0]?.name;
       if (
         !remember &&
-        (pendingTool === "browser_read_url" || pending.disclosure !== null) &&
+        (pendingTool === "browser_read_url" ||
+          pendingTool === "library_catalog_search" ||
+          pendingTool === "library_item_read" ||
+          pendingTool === "library_catalog_browse" ||
+          pendingTool === "library_discovery_search" ||
+          pending.disclosure !== null) &&
         typeof chrome.permissions?.remove === "function"
       ) {
         await chrome.permissions.remove({ origins: [pending.pattern] });
@@ -967,13 +1303,17 @@ export function ChatPanel({
       {permissionPrompt ? (
         <aside className="chat-permission-prompt" role="alert">
           <strong>サイトの読み取り許可</strong>
-          <p>
-            {permissionPrompt.origin}
-            を今回のTool実行で参照します。ページの表示情報だけを使い、送信・変更は行いません。
-          </p>
           {permissionPrompt.disclosure ? (
-            <p>{permissionPrompt.disclosure}</p>
-          ) : null}
+            <p>
+              {permissionPrompt.origin}を今回のTool実行で参照します。
+              {permissionPrompt.disclosure}
+            </p>
+          ) : (
+            <p>
+              {permissionPrompt.origin}
+              を今回のTool実行で参照します。ページの表示情報だけを使い、送信・変更は行いません。
+            </p>
+          )}
           <div className="button-row">
             <button
               type="button"

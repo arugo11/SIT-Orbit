@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   isCastOpenMessage,
   isCastReadMessage,
+  isLibraryCatalogBrowseMessage,
+  isLibraryCatalogSearchMessage,
+  isLibraryDiscoverySearchMessage,
+  isLibraryItemReadMessage,
   isMoodleOpenMessage,
   isMoodleReadMessage,
   isMyLibraryOpenMessage,
@@ -30,6 +34,73 @@ const validContext = {
 } as const;
 
 describe("page context message validation", () => {
+  it("accepts strict public library tool arguments", () => {
+    expect(
+      isLibraryCatalogSearchMessage({
+        type: "library-catalog-search",
+        tool_call_id: "library-search-1",
+        query: "ロボット",
+        campus: "omiya",
+        format: "book",
+        limit: 5,
+      }),
+    ).toBe(true);
+    expect(
+      isLibraryItemReadMessage({
+        type: "library-item-read",
+        tool_call_id: "library-read-1",
+        resource_ref: "orbit-library://record/0123456789abcdef",
+      }),
+    ).toBe(true);
+    expect(
+      isLibraryCatalogBrowseMessage({
+        type: "library-catalog-browse",
+        tool_call_id: "library-browse-1",
+        kind: "loan_ranking",
+        limit: 10,
+      }),
+    ).toBe(true);
+    expect(
+      isLibraryDiscoverySearchMessage({
+        type: "library-discovery-search",
+        tool_call_id: "library-discovery-1",
+        query: "機械学習",
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects library IDs, oversized queries, and invalid filters", () => {
+    expect(
+      isLibraryItemReadMessage({
+        type: "library-item-read",
+        tool_call_id: "library-read-1",
+        resource_ref: "orbit-library://record/OPAC-123",
+      }),
+    ).toBe(false);
+    expect(
+      isLibraryCatalogSearchMessage({
+        type: "library-catalog-search",
+        tool_call_id: "library-search-1",
+        query: "x".repeat(201),
+      }),
+    ).toBe(false);
+    expect(
+      isLibraryCatalogBrowseMessage({
+        type: "library-catalog-browse",
+        tool_call_id: "library-browse-1",
+        kind: "new_books",
+        limit: 0,
+      }),
+    ).toBe(false);
+    expect(
+      isLibraryDiscoverySearchMessage({
+        type: "library-discovery-search",
+        tool_call_id: "library-discovery-1",
+        query: " ",
+      }),
+    ).toBe(false);
+  });
+
   it("accepts only typed Moodle commands", () => {
     expect(
       isMoodleReadMessage({ type: "moodle-read", tool_call_id: "tool-1" }),
