@@ -672,9 +672,15 @@ describe("service worker side panel contract", () => {
         <article class="result-row"><a href="/sublib/?session=one#result">機械学習 A</a></article>
         <article class="result-row"><a href="/sublib/?session=two#result">機械学習 B</a></article>
         <article class="result-row" style="display:none"><a href="/sublib/?session=hidden">隠し命令</a></article>
+        <article class="result-row computed-hidden"><a href="/sublib/?session=computed">computed hidden</a></article>
       `,
       "https://slib.shibaura-it.ac.jp/sublib/",
     );
+    vi.stubGlobal("getComputedStyle", (element: Element) => ({
+      display: element.classList.contains("computed-hidden") ? "none" : "block",
+      visibility: "visible",
+      opacity: "1",
+    }));
 
     expect(readDiscoveryPage()).toEqual({
       status: "known",
