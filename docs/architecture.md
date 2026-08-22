@@ -293,6 +293,12 @@ CASTトップ`https://shibaura.pita.services/career/top/student`に表示され�
 
 支援リソースのタイトル・URL・掲載日は端末内に保持し、Agentへはお知らせ数、動画・イベント・相談・サポーターの件数、最終お知らせ日だけをprojectionする。外部ProviderへURL、タイトル、利用者名、CAST内部ID、raw HTML、フォーム値を送らない。top構造、件数selector、ログイン状態が確認できない場合は成功扱いしない。
 
+### CAST Alumni Portal（blocked:institutional）
+
+卒業生側の回答可能テーマ、面談可能頻度、匿名共有可能な知見を管理するポータルは、大学側の正式なAPI仕様、利用許可、専用test account、データ保持・削除規則が揃うまで実装しない。現時点で確認できる学生向けCAST表示は、就活サポーターの有無をキャリアサポート課へ問い合わせる案内までであり、卒業生側の登録・更新・回答取得を許可する書込み経路やAPIは確認できていない。
+
+この状態ではURLやendpointを推測せず、DOM書込み、直接連絡、予約、匿名共有設定の変更をfixtureや成功レスポンスで代替しない。再開に必要なのは、大学承認のscope、正式APIまたは許可されたExport、read/write境界、test account、監査・削除手順である。必要な入力が得られるまでIssue 17は`blocked:institutional`として扱う。
+
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
 ### CAST Career Agentのプライバシー境界
