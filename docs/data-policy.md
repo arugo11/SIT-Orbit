@@ -177,6 +177,12 @@ ReActの計画・観測・例外の分離はイベント履歴の設計根拠に
 
 通常の確定操作は明示確認、推薦応募は一次確認と赤色二次確認を経なければexecutorを呼び出せない。既定executorは大学側の正式なwrite API・test account・確認済み書込み経路が存在しないことを`unavailable`として返す。未確認URL、404、構造変更、権限不足を空成功やfixture成功へ置き換えない。期限切れ、拒否済み、実行済みpreviewの再利用も拒否する。
 
+### CAST品質リリース評価
+
+品質評価はsynthetic／public fixtureだけで実行し、CAST、Azure、Google、Chrome Prompt APIのlive呼出しを通常CIから行わない。評価入力はPseudonymization Gateway後のtyped payload、Evidence-grounded ES、変更種別キー、Application Missionのイベント列に限定する。出力はpass／fail、件数、precision／recall、mission traceの真偽値、処理時間のmedian／p95だけとし、禁止語、元の氏名、内部人物ID、URL、raw HTML、token、PDF本文を報告書・ログ・Chat履歴へコピーしない。
+
+仮名化漏洩が一件でもあればfailとし、Evidenceの未接地文章、変更キーの不一致、preview前のCalendar確定、順序を飛ばしたmissionもfailとする。処理時間は観測値であり、固定の速度閾値を設けない。これにより、環境差や一時的な負荷を隠れたfallbackで成功扱いせず、個人データ境界と外部書込み確認を品質検査へ直接反映する。
+
 ### 多視点キャリアレビュー
 
 ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはなく、Prompt APIが利用できない場合も外部Providerへfallbackしない。
