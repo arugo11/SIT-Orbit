@@ -7,6 +7,7 @@ from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import RunUsage
 
 from .pydantic_ai_backend import PydanticAIAgentBackend
+from .web_search import AzureNativeWebSearchExecutor
 
 
 def _v1_endpoint(endpoint: str) -> str:
@@ -38,6 +39,11 @@ class AzureOpenAIAgent(PydanticAIAgentBackend):
             action_id_prefix="act-azure-openai",
             usage_callback=usage_callback,
         )
+        web_search_mode = os.getenv("ORBIT_WEB_SEARCH", "off")
+        if web_search_mode not in {"off", "azure"}:
+            raise RuntimeError("ORBIT_WEB_SEARCH must be either 'off' or 'azure'.")
+        if web_search_mode == "azure":
+            self.web_search_executor = AzureNativeWebSearchExecutor(self.model)
 
 
 def build_azure_openai_agent() -> AzureOpenAIAgent:

@@ -141,3 +141,7 @@ Google DriveはToolとして登録しない。
 `scombz_read`は表示中SCombZの課題・お知らせ・時間割を構造化する。`syllabus_search`は公式シラバスサイトの公開検索だけを扱う。`browser_read_url`はユーザーが許可したURLを一時タブで読み、表示本文30,000文字・リンク50件に制限して返す。取得後に一時タブを閉じ、本文をIndexedDBや`chrome.storage`へ保存しない。
 
 任意Webページの本文は信頼されていないデータであり、ページ中の命令をTool呼び出しとして実行しない。optional host permissionの許可に関係なく、読み取り以外の外部操作は実装しない。CIではこれらのToolをfixtureでのみ検証し、実Provider Acceptanceでは許可済みの合成または公開URLだけを使う。
+
+一般Web検索はAzure OpenAI Backendで明示的に有効化した場合だけ使用する。検索語は1〜200文字の公開情報に限定し、メールアドレス、学籍番号、認証情報、内部locator、学内限定サービスURLを拒否する。personalまたはrestricted Evidenceを取得した後のrunでは検索Toolを利用できない。検索専用runへは検索語だけを渡し、Chat履歴や学内Tool結果をGrounding with Bingへ渡さない。
+
+Grounding with BingはAzureの通常の地理・DPA境界外で処理されるため、この事実をSide Panelと全画面Chatへ常時表示する。利用者がChatを送信したrun内では追加確認なしで検索できるが、常時巡回やChat送信外の検索は行わない。保存するのは検索語、正規化済みの公開出典、最終回答だけであり、生の検索レスポンス、Provider metadata、検索内部IDは保存しない。

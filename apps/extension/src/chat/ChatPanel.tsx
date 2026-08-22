@@ -959,6 +959,10 @@ export function ChatPanel({
         <small>
           {accessMode === "ask" ? "読み取り前に確認します" : "読み取り専用"}
         </small>
+        <small>
+          一般Web検索を使う場合、公開情報の検索語はGrounding with
+          Bingへ送信され、Azureの通常の地理・DPA境界外で処理されます。
+        </small>
       </fieldset>
 
       {permissionPrompt ? (
@@ -1113,7 +1117,20 @@ export function ChatPanel({
                   <strong>参照</strong>
                   <ul>
                     {message.evidence.map((item) => (
-                      <li key={item.evidence_id}>{item.title}</li>
+                      <li key={item.evidence_id}>
+                        {item.source_type === "web" &&
+                        /^https?:\/\//.test(item.locator) ? (
+                          <a
+                            href={item.locator}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {item.title}
+                          </a>
+                        ) : (
+                          item.title
+                        )}
+                      </li>
                     ))}
                   </ul>
                 </div>
