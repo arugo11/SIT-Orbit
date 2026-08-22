@@ -306,6 +306,198 @@ describe("service worker side panel contract", () => {
     expect(removeTab).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    "current_loans",
+    "reservations",
+    "loan_history",
+    "purchase_requests",
+    "interlibrary_requests",
+  ] as const)(
+    "projects the %s worker result into the Agent allowlist only",
+    async (scope) => {
+      permissionsContains.mockResolvedValue(true);
+      getTab.mockResolvedValue({
+        id: 91,
+        windowId: 1,
+        status: "complete",
+        url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+      } as chrome.tabs.Tab);
+
+      const rawId = `${scope}-material-secret`;
+      const item = {
+        raw_id: rawId,
+        title: "端末内資料",
+        author: "公開著者",
+        status: "処理中",
+        due_date: null,
+        renewable: null,
+        activity_date: "2026-08-01",
+        request_type: scope === "interlibrary_requests" ? "文献複写" : null,
+      };
+      const readResult: Record<string, unknown> = {
+        status: "known",
+        scope,
+        items: [item],
+      };
+      if (scope === "current_loans") {
+        readResult.kind = "loans";
+        readResult.loans = [
+          {
+            title: item.title,
+            author: item.author,
+            due_date: item.due_date,
+            renewable: false,
+            overdue: false,
+          },
+        ];
+      }
+      if (scope === "reservations") {
+        readResult.kind = "reservations";
+        readResult.reservations = [
+          {
+            title: item.title,
+            author: item.author,
+            hold_until: "2026-08-28",
+            status: "取置中",
+          },
+        ];
+      }
+      executeScript
+        .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+        .mockResolvedValueOnce([{ result: readResult }]);
+
+      const response = vi.fn();
+      onMessage.dispatch(
+        {
+          type: MESSAGE_TYPES.myLibraryRead,
+          tool_call_id: `library-scoped-${scope}`,
+          scope,
+          query: null,
+          offset: 0,
+          limit: 20,
+        },
+        {},
+        response,
+      );
+      await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+      const payload = response.mock.calls[0]?.[0] as {
+        status: string;
+        projection?: Record<string, unknown>;
+        detail?: unknown;
+      };
+      expect(payload.status).toBe("known");
+      expect(Object.keys(payload.projection ?? {}).sort()).toEqual(
+        [
+          "earliest_due_date",
+          "items",
+          "loan_count",
+          "next_offset",
+          "overdue_count",
+          "reason_code",
+          "renewable_count",
+          "reservation_count",
+          "schema_version",
+          "scope",
+          "status",
+          "total_count",
+        ].sort(),
+      );
+      const items = payload.projection?.items as Array<Record<string, unknown>>;
+      expect(items).toHaveLength(1);
+      expect(Object.keys(items[0] ?? {}).sort()).toEqual(
+        [
+          "activity_date",
+          "author",
+          "due_date",
+          "renewable",
+          "request_type",
+          "resource_ref",
+          "status",
+          "title",
+        ].sort(),
+      );
+      expect(items[0]?.resource_ref).toMatch(
+        /^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u,
+      );
+      const serialized = JSON.stringify({ payload, storageValues });
+      for (const marker of [
+        rawId,
+        "secret-call-number",
+        "student-number-secret",
+        "student@example.invalid",
+        "sso-token-secret",
+        "query-secret",
+        "fragment-secret",
+        "tracking-secret-id",
+        "purchase-reason-secret",
+        "contact-note-secret",
+      ]) {
+        expect(serialized).not.toContain(marker);
+      }
+    },
+  );
+
+  it("fails closed when two raw rows map to one worker reference", async () => {
+    permissionsContains.mockResolvedValue(true);
+    getTab.mockResolvedValue({
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+    } as chrome.tabs.Tab);
+    const duplicateRows = [
+      {
+        raw_id: "same-material-secret",
+        title: "資料A",
+        author: null,
+        status: "返却済み",
+        due_date: null,
+        renewable: null,
+        activity_date: "2026-08-01",
+        request_type: null,
+      },
+      {
+        raw_id: "same-material-secret",
+        title: "資料B",
+        author: null,
+        status: "返却済み",
+        due_date: null,
+        renewable: null,
+        activity_date: "2026-08-02",
+        request_type: null,
+      },
+    ];
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            scope: "loan_history",
+            items: duplicateRows,
+          },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.myLibraryRead,
+        tool_call_id: "library-ref-collision",
+        scope: "loan_history",
+        limit: 20,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({
+      status: "unavailable",
+      reason_code: "resource_ref_collision",
+    });
+    expect(JSON.stringify(storageValues)).not.toContain("same-material-secret");
+  });
+
   it("reads public catalog DOM in an inactive isolated-world tab", async () => {
     permissionsContains.mockResolvedValue(true);
     getTab.mockResolvedValue({

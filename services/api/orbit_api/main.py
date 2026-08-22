@@ -3,6 +3,7 @@ import secrets
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -52,6 +53,26 @@ app = FastAPI(
     description="Personal Campus Agent for Shibaura Institute of Technology",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def redact_request_validation_error(
+    _request: Request,
+    _error: RequestValidationError,
+) -> JSONResponse:
+    """Reject malformed API input without reflecting its values.
+
+    Pydantic validation errors normally include the rejected input in the
+    response body. Client-tool payloads can contain private browser data, so
+    returning that diagnostic would turn a successful schema rejection into a
+    disclosure channel. Detailed validation remains available in local tests;
+    the HTTP boundary exposes only a stable, value-free error.
+    """
+
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Request validation failed."},
+    )
 
 
 @app.middleware("http")

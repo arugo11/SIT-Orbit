@@ -1122,7 +1122,7 @@ export function App({
       if (result.status === "known") {
         setMyLibraryStatus("connected");
         setMyLibraryMessage(
-          "貸出・予約状況を読み取れます。詳細は保存していません。",
+          "貸出・予約状況を読み取れます。raw snapshotは保存せず、ChatでAIへタイトル等を送る際は別途session consentを確認します。",
         );
       } else if (result.status === "reauth_required") {
         setMyLibraryStatus("reauth_required");

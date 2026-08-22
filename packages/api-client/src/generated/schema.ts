@@ -744,11 +744,41 @@ export interface components {
             reason_code?: string | null;
         };
         /**
-         * MyLibraryReadResult
-         * @description Derived My Library counts safe for an explicitly confirmed run.
+         * MyLibraryItem
+         * @description One bounded personal-library row safe to share after session consent.
          *
-         *     Book titles, authors, material identifiers, call numbers, user identity,
-         *     and SSO data deliberately have no representation in this model.
+         *     The connector maps provider-specific identifiers to an opaque reference
+         *     before this model is constructed.  Material/request IDs, call numbers,
+         *     form values, and account identity intentionally have no fields here.
+         */
+        MyLibraryItem: {
+            /** Resource Ref */
+            resource_ref: string;
+            /** Title */
+            title: string;
+            /** Author */
+            author?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Due Date */
+            due_date?: string | null;
+            /** Renewable */
+            renewable?: boolean | null;
+            /** Activity Date */
+            activity_date?: string | null;
+            /** Request Type */
+            request_type?: string | null;
+        };
+        /**
+         * MyLibraryReadResult
+         * @description A bounded, consent-gated My Library scope projection.
+         *
+         *     ``loan_count`` and the other aggregate fields remain for clients of the
+         *     original v1 summary.  New callers use one requested ``scope`` and receive
+         *     at most twenty item projections plus a cursor.  Book titles and authors
+         *     are intentionally present only in this minimized, explicitly consented
+         *     projection; identifiers, call numbers, forms, identity, and SSO data have
+         *     no representation in the model.
          */
         MyLibraryReadResult: {
             /**
@@ -762,13 +792,40 @@ export interface components {
              * @enum {string}
              */
             status: "known" | "reauth_required" | "unavailable";
-            /** Loan Count */
+            /**
+             * Scope
+             * @default current_loans
+             * @enum {string}
+             */
+            scope: "current_loans" | "reservations" | "loan_history" | "purchase_requests" | "interlibrary_requests";
+            /** Items */
+            items?: components["schemas"]["MyLibraryItem"][];
+            /**
+             * Total Count
+             * @default 0
+             */
+            total_count: number;
+            /** Next Offset */
+            next_offset?: number | null;
+            /**
+             * Loan Count
+             * @default 0
+             */
             loan_count: number;
-            /** Reservation Count */
+            /**
+             * Reservation Count
+             * @default 0
+             */
             reservation_count: number;
-            /** Overdue Count */
+            /**
+             * Overdue Count
+             * @default 0
+             */
             overdue_count: number;
-            /** Renewable Count */
+            /**
+             * Renewable Count
+             * @default 0
+             */
             renewable_count: number;
             /** Earliest Due Date */
             earliest_due_date?: string | null;

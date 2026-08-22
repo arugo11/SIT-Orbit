@@ -32,6 +32,7 @@ from orbit_api.models import (
     LibraryItemReadResult,
     MoodleReadResult,
     MyLibraryReadResult,
+    MyLibraryScope,
     ScombzPageSummaryResult,
     ScombzReadResult,
     SitrusGradeResult,
@@ -75,7 +76,8 @@ _FIXTURE_SCOMBZ_QUERY = re.compile(
 _FIXTURE_SITRUS_QUERY = re.compile(r"(?:成績|単位|GPA|評価|取得済み)", re.IGNORECASE)
 _FIXTURE_MOODLE_QUERY = re.compile(r"(?:moodle|ムードル|教材|コース|活動|未提出)", re.IGNORECASE)
 _FIXTURE_MY_LIBRARY_QUERY = re.compile(
-    r"(?:my\s*library|図書館|貸出|返却|延滞|予約図書)", re.IGNORECASE
+    r"(?:my\s*library|図書館|貸出|返却|延滞|予約|履歴|購入|相互貸借|ILL)",
+    re.IGNORECASE,
 )
 _FIXTURE_CAST_QUERY = re.compile(
     r"(?:cast|キャリア|就活|求人|インターン|会社説明会|相談予約)", re.IGNORECASE
@@ -173,6 +175,25 @@ class FixtureChatBackend:
             return False
         recent_text = "\n".join(item.content for item in history[-4:])
         return bool(_FIXTURE_MY_LIBRARY_QUERY.search(f"{recent_text}\n{message}"))
+
+    @staticmethod
+    def _my_library_scope(message: str) -> MyLibraryScope:
+        """Choose one deterministic fixture scope from the latest request."""
+
+        # Preserve the original aggregate fixture behavior for a combined
+        # "loans and reservations" request; callers asking for one section
+        # get the corresponding new scoped projection below.
+        if re.search(r"貸出.*予約|予約.*貸出", message, re.IGNORECASE):
+            return "current_loans"
+        if re.search(r"購入|購入依頼|リクエスト", message, re.IGNORECASE):
+            return "purchase_requests"
+        if re.search(r"相互貸借|ILL|図書館間", message, re.IGNORECASE):
+            return "interlibrary_requests"
+        if re.search(r"履歴|過去の貸出|借りた本", message, re.IGNORECASE):
+            return "loan_history"
+        if re.search(r"予約", message, re.IGNORECASE):
+            return "reservations"
+        return "current_loans"
 
     @staticmethod
     def _requests_cast_read(
@@ -300,12 +321,14 @@ class FixtureChatBackend:
                 )
             )
         if self._requests_my_library_read(message, history, advertised):
+            scope = self._my_library_scope(message)
             return ChatAgentExecution(
                 deferred=DeferredChatRun(
                     messages=[],
                     tool_call_id=f"fixture-my-library-{uuid4().hex}",
                     conversation_id=conversation_id,
                     tool_name=MY_LIBRARY_TOOL_NAME,
+                    arguments={"scope": scope, "query": None, "offset": 0, "limit": 20},
                 )
             )
         if self._requests_moodle_read(message, history, advertised):
@@ -461,6 +484,9 @@ class FixtureChatBackend:
         if deferred.tool_name == MY_LIBRARY_TOOL_NAME:
             if not isinstance(tool_result, MyLibraryReadResult):
                 raise ValueError("The fixture My Library call requires a MyLibraryReadResult.")
+            requested_scope = deferred.arguments.get("scope")
+            if requested_scope is not None and tool_result.scope != requested_scope:
+                raise ValueError("My Library result scope does not match the requested scope.")
             evidence = next(
                 (item for item in context if is_derived_my_library_evidence(item)),
                 None,
@@ -474,6 +500,23 @@ class FixtureChatBackend:
             lines.append(f"- 延長可能: {tool_result.renewable_count}件")
             if tool_result.earliest_due_date:
                 lines.append(f"- 最短返却期限: {tool_result.earliest_due_date}")
+            if tool_result.items:
+                lines.append("\n**対象項目**")
+                for item in tool_result.items:
+                    details = [item.title]
+                    if item.author:
+                        details.append(f"著者: {item.author}")
+                    if item.status:
+                        details.append(f"状態: {item.status}")
+                    if item.due_date:
+                        details.append(f"返却期限: {item.due_date}")
+                    if item.renewable is not None:
+                        details.append("延長可能" if item.renewable else "延長不可")
+                    if item.activity_date:
+                        details.append(f"日付: {item.activity_date}")
+                    if item.request_type:
+                        details.append(f"種別: {item.request_type}")
+                    lines.append(f"- {' / '.join(details)}")
             return ChatAgentExecution(
                 draft=ChatDraft(
                     content_markdown="\n".join(lines),

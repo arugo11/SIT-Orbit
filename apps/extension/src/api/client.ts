@@ -29,6 +29,9 @@ export type SyllabusSearchResult =
 export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
 export type SitrusGradeResult = components["schemas"]["SitrusGradeResult"];
 export type MoodleReadResult = components["schemas"]["MoodleReadResult"];
+export type MyLibraryItem = components["schemas"]["MyLibraryItem"];
+export type MyLibraryScope =
+  components["schemas"]["MyLibraryReadResult"]["scope"];
 export type MyLibraryReadResult = components["schemas"]["MyLibraryReadResult"];
 export type CastReadResult = components["schemas"]["CastReadResult"];
 export type LibraryHoldingSummary =
@@ -770,18 +773,31 @@ function isIsoDateOnly(value: unknown): value is string {
 export function isMyLibraryReadResult(
   value: unknown,
 ): value is MyLibraryReadResult {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const legacyKeys = [
+    "schema_version",
+    "status",
+    "loan_count",
+    "reservation_count",
+    "overdue_count",
+    "renewable_count",
+    "earliest_due_date",
+    "reason_code",
+  ] as const;
+  const scopedKeys = [
+    ...legacyKeys.slice(0, 2),
+    "scope",
+    "items",
+    "total_count",
+    "next_offset",
+    ...legacyKeys.slice(2),
+  ] as const;
+  const isLegacy = hasExactlyKeys(value, legacyKeys);
+  const isScoped = hasExactlyKeys(value, scopedKeys);
+  if (!isLegacy && !isScoped) return false;
   if (
-    !isRecord(value) ||
-    !hasExactlyKeys(value, [
-      "schema_version",
-      "status",
-      "loan_count",
-      "reservation_count",
-      "overdue_count",
-      "renewable_count",
-      "earliest_due_date",
-      "reason_code",
-    ]) ||
     value.schema_version !== "v1" ||
     !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
     !isIntegerInRange(value.loan_count, 0, 1000) ||
@@ -796,6 +812,35 @@ export function isMyLibraryReadResult(
   ) {
     return false;
   }
+  if (isScoped) {
+    if (
+      !isOneOf(value.scope, [
+        "current_loans",
+        "reservations",
+        "loan_history",
+        "purchase_requests",
+        "interlibrary_requests",
+      ]) ||
+      !isIntegerInRange(value.total_count, 0, 1000) ||
+      (value.next_offset !== null &&
+        !isIntegerInRange(value.next_offset, 0, 1000)) ||
+      !Array.isArray(value.items) ||
+      value.items.length > 20 ||
+      !value.items.every(isMyLibraryItem) ||
+      value.total_count < value.items.length ||
+      (value.total_count <= value.items.length && value.next_offset !== null)
+    ) {
+      return false;
+    }
+    if (
+      value.status !== "known" &&
+      (value.items.length > 0 ||
+        value.total_count > 0 ||
+        value.next_offset !== null)
+    ) {
+      return false;
+    }
+  }
   const hasData =
     value.loan_count > 0 ||
     value.reservation_count > 0 ||
@@ -803,6 +848,48 @@ export function isMyLibraryReadResult(
     value.renewable_count > 0 ||
     value.earliest_due_date !== null;
   return value.status === "known" || !hasData;
+}
+
+function isMyLibraryItem(value: unknown): value is MyLibraryItem {
+  if (!isRecord(value)) return false;
+  const allowed = new Set([
+    "resource_ref",
+    "title",
+    "author",
+    "status",
+    "due_date",
+    "renewable",
+    "activity_date",
+    "request_type",
+  ]);
+  if (
+    !Object.keys(value).every((key) => allowed.has(key)) ||
+    !isLibraryResourceRef(value.resource_ref) ||
+    !isNonEmptyString(value.title) ||
+    value.title.length > 300 ||
+    (value.author !== undefined &&
+      value.author !== null &&
+      (typeof value.author !== "string" || value.author.length > 300)) ||
+    (value.status !== undefined &&
+      value.status !== null &&
+      (typeof value.status !== "string" || value.status.length > 100)) ||
+    (value.due_date !== undefined &&
+      value.due_date !== null &&
+      !isIsoDateOnly(value.due_date)) ||
+    (value.renewable !== undefined &&
+      value.renewable !== null &&
+      typeof value.renewable !== "boolean") ||
+    (value.activity_date !== undefined &&
+      value.activity_date !== null &&
+      !isIsoDateOnly(value.activity_date)) ||
+    (value.request_type !== undefined &&
+      value.request_type !== null &&
+      (typeof value.request_type !== "string" ||
+        value.request_type.length > 100))
+  ) {
+    return false;
+  }
+  return true;
 }
 
 export function isCastReadResult(value: unknown): value is CastReadResult {

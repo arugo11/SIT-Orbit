@@ -12,7 +12,7 @@ import os
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -35,6 +35,7 @@ from orbit_api.models import (
     LibraryItemReadResult,
     MoodleReadResult,
     MyLibraryReadResult,
+    MyLibraryScope,
     OrbitEvent,
     ScombzPageSummaryResult,
     ScombzReadResult,
@@ -431,9 +432,21 @@ async def moodle_read() -> MoodleReadResult:
     raise CallDeferred()
 
 
-async def my_library_read() -> MyLibraryReadResult:
-    """Deferred read of explicitly confirmed My Library aggregates."""
+async def my_library_read(
+    scope: MyLibraryScope = "current_loans",
+    query: Annotated[str | None, Field(max_length=200)] = None,
+    offset: Annotated[int, Field(ge=0, le=1000)] = 0,
+    limit: Annotated[int, Field(ge=1, le=20)] = 20,
+) -> MyLibraryReadResult:
+    """Read one explicitly consented My Library scope.
 
+    Choose the narrowest scope needed for the student's request.  ``query``
+    is an optional local title/author filter; ``offset`` and ``limit`` page
+    through at most twenty rows.  The extension performs filtering and paging
+    on the in-memory DOM snapshot before sending only the minimized result.
+    """
+
+    del scope, query, offset, limit
     raise CallDeferred()
 
 
@@ -514,6 +527,30 @@ def _validate_library_tool_arguments(tool_name: str, arguments: dict[str, Any]) 
     checks.
     """
 
+    if tool_name == MY_LIBRARY_TOOL_NAME:
+        allowed = {"scope", "query", "offset", "limit"}
+        if "scope" not in arguments or set(arguments) - allowed:
+            raise RuntimeError(
+                "my_library_read requires one valid scope and optional paging arguments."
+            )
+        if arguments.get("scope") not in {
+            "current_loans",
+            "reservations",
+            "loan_history",
+            "purchase_requests",
+            "interlibrary_requests",
+        }:
+            raise RuntimeError("my_library_read scope is invalid.")
+        query = arguments.get("query")
+        if query is not None and (not isinstance(query, str) or len(query) > 200):
+            raise RuntimeError("my_library_read query is outside the allowed range.")
+        offset = arguments.get("offset", 0)
+        if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 1000:
+            raise RuntimeError("my_library_read offset is invalid.")
+        limit = arguments.get("limit", 20)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+            raise RuntimeError("my_library_read limit is invalid.")
+        return
     if tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME:
         allowed = {
             "query",
@@ -994,7 +1031,6 @@ class PydanticAIAgentBackend(AgentBackend):
             SCOMBZ_READ_TOOL_NAME,
             SITRUS_TOOL_NAME,
             MOODLE_TOOL_NAME,
-            MY_LIBRARY_TOOL_NAME,
             CAST_TOOL_NAME,
         } and arguments:
             raise RuntimeError("This client tool does not accept arguments.")
@@ -1021,7 +1057,13 @@ class PydanticAIAgentBackend(AgentBackend):
                 not isinstance(faculty, str) or len(faculty) > 200
             ):
                 raise RuntimeError("syllabus_search faculty is outside the allowed range.")
+        # Accept the pre-scope v1 empty call emitted by older local clients as
+        # the safe default page. New model-generated calls still require the
+        # scope argument through the tool signature and validator.
+        if call.tool_name == MY_LIBRARY_TOOL_NAME and not arguments:
+            arguments = {"scope": "current_loans"}
         if call.tool_name in {
+            MY_LIBRARY_TOOL_NAME,
             LIBRARY_CATALOG_SEARCH_TOOL_NAME,
             LIBRARY_ITEM_READ_TOOL_NAME,
             LIBRARY_CATALOG_BROWSE_TOOL_NAME,
@@ -1188,6 +1230,13 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == MY_LIBRARY_TOOL_NAME:
             if not isinstance(tool_result, MyLibraryReadResult):
                 raise ValueError("My Library calls require a MyLibraryReadResult.")
+            if tool_result.items and self.provider_name != "Azure OpenAI":
+                raise ValueError(
+                    "My Library item titles require the explicitly consented Azure Agent."
+                )
+            requested_scope = deferred.arguments.get("scope")
+            if requested_scope is not None and tool_result.scope != requested_scope:
+                raise ValueError("My Library result scope does not match the requested scope.")
             evidence = next(
                 (item for item in context if is_derived_my_library_evidence(item)),
                 None,

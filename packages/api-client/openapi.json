@@ -1902,6 +1902,102 @@
         "title": "MoodleReadResult",
         "description": "Derived Moodle dashboard counts safe for an explicitly confirmed run.\n\nCourse names, activity titles, course IDs, user identity, submission data,\nand source HTML deliberately have no representation in this model."
       },
+      "MyLibraryItem": {
+        "properties": {
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "renewable": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renewable"
+          },
+          "activity_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activity Date"
+          },
+          "request_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Type"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_ref",
+          "title"
+        ],
+        "title": "MyLibraryItem",
+        "description": "One bounded personal-library row safe to share after session consent.\n\nThe connector maps provider-specific identifiers to an opaque reference\nbefore this model is constructed.  Material/request IDs, call numbers,\nform values, and account identity intentionally have no fields here."
+      },
       "MyLibraryReadResult": {
         "properties": {
           "schema_version": {
@@ -1919,29 +2015,73 @@
             ],
             "title": "Status"
           },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "current_loans",
+              "reservations",
+              "loan_history",
+              "purchase_requests",
+              "interlibrary_requests"
+            ],
+            "title": "Scope",
+            "default": "current_loans"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MyLibraryItem"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Items"
+          },
+          "total_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Total Count",
+            "default": 0
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
           "loan_count": {
             "type": "integer",
             "maximum": 1000.0,
             "minimum": 0.0,
-            "title": "Loan Count"
+            "title": "Loan Count",
+            "default": 0
           },
           "reservation_count": {
             "type": "integer",
             "maximum": 1000.0,
             "minimum": 0.0,
-            "title": "Reservation Count"
+            "title": "Reservation Count",
+            "default": 0
           },
           "overdue_count": {
             "type": "integer",
             "maximum": 1000.0,
             "minimum": 0.0,
-            "title": "Overdue Count"
+            "title": "Overdue Count",
+            "default": 0
           },
           "renewable_count": {
             "type": "integer",
             "maximum": 1000.0,
             "minimum": 0.0,
-            "title": "Renewable Count"
+            "title": "Renewable Count",
+            "default": 0
           },
           "earliest_due_date": {
             "anyOf": [
@@ -1971,14 +2111,10 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "status",
-          "loan_count",
-          "reservation_count",
-          "overdue_count",
-          "renewable_count"
+          "status"
         ],
         "title": "MyLibraryReadResult",
-        "description": "Derived My Library counts safe for an explicitly confirmed run.\n\nBook titles, authors, material identifiers, call numbers, user identity,\nand SSO data deliberately have no representation in this model."
+        "description": "A bounded, consent-gated My Library scope projection.\n\n``loan_count`` and the other aggregate fields remain for clients of the\noriginal v1 summary.  New callers use one requested ``scope`` and receive\nat most twenty item projections plus a cursor.  Book titles and authors\nare intentionally present only in this minimized, explicitly consented\nprojection; identifiers, call numbers, forms, identity, and SSO data have\nno representation in the model."
       },
       "OrbitEvent": {
         "properties": {

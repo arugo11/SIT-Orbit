@@ -533,37 +533,103 @@ class MoodleReadResult(StrictApiModel):
         return self
 
 
-class MyLibraryReadResult(StrictApiModel):
-    """Derived My Library counts safe for an explicitly confirmed run.
+MyLibraryScope = Literal[
+    "current_loans",
+    "reservations",
+    "loan_history",
+    "purchase_requests",
+    "interlibrary_requests",
+]
 
-    Book titles, authors, material identifiers, call numbers, user identity,
-    and SSO data deliberately have no representation in this model.
+
+class MyLibraryItem(StrictApiModel):
+    """One bounded personal-library row safe to share after session consent.
+
+    The connector maps provider-specific identifiers to an opaque reference
+    before this model is constructed.  Material/request IDs, call numbers,
+    form values, and account identity intentionally have no fields here.
+    """
+
+    resource_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    title: StrictStr = Field(min_length=1, max_length=300)
+    author: StrictStr | None = Field(default=None, max_length=300)
+    status: StrictStr | None = Field(default=None, max_length=100)
+    due_date: StrictStr | None = Field(default=None, max_length=10)
+    renewable: StrictBool | None = None
+    activity_date: StrictStr | None = Field(default=None, max_length=10)
+    request_type: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def dates_are_iso(self) -> "MyLibraryItem":
+        for field_name, value in (
+            ("due_date", self.due_date),
+            ("activity_date", self.activity_date),
+        ):
+            if value is None:
+                continue
+            try:
+                datetime.strptime(value, "%Y-%m-%d")
+            except ValueError as error:
+                raise ValueError(
+                    f"My Library {field_name} values must use YYYY-MM-DD."
+                ) from error
+        return self
+
+
+class MyLibraryReadResult(StrictApiModel):
+    """A bounded, consent-gated My Library scope projection.
+
+    ``loan_count`` and the other aggregate fields remain for clients of the
+    original v1 summary.  New callers use one requested ``scope`` and receive
+    at most twenty item projections plus a cursor.  Book titles and authors
+    are intentionally present only in this minimized, explicitly consented
+    projection; identifiers, call numbers, forms, identity, and SSO data have
+    no representation in the model.
     """
 
     schema_version: Literal["v1"] = "v1"
     status: Literal["known", "reauth_required", "unavailable"]
-    loan_count: StrictInt = Field(ge=0, le=1000)
-    reservation_count: StrictInt = Field(ge=0, le=1000)
-    overdue_count: StrictInt = Field(ge=0, le=1000)
-    renewable_count: StrictInt = Field(ge=0, le=1000)
+    scope: MyLibraryScope = "current_loans"
+    items: list[MyLibraryItem] = Field(default_factory=list, max_length=20)
+    total_count: StrictInt = Field(default=0, ge=0, le=1000)
+    next_offset: StrictInt | None = Field(default=None, ge=0, le=1000)
+    loan_count: StrictInt = Field(default=0, ge=0, le=1000)
+    reservation_count: StrictInt = Field(default=0, ge=0, le=1000)
+    overdue_count: StrictInt = Field(default=0, ge=0, le=1000)
+    renewable_count: StrictInt = Field(default=0, ge=0, le=1000)
     earliest_due_date: StrictStr | None = Field(default=None, max_length=10)
     reason_code: StrictStr | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
     def values_match_status(self) -> "MyLibraryReadResult":
-        if self.earliest_due_date is not None:
+        for field_name, value in (("earliest_due_date", self.earliest_due_date),):
+            if value is None:
+                continue
             try:
-                datetime.strptime(self.earliest_due_date, "%Y-%m-%d")
+                datetime.strptime(value, "%Y-%m-%d")
             except ValueError as error:
-                raise ValueError("My Library due dates must use YYYY-MM-DD.") from error
+                raise ValueError(
+                    f"My Library {field_name} values must use YYYY-MM-DD."
+                ) from error
         if self.status != "known" and (
-            self.loan_count
+            self.items
+            or self.total_count
+            or self.next_offset is not None
+            or self.loan_count
             or self.reservation_count
             or self.overdue_count
             or self.renewable_count
             or self.earliest_due_date is not None
         ):
             raise ValueError("Unavailable My Library results cannot include derived data.")
+        if self.total_count < len(self.items):
+            raise ValueError("My Library total_count cannot be below the item count.")
+        if self.total_count <= len(self.items) and self.next_offset is not None:
+            raise ValueError("My Library next_offset must be null on the final page.")
         if self.overdue_count > self.loan_count:
             raise ValueError("My Library overdue count cannot exceed loan count.")
         if self.renewable_count > self.loan_count:
@@ -848,6 +914,8 @@ __all__ = [
     "SitrusGradeItem",
     "SitrusGradeResult",
     "MoodleReadResult",
+    "MyLibraryItem",
+    "MyLibraryScope",
     "MyLibraryReadResult",
     "LibraryHoldingSummary",
     "LibraryRelatedRecordRef",
