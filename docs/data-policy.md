@@ -147,6 +147,14 @@ Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM�
 
 Career Evidence Bankの記録、資料locator、人物対応表は、Azure、OpenAI、W&B、FastAPI、Chat履歴、runtime messageへ送信しない。個人証拠を外部モデルで扱う必要が生じた場合は、この例外を暗黙に広げず、Pseudonymization Gateway、Context Manifest、大学の許可範囲を満たす別変更として再審査する。raw PDFや添付ファイルは保存・アップロードせず、利用者が明示した表示情報だけを端末内で参照する。
 
+### CAST Decision Room
+
+Decision Roomは端末内の求人比較表示であり、入力された求人・インターンと企業名が一致する履歴Snapshotだけを利用する。技術領域、勤務地、職種、採用実績、選考記録、OB・OG支援、締切、不足情報を別々に評価し、単一の相性点、順位、採用可能性を外部へ送信・保存しない。
+
+外部へ出せるProvider projectionはこのbranchでは存在しない。Decision Roomの`subject.local_id`、企業名、採用実績の年月、選考記録、OB・OGの詳細、求人URL、企業コード、人物名、`report_href`、raw HTMLは拡張機能のメモリ内UIに限定する。別企業の履歴、企業名を照合できないSnapshot、未知の締切・職種・勤務地は成功や不一致と断定せず`unknown`と不足情報へ分類する。
+
+Decision Roomが表示する次の一歩は読み取り専用の確認案内だけである。応募、予約、送信、添付、Calendar登録を暗黙に開始せず、後続のAction Adapterでpreviewと本人の再確認を経る。
+
 個人・第三者のCAST記録は仮名化しても現行ポリシーではAzureへ送らず、ChromeのオンデバイスPrompt APIで処理する。Prompt APIが利用できない場合にAzureや別Providerへ暗黙fallbackしない。Context Manifestで、データ種別、処理先、置換数、一般化項目、保存期間、送信payload previewを利用者へ示す。GoogleのGranular Consentと[Chromeの権限ガイド](https://developer.chrome.com/docs/extensions/develop/concepts/permission-warnings)をUI設計の参考にする。[Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api)、[OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)、[W3C Web Crypto](https://www.w3.org/TR/WebCryptoAPI/)に基づく。
 
 ### CAST横断検索のデータ境界
