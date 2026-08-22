@@ -119,6 +119,22 @@ describe("CareerVault", () => {
     await expect(vault.get("one")).rejects.toThrow();
   });
 
+  it("derives a stable local HMAC without exposing the key", async () => {
+    const { session, vault } = createFixture();
+    activeVaults.push(vault);
+    await vault.create(PASSPHRASE);
+
+    const first = await vault.hmac("person:山田 太郎");
+    const second = await vault.hmac("person:山田 太郎");
+    const other = await vault.hmac("person:佐藤 花子");
+    expect(Array.from(first)).toEqual(Array.from(second));
+    expect(Array.from(first)).not.toEqual(Array.from(other));
+    expect(await session.get()).not.toBeNull();
+
+    await vault.lock();
+    await expect(vault.hmac("person:山田 太郎")).rejects.toThrow("locked");
+  });
+
   it("clears private records while retaining only the verification record", async () => {
     const { store, vault } = createFixture();
     activeVaults.push(vault);
