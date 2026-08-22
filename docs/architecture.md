@@ -299,6 +299,12 @@ CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含�
 
 個人・第三者のCAST記録はChrome Prompt APIのオンデバイス実行へ固定し、APIが利用できない場合にAzureへfallbackしない。Azureへ送れるのは公開情報、匿名集計、一般化属性だけである。Context Manifestで処理先と送信payloadを表示し、外部書込み、応募、予約、添付、Calendar登録はpreview後の本人確認を必須とする。個人情報を安全に仮名化できない自由記述は送信せず、端末内で停止する。
 
+### CAST横断検索
+
+`cast-cross-search.ts`は、求人・インターン、採用実績・選考記録、支援リソースのtyped Snapshotを一つの端末内コーパスへまとめる。自然言語の質問はChrome Prompt APIへ質問文だけを渡して、検索語・必須語・勤務地・技術領域・職種・年度・OB・OG条件へ構造化する。Snapshotや人物情報をこのPromptへ渡す経路は用意しない。
+
+構造化後はMiniSearch 7.2のBM25+ランキングを使い、完全一致のフィルタ（種別、年度、勤務地、技術領域、職種、OB・OG条件）を先に適用し、prefix・fuzzy検索を補助的に使う。結果カードの詳細は端末内のlocal payloadから表示し、検索結果をAzureやChat履歴へ送らない。意味埋め込み、外部検索API、常時索引、推測URL、フォーム送信はこの段階では追加しない。
+
 ## Connectorの境界
 
 「ScombZへログインすれば関連サイトをすべて読める」とは扱わない。

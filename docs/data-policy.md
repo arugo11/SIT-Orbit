@@ -141,6 +141,12 @@ Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM�
 
 個人・第三者のCAST記録は仮名化しても現行ポリシーではAzureへ送らず、ChromeのオンデバイスPrompt APIで処理する。Prompt APIが利用できない場合にAzureや別Providerへ暗黙fallbackしない。Context Manifestで、データ種別、処理先、置換数、一般化項目、保存期間、送信payload previewを利用者へ示す。GoogleのGranular Consentと[Chromeの権限ガイド](https://developer.chrome.com/docs/extensions/develop/concepts/permission-warnings)をUI設計の参考にする。[Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api)、[OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)、[W3C Web Crypto](https://www.w3.org/TR/WebCryptoAPI/)に基づく。
 
+### CAST横断検索のデータ境界
+
+横断検索のPrompt入力は、利用者が明示した自然言語の質問だけとする。求人カード、採用実績、選考記録、人物名、内部ID、URL、raw HTMLをPrompt APIの入力へ連結しない。Chrome Prompt APIが返した構造化クエリは、配列長・文字数・種別を検証してから端末内MiniSearchへ渡す。MiniSearchの結果と詳細Snapshotは拡張機能メモリ内だけで扱い、FastAPI、Azure、W&B、IndexedDB、Chat履歴へ保存しない。
+
+検索条件の勤務地、技術領域、職種、年度、OB・OG条件は厳密フィルタとして適用し、曖昧な検索語だけをprefix・fuzzyランキングへ回す。検索語が空、構造化結果が不正、Prompt APIが利用できない場合は外部Providerへfallbackせず、端末内で検索を開始しない。これはCAST個人記録を外部へ送らない既存のGateway境界を維持する。
+
 拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
 
 実データを扱うConnectorを追加する場合は、送信先、保存期間、削除方法、利用目的、大学の許可範囲を個別に確認する。
