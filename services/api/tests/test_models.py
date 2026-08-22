@@ -33,34 +33,36 @@ def test_external_action_requires_confirmation() -> None:
 
 
 def test_library_action_options_are_typed_and_personal_classified() -> None:
-    result = LibraryActionOptionsResult(
-        status="known",
-        resource_ref="orbit-library://record/ABCDEFGHIJKLMNOP",
-        data_classification="personal",
-        options=[
-            {
-                "action_type": action,
-                "available": action == "renew",
-                "reason_code": "available" if action == "renew" else "not_available",
-                "required_inputs": {
-                    "reserve": ["pickup_campus"],
-                    "intercampus_transfer": ["pickup_campus"],
-                    "purchase_request": ["reason"],
-                    "ill_loan": ["receiver", "payment", "fee"],
-                    "ill_copy": ["receiver", "payment", "fee", "page_range"],
-                }.get(action, []),
-            }
-            for action in (
-                "visit_shelf",
-                "open_online",
-                "reserve",
-                "intercampus_transfer",
-                "renew",
-                "purchase_request",
-                "ill_loan",
-                "ill_copy",
-            )
-        ],
+    result = LibraryActionOptionsResult.model_validate(
+        {
+            "status": "known",
+            "resource_ref": "orbit-library://record/ABCDEFGHIJKLMNOP",
+            "data_classification": "personal",
+            "options": [
+                {
+                    "action_type": action,
+                    "available": action == "renew",
+                    "reason_code": "available" if action == "renew" else "not_available",
+                    "required_inputs": {
+                        "reserve": ["pickup_campus"],
+                        "intercampus_transfer": ["pickup_campus"],
+                        "purchase_request": ["reason"],
+                        "ill_loan": ["receiver", "payment", "fee"],
+                        "ill_copy": ["receiver", "payment", "fee", "page_range"],
+                    }.get(action, []),
+                }
+                for action in (
+                    "visit_shelf",
+                    "open_online",
+                    "reserve",
+                    "intercampus_transfer",
+                    "renew",
+                    "purchase_request",
+                    "ill_loan",
+                    "ill_copy",
+                )
+            ],
+        }
     )
     assert result.data_classification == "personal"
     assert len(result.options) == 8
