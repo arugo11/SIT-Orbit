@@ -29,6 +29,7 @@ from orbit_api.models import (
     CastReadResult,
     ChatHistoryMessage,
     EvidenceLink,
+    LegacyMyLibraryReadResult,
     LibraryCatalogBrowseResult,
     LibraryCatalogSearchResult,
     LibraryDiscoverySearchResult,
@@ -39,6 +40,7 @@ from orbit_api.models import (
     OrbitEvent,
     ScombzPageSummaryResult,
     ScombzReadResult,
+    ScopedMyLibraryReadResult,
     SitrusGradeResult,
     SyllabusSearchResult,
 )
@@ -448,6 +450,46 @@ async def my_library_read(
 
     del scope, query, offset, limit
     raise CallDeferred()
+
+
+def validate_my_library_result_page(
+    result: MyLibraryReadResult,
+    arguments: Mapping[str, Any],
+) -> None:
+    """Validate a scoped result against the exact deferred tool request.
+
+    Legacy aggregate-only results remain accepted for backward compatibility.
+    Scoped results are authoritative only for the requested page, so the
+    request arguments determine both the expected item count and cursor.
+    """
+
+    if isinstance(result, LegacyMyLibraryReadResult):
+        if arguments:
+            raise ValueError(
+                "Legacy My Library results cannot satisfy a scoped tool request."
+            )
+        return
+    if not isinstance(result, ScopedMyLibraryReadResult):
+        raise ValueError("My Library calls require a MyLibraryReadResult.")
+
+    requested_scope = arguments.get("scope", "current_loans")
+    offset = arguments.get("offset", 0)
+    limit = arguments.get("limit", 20)
+    if requested_scope != result.scope:
+        raise ValueError("My Library result scope does not match the requested scope.")
+    if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 1000:
+        raise ValueError("My Library offset must be an integer from 0 to 1000.")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+        raise ValueError("My Library limit must be an integer from 1 to 20.")
+
+    expected_count = min(limit, max(result.total_count - offset, 0))
+    if len(result.items) != expected_count:
+        raise ValueError("My Library result item count does not match the requested page.")
+    expected_next_offset = (
+        offset + expected_count if offset + expected_count < result.total_count else None
+    )
+    if result.next_offset != expected_next_offset:
+        raise ValueError("My Library result next_offset does not match the requested page.")
 
 
 async def cast_read() -> CastReadResult:
@@ -1234,13 +1276,7 @@ class PydanticAIAgentBackend(AgentBackend):
                 raise ValueError(
                     "My Library data requires the explicitly consented Azure Agent."
                 )
-            requested_scope = deferred.arguments.get("scope")
-            if (
-                requested_scope is not None
-                and tool_result.scope is not None
-                and tool_result.scope != requested_scope
-            ):
-                raise ValueError("My Library result scope does not match the requested scope.")
+            validate_my_library_result_page(tool_result, deferred.arguments)
             evidence = next(
                 (item for item in context if is_derived_my_library_evidence(item)),
                 None,
@@ -1424,4 +1460,5 @@ __all__ = [
     "scombz_page_summary",
     "syllabus_search",
     "validate_agent_data",
+    "validate_my_library_result_page",
 ]

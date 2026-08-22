@@ -35,6 +35,7 @@ from orbit_api.models import (
     MyLibraryScope,
     ScombzPageSummaryResult,
     ScombzReadResult,
+    ScopedMyLibraryReadResult,
     SitrusGradeResult,
     SyllabusSearchResult,
 )
@@ -64,6 +65,7 @@ from .pydantic_ai_backend import (
     is_derived_my_library_evidence,
     is_derived_scombz_read_evidence,
     is_derived_sitrus_evidence,
+    validate_my_library_result_page,
 )
 
 CHAT_RUN_TTL_SECONDS = 600
@@ -484,13 +486,7 @@ class FixtureChatBackend:
         if deferred.tool_name == MY_LIBRARY_TOOL_NAME:
             if not isinstance(tool_result, MyLibraryReadResult):
                 raise ValueError("The fixture My Library call requires a MyLibraryReadResult.")
-            requested_scope = deferred.arguments.get("scope")
-            if (
-                requested_scope is not None
-                and tool_result.scope is not None
-                and tool_result.scope != requested_scope
-            ):
-                raise ValueError("My Library result scope does not match the requested scope.")
+            validate_my_library_result_page(tool_result, deferred.arguments)
             evidence = next(
                 (item for item in context if is_derived_my_library_evidence(item)),
                 None,
@@ -508,7 +504,7 @@ class FixtureChatBackend:
                 lines.append(f"- 延長可能: {tool_result.renewable_count}件")
             if tool_result.earliest_due_date:
                 lines.append(f"- 最短返却期限: {tool_result.earliest_due_date}")
-            if tool_result.items:
+            if isinstance(tool_result, ScopedMyLibraryReadResult) and tool_result.items:
                 lines.append("\n**対象項目**")
                 for item in tool_result.items:
                     details = [item.title]

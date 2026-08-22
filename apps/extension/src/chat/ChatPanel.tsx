@@ -883,30 +883,29 @@ export function ChatPanel({
           disclosure,
         );
       }
+      const requestedScope =
+        typeof argumentsObject.scope === "string"
+          ? (argumentsObject.scope as
+              | "current_loans"
+              | "reservations"
+              | "loan_history"
+              | "purchase_requests"
+              | "interlibrary_requests")
+          : "current_loans";
+      const requestedOffset =
+        typeof argumentsObject.offset === "number" ? argumentsObject.offset : 0;
+      const requestedLimit =
+        typeof argumentsObject.limit === "number" ? argumentsObject.limit : 20;
       const library = await sendExtensionMessage<MyLibraryReadResponse>({
         type: "my-library-read",
         tool_call_id: call.tool_call_id,
-        scope:
-          typeof argumentsObject.scope === "string"
-            ? (argumentsObject.scope as
-                | "current_loans"
-                | "reservations"
-                | "loan_history"
-                | "purchase_requests"
-                | "interlibrary_requests")
-            : "current_loans",
+        scope: requestedScope,
         query:
           typeof argumentsObject.query === "string"
             ? argumentsObject.query
             : null,
-        offset:
-          typeof argumentsObject.offset === "number"
-            ? argumentsObject.offset
-            : 0,
-        limit:
-          typeof argumentsObject.limit === "number"
-            ? argumentsObject.limit
-            : 20,
+        offset: requestedOffset,
+        limit: requestedLimit,
       });
       if (library.status === "permission_required") {
         throw new BrowserAccessRequiredError(
@@ -922,9 +921,26 @@ export function ChatPanel({
           "My Libraryを開きました。ログイン後、もう一度質問してください。",
         );
       }
+      const projection = library.status === "known" ? library.projection : null;
       if (
         library.status !== "known" ||
-        !isMyLibraryReadResult(library.projection)
+        !isMyLibraryReadResult(projection) ||
+        !("scope" in projection) ||
+        projection.scope !== requestedScope
+      ) {
+        throw new Error("My Libraryの利用状況を読み取れませんでした。");
+      }
+      const expectedItemCount = Math.min(
+        requestedLimit,
+        Math.max(projection.total_count - requestedOffset, 0),
+      );
+      const expectedNextOffset =
+        requestedOffset + expectedItemCount < projection.total_count
+          ? requestedOffset + expectedItemCount
+          : null;
+      if (
+        projection.items.length !== expectedItemCount ||
+        projection.next_offset !== expectedNextOffset
       ) {
         throw new Error("My Libraryの利用状況を読み取れませんでした。");
       }
@@ -932,11 +948,7 @@ export function ChatPanel({
         ...items,
         [activity.id]: library.detail,
       }));
-      request = toolResultRequest(
-        call.tool_call_id,
-        call.name,
-        library.projection,
-      );
+      request = toolResultRequest(call.tool_call_id, call.name, projection);
       sensitiveApproval.current.delete(approvalKey);
     } else if (call.name === "cast_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);

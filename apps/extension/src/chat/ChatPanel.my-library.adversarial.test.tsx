@@ -314,4 +314,55 @@ describe("ChatPanel My Library consent and history boundary", () => {
     expect(stored).toContain("購入依頼の状況を確認しました");
     expect(rendered).toContain("端末内資料");
   });
+
+  it("rejects a legacy aggregate when the Agent requested a scoped page", async () => {
+    const apiClient = createApiClient();
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    installLibraryChrome({ consented: true });
+    mounted.chromeRuntime.sendMessage.mockImplementation(
+      (message: unknown, callback?: (response: unknown) => void) => {
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: string }).type === "my-library-read"
+        ) {
+          callback?.({
+            status: "known",
+            projection: {
+              schema_version: "v1",
+              status: "known",
+              loan_count: 1,
+              reservation_count: 0,
+              overdue_count: 0,
+              renewable_count: 0,
+              earliest_due_date: null,
+              reason_code: null,
+            },
+            detail: localDetail,
+          });
+          return;
+        }
+        callback?.({ ok: true });
+      },
+    );
+
+    await submitMessage(mounted, "購入依頼の状況を確認して");
+    await waitFor(
+      () =>
+        apiClient.submitChatToolResult.mock.calls.length === 1 ||
+        mounted?.document.querySelector('[role="alert"]')?.textContent ===
+          "My Libraryの利用状況を読み取れませんでした。",
+    );
+    expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
+    expect(mounted?.document.querySelector('[role="alert"]')?.textContent).toBe(
+      "My Libraryの利用状況を読み取れませんでした。",
+    );
+  });
 });

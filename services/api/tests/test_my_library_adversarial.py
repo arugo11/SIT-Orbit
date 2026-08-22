@@ -3,9 +3,12 @@ import copy
 import orbit_api.main as orbit_main
 import pytest
 from fastapi.testclient import TestClient
+from orbit_api.agent.pydantic_ai_backend import validate_my_library_result_page
 from orbit_api.main import app
 from orbit_api.models import MyLibraryItem, MyLibraryReadResult
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
+
+MY_LIBRARY_RESULT_ADAPTER = TypeAdapter(MyLibraryReadResult)
 
 OPAQUE_REF = "orbit-library://record/0123456789abcdef"
 FORBIDDEN_VALUES = (
@@ -109,7 +112,7 @@ def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
         "purchase_requests",
         "interlibrary_requests",
     ):
-        result = MyLibraryReadResult.model_validate(
+        result = MY_LIBRARY_RESULT_ADAPTER.validate_python(
             result_payload(scope, items=rows),
         )
         assert result.scope == scope
@@ -127,7 +130,7 @@ def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
         ],
     )
     with pytest.raises(ValidationError):
-        MyLibraryReadResult.model_validate(too_many)
+        MY_LIBRARY_RESULT_ADAPTER.validate_python(too_many)
 
 
 def test_fixture_chat_response_contains_only_allowed_book_fields(monkeypatch) -> None:
@@ -189,17 +192,220 @@ def test_unavailable_scoped_result_rejects_even_zero_aggregate_values() -> None:
     payload = result_payload(items=[])
     payload.update(status="unavailable", loan_count=0, reason_code="unavailable")
     with pytest.raises(ValidationError):
-        MyLibraryReadResult.model_validate(payload)
+        MY_LIBRARY_RESULT_ADAPTER.validate_python(payload)
 
 
 def test_known_result_requires_a_complete_legacy_or_scoped_shape() -> None:
     with pytest.raises(ValidationError):
-        MyLibraryReadResult.model_validate({"status": "known"})
+        MY_LIBRARY_RESULT_ADAPTER.validate_python({"status": "known"})
 
     inconsistent = result_payload("purchase_requests")
     inconsistent["loan_count"] = 0
     with pytest.raises(ValidationError, match="outside the requested scope"):
-        MyLibraryReadResult.model_validate(inconsistent)
+        MY_LIBRARY_RESULT_ADAPTER.validate_python(inconsistent)
+
+
+@pytest.mark.parametrize(
+    ("scope", "allowed_fields"),
+    [
+        ("current_loans", {"loan_count", "overdue_count", "renewable_count"}),
+        ("reservations", {"reservation_count"}),
+        ("loan_history", set()),
+        ("purchase_requests", set()),
+        ("interlibrary_requests", set()),
+    ],
+)
+def test_scoped_contract_nulls_aggregates_outside_each_requested_scope(
+    scope: str,
+    allowed_fields: set[str],
+) -> None:
+    parsed = MY_LIBRARY_RESULT_ADAPTER.validate_python(result_payload(scope))
+    for field in (
+        "loan_count",
+        "reservation_count",
+        "overdue_count",
+        "renewable_count",
+        "earliest_due_date",
+    ):
+        value = getattr(parsed, field)
+        if field in allowed_fields:
+            assert value is not None
+            continue
+        assert value is None
+
+        poisoned = copy.deepcopy(result_payload(scope))
+        poisoned[field] = 0
+        with pytest.raises(ValidationError):
+            MY_LIBRARY_RESULT_ADAPTER.validate_python(poisoned)
+
+
+def _scoped_page_for_resume(
+    *, item_count: int, total_count: int, next_offset: int | None
+):
+    rows = [
+        {
+            **item_payload(),
+            "resource_ref": f"orbit-library://record/{index:016x}",
+        }
+        for index in range(item_count)
+    ]
+    payload = result_payload("purchase_requests", items=rows)
+    payload["total_count"] = total_count
+    payload["next_offset"] = next_offset
+    return MY_LIBRARY_RESULT_ADAPTER.validate_python(payload)
+
+
+@pytest.mark.parametrize(
+    ("item_count", "total_count", "next_offset", "arguments", "message"),
+    [
+        (
+            1,
+            21,
+            1,
+            {"scope": "purchase_requests", "offset": 0, "limit": 20},
+            "item count",
+        ),
+        (
+            20,
+            21,
+            None,
+            {"scope": "purchase_requests", "offset": 0, "limit": 20},
+            "next_offset",
+        ),
+        (
+            0,
+            1,
+            None,
+            {"scope": "purchase_requests", "offset": 0, "limit": 20},
+            "item count",
+        ),
+        (
+            0,
+            21,
+            None,
+            {"scope": "purchase_requests", "offset": 20, "limit": 20},
+            "item count",
+        ),
+    ],
+)
+def test_resume_rejects_total_offset_limit_cursor_inconsistency(
+    item_count: int,
+    total_count: int,
+    next_offset: int | None,
+    arguments: dict[str, object],
+    message: str,
+) -> None:
+    result = _scoped_page_for_resume(
+        item_count=item_count,
+        total_count=total_count,
+        next_offset=next_offset,
+    )
+    with pytest.raises(ValueError, match=message):
+        validate_my_library_result_page(result, arguments)
+
+
+def test_resume_accepts_only_the_page_defined_by_offset_and_limit() -> None:
+    first_page = _scoped_page_for_resume(
+        item_count=20,
+        total_count=21,
+        next_offset=20,
+    )
+    validate_my_library_result_page(
+        first_page,
+        {"scope": "purchase_requests", "offset": 0, "limit": 20},
+    )
+
+    final_page = _scoped_page_for_resume(
+        item_count=1,
+        total_count=21,
+        next_offset=None,
+    )
+    validate_my_library_result_page(
+        final_page,
+        {"scope": "purchase_requests", "offset": 20, "limit": 20},
+    )
+
+    with pytest.raises(ValueError, match="offset"):
+        validate_my_library_result_page(
+            final_page,
+            {"scope": "purchase_requests", "offset": -1, "limit": 20},
+        )
+    with pytest.raises(ValueError, match="limit"):
+        validate_my_library_result_page(
+            final_page,
+            {"scope": "purchase_requests", "offset": 20, "limit": 21},
+        )
+
+
+def test_chat_resume_rejects_a_scoped_page_shorter_than_requested(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "my-library-short-page",
+                "message": "購入依頼の状況を確認して",
+                "history": [],
+                "client_tools": [{"name": "my_library_read", "version": 1}],
+            },
+        )
+        assert first.status_code == 200
+        pending = first.json()
+        call = pending["calls"][0]
+        short_page = result_payload(items=[])
+        short_page["total_count"] = 1
+
+        resumed = client.post(
+            f"/v1/chat/runs/{pending['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": call["name"],
+                "version": call["version"],
+                "result": short_page,
+            },
+        )
+
+    assert resumed.status_code == 422
+    assert "item count does not match the requested page" in resumed.text
+
+
+def test_chat_resume_rejects_legacy_aggregates_for_a_scoped_request(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "my-library-legacy-scoped",
+                "message": "貸出状況を確認して",
+                "history": [],
+                "client_tools": [{"name": "my_library_read", "version": 1}],
+            },
+        )
+        pending = first.json()
+        call = pending["calls"][0]
+        resumed = client.post(
+            f"/v1/chat/runs/{pending['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": call["name"],
+                "version": call["version"],
+                "result": {
+                    "schema_version": "v1",
+                    "status": "known",
+                    "loan_count": 0,
+                    "reservation_count": 0,
+                    "overdue_count": 0,
+                    "renewable_count": 0,
+                    "earliest_due_date": None,
+                    "reason_code": None,
+                },
+            },
+        )
+
+    assert resumed.status_code == 422
+    assert "cannot satisfy a scoped tool request" in resumed.text
 
 
 @pytest.mark.parametrize(

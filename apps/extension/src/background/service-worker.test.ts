@@ -553,6 +553,76 @@ describe("service worker side panel contract", () => {
     );
   });
 
+  it.each([
+    {
+      scope: "current_loans",
+      html: `<table id="lendList"><tbody><tr><td>解析不能な貸出行</td></tr></tbody></table>`,
+    },
+    {
+      scope: "reservations",
+      html: `<table id="reservationList"><tbody><tr><td>解析不能な予約行</td></tr></tbody></table>`,
+    },
+    {
+      scope: "purchase_requests",
+      html: `<table><caption>購入依頼状況</caption><thead><tr><th>書名</th><th>状態</th><th>申請日</th></tr></thead><tbody><tr><td></td><td>受付済み</td><td>2026-08-01</td></tr></tbody></table>`,
+    },
+    {
+      scope: "loan_history",
+      html: `<table><caption>貸出履歴一覧</caption><thead><tr><th>書名</th><th>貸出日</th></tr></thead><tbody><tr><td></td><td>2026-08-01</td></tr></tbody></table>`,
+    },
+    {
+      scope: "interlibrary_requests",
+      html: `<table><caption>ILL（文献複写・貸借）依頼</caption><thead><tr><th>書名</th><th>状態</th><th>依頼日</th><th>依頼区分</th></tr></thead><tbody><tr><td></td><td>受付済み</td><td>2026-08-01</td><td>文献複写</td></tr></tbody></table>`,
+    },
+  ] as const)(
+    "fails closed for a non-empty unparseable $scope DOM row",
+    async ({ scope, html }) => {
+      permissionsContains.mockResolvedValue(true);
+      getTab.mockResolvedValue({
+        id: 91,
+        windowId: 1,
+        status: "complete",
+        url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+      } as chrome.tabs.Tab);
+      executeScript
+        .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+        .mockResolvedValueOnce([
+          {
+            result: {
+              status: "unavailable",
+              reason_code: "scope_row_unparseable",
+            },
+          },
+        ]);
+
+      const response = vi.fn();
+      onMessage.dispatch(
+        {
+          type: MESSAGE_TYPES.myLibraryRead,
+          tool_call_id: `library-unparseable-${scope}`,
+          scope,
+          offset: 0,
+          limit: 20,
+        },
+        {},
+        response,
+      );
+      await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+      stubPage(
+        html,
+        "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+      );
+      const readStatusPage = capturedScript(1) as unknown as (
+        requestedScope: typeof scope,
+      ) => unknown;
+      expect(readStatusPage(scope)).toEqual({
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
   it("reads public catalog DOM in an inactive isolated-world tab", async () => {
     permissionsContains.mockResolvedValue(true);
     getTab.mockResolvedValue({

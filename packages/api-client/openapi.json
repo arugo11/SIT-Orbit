@@ -1171,7 +1171,10 @@
                 "$ref": "#/components/schemas/MoodleReadResult"
               },
               {
-                "$ref": "#/components/schemas/MyLibraryReadResult"
+                "$ref": "#/components/schemas/LegacyMyLibraryReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/ScopedMyLibraryReadResult"
               },
               {
                 "$ref": "#/components/schemas/CastReadResult"
@@ -1293,6 +1296,86 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "LegacyMyLibraryReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "loan_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Loan Count"
+          },
+          "reservation_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Reservation Count"
+          },
+          "overdue_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Overdue Count"
+          },
+          "renewable_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Renewable Count"
+          },
+          "earliest_due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Due Date"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "loan_count",
+          "reservation_count",
+          "overdue_count",
+          "renewable_count",
+          "earliest_due_date",
+          "reason_code"
+        ],
+        "title": "LegacyMyLibraryReadResult",
+        "description": "The original aggregate-only My Library result shape."
       },
       "LibraryBibliographicRecord": {
         "properties": {
@@ -1998,173 +2081,6 @@
         "title": "MyLibraryItem",
         "description": "One bounded personal-library row safe to share after session consent.\n\nThe connector maps provider-specific identifiers to an opaque reference\nbefore this model is constructed.  Material/request IDs, call numbers,\nform values, and account identity intentionally have no fields here."
       },
-      "MyLibraryReadResult": {
-        "properties": {
-          "schema_version": {
-            "type": "string",
-            "const": "v1",
-            "title": "Schema Version",
-            "default": "v1"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "known",
-              "reauth_required",
-              "unavailable"
-            ],
-            "title": "Status"
-          },
-          "scope": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "current_loans",
-                  "reservations",
-                  "loan_history",
-                  "purchase_requests",
-                  "interlibrary_requests"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Scope"
-          },
-          "items": {
-            "anyOf": [
-              {
-                "items": {
-                  "$ref": "#/components/schemas/MyLibraryItem"
-                },
-                "type": "array",
-                "maxItems": 20
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Items"
-          },
-          "total_count": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Total Count"
-          },
-          "next_offset": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Offset"
-          },
-          "loan_count": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Loan Count"
-          },
-          "reservation_count": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reservation Count"
-          },
-          "overdue_count": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Overdue Count"
-          },
-          "renewable_count": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 1000.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Renewable Count"
-          },
-          "earliest_due_date": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 10
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Earliest Due Date"
-          },
-          "reason_code": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 100
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason Code"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "status",
-          "loan_count",
-          "reservation_count",
-          "overdue_count",
-          "renewable_count",
-          "earliest_due_date",
-          "reason_code"
-        ],
-        "title": "MyLibraryReadResult",
-        "description": "A bounded, consent-gated My Library scope projection.\n\n``loan_count`` and the other aggregate fields remain for clients of the\noriginal v1 summary.  New callers use one requested ``scope`` and receive\nat most twenty item projections plus a cursor.  Aggregates outside that\nscope are null rather than a misleading zero.  Book titles and authors\nare intentionally present only in this minimized, explicitly consented\nprojection; identifiers, call numbers, forms, identity, and SSO data have\nno representation in the model."
-      },
       "OrbitEvent": {
         "properties": {
           "event_id": {
@@ -2486,6 +2402,156 @@
         ],
         "title": "ScombzReadTask",
         "description": "A visible SCombZ assignment projection without HTML or identifiers."
+      },
+      "ScopedMyLibraryReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "current_loans",
+              "reservations",
+              "loan_history",
+              "purchase_requests",
+              "interlibrary_requests"
+            ],
+            "title": "Scope"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MyLibraryItem"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Items"
+          },
+          "total_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Total Count"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          },
+          "loan_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loan Count"
+          },
+          "reservation_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Count"
+          },
+          "overdue_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overdue Count"
+          },
+          "renewable_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renewable Count"
+          },
+          "earliest_due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Due Date"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "scope",
+          "items",
+          "total_count",
+          "next_offset",
+          "loan_count",
+          "reservation_count",
+          "overdue_count",
+          "renewable_count",
+          "earliest_due_date",
+          "reason_code"
+        ],
+        "title": "ScopedMyLibraryReadResult",
+        "description": "A complete, bounded page for exactly one My Library scope."
       },
       "SitrusGradeItem": {
         "properties": {

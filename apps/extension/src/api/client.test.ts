@@ -203,6 +203,29 @@ describe("AgentApiClient", () => {
     expect(
       isMyLibraryReadResult({ ...result, earliest_due_date: "2026-99-99" }),
     ).toBe(false);
+    expect(
+      isMyLibraryReadResult({
+        ...result,
+        status: "unavailable",
+        loan_count: 0,
+        reservation_count: 0,
+        overdue_count: 0,
+        renewable_count: 0,
+        earliest_due_date: null,
+        reason_code: "login_required",
+      }),
+    ).toBe(true);
+
+    const scopedLoan = {
+      ...result,
+      scope: "current_loans",
+      items: [],
+      total_count: 2,
+      next_offset: 0,
+      reservation_count: null,
+    };
+    expect(isMyLibraryReadResult(scopedLoan)).toBe(true);
+    expect(isMyLibraryReadResult({ ...scopedLoan, loan_count: 1 })).toBe(false);
 
     const scoped = {
       ...result,

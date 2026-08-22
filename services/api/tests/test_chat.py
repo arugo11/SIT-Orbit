@@ -25,10 +25,12 @@ from orbit_api.models import (
     ChatHistoryMessage,
     ChatRunRequest,
     EvidenceLink,
+    LegacyMyLibraryReadResult,
     MoodleReadResult,
-    MyLibraryReadResult,
+    MyLibraryItem,
     ScombzPageSummaryResult,
     ScombzReadResult,
+    ScopedMyLibraryReadResult,
 )
 from pydantic_ai import Agent, DeferredToolRequests, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -293,10 +295,25 @@ def test_fixture_chat_route_runs_my_library_derived_tool_loop(monkeypatch) -> No
                 "result": {
                     "schema_version": "v1",
                     "status": "known",
-                    "loan_count": 6,
-                    "reservation_count": 0,
+                    "scope": "current_loans",
+                    "items": [
+                        {
+                            "resource_ref": "orbit-library://record/1234567890abcdef",
+                            "title": "合成貸出資料",
+                            "author": "公開著者",
+                            "status": "loaned",
+                            "due_date": "2026-09-01",
+                            "renewable": True,
+                            "activity_date": None,
+                            "request_type": None,
+                        }
+                    ],
+                    "total_count": 1,
+                    "next_offset": None,
+                    "loan_count": 1,
+                    "reservation_count": None,
                     "overdue_count": 0,
-                    "renewable_count": 5,
+                    "renewable_count": 1,
                     "earliest_due_date": "2026-09-01",
                     "reason_code": None,
                 },
@@ -305,7 +322,7 @@ def test_fixture_chat_route_runs_my_library_derived_tool_loop(monkeypatch) -> No
     assert second.status_code == 200
     completed = second.json()
     assert completed["status"] == "completed"
-    assert "貸出中: 6件" in completed["message"]["content_markdown"]
+    assert "貸出中: 1件" in completed["message"]["content_markdown"]
     assert completed["message"]["evidence"][0]["source_type"] == "library"
     serialized = second.text
     assert "分散システム入門" not in serialized
@@ -314,7 +331,7 @@ def test_fixture_chat_route_runs_my_library_derived_tool_loop(monkeypatch) -> No
 
 def test_my_library_projection_rejects_detail_and_unavailable_data() -> None:
     with pytest.raises(ValueError):
-        MyLibraryReadResult.model_validate(
+        LegacyMyLibraryReadResult.model_validate(
             {
                 "schema_version": "v1",
                 "status": "known",
@@ -328,7 +345,7 @@ def test_my_library_projection_rejects_detail_and_unavailable_data() -> None:
             }
         )
     with pytest.raises(ValueError, match="cannot include derived data"):
-        MyLibraryReadResult(
+        LegacyMyLibraryReadResult(
             status="reauth_required",
             loan_count=1,
             reservation_count=0,
@@ -732,10 +749,25 @@ async def test_function_model_sends_my_library_projection_only_to_azure(monkeypa
         locator="orbit-library://summary/1234567890abcdef",
         data_classification="personal",
     )
-    result = MyLibraryReadResult(
+    result = ScopedMyLibraryReadResult(
         status="known",
-        loan_count=2,
-        reservation_count=1,
+        scope="current_loans",
+        items=[
+            MyLibraryItem(
+                resource_ref="orbit-library://record/1234567890abcdef",
+                title="合成貸出資料",
+                author="公開著者",
+                status="loaned",
+                due_date="2026-09-01",
+                renewable=True,
+                activity_date=None,
+                request_type=None,
+            )
+        ],
+        total_count=1,
+        next_offset=None,
+        loan_count=1,
+        reservation_count=None,
         overdue_count=0,
         renewable_count=1,
         earliest_due_date="2026-09-01",
@@ -869,10 +901,25 @@ async def test_function_model_runs_moodle_library_cast_sequence_with_derived_val
     assert second.deferred is not None
     third = await backend.resume_chat(
         deferred=second.deferred,
-        tool_result=MyLibraryReadResult(
+        tool_result=ScopedMyLibraryReadResult(
             status="known",
-            loan_count=2,
-            reservation_count=1,
+            scope="current_loans",
+            items=[
+                MyLibraryItem(
+                    resource_ref="orbit-library://record/1234567890abcdef",
+                    title="合成貸出資料",
+                    author="公開著者",
+                    status="loaned",
+                    due_date="2026-09-01",
+                    renewable=True,
+                    activity_date=None,
+                    request_type=None,
+                )
+            ],
+            total_count=1,
+            next_offset=None,
+            loan_count=1,
+            reservation_count=None,
             overdue_count=0,
             renewable_count=1,
             earliest_due_date="2026-09-01",

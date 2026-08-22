@@ -464,7 +464,7 @@ export interface components {
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["MyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"];
         };
         /**
          * ClientTool
@@ -509,6 +509,35 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * LegacyMyLibraryReadResult
+         * @description The original aggregate-only My Library result shape.
+         */
+        LegacyMyLibraryReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /** Loan Count */
+            loan_count: number;
+            /** Reservation Count */
+            reservation_count: number;
+            /** Overdue Count */
+            overdue_count: number;
+            /** Renewable Count */
+            renewable_count: number;
+            /** Earliest Due Date */
+            earliest_due_date: string | null;
+            /** Reason Code */
+            reason_code: string | null;
         };
         /**
          * LibraryBibliographicRecord
@@ -770,51 +799,6 @@ export interface components {
             request_type?: string | null;
         };
         /**
-         * MyLibraryReadResult
-         * @description A bounded, consent-gated My Library scope projection.
-         *
-         *     ``loan_count`` and the other aggregate fields remain for clients of the
-         *     original v1 summary.  New callers use one requested ``scope`` and receive
-         *     at most twenty item projections plus a cursor.  Aggregates outside that
-         *     scope are null rather than a misleading zero.  Book titles and authors
-         *     are intentionally present only in this minimized, explicitly consented
-         *     projection; identifiers, call numbers, forms, identity, and SSO data have
-         *     no representation in the model.
-         */
-        MyLibraryReadResult: {
-            /**
-             * Schema Version
-             * @default v1
-             * @constant
-             */
-            schema_version: "v1";
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "known" | "reauth_required" | "unavailable";
-            /** Scope */
-            scope?: ("current_loans" | "reservations" | "loan_history" | "purchase_requests" | "interlibrary_requests") | null;
-            /** Items */
-            items?: components["schemas"]["MyLibraryItem"][] | null;
-            /** Total Count */
-            total_count?: number | null;
-            /** Next Offset */
-            next_offset?: number | null;
-            /** Loan Count */
-            loan_count: number | null;
-            /** Reservation Count */
-            reservation_count: number | null;
-            /** Overdue Count */
-            overdue_count: number | null;
-            /** Renewable Count */
-            renewable_count: number | null;
-            /** Earliest Due Date */
-            earliest_due_date: string | null;
-            /** Reason Code */
-            reason_code: string | null;
-        };
-        /**
          * OrbitEvent
          * @description An observed event in the student's campus journey.
          */
@@ -956,6 +940,46 @@ export interface components {
             title: string;
             /** Deadline */
             deadline: string;
+        };
+        /**
+         * ScopedMyLibraryReadResult
+         * @description A complete, bounded page for exactly one My Library scope.
+         */
+        ScopedMyLibraryReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "current_loans" | "reservations" | "loan_history" | "purchase_requests" | "interlibrary_requests";
+            /** Items */
+            items: components["schemas"]["MyLibraryItem"][];
+            /** Total Count */
+            total_count: number;
+            /** Next Offset */
+            next_offset: number | null;
+            /** Loan Count */
+            loan_count: number | null;
+            /** Reservation Count */
+            reservation_count: number | null;
+            /** Overdue Count */
+            overdue_count: number | null;
+            /** Renewable Count */
+            renewable_count: number | null;
+            /** Earliest Due Date */
+            earliest_due_date: string | null;
+            /** Reason Code */
+            reason_code: string | null;
         };
         /**
          * SitrusGradeItem

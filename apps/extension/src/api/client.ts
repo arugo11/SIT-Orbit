@@ -31,8 +31,10 @@ export type SitrusGradeResult = components["schemas"]["SitrusGradeResult"];
 export type MoodleReadResult = components["schemas"]["MoodleReadResult"];
 export type MyLibraryItem = components["schemas"]["MyLibraryItem"];
 export type MyLibraryScope =
-  components["schemas"]["MyLibraryReadResult"]["scope"];
-export type MyLibraryReadResult = components["schemas"]["MyLibraryReadResult"];
+  components["schemas"]["ScopedMyLibraryReadResult"]["scope"];
+export type MyLibraryReadResult =
+  | components["schemas"]["LegacyMyLibraryReadResult"]
+  | components["schemas"]["ScopedMyLibraryReadResult"];
 export type CastReadResult = components["schemas"]["CastReadResult"];
 export type LibraryHoldingSummary =
   components["schemas"]["LibraryHoldingSummary"];
@@ -854,6 +856,7 @@ export function isMyLibraryReadResult(
     if (value.status === "known" && value.scope === "current_loans") {
       if (
         typeof value.loan_count !== "number" ||
+        value.loan_count !== value.total_count ||
         typeof value.overdue_count !== "number" ||
         typeof value.renewable_count !== "number" ||
         value.reservation_count !== null
@@ -864,6 +867,7 @@ export function isMyLibraryReadResult(
       if (
         value.loan_count !== null ||
         typeof value.reservation_count !== "number" ||
+        value.reservation_count !== value.total_count ||
         value.overdue_count !== null ||
         value.renewable_count !== null ||
         value.earliest_due_date !== null
@@ -880,7 +884,9 @@ export function isMyLibraryReadResult(
   }
   if (
     value.status !== "known" &&
-    (counts.some((count) => count !== null) || value.earliest_due_date !== null)
+    ((isLegacy && counts.some((count) => count !== 0)) ||
+      (isScoped && counts.some((count) => count !== null)) ||
+      value.earliest_due_date !== null)
   ) {
     return false;
   }
