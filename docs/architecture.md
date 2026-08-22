@@ -273,6 +273,14 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
+### CAST Career Agentのプライバシー境界
+
+CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含むTyped SnapshotをPseudonymization Gatewayへ通してから実行する。Gatewayは氏名の表記揺れ、メール、電話、学籍番号、CAST内部ID、SSO token、URL query/fragment、自由記述中の署名や連絡先を検出し、内部人物ID、ミッション固有の別名、一般化属性へ変換する。これは対応表で復元可能な仮名化であり、完全匿名化とは扱わない。
+
+内部人物IDと元の氏名の対応表は、Argon2idとAES-256-GCMを用いるCareer Vaultの暗号化レコードだけに保存する。鍵は`chrome.storage.session`とメモリに限り、15分の無操作またはChrome終了で破棄する。FastAPI、Azure、W&B、Chat履歴、ログ、runtime messageには、元の氏名、内部人物ID、対応表、HMAC、raw HTML、tokenを渡さない。外部別名はmission nonceから生成し、同一mission内だけで安定させる。
+
+個人・第三者のCAST記録はChrome Prompt APIのオンデバイス実行へ固定し、APIが利用できない場合にAzureへfallbackしない。Azureへ送れるのは公開情報、匿名集計、一般化属性だけである。Context Manifestで処理先と送信payloadを表示し、外部書込み、応募、予約、添付、Calendar登録はpreview後の本人確認を必須とする。個人情報を安全に仮名化できない自由記述は送信せず、端末内で停止する。
+
 ## Connectorの境界
 
 「ScombZへログインすれば関連サイトをすべて読める」とは扱わない。
