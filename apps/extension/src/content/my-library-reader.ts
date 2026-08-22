@@ -441,15 +441,16 @@ export function extractMyLibraryScopePage(
   const headerRow = Array.from(table.querySelectorAll("tr")).find(
     (row) => isVisibleElement(row) && row.querySelector("th"),
   );
+  const candidateRows = Array.from(
+    table.querySelectorAll("tbody tr, tr"),
+  ).filter((row) => row !== headerRow && isVisibleElement(row));
+  if (candidateRows.length === 0) return null;
   const columnLabels = headerRow
     ? Array.from(headerRow.querySelectorAll("th, td")).map((cell) =>
         compactText(visibleText(cell), 100),
       )
     : [];
-  const rows = Array.from(table.querySelectorAll("tbody tr, tr")).filter(
-    (row) =>
-      row !== headerRow && isVisibleElement(row) && !isEmptyPlaceholderRow(row),
-  );
+  const rows = candidateRows.filter((row) => !isEmptyPlaceholderRow(row));
   const items = rows.map((row) =>
     extractGenericMyLibraryItem(row, scope, columnLabels),
   );
@@ -477,10 +478,12 @@ export function extractMyLibraryLoanPage(
   )
     .toString()
     .padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
-  const rows = Array.from(table.querySelectorAll("tbody tr")).filter(
-    (row) => isVisibleElement(row) && !isEmptyPlaceholderRow(row),
+  const rows = Array.from(table.querySelectorAll("tbody tr")).filter((row) =>
+    isVisibleElement(row),
   );
-  const loans = rows.map((row): MyLibraryLoan | null => {
+  if (rows.length === 0) return null;
+  const dataRows = rows.filter((row) => !isEmptyPlaceholderRow(row));
+  const loans = dataRows.map((row): MyLibraryLoan | null => {
     const titleAuthor = splitTitleAuthor(
       visibleText(valueForLabel(row, "書名 / 著者名")),
     );
@@ -516,10 +519,12 @@ export function extractMyLibraryReservationPage(
   }
   const table = document.querySelector("#reservationList");
   if (!table) return null;
-  const rows = Array.from(table.querySelectorAll("tbody tr")).filter(
-    (row) => isVisibleElement(row) && !isEmptyPlaceholderRow(row),
+  const rows = Array.from(table.querySelectorAll("tbody tr")).filter((row) =>
+    isVisibleElement(row),
   );
-  const reservations = rows.map((row): MyLibraryReservation | null => {
+  if (rows.length === 0) return null;
+  const dataRows = rows.filter((row) => !isEmptyPlaceholderRow(row));
+  const reservations = dataRows.map((row): MyLibraryReservation | null => {
     const titleAuthor = splitTitleAuthor(
       visibleText(valueForLabel(row, "書名 / 著者名")),
     );

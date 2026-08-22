@@ -5,6 +5,7 @@ remain backwards compatible.  Run envelopes are a narrower boundary: unknown
 fields are rejected and the response union is discriminated by ``status``.
 """
 
+import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
@@ -572,14 +573,14 @@ class MyLibraryItem(StrictApiModel):
 
     @model_validator(mode="after")
     def dates_are_iso(self) -> "MyLibraryItem":
+        if not self.title.strip():
+            raise ValueError("My Library titles must not be blank.")
         for field_name, value in (
             ("due_date", self.due_date),
             ("activity_date", self.activity_date),
         ):
-            if value is None:
-                continue
             try:
-                datetime.strptime(value, "%Y-%m-%d")
+                _validate_my_library_date(value)
             except ValueError as error:
                 raise ValueError(
                     f"My Library {field_name} values must use YYYY-MM-DD."
@@ -590,6 +591,8 @@ class MyLibraryItem(StrictApiModel):
 def _validate_my_library_date(value: str | None) -> None:
     if value is None:
         return
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise ValueError("My Library dates must use YYYY-MM-DD.")
     try:
         datetime.strptime(value, "%Y-%m-%d")
     except ValueError as error:

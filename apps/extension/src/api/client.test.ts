@@ -204,6 +204,9 @@ describe("AgentApiClient", () => {
       isMyLibraryReadResult({ ...result, earliest_due_date: "2026-99-99" }),
     ).toBe(false);
     expect(
+      isMyLibraryReadResult({ ...result, earliest_due_date: "2026-9-1" }),
+    ).toBe(false);
+    expect(
       isMyLibraryReadResult({
         ...result,
         status: "unavailable",

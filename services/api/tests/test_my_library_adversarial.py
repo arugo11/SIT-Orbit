@@ -132,6 +132,65 @@ def test_my_library_item_rejects_identity_and_provider_fields(
         MyLibraryItem.model_validate(payload)
 
 
+@pytest.mark.parametrize("title", [" ", "\t\n"])
+def test_my_library_item_rejects_whitespace_only_titles(title: str) -> None:
+    payload = item_payload()
+    payload["title"] = title
+    with pytest.raises(ValidationError, match="must not be blank"):
+        MyLibraryItem.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["due_date", "activity_date"])
+def test_my_library_item_requires_exact_iso_dates(field: str) -> None:
+    payload = item_payload("purchase_requests")
+    payload[field] = "2026-8-1"
+    with pytest.raises(ValidationError, match="YYYY-MM-DD"):
+        MyLibraryItem.model_validate(payload)
+
+    payload[field] = "2026-08-01"
+    parsed = MyLibraryItem.model_validate(payload)
+    assert getattr(parsed, field) == "2026-08-01"
+
+
+def test_my_library_result_requires_exact_aggregate_dates() -> None:
+    for payload in (
+        {
+            "schema_version": "v1",
+            "status": "known",
+            "loan_count": 1,
+            "reservation_count": 0,
+            "overdue_count": 0,
+            "renewable_count": 0,
+            "earliest_due_date": "2026-8-1",
+            "reason_code": None,
+        },
+        {
+            **result_payload("current_loans"),
+            "earliest_due_date": "2026-8-1",
+        },
+    ):
+        with pytest.raises(ValidationError, match="YYYY-MM-DD"):
+            MY_LIBRARY_RESULT_ADAPTER.validate_python(payload)
+
+    for payload in (
+        {
+            "schema_version": "v1",
+            "status": "known",
+            "loan_count": 1,
+            "reservation_count": 0,
+            "overdue_count": 0,
+            "renewable_count": 0,
+            "earliest_due_date": "2026-08-01",
+            "reason_code": None,
+        },
+        {
+            **result_payload("current_loans"),
+            "earliest_due_date": "2026-08-01",
+        },
+    ):
+        assert MY_LIBRARY_RESULT_ADAPTER.validate_python(payload).status == "known"
+
+
 def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
     for scope in (
         "current_loans",
@@ -168,7 +227,7 @@ def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
         MY_LIBRARY_RESULT_ADAPTER.validate_python(too_many)
 
 
-def test_fixture_chat_response_contains_only_allowed_book_fields(monkeypatch) -> None:
+def test_fixture_chat_response_rejects_scoped_result_without_page_storage(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     with TestClient(app) as client:
@@ -209,18 +268,10 @@ def test_fixture_chat_response_contains_only_allowed_book_fields(monkeypatch) ->
                 "result": result_payload(),
             },
         )
-    assert second.status_code == 200
-    completed = second.json()
-    assert completed["status"] == "completed"
-    assert "端末内資料" in completed["message"]["content_markdown"]
-    assert "公開著者" in completed["message"]["content_markdown"]
-    assert "貸出中:" not in completed["message"]["content_markdown"]
-    assert "予約中:" not in completed["message"]["content_markdown"]
-    assert "延滞:" not in completed["message"]["content_markdown"]
-    assert "延長可能:" not in completed["message"]["content_markdown"]
-    serialized = second.text
+    assert second.status_code == 422
+    assert "requires the explicitly consented Azure Agent" in second.text
     for marker in FORBIDDEN_VALUES:
-        assert marker not in serialized
+        assert marker not in second.text
 
 
 def test_unavailable_scoped_result_rejects_even_zero_aggregate_values() -> None:
@@ -447,7 +498,7 @@ def test_resume_accepts_only_the_page_defined_by_offset_and_limit() -> None:
         )
 
 
-def test_chat_resume_rejects_a_scoped_page_shorter_than_requested(monkeypatch) -> None:
+def test_chat_resume_rejects_scoped_result_before_fixture_page_validation(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     with TestClient(app) as client:
@@ -477,7 +528,7 @@ def test_chat_resume_rejects_a_scoped_page_shorter_than_requested(monkeypatch) -
         )
 
     assert resumed.status_code == 422
-    assert "item count does not match the requested page" in resumed.text
+    assert "requires the explicitly consented Azure Agent" in resumed.text
 
 
 def test_chat_resume_rejects_legacy_aggregates_for_a_scoped_request(monkeypatch) -> None:

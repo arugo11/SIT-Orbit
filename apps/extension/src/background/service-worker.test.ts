@@ -338,6 +338,29 @@ const inlineMarkedRequiredCellCases = [
   },
 ] as const;
 
+const inlineEmptyBodyWithoutPlaceholderCases = [
+  {
+    scope: "current_loans",
+    html: '<table id="lendList"><tbody></tbody></table>',
+  },
+  {
+    scope: "reservations",
+    html: '<table id="reservationList"><tbody></tbody></table>',
+  },
+  {
+    scope: "loan_history",
+    html: `<table><caption>貸出履歴一覧</caption><thead><tr><th>書名</th><th>貸出日</th><th>状態</th></tr></thead><tbody></tbody></table>`,
+  },
+  {
+    scope: "purchase_requests",
+    html: `<table><caption>購入依頼状況</caption><thead><tr><th>書名</th><th>申請日</th><th>状態</th><th>申請種別</th></tr></thead><tbody></tbody></table>`,
+  },
+  {
+    scope: "interlibrary_requests",
+    html: `<table><caption>ILL（文献複写・貸借）依頼</caption><thead><tr><th>書名</th><th>受付日</th><th>状態</th><th>依頼種別</th></tr></thead><tbody></tbody></table>`,
+  },
+] as const;
+
 async function runInlineMyLibraryReader(
   scope: InlineMyLibraryScope,
   html: string,
@@ -884,6 +907,20 @@ describe("service worker side panel contract", () => {
 
   it.each(inlineMarkedRequiredCellCases)(
     "inline reader fails closed when a valid-title $scope required cell is marked empty",
+    async ({ scope, html }) => {
+      const result = await runInlineMyLibraryReader(scope, html, {
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+      expect(result).toEqual({
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
+  it.each(inlineEmptyBodyWithoutPlaceholderCases)(
+    "inline reader fails closed for an empty $scope table without an explicit placeholder",
     async ({ scope, html }) => {
       const result = await runInlineMyLibraryReader(scope, html, {
         status: "unavailable",

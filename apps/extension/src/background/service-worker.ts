@@ -2097,38 +2097,43 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
         .padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
       const visibleLoanRows = Array.from(
         loanTable.querySelectorAll("tbody tr"),
-      ).filter((row) => isVisible(row) && !isEmptyPlaceholderRow(row));
-      const parsedLoanRows = visibleLoanRows.map((row) => {
-        const titleAuthor = splitTitleAuthor(
-          visibleLibraryText(valueForLabel(row, "書名 / 著者名")),
-        );
-        if (!titleAuthor) return null;
-        const dueDate = normalizeDate(
-          visibleLibraryText(valueForLabel(row, "貸出返却期限延長回数")),
-        );
-        if (!dueDate) return null;
-        const checkbox = row.querySelector<HTMLInputElement>(
-          'input[type="checkbox"][name="checkBoxBookNumber"]',
-        );
-        const loan = {
-          ...titleAuthor,
-          due_date: dueDate,
-          renewable: Boolean(checkbox && !checkbox.disabled),
-          overdue: dueDate !== null && dueDate < todayKey,
-        };
-        return {
-          loan,
-          item: {
+      ).filter((row) => isVisible(row));
+      if (visibleLoanRows.length === 0) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const parsedLoanRows = visibleLoanRows
+        .filter((row) => !isEmptyPlaceholderRow(row))
+        .map((row) => {
+          const titleAuthor = splitTitleAuthor(
+            visibleLibraryText(valueForLabel(row, "書名 / 著者名")),
+          );
+          if (!titleAuthor) return null;
+          const dueDate = normalizeDate(
+            visibleLibraryText(valueForLabel(row, "貸出返却期限延長回数")),
+          );
+          if (!dueDate) return null;
+          const checkbox = row.querySelector<HTMLInputElement>(
+            'input[type="checkbox"][name="checkBoxBookNumber"]',
+          );
+          const loan = {
             ...titleAuthor,
-            status: loan.overdue ? "overdue" : "loaned",
             due_date: dueDate,
-            renewable: loan.renewable,
-            activity_date: null,
-            request_type: null,
-            raw_id: rawIdForRow(row),
-          } satisfies MyLibraryRawScopedItem,
-        };
-      });
+            renewable: Boolean(checkbox && !checkbox.disabled),
+            overdue: dueDate !== null && dueDate < todayKey,
+          };
+          return {
+            loan,
+            item: {
+              ...titleAuthor,
+              status: loan.overdue ? "overdue" : "loaned",
+              due_date: dueDate,
+              renewable: loan.renewable,
+              activity_date: null,
+              request_type: null,
+              raw_id: rawIdForRow(row),
+            } satisfies MyLibraryRawScopedItem,
+          };
+        });
       if (parsedLoanRows.some((item) => item === null)) {
         return { status: "unavailable", reason_code: "scope_row_unparseable" };
       }
@@ -2150,35 +2155,40 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
     if (reservationTable && isVisible(reservationTable)) {
       const visibleReservationRows = Array.from(
         reservationTable.querySelectorAll("tbody tr"),
-      ).filter((row) => isVisible(row) && !isEmptyPlaceholderRow(row));
-      const parsedReservationRows = visibleReservationRows.map((row) => {
-        const titleAuthor = splitTitleAuthor(
-          visibleLibraryText(valueForLabel(row, "書名 / 著者名")),
-        );
-        if (!titleAuthor) return null;
-        const holdUntil = normalizeDate(
-          visibleLibraryText(valueForLabel(row, "受取館取置期限日")),
-        );
-        const status =
-          clean(visibleLibraryText(valueForLabel(row, "状態")), 100) || null;
-        if (!holdUntil || !status) return null;
-        return {
-          reservation: {
-            ...titleAuthor,
-            hold_until: holdUntil,
-            status,
-          },
-          item: {
-            ...titleAuthor,
-            status,
-            due_date: holdUntil,
-            renewable: null,
-            activity_date: null,
-            request_type: "reservation",
-            raw_id: rawIdForRow(row),
-          } satisfies MyLibraryRawScopedItem,
-        };
-      });
+      ).filter((row) => isVisible(row));
+      if (visibleReservationRows.length === 0) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const parsedReservationRows = visibleReservationRows
+        .filter((row) => !isEmptyPlaceholderRow(row))
+        .map((row) => {
+          const titleAuthor = splitTitleAuthor(
+            visibleLibraryText(valueForLabel(row, "書名 / 著者名")),
+          );
+          if (!titleAuthor) return null;
+          const holdUntil = normalizeDate(
+            visibleLibraryText(valueForLabel(row, "受取館取置期限日")),
+          );
+          const status =
+            clean(visibleLibraryText(valueForLabel(row, "状態")), 100) || null;
+          if (!holdUntil || !status) return null;
+          return {
+            reservation: {
+              ...titleAuthor,
+              hold_until: holdUntil,
+              status,
+            },
+            item: {
+              ...titleAuthor,
+              status,
+              due_date: holdUntil,
+              renewable: null,
+              activity_date: null,
+              request_type: "reservation",
+              raw_id: rawIdForRow(row),
+            } satisfies MyLibraryRawScopedItem,
+          };
+        });
       if (parsedReservationRows.some((item) => item === null)) {
         return { status: "unavailable", reason_code: "scope_row_unparseable" };
       }
@@ -2301,12 +2311,13 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
         normalizeDate(visibleLibraryText(tableValueForLabels(row, labels)));
       const visibleRows = Array.from(
         table.querySelectorAll("tbody tr, tr"),
-      ).filter(
-        (row) =>
-          row !== headerRow && isVisible(row) && !isEmptyPlaceholderRow(row),
-      );
-      const parsedItems = visibleRows.map(
-        (row): MyLibraryRawScopedItem | null => {
+      ).filter((row) => row !== headerRow && isVisible(row));
+      if (visibleRows.length === 0) {
+        return { status: "unavailable", reason_code: "scope_row_unparseable" };
+      }
+      const parsedItems = visibleRows
+        .filter((row) => !isEmptyPlaceholderRow(row))
+        .map((row): MyLibraryRawScopedItem | null => {
           const titleAuthor = splitTitleAuthor(
             visibleLibraryText(
               tableValueForLabels(row, [
@@ -2360,8 +2371,7 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
             request_type: requestType,
             raw_id: rawIdForRow(row, tableValueForLabels),
           };
-        },
-      );
+        });
       if (parsedItems.some((item) => item === null)) {
         return { status: "unavailable", reason_code: "scope_row_unparseable" };
       }

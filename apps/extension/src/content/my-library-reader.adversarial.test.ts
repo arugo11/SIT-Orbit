@@ -216,6 +216,29 @@ const markedRequiredCellCases = [
   },
 ] as const;
 
+const emptyBodyWithoutPlaceholderCases = [
+  {
+    scope: "current_loans",
+    html: '<table id="lendList"><tbody></tbody></table>',
+  },
+  {
+    scope: "reservations",
+    html: '<table id="reservationList"><tbody></tbody></table>',
+  },
+  {
+    scope: "loan_history",
+    html: `<table><caption>貸出履歴一覧</caption><thead><tr><th>書名</th><th>貸出日</th><th>状態</th></tr></thead><tbody></tbody></table>`,
+  },
+  {
+    scope: "purchase_requests",
+    html: `<table><caption>購入依頼状況</caption><thead><tr><th>書名</th><th>申請日</th><th>状態</th><th>申請種別</th></tr></thead><tbody></tbody></table>`,
+  },
+  {
+    scope: "interlibrary_requests",
+    html: `<table><caption>ILL（文献複写・貸借）依頼</caption><thead><tr><th>書名</th><th>受付日</th><th>状態</th><th>依頼種別</th></tr></thead><tbody></tbody></table>`,
+  },
+] as const;
+
 const allowedItemKeys = [
   "activity_date",
   "author",
@@ -374,6 +397,15 @@ describe("My Library reader adversarial boundaries", () => {
         scope,
       );
       expect(items).toBeNull();
+    },
+  );
+
+  it.each(emptyBodyWithoutPlaceholderCases)(
+    "fails closed for an empty $scope table without an explicit placeholder",
+    ({ scope, html }) => {
+      expect(
+        extractMyLibraryScopePage(parseHTML(html).document, PAGE_URL, scope),
+      ).toBeNull();
     },
   );
 

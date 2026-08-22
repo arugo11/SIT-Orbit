@@ -1050,8 +1050,16 @@ class ChatRunService:
             tool_version=request.version,
         )
         try:
-            context = [*claimed.context, _tool_evidence(request, run_id)]
             backend_name = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
+            if (
+                request.name == MY_LIBRARY_TOOL_NAME
+                and isinstance(request.result, ScopedMyLibraryReadResult)
+                and backend_name != "azure_openai"
+            ):
+                raise ValueError(
+                    "Scoped My Library data requires the explicitly consented Azure Agent."
+                )
+            context = [*claimed.context, _tool_evidence(request, run_id)]
             if backend_name != claimed.backend_name:
                 raise RuntimeError("The chat backend changed while the run was pending.")
             execution = await self.backend_factory().resume_chat(

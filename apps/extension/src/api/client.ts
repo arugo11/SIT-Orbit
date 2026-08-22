@@ -782,6 +782,16 @@ function isIsoDateOnly(value: unknown): value is string {
   );
 }
 
+function isMyLibraryIsoDateOnly(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/u.test(value)) {
+    return false;
+  }
+  const date = new Date(`${value}T00:00:00Z`);
+  return (
+    !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+  );
+}
+
 export function isMyLibraryReadResult(
   value: unknown,
 ): value is MyLibraryReadResult {
@@ -830,7 +840,7 @@ export function isMyLibraryReadResult(
       typeof value.loan_count === "number" &&
       value.renewable_count > value.loan_count) ||
     (value.earliest_due_date !== null &&
-      !isIsoDateOnly(value.earliest_due_date)) ||
+      !isMyLibraryIsoDateOnly(value.earliest_due_date)) ||
     (value.reason_code !== null && typeof value.reason_code !== "string")
   ) {
     return false;
@@ -932,13 +942,13 @@ function isMyLibraryItem(value: unknown): value is MyLibraryItem {
       (typeof value.status !== "string" || value.status.length > 100)) ||
     (value.due_date !== undefined &&
       value.due_date !== null &&
-      !isIsoDateOnly(value.due_date)) ||
+      !isMyLibraryIsoDateOnly(value.due_date)) ||
     (value.renewable !== undefined &&
       value.renewable !== null &&
       typeof value.renewable !== "boolean") ||
     (value.activity_date !== undefined &&
       value.activity_date !== null &&
-      !isIsoDateOnly(value.activity_date)) ||
+      !isMyLibraryIsoDateOnly(value.activity_date)) ||
     (value.request_type !== undefined &&
       value.request_type !== null &&
       (typeof value.request_type !== "string" ||
@@ -953,15 +963,20 @@ function isMyLibraryItemForScope(
   value: MyLibraryItem,
   scope: MyLibraryScope,
 ): boolean {
-  if (scope === "current_loans") return isIsoDateOnly(value.due_date);
+  if (scope === "current_loans") return isMyLibraryIsoDateOnly(value.due_date);
   if (scope === "reservations") {
-    return isIsoDateOnly(value.due_date) && isNonEmptyString(value.status);
+    return (
+      isMyLibraryIsoDateOnly(value.due_date) && isNonEmptyString(value.status)
+    );
   }
   if (scope === "loan_history") {
-    return isIsoDateOnly(value.activity_date) && isNonEmptyString(value.status);
+    return (
+      isMyLibraryIsoDateOnly(value.activity_date) &&
+      isNonEmptyString(value.status)
+    );
   }
   return (
-    isIsoDateOnly(value.activity_date) &&
+    isMyLibraryIsoDateOnly(value.activity_date) &&
     isNonEmptyString(value.status) &&
     isNonEmptyString(value.request_type)
   );

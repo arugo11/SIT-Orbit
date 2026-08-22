@@ -76,6 +76,14 @@ const requiredFields: Record<Scope, readonly string[]> = {
   interlibrary_requests: ["activity_date", "status", "request_type"],
 };
 
+const requiredDateFields: Record<Scope, "due_date" | "activity_date"> = {
+  current_loans: "due_date",
+  reservations: "due_date",
+  loan_history: "activity_date",
+  purchase_requests: "activity_date",
+  interlibrary_requests: "activity_date",
+};
+
 function scopedResult(scope: Scope): Record<string, unknown> {
   const aggregates = {
     loan_count: null,
@@ -150,6 +158,39 @@ describe("My Library result contract adversarial cases", () => {
         };
         expect(isMyLibraryReadResult(incomplete)).toBe(false);
       }
+    },
+  );
+
+  it.each(scopes)("requires exact ISO dates for a known %s item", (scope) => {
+    const valid = scopedResult(scope);
+    expect(isMyLibraryReadResult(valid)).toBe(true);
+    const field = requiredDateFields[scope];
+    const rows = valid.items as Array<Record<string, unknown>>;
+    expect(
+      isMyLibraryReadResult({
+        ...valid,
+        items: [{ ...rows[0], [field]: "2026-8-1" }],
+      }),
+    ).toBe(false);
+    expect(
+      isMyLibraryReadResult({
+        ...valid,
+        items: [{ ...rows[0], [field]: "2026-08-01" }],
+      }),
+    ).toBe(true);
+  });
+
+  it.each([" ", "\t\n"])(
+    "rejects whitespace-only My Library titles (%j)",
+    (title) => {
+      const valid = scopedResult("purchase_requests");
+      const rows = valid.items as Array<Record<string, unknown>>;
+      expect(
+        isMyLibraryReadResult({
+          ...valid,
+          items: [{ ...rows[0], title }],
+        }),
+      ).toBe(false);
     },
   );
 
