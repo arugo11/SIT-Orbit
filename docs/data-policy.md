@@ -114,6 +114,27 @@ My Libraryは、利用者が`my_library_read`を明示実行した場合だけ�
 
 CASTは、利用者が`cast_read`を明示実行した場合だけ、正規入口から`/career/top/student`を参照する。お知らせ件名・掲載日を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`CastReadResult`のお知らせ件数、新着求人・インターン・会社説明会件数、相談予約の有無、直近掲載日だけである。`Full access`でもrunごとに送信確認を行い、進路希望、自己PR、応募履歴、氏名、前回ログイン、個別企業への提出内容を結果へ含めない。ライブCAST Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
 
+### CAST Career Vaultと仮名化Gateway
+
+CAST Career Agentの人物情報は「完全匿名化」ではなく、対応表で復元可能な「仮名化＋間接識別子の一般化」として扱う。モデル入力を作る前に、Typed Snapshotを必ず次のGatewayへ通す。
+
+```text
+Typed Snapshot
+  → 氏名・連絡先・ID・token・自由記述の検出
+  → 内部人物IDへの置換
+  → ミッション固有の別名への置換
+  → 少人数の組合せ・URL query/fragmentの一般化
+  → allowlist Schemaの検証
+  → 漏洩スキャン
+  → Chrome Prompt API（個人情報）またはAzure（公開・匿名集計）
+```
+
+同じCAST人物は端末内のCareer Vaultで安定した内部人物IDへ対応させるが、外部へ送る別名はミッションごとに変更する。内部人物ID、HMAC、元の氏名、対応表、Vault鍵はFastAPI、Azure、W&B、Chat履歴、ログ、runtime messageへ送らない。自由記述を安全に仮名化できない場合は外部送信せず、端末内処理へ固定する。
+
+Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM暗号化し、IndexedDBには暗号文、IV、schema versionだけを保存する。鍵は`chrome.storage.session`の短命領域とメモリにだけ置き、15分の無操作またはChrome終了でロックする。raw HTML、Cookie、OAuth token、PDF本体、復号済み対応表は保存しない。Vault全削除は利用者の明示操作で暗号文とmetadataを削除する。
+
+個人・第三者のCAST記録は仮名化しても現行ポリシーではAzureへ送らず、ChromeのオンデバイスPrompt APIで処理する。Prompt APIが利用できない場合にAzureや別Providerへ暗黙fallbackしない。Context Manifestで、データ種別、処理先、置換数、一般化項目、保存期間、送信payload previewを利用者へ示す。GoogleのGranular Consentと[Chromeの権限ガイド](https://developer.chrome.com/docs/extensions/develop/concepts/permission-warnings)をUI設計の参考にする。[Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api)、[OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)、[W3C Web Crypto](https://www.w3.org/TR/WebCryptoAPI/)に基づく。
+
 拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
 
 実データを扱うConnectorを追加する場合は、送信先、保存期間、削除方法、利用目的、大学の許可範囲を個別に確認する。
