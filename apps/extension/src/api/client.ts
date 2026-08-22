@@ -854,8 +854,7 @@ export function isMyLibraryReadResult(
   }
   if (
     value.status !== "known" &&
-    (counts.some((count) => count !== null) ||
-      value.earliest_due_date !== null)
+    (counts.some((count) => count !== null) || value.earliest_due_date !== null)
   ) {
     return false;
   }
