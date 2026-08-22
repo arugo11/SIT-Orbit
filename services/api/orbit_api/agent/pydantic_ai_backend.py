@@ -9,6 +9,7 @@ provider response, OAuth token, or token usage metadata.
 import asyncio
 import json
 import os
+import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
@@ -28,6 +29,10 @@ from orbit_api.models import (
     CastReadResult,
     ChatHistoryMessage,
     EvidenceLink,
+    LibraryCatalogBrowseResult,
+    LibraryCatalogSearchResult,
+    LibraryDiscoverySearchResult,
+    LibraryItemReadResult,
     MoodleReadResult,
     MyLibraryReadResult,
     OrbitEvent,
@@ -59,6 +64,15 @@ MY_LIBRARY_TOOL_NAME = "my_library_read"
 MY_LIBRARY_LOCATOR_PREFIX = "orbit-library://summary/"
 CAST_TOOL_NAME = "cast_read"
 CAST_LOCATOR_PREFIX = "orbit-cast://summary/"
+LIBRARY_CATALOG_SEARCH_TOOL_NAME = "library_catalog_search"
+LIBRARY_ITEM_READ_TOOL_NAME = "library_item_read"
+LIBRARY_CATALOG_BROWSE_TOOL_NAME = "library_catalog_browse"
+LIBRARY_DISCOVERY_SEARCH_TOOL_NAME = "library_discovery_search"
+LIBRARY_LOCATOR_PREFIX = "orbit-library://public/"
+LIBRARY_RESOURCE_REF_PREFIX = "orbit-library://record/"
+_LIBRARY_EVIDENCE_ID_RE = re.compile(
+    r"^library-(?:catalog-search|item-read|catalog-browse|discovery-search)-v1-[A-Za-z0-9_-]{16,200}$"
+)
 SUPPORTED_TOOL_NAMES = frozenset(
     {
         CALENDAR_TOOL_NAME,
@@ -69,6 +83,10 @@ SUPPORTED_TOOL_NAMES = frozenset(
         MOODLE_TOOL_NAME,
         MY_LIBRARY_TOOL_NAME,
         CAST_TOOL_NAME,
+        LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+        LIBRARY_ITEM_READ_TOOL_NAME,
+        LIBRARY_CATALOG_BROWSE_TOOL_NAME,
+        LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
     }
 )
 ToolName = Literal[
@@ -81,6 +99,10 @@ ToolName = Literal[
     "moodle_read",
     "my_library_read",
     "cast_read",
+    "library_catalog_search",
+    "library_item_read",
+    "library_catalog_browse",
+    "library_discovery_search",
 ]
 ActionToolName = Literal["scombz_page_summary", "google_calendar_availability"]
 ToolResult = (
@@ -93,6 +115,10 @@ ToolResult = (
     | MoodleReadResult
     | MyLibraryReadResult
     | CastReadResult
+    | LibraryCatalogSearchResult
+    | LibraryItemReadResult
+    | LibraryCatalogBrowseResult
+    | LibraryDiscoverySearchResult
 )
 
 
@@ -300,6 +326,17 @@ def is_derived_cast_evidence(evidence: EvidenceLink) -> bool:
     )
 
 
+def is_derived_library_evidence(evidence: EvidenceLink) -> bool:
+    """Accept only server-issued public evidence for the four Branch 1 tools."""
+
+    return (
+        evidence.source_type == "library"
+        and evidence.data_classification == "public"
+        and _is_opaque_locator(evidence.locator, LIBRARY_LOCATOR_PREFIX)
+        and _LIBRARY_EVIDENCE_ID_RE.fullmatch(evidence.evidence_id) is not None
+    )
+
+
 def validate_agent_data(
     event: OrbitEvent,
     context: list[EvidenceLink],
@@ -313,6 +350,7 @@ def validate_agent_data(
     allow_moodle_read: bool = False,
     allow_my_library_read: bool = False,
     allow_cast_read: bool = False,
+    allow_library_read: bool = False,
 ) -> None:
     if event.data_classification not in SAFE_CLASSIFICATIONS:
         raise ValueError("The agent backend accepts only synthetic or public event data.")
@@ -336,6 +374,8 @@ def validate_agent_data(
         if allow_my_library_read and is_derived_my_library_evidence(evidence):
             continue
         if allow_cast_read and is_derived_cast_evidence(evidence):
+            continue
+        if allow_library_read and is_derived_library_evidence(evidence):
             continue
         raise ValueError(
             "The agent backend rejects personal or restricted evidence unless it is "
@@ -403,6 +443,50 @@ async def cast_read() -> CastReadResult:
     raise CallDeferred()
 
 
+async def library_catalog_search(
+    query: str,
+    author: str | None = None,
+    subject: str | None = None,
+    isbn: str | None = None,
+    pub_year: int | None = None,
+    campus: Literal["toyosu", "omiya", "any"] = "any",
+    format: Literal["book", "journal", "ebook", "any"] = "any",
+    limit: int = 10,
+) -> LibraryCatalogSearchResult:
+    """Deferred search of the public official OPAC catalog."""
+
+    del query, author, subject, isbn, pub_year, campus, format, limit
+    raise CallDeferred()
+
+
+async def library_item_read(resource_ref: str) -> LibraryItemReadResult:
+    """Deferred read of one public OPAC record resolved by opaque reference."""
+
+    del resource_ref
+    raise CallDeferred()
+
+
+async def library_catalog_browse(
+    kind: Literal["new_books", "loan_ranking"],
+    campus: Literal["toyosu", "omiya", "any"] = "any",
+    limit: int = 10,
+) -> LibraryCatalogBrowseResult:
+    """Deferred browse of official new-book and loan-ranking pages."""
+
+    del kind, campus, limit
+    raise CallDeferred()
+
+
+async def library_discovery_search(
+    query: str,
+    limit: int = 10,
+) -> LibraryDiscoverySearchResult:
+    """Deferred metadata-only search of official SIT Search."""
+
+    del query, limit
+    raise CallDeferred()
+
+
 def _tool_arguments(raw: Any) -> dict[str, Any]:
     if raw in ({}, "{}", None):
         return {}
@@ -415,6 +499,84 @@ def _tool_arguments(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict) or not all(isinstance(key, str) for key in raw):
         raise ValueError("Deferred tool arguments must be an object.")
     return dict(raw)
+
+
+_LIBRARY_RESOURCE_REF_RE = re.compile(
+    r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$"
+)
+
+
+def _validate_library_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
+    """Validate deferred arguments again at the API boundary.
+
+    PydanticAI validates model-generated calls, but fixture and alternate
+    backends still cross this public boundary and must receive the same strict
+    checks.
+    """
+
+    if tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME:
+        allowed = {
+            "query",
+            "author",
+            "subject",
+            "isbn",
+            "pub_year",
+            "campus",
+            "format",
+            "limit",
+        }
+        if set(arguments) - allowed:
+            raise RuntimeError("library_catalog_search received unknown arguments.")
+        query = arguments.get("query")
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            raise RuntimeError("library_catalog_search query is outside the allowed range.")
+        for key, maximum in (("author", 200), ("subject", 200), ("isbn", 32)):
+            value = arguments.get(key)
+            if value is not None and (not isinstance(value, str) or len(value) > maximum):
+                raise RuntimeError(f"library_catalog_search {key} is invalid.")
+        pub_year = arguments.get("pub_year")
+        if pub_year is not None and (
+            isinstance(pub_year, bool)
+            or not isinstance(pub_year, int)
+            or pub_year < 1000
+            or pub_year > 2100
+        ):
+            raise RuntimeError("library_catalog_search pub_year is invalid.")
+        if arguments.get("campus", "any") not in {"toyosu", "omiya", "any"}:
+            raise RuntimeError("library_catalog_search campus is invalid.")
+        if arguments.get("format", "any") not in {"book", "journal", "ebook", "any"}:
+            raise RuntimeError("library_catalog_search format is invalid.")
+        limit = arguments.get("limit", 10)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10:
+            raise RuntimeError("library_catalog_search limit is invalid.")
+        return
+    if tool_name == LIBRARY_ITEM_READ_TOOL_NAME:
+        if set(arguments) != {"resource_ref"} or not isinstance(
+            arguments.get("resource_ref"), str
+        ) or not _LIBRARY_RESOURCE_REF_RE.fullmatch(arguments["resource_ref"]):
+            raise RuntimeError("library_item_read requires a valid opaque resource_ref.")
+        return
+    if tool_name == LIBRARY_CATALOG_BROWSE_TOOL_NAME:
+        if set(arguments) - {"kind", "campus", "limit"}:
+            raise RuntimeError("library_catalog_browse received unknown arguments.")
+        if arguments.get("kind") not in {"new_books", "loan_ranking"}:
+            raise RuntimeError("library_catalog_browse kind is invalid.")
+        if arguments.get("campus", "any") not in {"toyosu", "omiya", "any"}:
+            raise RuntimeError("library_catalog_browse campus is invalid.")
+        limit = arguments.get("limit", 10)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10:
+            raise RuntimeError("library_catalog_browse limit is invalid.")
+        return
+    if tool_name == LIBRARY_DISCOVERY_SEARCH_TOOL_NAME:
+        if set(arguments) - {"query", "limit"}:
+            raise RuntimeError("library_discovery_search received unknown arguments.")
+        query = arguments.get("query")
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            raise RuntimeError("library_discovery_search query is outside the allowed range.")
+        limit = arguments.get("limit", 10)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10:
+            raise RuntimeError("library_discovery_search limit is invalid.")
+        return
 
 
 class PydanticAIAgentBackend(AgentBackend):
@@ -734,6 +896,14 @@ class PydanticAIAgentBackend(AgentBackend):
             tools.append(my_library_read)
         if CAST_TOOL_NAME in advertised:
             tools.append(cast_read)
+        if LIBRARY_CATALOG_SEARCH_TOOL_NAME in advertised:
+            tools.append(library_catalog_search)
+        if LIBRARY_ITEM_READ_TOOL_NAME in advertised:
+            tools.append(library_item_read)
+        if LIBRARY_CATALOG_BROWSE_TOOL_NAME in advertised:
+            tools.append(library_catalog_browse)
+        if LIBRARY_DISCOVERY_SEARCH_TOOL_NAME in advertised:
+            tools.append(library_discovery_search)
         if web_search_state is not None:
             tools.append(web_search_state.general_web_search)
         model_settings: OpenAIResponsesModelSettings = {"openai_store": False}
@@ -851,6 +1021,13 @@ class PydanticAIAgentBackend(AgentBackend):
                 not isinstance(faculty, str) or len(faculty) > 200
             ):
                 raise RuntimeError("syllabus_search faculty is outside the allowed range.")
+        if call.tool_name in {
+            LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+            LIBRARY_ITEM_READ_TOOL_NAME,
+            LIBRARY_CATALOG_BROWSE_TOOL_NAME,
+            LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+        }:
+            _validate_library_tool_arguments(call.tool_name, arguments)
         return ChatAgentExecution(
             deferred=DeferredChatRun(
                 messages=result.all_messages(),
@@ -891,6 +1068,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_moodle_read=True,
             allow_my_library_read=True,
             allow_cast_read=True,
+            allow_library_read=True,
         )
         advertised = set(advertised_tools or set()) & set(SUPPORTED_TOOL_NAMES)
         if (advertised or self.web_search_executor is not None) and os.getenv(
@@ -1029,6 +1207,56 @@ class PydanticAIAgentBackend(AgentBackend):
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "cast_summary": tool_result.model_dump(mode="json"),
             }
+        elif deferred.tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME:
+            if not isinstance(tool_result, LibraryCatalogSearchResult):
+                raise ValueError(
+                    "Library catalog calls require a LibraryCatalogSearchResult."
+                )
+            evidence = next(
+                (item for item in context if is_derived_library_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "library_catalog_search": tool_result.model_dump(mode="json"),
+            }
+        elif deferred.tool_name == LIBRARY_ITEM_READ_TOOL_NAME:
+            if not isinstance(tool_result, LibraryItemReadResult):
+                raise ValueError("Library item calls require a LibraryItemReadResult.")
+            evidence = next(
+                (item for item in context if is_derived_library_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "library_item_read": tool_result.model_dump(mode="json"),
+            }
+        elif deferred.tool_name == LIBRARY_CATALOG_BROWSE_TOOL_NAME:
+            if not isinstance(tool_result, LibraryCatalogBrowseResult):
+                raise ValueError(
+                    "Library browse calls require a LibraryCatalogBrowseResult."
+                )
+            evidence = next(
+                (item for item in context if is_derived_library_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "library_catalog_browse": tool_result.model_dump(mode="json"),
+            }
+        elif deferred.tool_name == LIBRARY_DISCOVERY_SEARCH_TOOL_NAME:
+            if not isinstance(tool_result, LibraryDiscoverySearchResult):
+                raise ValueError(
+                    "Library discovery calls require a LibraryDiscoverySearchResult."
+                )
+            evidence = next(
+                (item for item in context if is_derived_library_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "library_discovery_search": tool_result.model_dump(mode="json"),
+            }
         else:
             raise ValueError("The deferred chat tool is unsupported.")
         if evidence is None:
@@ -1050,6 +1278,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_moodle_read=True,
             allow_my_library_read=True,
             allow_cast_read=True,
+            allow_library_read=True,
         )
         web_search_state = (
             ChatWebSearchState(
@@ -1107,6 +1336,12 @@ __all__ = [
     "MOODLE_LOCATOR_PREFIX",
     "MY_LIBRARY_TOOL_NAME",
     "MY_LIBRARY_LOCATOR_PREFIX",
+    "LIBRARY_CATALOG_SEARCH_TOOL_NAME",
+    "LIBRARY_ITEM_READ_TOOL_NAME",
+    "LIBRARY_CATALOG_BROWSE_TOOL_NAME",
+    "LIBRARY_DISCOVERY_SEARCH_TOOL_NAME",
+    "LIBRARY_LOCATOR_PREFIX",
+    "LIBRARY_RESOURCE_REF_PREFIX",
     "SCOMBZ_READ_TOOL_NAME",
     "SYLLABUS_SEARCH_TOOL_NAME",
     "DeferredActionRun",
@@ -1123,10 +1358,15 @@ __all__ = [
     "is_derived_sitrus_evidence",
     "is_derived_moodle_evidence",
     "is_derived_my_library_evidence",
+    "is_derived_library_evidence",
     "browser_read_url",
     "sitrus_read",
     "moodle_read",
     "my_library_read",
+    "library_catalog_search",
+    "library_item_read",
+    "library_catalog_browse",
+    "library_discovery_search",
     "scombz_read",
     "scombz_page_summary",
     "syllabus_search",

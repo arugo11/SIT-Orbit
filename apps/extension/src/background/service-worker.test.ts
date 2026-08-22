@@ -288,6 +288,82 @@ describe("service worker side panel contract", () => {
     expect(removeTab).toHaveBeenCalledTimes(2);
   });
 
+  it("reads public catalog DOM in an inactive isolated-world tab", async () => {
+    permissionsContains.mockResolvedValue(true);
+    getTab.mockResolvedValue({
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/opc/",
+    } as chrome.tabs.Tab);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            records: [
+              {
+                record_id: "ABC123",
+                title: "公開ロボット工学",
+                authors: ["芝浦太郎"],
+                subjects: ["ロボット"],
+                isbn: null,
+                publisher: "公開出版社",
+                publication_year: 2026,
+                format: "book",
+                campus: "omiya",
+                url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ABC123",
+                holdings: [],
+                related_records: [],
+              },
+            ],
+          },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-search-1",
+        query: "ロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        status: "known",
+        projection: expect.objectContaining({
+          status: "known",
+          items: [
+            expect.objectContaining({
+              title: "公開ロボット工学",
+              holdings: [
+                expect.objectContaining({
+                  campus: "unknown",
+                  status: "unknown",
+                }),
+              ],
+            }),
+          ],
+        }),
+      }),
+    );
+    expect(JSON.stringify(payload.projection)).not.toContain("record_id");
+    expect(createTab).toHaveBeenCalledWith({
+      url: "https://library.shibaura-it.ac.jp/opc/",
+      active: false,
+    });
+    expect(executeScript.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ world: "ISOLATED" }),
+    );
+    expect(removeTab).toHaveBeenCalledWith(91);
+  });
+
   it("returns only CAST aggregates while keeping notice titles local", async () => {
     permissionsContains.mockResolvedValue(true);
     queryTabs.mockResolvedValue([

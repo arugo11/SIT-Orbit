@@ -84,6 +84,14 @@ ScombZ以外のサービスは、サービスごとのOAuth同意、正式API、
 
 ScombZへのログイン状態を、Google Drive、Google Calendar、Microsoft Graph、SIT Portfolio、CAST、OPACの認証として扱わない。
 
+### Branch 1 公開図書館ディスカバリー
+
+`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`は、利用者がChatで明示的に要求した場合だけ、公開されたOPACまたは公式SIT Searchの表示DOMを読む。OPACの検索・レコード・新着図書・貸出ランキング、およびSIT Searchのフォームと結果リンクは、確認済みの公式origin/pathに限定する。必要なoptional host permissionがないときはToolを広告せず、フォーム・DOM・origin・pathの不一致、ログイン画面、エラー、availabilityの未解決は`unavailable`として扱う。
+
+Agent APIへ送るのは、厳格な公開書誌メタデータ、表示されたholdingのcampus/location/call number/status/due date/reservation count、公式リンク、検索結果の短い表示スニペットだけである。material ID、copy ID、内部AJAXの応答、Cookie、session token、認証情報、個人の貸出・予約情報は送らない。`resource_ref`は公開レコードIDから導出したopaque値で、元IDはService Workerの短命な対応表にのみ保持し、再起動後や衝突時は解決しない。SIT Searchでは契約本文の全文取得、ダウンロード、保存、一般Web検索へのfallbackを行わない。
+
+図書館ToolのEvidenceは`source_type=library`、`data_classification=public`、検証済みの`library-*` IDと`orbit-library://public/` locatorだけを許可する。raw HTMLとTool生レスポンスはChat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存しない。これは公開ディスカバリーのBranch 1であり、個人向けMy Libraryの貸出・予約操作や書き込みを追加するものではない。
+
 Connectorは、`not_connected`、`connected`、`reauth_required`、`unavailable`の状態を表示する。
 
 外部サービスへの書き込みは、Agentが候補を作成した後、利用者が確認した場合だけ実行する。

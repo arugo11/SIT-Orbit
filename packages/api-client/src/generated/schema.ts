@@ -380,7 +380,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search";
             /**
              * Version
              * @constant
@@ -438,7 +438,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search";
             /**
              * Version
              * @constant
@@ -457,14 +457,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["MyLibraryReadResult"] | components["schemas"]["CastReadResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["MyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"];
         };
         /**
          * ClientTool
@@ -509,6 +509,207 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * LibraryBibliographicRecord
+         * @description Public bibliographic metadata and rendered holdings from the OPAC.
+         */
+        LibraryBibliographicRecord: {
+            /** Resource Ref */
+            resource_ref: string;
+            /** Title */
+            title: string;
+            /** Authors */
+            authors?: string[];
+            /** Subjects */
+            subjects?: string[];
+            /** Isbn */
+            isbn?: string | null;
+            /** Publisher */
+            publisher?: string | null;
+            /** Publication Year */
+            publication_year?: number | null;
+            /**
+             * Format
+             * @default unknown
+             * @enum {string}
+             */
+            format: "book" | "journal" | "ebook" | "unknown";
+            /**
+             * Campus
+             * @default any
+             * @enum {string}
+             */
+            campus: "toyosu" | "omiya" | "any";
+            /** Url */
+            url: string;
+            /** Holdings */
+            holdings?: components["schemas"]["LibraryHoldingSummary"][];
+            /** Related Records */
+            related_records?: components["schemas"]["LibraryRelatedRecordRef"][];
+        };
+        /**
+         * LibraryCatalogBrowseResult
+         * @description Public new-book or loan-ranking rows from the official catalog pages.
+         */
+        LibraryCatalogBrowseResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "new_books" | "loan_ranking";
+            /**
+             * Campus
+             * @default any
+             * @enum {string}
+             */
+            campus: "toyosu" | "omiya" | "any";
+            /** Items */
+            items?: components["schemas"]["LibraryBibliographicRecord"][];
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
+         * LibraryCatalogSearchResult
+         * @description Bounded public results from the official OPAC search form.
+         */
+        LibraryCatalogSearchResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /** Query */
+            query: string;
+            /** Items */
+            items?: components["schemas"]["LibraryBibliographicRecord"][];
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
+         * LibraryDiscoveryItem
+         * @description Displayed public metadata/link from the official SIT Search page.
+         *
+         *     This schema intentionally has no full-text, download, or persistence field.
+         */
+        LibraryDiscoveryItem: {
+            /** Title */
+            title: string;
+            /** Authors */
+            authors?: string[];
+            /** Source Label */
+            source_label?: string | null;
+            /** Url */
+            url: string;
+            /** Snippet */
+            snippet?: string | null;
+            /** Resource Ref */
+            resource_ref?: string | null;
+        };
+        /**
+         * LibraryDiscoverySearchResult
+         * @description Bounded metadata-only results from official SIT Search.
+         */
+        LibraryDiscoverySearchResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /** Query */
+            query: string;
+            /** Items */
+            items?: components["schemas"]["LibraryDiscoveryItem"][];
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
+         * LibraryHoldingSummary
+         * @description Public holding status rendered by the official OPAC.
+         *
+         *     Internal material, copy, and holding identifiers deliberately have no
+         *     representation in this model.
+         */
+        LibraryHoldingSummary: {
+            /**
+             * Campus
+             * @enum {string}
+             */
+            campus: "toyosu" | "omiya" | "unknown";
+            /** Location */
+            location?: string | null;
+            /** Call Number */
+            call_number?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "available" | "unavailable" | "unknown";
+            /** Due Date */
+            due_date?: string | null;
+            /** Reservation Count */
+            reservation_count?: number | null;
+        };
+        /**
+         * LibraryItemReadResult
+         * @description Detailed public OPAC record resolved from an opaque resource reference.
+         */
+        LibraryItemReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /** Resource Ref */
+            resource_ref: string;
+            item?: components["schemas"]["LibraryBibliographicRecord"] | null;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
+         * LibraryRelatedRecordRef
+         * @description A public related-record reference without material identifiers.
+         */
+        LibraryRelatedRecordRef: {
+            /** Resource Ref */
+            resource_ref: string;
+            /** Title */
+            title: string;
+            /**
+             * Relation
+             * @default related
+             * @enum {string}
+             */
+            relation: "related" | "edition" | "translation" | "other";
         };
         /**
          * MoodleReadResult

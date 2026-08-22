@@ -6,6 +6,10 @@ import {
   type Fetcher,
   isActionProposal,
   isCastReadResult,
+  isLibraryCatalogBrowseResult,
+  isLibraryCatalogSearchResult,
+  isLibraryDiscoverySearchResult,
+  isLibraryItemReadResult,
   isMoodleReadResult,
   isMyLibraryReadResult,
   isSitrusGradeResult,
@@ -51,6 +55,95 @@ function createFetcher(response: Response): Fetcher & ReturnType<typeof vi.fn> {
 }
 
 describe("AgentApiClient", () => {
+  it("accepts public library records with conservative holdings", () => {
+    const item = {
+      resource_ref: "orbit-library://record/0123456789abcdef",
+      title: "公開ロボット工学",
+      authors: ["芝浦太郎"],
+      subjects: ["ロボット"],
+      isbn: "978-4-0000-0000-0",
+      publisher: "公開出版社",
+      publication_year: 2026,
+      format: "book",
+      campus: "omiya",
+      url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ABC123",
+      holdings: [
+        {
+          campus: "unknown",
+          location: null,
+          call_number: null,
+          status: "unknown",
+          due_date: null,
+          reservation_count: null,
+        },
+      ],
+      related_records: [],
+    };
+    const search = {
+      schema_version: "v1",
+      status: "known",
+      query: "ロボット",
+      items: [item],
+      reason_code: null,
+    };
+    expect(isLibraryCatalogSearchResult(search)).toBe(true);
+    expect(
+      isLibraryItemReadResult({
+        schema_version: "v1",
+        status: "known",
+        resource_ref: item.resource_ref,
+        item,
+        reason_code: null,
+      }),
+    ).toBe(true);
+    expect(
+      isLibraryCatalogBrowseResult({
+        schema_version: "v1",
+        status: "known",
+        kind: "new_books",
+        campus: "any",
+        items: [item],
+        reason_code: null,
+      }),
+    ).toBe(true);
+    expect(
+      isLibraryDiscoverySearchResult({
+        schema_version: "v1",
+        status: "known",
+        query: "ロボット",
+        items: [
+          {
+            title: item.title,
+            authors: item.authors,
+            source_label: "SIT Search",
+            url: item.url,
+            snippet: "公開された書誌情報",
+            resource_ref: item.resource_ref,
+          },
+        ],
+        reason_code: null,
+      }),
+    ).toBe(true);
+    expect(
+      isLibraryCatalogSearchResult({
+        ...search,
+        items: [
+          {
+            ...item,
+            holdings: [{ ...item.holdings[0], material_id: "secret" }],
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      isLibraryCatalogSearchResult({
+        ...search,
+        status: "unavailable",
+        items: [item],
+      }),
+    ).toBe(false);
+  });
+
   it("accepts Moodle aggregates and rejects local course details", () => {
     const result = {
       schema_version: "v1",

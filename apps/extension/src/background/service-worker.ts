@@ -7,6 +7,20 @@ import {
   GoogleDriveConnector,
 } from "../connectors/google-drive";
 import {
+  createLibraryResourceRef,
+  isLibraryResourceRef,
+  isOfficialDiscoveryUrl,
+  LIBRARY_LOAN_RANKING_URL,
+  LIBRARY_NEW_BOOKS_URL,
+  LIBRARY_OPAC_ENTRY_URL,
+  LIBRARY_OPAC_ORIGIN,
+  LIBRARY_OPAC_PERMISSION_PATTERN,
+  LIBRARY_RECORD_PATH_PREFIX,
+  LIBRARY_SIT_SEARCH_ENTRY_URL,
+  LIBRARY_SIT_SEARCH_ORIGIN,
+  LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
+} from "../connectors/library-discovery";
+import {
   SYLLABUS_SEARCH_ORIGIN,
   searchOfficialSyllabus,
 } from "../connectors/syllabus-search";
@@ -54,6 +68,10 @@ import {
   isGetPageContextMessage,
   isGetWorkspaceSessionMessage,
   isGetWorkspaceStatusMessage,
+  isLibraryCatalogBrowseMessage,
+  isLibraryCatalogSearchMessage,
+  isLibraryDiscoverySearchMessage,
+  isLibraryItemReadMessage,
   isMoodleOpenMessage,
   isMoodleReadMessage,
   isMyLibraryOpenMessage,
@@ -64,6 +82,14 @@ import {
   isSitrusReadMessage,
   isSyllabusSearchMessage,
   isUpdateWorkspaceSessionMessage,
+  type LibraryCatalogBrowseMessage,
+  type LibraryCatalogBrowseResponse,
+  type LibraryCatalogSearchMessage,
+  type LibraryCatalogSearchResponse,
+  type LibraryDiscoverySearchMessage,
+  type LibraryDiscoverySearchResponse,
+  type LibraryItemReadMessage,
+  type LibraryItemReadResponse,
   MESSAGE_TYPES,
   type MoodleReadResponse,
   type MyLibraryReadResponse,
@@ -94,6 +120,11 @@ const BUILT_IN_ORIGINS = new Set([
 const MOODLE_PERMISSION_PATTERN = `${MOODLE_ORIGIN}/*`;
 const MY_LIBRARY_PERMISSION_PATTERN = `${MY_LIBRARY_ORIGIN}/*`;
 const CAST_PERMISSION_PATTERN = `${CAST_ORIGIN}/*`;
+
+// The public record ID is retained only while the service worker is alive so
+// an opaque resource_ref can be resolved for the next item-read call. A
+// worker restart therefore fails closed instead of guessing a record URL.
+const libraryRecordRefs = new Map<string, string>();
 
 function browserOrigin(
   value: string,
@@ -157,6 +188,961 @@ async function waitForTabReady(tabId: number): Promise<void> {
     chrome.tabs.onUpdated.addListener(listener);
     setTimeout(finish, 8000);
   });
+}
+
+type LibraryRawHolding = {
+  campus: "toyosu" | "omiya" | "unknown";
+  location: string | null;
+  call_number: string | null;
+  status: "available" | "unavailable" | "unknown";
+  due_date: string | null;
+  reservation_count: number | null;
+};
+
+type LibraryRawRecord = {
+  record_id: string;
+  title: string;
+  authors: string[];
+  subjects: string[];
+  isbn: string | null;
+  publisher: string | null;
+  publication_year: number | null;
+  format: "book" | "journal" | "ebook" | "unknown";
+  campus: "toyosu" | "omiya" | "any";
+  url: string;
+  holdings: LibraryRawHolding[];
+  related_records: Array<{
+    record_id: string;
+    title: string;
+    relation: "related" | "edition" | "translation" | "other";
+  }>;
+};
+
+type LibraryMaterializedRecord = {
+  resource_ref: string;
+  title: string;
+  authors: string[];
+  subjects: string[];
+  isbn: string | null;
+  publisher: string | null;
+  publication_year: number | null;
+  format: "book" | "journal" | "ebook" | "unknown";
+  campus: "toyosu" | "omiya" | "any";
+  url: string;
+  holdings: LibraryRawHolding[];
+  related_records: Array<{
+    resource_ref: string;
+    title: string;
+    relation: "related" | "edition" | "translation" | "other";
+  }>;
+};
+
+type LibraryPageProjection =
+  | { status: "known"; records: LibraryRawRecord[] }
+  | { status: "loading" }
+  | { status: "unavailable"; reason_code: string };
+
+function submitLibraryCatalogSearchInPage(filters: {
+  query: string;
+  author?: string | null;
+  subject?: string | null;
+  isbn?: string | null;
+  pub_year?: number | null;
+  campus?: "toyosu" | "omiya" | "any";
+  format?: "book" | "journal" | "ebook" | "any";
+}): { status: "submitted" | "unavailable"; reason_code?: string } {
+  try {
+    if (
+      location.origin !== "https://library.shibaura-it.ac.jp" ||
+      location.pathname !== "/opc/"
+    ) {
+      return { status: "unavailable", reason_code: "unexpected_opac_entry" };
+    }
+    const form = Array.from(
+      document.querySelectorAll<HTMLFormElement>("form"),
+    ).find(
+      (candidate) =>
+        candidate.querySelector('[name="keys"]') !== null &&
+        (candidate.action === "" ||
+          new URL(candidate.action, location.href).pathname ===
+            "/opc/xc/search"),
+    );
+    if (!form)
+      return { status: "unavailable", reason_code: "search_form_not_found" };
+    const setValue = (name: string, value: string): boolean => {
+      const field = form.querySelector<HTMLInputElement | HTMLSelectElement>(
+        `[name="${CSS.escape(name)}"]`,
+      );
+      if (!field) return false;
+      field.value = value;
+      return true;
+    };
+    if (!setValue("keys", filters.query)) {
+      return { status: "unavailable", reason_code: "query_field_not_found" };
+    }
+    const optionalFields: Array<[string, string | null | undefined]> = [
+      ["title", null],
+      ["fullTitle", null],
+      ["auth", filters.author],
+      ["pub", null],
+      ["isbn", filters.isbn],
+      [
+        "pubYear",
+        filters.pub_year === null || filters.pub_year === undefined
+          ? null
+          : String(filters.pub_year),
+      ],
+      ["subject", filters.subject],
+      ["callNumber", null],
+    ];
+    for (const [name, value] of optionalFields) {
+      if (value === null || value === undefined) continue;
+      if (!setValue(name, value)) {
+        return {
+          status: "unavailable",
+          reason_code: `${name}_field_not_found`,
+        };
+      }
+    }
+    if (filters.format && filters.format !== "any") {
+      if (filters.format === "ebook") {
+        const ebookLocation = Array.from(
+          form.querySelectorAll<HTMLInputElement>('input[name^="location["]'),
+        ).find((field) =>
+          /eBook|電子図書/iu.test(
+            field.closest("label")?.textContent ?? field.value,
+          ),
+        );
+        if (!ebookLocation) {
+          return {
+            status: "unavailable",
+            reason_code: "format_filter_unavailable",
+          };
+        }
+        ebookLocation.checked = true;
+      } else {
+        const fieldName = `format[${filters.format === "book" ? "Book" : "Journal"}]`;
+        const formatField = form.querySelector<HTMLInputElement>(
+          `[name="${CSS.escape(fieldName)}"]`,
+        );
+        if (!formatField) {
+          return {
+            status: "unavailable",
+            reason_code: "format_filter_unavailable",
+          };
+        }
+        formatField.checked = true;
+      }
+    }
+    if (filters.campus && filters.campus !== "any") {
+      const fieldName = `location[${filters.campus === "toyosu" ? "Toyosu" : "Omiya"}]`;
+      const campusField = form.querySelector<HTMLInputElement>(
+        `[name="${CSS.escape(fieldName)}"]`,
+      );
+      if (!campusField) {
+        return {
+          status: "unavailable",
+          reason_code: "campus_filter_unavailable",
+        };
+      }
+      campusField.checked = true;
+    }
+    if (typeof form.requestSubmit === "function") form.requestSubmit();
+    else form.submit();
+    return { status: "submitted" };
+  } catch {
+    return { status: "unavailable", reason_code: "search_submit_failed" };
+  }
+}
+
+function readLibraryCatalogSearchInPage(): LibraryPageProjection {
+  const clean = (value: string | null | undefined, limit: number): string =>
+    (value ?? "").replace(/\s+/gu, " ").trim().slice(0, limit);
+  const recordIdFromUrl = (value: string): string | null => {
+    try {
+      const url = new URL(value, location.href);
+      if (
+        url.origin !== "https://library.shibaura-it.ac.jp" ||
+        !url.pathname.startsWith("/opc/recordID/catalog.bib/")
+      ) {
+        return null;
+      }
+      const raw = url.pathname.slice("/opc/recordID/catalog.bib/".length);
+      return raw ? decodeURIComponent(raw) : null;
+    } catch {
+      return null;
+    }
+  };
+  const rowFor = (link: Element): Element =>
+    link.closest(".result-row, article, li, tr, .record, .search-result") ??
+    link;
+  const parseHolding = (element: Element): LibraryRawHolding | null => {
+    const text = clean(element.textContent, 500);
+    if (!text) return null;
+    const status = /利用可|貸出可|available/i.test(text)
+      ? "available"
+      : /貸出中|利用不可|unavailable|checked\s*out/i.test(text)
+        ? "unavailable"
+        : "unknown";
+    const campus = /豊洲|toyosu/i.test(text)
+      ? "toyosu"
+      : /大宮|omiya/i.test(text)
+        ? "omiya"
+        : "unknown";
+    const dueDate = text.match(/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})/u);
+    const dueYear = dueDate?.[1];
+    const dueMonth = dueDate?.[2];
+    const dueDay = dueDate?.[3];
+    const due_date =
+      status !== "unknown" && dueYear && dueMonth && dueDay
+        ? `${dueYear}-${dueMonth.padStart(2, "0")}-${dueDay.padStart(2, "0")}`
+        : null;
+    const reservationMatch = text.match(/予約(?:数|件)?\s*[:：]?\s*(\d+)/u);
+    const callNumber =
+      text.match(/(?:請求記号|call\s*number)\s*[:：]?\s*([^\s,、]+)/iu)?.[1] ??
+      text.match(/(?:貸出可|利用可|貸出中)\s*[,、]\s*([^\s,、]+)/u)?.[1] ??
+      null;
+    return {
+      campus,
+      location:
+        text
+          .match(/(?:所在|配置場所|location)\s*[:：]?\s*([^,、]+)/iu)?.[1]
+          ?.slice(0, 200) ?? null,
+      call_number: callNumber?.slice(0, 100) ?? null,
+      status,
+      due_date,
+      reservation_count:
+        reservationMatch && status !== "unknown"
+          ? Number(reservationMatch[1])
+          : null,
+    };
+  };
+  const parseRecord = (link: HTMLAnchorElement): LibraryRawRecord | null => {
+    const recordId = recordIdFromUrl(link.href);
+    if (!recordId) return null;
+    const row = rowFor(link);
+    const title = clean(link.getAttribute("title") || link.textContent, 300);
+    if (!title) return null;
+    const text = clean(row.textContent, 2_000);
+    const visibleValues = (selector: string, limit: number): string[] =>
+      Array.from(row.querySelectorAll(selector))
+        .map((element) => clean(element.textContent, limit))
+        .filter((value) => value.length > 0)
+        .filter((value, index, values) => values.indexOf(value) === index)
+        .slice(0, 20);
+    const yearMatch = text.match(/(?:19|20)\d{2}/u);
+    const holdings = Array.from(
+      row.querySelectorAll(
+        "[data-availability], .xc-availability, .availability, .holding, .status",
+      ),
+    )
+      .map(parseHolding)
+      .filter((item): item is LibraryRawHolding => item !== null)
+      .slice(0, 20);
+    return {
+      record_id: recordId,
+      title,
+      authors: visibleValues(".author, .authors, .creator, [data-author]", 200),
+      subjects: visibleValues(".subject, .subjects, [data-subject]", 200),
+      isbn:
+        text.match(/(?:ISBN(?:-\d+)?\s*[:：]?\s*)([0-9Xx-]{10,17})/u)?.[1] ??
+        null,
+      publisher:
+        visibleValues(".publisher, .pub, [data-publisher]", 200)[0] ?? null,
+      publication_year: yearMatch ? Number(yearMatch[0]) : null,
+      format: /電子書籍|ebook/i.test(text)
+        ? "ebook"
+        : /雑誌|journal/i.test(text)
+          ? "journal"
+          : "unknown",
+      campus: /豊洲|toyosu/i.test(text)
+        ? "toyosu"
+        : /大宮|omiya/i.test(text)
+          ? "omiya"
+          : "any",
+      url: `https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/${encodeURIComponent(recordId)}`,
+      holdings,
+      related_records: [],
+    };
+  };
+  try {
+    const validCatalogPath =
+      location.pathname.startsWith("/opc/") ||
+      location.pathname === "/cgi-bin/nbk/nbk_seek.cgi" ||
+      location.pathname === "/cgi-bin/loan_best10/loan_best10.cgi";
+    if (
+      location.origin !== "https://library.shibaura-it.ac.jp" ||
+      !validCatalogPath
+    ) {
+      return { status: "unavailable", reason_code: "unexpected_opac_result" };
+    }
+    if (
+      document.querySelector('[aria-busy="true"], .loading, .spinner') ||
+      /読み込み中|loading/i.test(document.body?.textContent ?? "")
+    ) {
+      return { status: "loading" };
+    }
+    const linkedRecords = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>("a[href]"),
+    )
+      .map(parseRecord)
+      .filter((item): item is LibraryRawRecord => item !== null)
+      .filter(
+        (item, index, all) =>
+          all.findIndex(
+            (candidate) => candidate.record_id === item.record_id,
+          ) === index,
+      )
+      .slice(0, 10);
+    let records = linkedRecords;
+    if (location.pathname.startsWith("/opc/recordID/catalog.bib/")) {
+      const currentId = recordIdFromUrl(location.href);
+      const mainTable = document.querySelector("dl.mainTable");
+      const title = clean(
+        document.querySelector("h1.page-title, #content h3, .node h3")
+          ?.textContent,
+        300,
+      );
+      if (!currentId || !mainTable || !title) {
+        return {
+          status: "unavailable",
+          reason_code: "record_structure_not_found",
+        };
+      }
+      const definition = (labels: RegExp): string | null => {
+        const term = Array.from(mainTable.querySelectorAll("dt")).find((item) =>
+          labels.test(clean(item.textContent, 100).replace(/[:：]$/u, "")),
+        );
+        const value = term?.nextElementSibling;
+        return value?.tagName === "DD" ? clean(value.textContent, 500) : null;
+      };
+      const splitValues = (value: string | null): string[] =>
+        (value ?? "")
+          .split(/[;；]/u)
+          .map((item) => clean(item, 200))
+          .filter((item) => item.length > 0)
+          .slice(0, 20);
+      const publication = definition(/^(?:出版情報|publication)$/iu);
+      const yearMatch = publication?.match(/(?:19|20)\d{2}/u);
+      const formatText = definition(/^(?:フォーマット|format)$/iu) ?? "";
+      const pageText = document.body?.textContent ?? "";
+      const current: LibraryRawRecord = {
+        record_id: currentId,
+        title,
+        authors: splitValues(
+          definition(/^(?:著者名|責任表示|author|creator)$/iu),
+        ),
+        subjects: splitValues(definition(/^(?:件名|主題|subject)$/iu)),
+        isbn: definition(/^ISBN$/iu)?.match(/([0-9Xx-]{10,17})/u)?.[1] ?? null,
+        publisher: publication,
+        publication_year: yearMatch ? Number(yearMatch[0]) : null,
+        format: /電子書籍|ebook/i.test(formatText)
+          ? "ebook"
+          : /雑誌|journal/i.test(formatText)
+            ? "journal"
+            : /図書|book/i.test(formatText)
+              ? "book"
+              : "unknown",
+        campus: /豊洲|toyosu/i.test(pageText)
+          ? "toyosu"
+          : /大宮|omiya/i.test(pageText)
+            ? "omiya"
+            : "any",
+        url: `https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/${encodeURIComponent(currentId)}`,
+        holdings: Array.from(
+          document.querySelectorAll(
+            "[data-availability], .xc-availability, .availability, .holding, .status",
+          ),
+        )
+          .map(parseHolding)
+          .filter((item): item is LibraryRawHolding => item !== null)
+          .slice(0, 20),
+        related_records: linkedRecords
+          .filter((record) => record.record_id !== currentId)
+          .map((record) => ({
+            record_id: record.record_id,
+            title: record.title,
+            relation: "related" as const,
+          }))
+          .slice(0, 20),
+      };
+      records = [current];
+    }
+    const noResults =
+      /該当する資料はありません|検索結果はありません|no\s+results/i.test(
+        document.body?.textContent ?? "",
+      );
+    if (!records.length && !noResults) {
+      return {
+        status: "unavailable",
+        reason_code: "result_structure_not_found",
+      };
+    }
+    return { status: "known", records };
+  } catch {
+    return { status: "unavailable", reason_code: "catalog_projection_failed" };
+  }
+}
+
+function submitLibraryDiscoverySearchInPage(query: string): {
+  status: "submitted" | "unavailable";
+  reason_code?: string;
+} {
+  try {
+    if (
+      location.origin !== "https://slib.shibaura-it.ac.jp" ||
+      !location.pathname.startsWith("/sublib/")
+    ) {
+      return {
+        status: "unavailable",
+        reason_code: "unexpected_discovery_entry",
+      };
+    }
+    const form = Array.from(
+      document.querySelectorAll<HTMLFormElement>("form"),
+    ).find(
+      (candidate) =>
+        candidate.querySelector('[name="kw"]') !== null &&
+        candidate.querySelector('[name="searchTarget"]') !== null &&
+        candidate.querySelector('[name="form_id"]') !== null,
+    );
+    if (!form)
+      return { status: "unavailable", reason_code: "discovery_form_not_found" };
+    const keyword = form.querySelector<HTMLInputElement>('[name="kw"]');
+    if (!keyword)
+      return {
+        status: "unavailable",
+        reason_code: "discovery_query_not_found",
+      };
+    keyword.value = query;
+    const target = form.querySelector<HTMLSelectElement | HTMLInputElement>(
+      '[name="searchTarget"]',
+    );
+    if (!target)
+      return {
+        status: "unavailable",
+        reason_code: "discovery_target_not_found",
+      };
+    target.value = "0";
+    if (typeof form.requestSubmit === "function") form.requestSubmit();
+    else form.submit();
+    return { status: "submitted" };
+  } catch {
+    return { status: "unavailable", reason_code: "discovery_submit_failed" };
+  }
+}
+
+function readLibraryDiscoveryInPage(): {
+  status: "known" | "loading" | "unavailable";
+  items?: Array<{
+    title: string;
+    authors: string[];
+    source_label: string | null;
+    url: string;
+    snippet: string | null;
+    record_id: string | null;
+  }>;
+  reason_code?: string;
+} {
+  const clean = (value: string | null | undefined, limit: number): string =>
+    (value ?? "").replace(/\s+/gu, " ").trim().slice(0, limit);
+  try {
+    if (
+      location.origin !== "https://slib.shibaura-it.ac.jp" ||
+      !location.pathname.startsWith("/sublib/")
+    ) {
+      return {
+        status: "unavailable",
+        reason_code: "unexpected_discovery_result",
+      };
+    }
+    if (
+      document.querySelector('[aria-busy="true"], .loading, .spinner') ||
+      /読み込み中|loading/i.test(document.body?.textContent ?? "")
+    ) {
+      return { status: "loading" };
+    }
+    const items = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>("a[href]"),
+    )
+      .map((link) => {
+        const url = new URL(link.href, location.href);
+        const official =
+          url.origin === "https://slib.shibaura-it.ac.jp" &&
+          url.pathname.startsWith("/sublib/");
+        const opac =
+          url.origin === "https://library.shibaura-it.ac.jp" &&
+          url.pathname.startsWith("/opc/recordID/catalog.bib/");
+        if (!official && !opac) return null;
+        const title = clean(link.textContent, 300);
+        if (!title || /検索|ログイン|language|menu/i.test(title)) return null;
+        const row =
+          link.closest(".result-row, article, li, tr, .record") ?? link;
+        const text = clean(row.textContent, 600);
+        const record_id = opac
+          ? decodeURIComponent(
+              url.pathname.slice("/opc/recordID/catalog.bib/".length),
+            )
+          : null;
+        return {
+          title,
+          authors: Array.from(
+            row.querySelectorAll(".author, .authors, .creator, [data-author]"),
+          )
+            .map((element) => clean(element.textContent, 200))
+            .filter((value) => value.length > 0)
+            .filter((value, index, values) => values.indexOf(value) === index)
+            .slice(0, 20),
+          source_label:
+            clean(
+              row.querySelector(".source, .database, .publisher")?.textContent,
+              200,
+            ) || null,
+          url: url.href,
+          snippet: clean(text.replace(title, ""), 500) || null,
+          record_id,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .filter(
+        (item, index, all) =>
+          all.findIndex((candidate) => candidate.url === item.url) === index,
+      )
+      .slice(0, 10);
+    const noResults = /該当する|結果はありません|no\s+results/i.test(
+      document.body?.textContent ?? "",
+    );
+    if (!items.length && !noResults) {
+      return {
+        status: "unavailable",
+        reason_code: "discovery_structure_not_found",
+      };
+    }
+    return { status: "known", items };
+  } catch {
+    return {
+      status: "unavailable",
+      reason_code: "discovery_projection_failed",
+    };
+  }
+}
+
+function libraryUnavailable(reason_code: string): {
+  status: "unavailable";
+  reason_code: string;
+} {
+  return { status: "unavailable", reason_code };
+}
+
+function materializeLibraryRecord(
+  raw: LibraryRawRecord,
+): LibraryMaterializedRecord | null {
+  try {
+    const resource_ref = createLibraryResourceRef(raw.record_id);
+    const existingRecordId = libraryRecordRefs.get(resource_ref);
+    if (existingRecordId !== undefined && existingRecordId !== raw.record_id) {
+      // A hash collision must never make one public record resolve to another.
+      return null;
+    }
+    libraryRecordRefs.set(resource_ref, raw.record_id);
+    let relatedInvalid = false;
+    const related_records = raw.related_records
+      .map((related) => {
+        try {
+          const related_ref = createLibraryResourceRef(related.record_id);
+          const existingRelatedId = libraryRecordRefs.get(related_ref);
+          if (
+            existingRelatedId !== undefined &&
+            existingRelatedId !== related.record_id
+          ) {
+            relatedInvalid = true;
+            return null;
+          }
+          libraryRecordRefs.set(related_ref, related.record_id);
+          return {
+            resource_ref: related_ref,
+            title: related.title,
+            relation: related.relation,
+          };
+        } catch {
+          relatedInvalid = true;
+          return null;
+        }
+      })
+      .filter(
+        (
+          item,
+        ): item is {
+          resource_ref: string;
+          title: string;
+          relation: "related" | "edition" | "translation" | "other";
+        } => item !== null,
+      );
+    if (relatedInvalid) return null;
+    return {
+      resource_ref,
+      title: raw.title,
+      authors: raw.authors,
+      subjects: raw.subjects,
+      isbn: raw.isbn,
+      publisher: raw.publisher,
+      publication_year: raw.publication_year,
+      format: raw.format,
+      campus: raw.campus,
+      url: raw.url,
+      holdings:
+        raw.holdings.length > 0
+          ? raw.holdings
+          : [
+              {
+                campus: "unknown",
+                location: null,
+                call_number: null,
+                status: "unknown",
+                due_date: null,
+                reservation_count: null,
+              },
+            ],
+      related_records,
+    } as LibraryMaterializedRecord;
+  } catch {
+    return null;
+  }
+}
+
+async function readLibraryCatalogPage(
+  tabId: number,
+  mode: "search" | "record" | "browse",
+  expectedRecordId?: string,
+): Promise<LibraryPageProjection> {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    try {
+      const [injected] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        func: readLibraryCatalogSearchInPage,
+      });
+      const value = injected?.result as LibraryPageProjection | undefined;
+      if (!value) return libraryUnavailable("projection_missing");
+      if (value.status === "known" && mode === "record" && expectedRecordId) {
+        const matching = value.records.filter(
+          (record) => record.record_id === expectedRecordId,
+        );
+        if (!matching.length) {
+          return libraryUnavailable("record_structure_not_found");
+        }
+        const current = matching[0];
+        if (!current) return libraryUnavailable("record_structure_not_found");
+        return { status: "known", records: [current] };
+      }
+      if (value.status !== "loading") return value;
+    } catch {
+      return libraryUnavailable("projection_failed");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return libraryUnavailable("availability_loading_timeout");
+}
+
+async function createLibraryTab(url: string): Promise<number | null> {
+  try {
+    const tab = await chrome.tabs.create({ url, active: false });
+    if (tab.id === undefined) return null;
+    await waitForTabReady(tab.id);
+    return tab.id;
+  } catch {
+    return null;
+  }
+}
+
+async function handleLibraryCatalogSearch(
+  message: LibraryCatalogSearchMessage,
+): Promise<LibraryCatalogSearchResponse> {
+  if (
+    !(await hasBrowserPermission(
+      LIBRARY_OPAC_PERMISSION_PATTERN,
+      LIBRARY_OPAC_ORIGIN,
+    ))
+  ) {
+    return {
+      status: "permission_required",
+      origin: LIBRARY_OPAC_ORIGIN,
+      pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
+    };
+  }
+  const tabId = await createLibraryTab(LIBRARY_OPAC_ENTRY_URL);
+  if (tabId === null) return libraryUnavailable("entry_tab_create_failed");
+  try {
+    const submitted = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      func: submitLibraryCatalogSearchInPage,
+      args: [
+        {
+          query: message.query,
+          author: message.author ?? null,
+          subject: message.subject ?? null,
+          isbn: message.isbn ?? null,
+          pub_year: message.pub_year ?? null,
+          campus: message.campus ?? "any",
+          format: message.format ?? "any",
+        },
+      ],
+    });
+    if (submitted[0]?.result?.status !== "submitted") {
+      return libraryUnavailable(
+        submitted[0]?.result?.reason_code ?? "search_submit_failed",
+      );
+    }
+    await waitForTabReady(tabId);
+    const projection = await readLibraryCatalogPage(tabId, "search");
+    if (projection.status !== "known") {
+      return libraryUnavailable(
+        projection.status === "unavailable"
+          ? projection.reason_code
+          : "availability_loading_timeout",
+      );
+    }
+    const materialized = projection.records.map(materializeLibraryRecord);
+    if (materialized.some((item) => item === null)) {
+      return libraryUnavailable("record_projection_invalid");
+    }
+    const items = materialized
+      .filter((item): item is LibraryMaterializedRecord => item !== null)
+      .slice(0, message.limit ?? 10);
+    return {
+      status: "known",
+      projection: {
+        schema_version: "v1",
+        status: "known",
+        query: message.query,
+        items,
+        reason_code: null,
+      },
+    };
+  } catch {
+    return libraryUnavailable("catalog_search_failed");
+  } finally {
+    await chrome.tabs.remove(tabId).catch(() => undefined);
+  }
+}
+
+async function handleLibraryItemRead(
+  message: LibraryItemReadMessage,
+): Promise<LibraryItemReadResponse> {
+  if (!isLibraryResourceRef(message.resource_ref))
+    return libraryUnavailable("invalid_resource_ref");
+  if (
+    !(await hasBrowserPermission(
+      LIBRARY_OPAC_PERMISSION_PATTERN,
+      LIBRARY_OPAC_ORIGIN,
+    ))
+  ) {
+    return {
+      status: "permission_required",
+      origin: LIBRARY_OPAC_ORIGIN,
+      pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
+    };
+  }
+  const recordId = libraryRecordRefs.get(message.resource_ref);
+  if (!recordId) return libraryUnavailable("unknown_resource_ref");
+  let tabId: number | null = null;
+  try {
+    tabId = await createLibraryTab(
+      `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`,
+    );
+    if (tabId === null) return libraryUnavailable("record_tab_create_failed");
+    const projection = await readLibraryCatalogPage(tabId, "record", recordId);
+    if (projection.status !== "known") {
+      return libraryUnavailable(
+        projection.status === "unavailable"
+          ? projection.reason_code
+          : "availability_loading_timeout",
+      );
+    }
+    const record = projection.records[0];
+    if (!record) return libraryUnavailable("record_projection_invalid");
+    const item = materializeLibraryRecord(record);
+    if (!item) return libraryUnavailable("record_projection_invalid");
+    return {
+      status: "known",
+      projection: {
+        schema_version: "v1",
+        status: "known",
+        resource_ref: message.resource_ref,
+        item: { ...item, resource_ref: message.resource_ref },
+        reason_code: null,
+      },
+    };
+  } catch {
+    return libraryUnavailable("item_read_failed");
+  } finally {
+    if (tabId !== null) await chrome.tabs.remove(tabId).catch(() => undefined);
+  }
+}
+
+async function handleLibraryCatalogBrowse(
+  message: LibraryCatalogBrowseMessage,
+): Promise<LibraryCatalogBrowseResponse> {
+  if (
+    !(await hasBrowserPermission(
+      LIBRARY_OPAC_PERMISSION_PATTERN,
+      LIBRARY_OPAC_ORIGIN,
+    ))
+  ) {
+    return {
+      status: "permission_required",
+      origin: LIBRARY_OPAC_ORIGIN,
+      pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
+    };
+  }
+  const tabId = await createLibraryTab(
+    message.kind === "new_books"
+      ? LIBRARY_NEW_BOOKS_URL
+      : LIBRARY_LOAN_RANKING_URL,
+  );
+  if (tabId === null) return libraryUnavailable("browse_tab_create_failed");
+  try {
+    const projection = await readLibraryCatalogPage(tabId, "browse");
+    if (projection.status !== "known") {
+      return libraryUnavailable(
+        projection.status === "unavailable"
+          ? projection.reason_code
+          : "availability_loading_timeout",
+      );
+    }
+    let records = projection.records;
+    if (message.campus && message.campus !== "any") {
+      records = records.filter((item) => item.campus === message.campus);
+      if (!records.length && projection.records.length > 0) {
+        return libraryUnavailable("campus_filter_not_rendered");
+      }
+    }
+    const materialized = records.map(materializeLibraryRecord);
+    if (materialized.some((item) => item === null)) {
+      return libraryUnavailable("record_projection_invalid");
+    }
+    const items = materialized
+      .filter((item): item is LibraryMaterializedRecord => item !== null)
+      .slice(0, message.limit ?? 10);
+    return {
+      status: "known",
+      projection: {
+        schema_version: "v1",
+        status: "known",
+        kind: message.kind,
+        campus: message.campus ?? "any",
+        items,
+        reason_code: null,
+      },
+    };
+  } catch {
+    return libraryUnavailable("catalog_browse_failed");
+  } finally {
+    await chrome.tabs.remove(tabId).catch(() => undefined);
+  }
+}
+
+async function handleLibraryDiscoverySearch(
+  message: LibraryDiscoverySearchMessage,
+): Promise<LibraryDiscoverySearchResponse> {
+  if (
+    !(await hasBrowserPermission(
+      LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
+      LIBRARY_SIT_SEARCH_ORIGIN,
+    ))
+  ) {
+    return {
+      status: "permission_required",
+      origin: LIBRARY_SIT_SEARCH_ORIGIN,
+      pattern: LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
+    };
+  }
+  const tabId = await createLibraryTab(LIBRARY_SIT_SEARCH_ENTRY_URL);
+  if (tabId === null) return libraryUnavailable("discovery_tab_create_failed");
+  try {
+    const submitted = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      func: submitLibraryDiscoverySearchInPage,
+      args: [message.query],
+    });
+    if (submitted[0]?.result?.status !== "submitted") {
+      return libraryUnavailable(
+        submitted[0]?.result?.reason_code ?? "discovery_submit_failed",
+      );
+    }
+    await waitForTabReady(tabId);
+    let projection: ReturnType<typeof readLibraryDiscoveryInPage> | undefined;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const [injected] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        func: readLibraryDiscoveryInPage,
+      });
+      projection = injected?.result as
+        | ReturnType<typeof readLibraryDiscoveryInPage>
+        | undefined;
+      if (projection?.status !== "loading") break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (projection?.status !== "known") {
+      return libraryUnavailable(
+        projection?.reason_code ?? "discovery_loading_timeout",
+      );
+    }
+    const items: Array<{
+      title: string;
+      authors: string[];
+      source_label: string | null;
+      url: string;
+      snippet: string | null;
+      resource_ref: string | null;
+    }> = [];
+    for (const item of (projection.items ?? []).filter((candidate) =>
+      isOfficialDiscoveryUrl(candidate.url),
+    )) {
+      let resource_ref: string | null = null;
+      if (item.record_id) {
+        try {
+          resource_ref = createLibraryResourceRef(item.record_id);
+        } catch {
+          return libraryUnavailable("discovery_record_ref_invalid");
+        }
+        const existingRecordId = libraryRecordRefs.get(resource_ref);
+        if (
+          existingRecordId !== undefined &&
+          existingRecordId !== item.record_id
+        ) {
+          return libraryUnavailable("resource_ref_collision");
+        }
+        libraryRecordRefs.set(resource_ref, item.record_id);
+      }
+      items.push({
+        title: item.title,
+        authors: item.authors,
+        source_label: item.source_label,
+        url: item.url,
+        snippet: item.snippet,
+        resource_ref,
+      });
+    }
+    items.splice(message.limit ?? 10);
+    return {
+      status: "known",
+      projection: {
+        schema_version: "v1",
+        status: "known",
+        query: message.query,
+        items,
+        reason_code: null,
+      },
+    };
+  } catch {
+    return libraryUnavailable("discovery_search_failed");
+  } finally {
+    await chrome.tabs.remove(tabId).catch(() => undefined);
+  }
 }
 
 async function handleBrowserRead(
@@ -1571,6 +2557,42 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       message.year ?? null,
       message.faculty ?? null,
     ).then(sendResponse);
+    return true;
+  }
+
+  if (isLibraryCatalogSearchMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse(libraryUnavailable("untrusted_sender"));
+      return true;
+    }
+    void handleLibraryCatalogSearch(message).then(sendResponse);
+    return true;
+  }
+
+  if (isLibraryItemReadMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse(libraryUnavailable("untrusted_sender"));
+      return true;
+    }
+    void handleLibraryItemRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isLibraryCatalogBrowseMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse(libraryUnavailable("untrusted_sender"));
+      return true;
+    }
+    void handleLibraryCatalogBrowse(message).then(sendResponse);
+    return true;
+  }
+
+  if (isLibraryDiscoverySearchMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse(libraryUnavailable("untrusted_sender"));
+      return true;
+    }
+    void handleLibraryDiscoverySearch(message).then(sendResponse);
     return true;
   }
 

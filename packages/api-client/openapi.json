@@ -921,7 +921,11 @@
               "sitrus_read",
               "moodle_read",
               "my_library_read",
-              "cast_read"
+              "cast_read",
+              "library_catalog_search",
+              "library_item_read",
+              "library_catalog_browse",
+              "library_discovery_search"
             ],
             "title": "Name"
           },
@@ -1083,7 +1087,11 @@
               "sitrus_read",
               "moodle_read",
               "my_library_read",
-              "cast_read"
+              "cast_read",
+              "library_catalog_search",
+              "library_item_read",
+              "library_catalog_browse",
+              "library_discovery_search"
             ],
             "title": "Name"
           },
@@ -1126,7 +1134,11 @@
               "sitrus_read",
               "moodle_read",
               "my_library_read",
-              "cast_read"
+              "cast_read",
+              "library_catalog_search",
+              "library_item_read",
+              "library_catalog_browse",
+              "library_discovery_search"
             ],
             "title": "Name"
           },
@@ -1163,6 +1175,18 @@
               },
               {
                 "$ref": "#/components/schemas/CastReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/LibraryCatalogSearchResult"
+              },
+              {
+                "$ref": "#/components/schemas/LibraryItemReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/LibraryCatalogBrowseResult"
+              },
+              {
+                "$ref": "#/components/schemas/LibraryDiscoverySearchResult"
               }
             ],
             "title": "Result"
@@ -1269,6 +1293,536 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "LibraryBibliographicRecord": {
+        "properties": {
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "authors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Authors"
+          },
+          "subjects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Subjects"
+          },
+          "isbn": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isbn"
+          },
+          "publisher": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publisher"
+          },
+          "publication_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 1000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Year"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "book",
+              "journal",
+              "ebook",
+              "unknown"
+            ],
+            "title": "Format",
+            "default": "unknown"
+          },
+          "campus": {
+            "type": "string",
+            "enum": [
+              "toyosu",
+              "omiya",
+              "any"
+            ],
+            "title": "Campus",
+            "default": "any"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Url"
+          },
+          "holdings": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryHoldingSummary"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Holdings"
+          },
+          "related_records": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryRelatedRecordRef"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Related Records"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_ref",
+          "title",
+          "url"
+        ],
+        "title": "LibraryBibliographicRecord",
+        "description": "Public bibliographic metadata and rendered holdings from the OPAC."
+      },
+      "LibraryCatalogBrowseResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "new_books",
+              "loan_ranking"
+            ],
+            "title": "Kind"
+          },
+          "campus": {
+            "type": "string",
+            "enum": [
+              "toyosu",
+              "omiya",
+              "any"
+            ],
+            "title": "Campus",
+            "default": "any"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryBibliographicRecord"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Items"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "kind"
+        ],
+        "title": "LibraryCatalogBrowseResult",
+        "description": "Public new-book or loan-ranking rows from the official catalog pages."
+      },
+      "LibraryCatalogSearchResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryBibliographicRecord"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Items"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "query"
+        ],
+        "title": "LibraryCatalogSearchResult",
+        "description": "Bounded public results from the official OPAC search form."
+      },
+      "LibraryDiscoveryItem": {
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "authors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Authors"
+          },
+          "source_label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Label"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Url"
+          },
+          "snippet": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snippet"
+          },
+          "resource_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160,
+                "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Ref"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "title",
+          "url"
+        ],
+        "title": "LibraryDiscoveryItem",
+        "description": "Displayed public metadata/link from the official SIT Search page.\n\nThis schema intentionally has no full-text, download, or persistence field."
+      },
+      "LibraryDiscoverySearchResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/LibraryDiscoveryItem"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Items"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "query"
+        ],
+        "title": "LibraryDiscoverySearchResult",
+        "description": "Bounded metadata-only results from official SIT Search."
+      },
+      "LibraryHoldingSummary": {
+        "properties": {
+          "campus": {
+            "type": "string",
+            "enum": [
+              "toyosu",
+              "omiya",
+              "unknown"
+            ],
+            "title": "Campus"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "call_number": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Number"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "available",
+              "unavailable",
+              "unknown"
+            ],
+            "title": "Status"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "reservation_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "campus",
+          "status"
+        ],
+        "title": "LibraryHoldingSummary",
+        "description": "Public holding status rendered by the official OPAC.\n\nInternal material, copy, and holding identifiers deliberately have no\nrepresentation in this model."
+      },
+      "LibraryItemReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LibraryBibliographicRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "resource_ref"
+        ],
+        "title": "LibraryItemReadResult",
+        "description": "Detailed public OPAC record resolved from an opaque resource reference."
+      },
+      "LibraryRelatedRecordRef": {
+        "properties": {
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "relation": {
+            "type": "string",
+            "enum": [
+              "related",
+              "edition",
+              "translation",
+              "other"
+            ],
+            "title": "Relation",
+            "default": "related"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_ref",
+          "title"
+        ],
+        "title": "LibraryRelatedRecordRef",
+        "description": "A public related-record reference without material identifiers."
       },
       "MoodleReadResult": {
         "properties": {
