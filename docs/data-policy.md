@@ -151,6 +151,12 @@ Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM�
 
 Career Evidence Bankの記録、資料locator、人物対応表は、Azure、OpenAI、W&B、FastAPI、Chat履歴、runtime messageへ送信しない。個人証拠を外部モデルで扱う必要が生じた場合は、この例外を暗黙に広げず、Pseudonymization Gateway、Context Manifest、大学の許可範囲を満たす別変更として再審査する。raw PDFや添付ファイルは保存・アップロードせず、利用者が明示した表示情報だけを端末内で参照する。
 
+### CAST Alumni Portal（blocked:institutional）
+
+卒業生の回答可能テーマ、面談頻度、匿名共有可能情報を扱う機能は、大学側の明示許可、正式APIまたは許可されたExport、read/write scope、専用test account、保持・削除手順が確認できるまで停止する。学生向けCASTの就活サポーター案内だけでは、卒業生の個人記録を取得・登録・更新する権限の根拠にならない。仮名化は外部送信の安全策であって、大学側のアクセス許可や同意の代替ではない。
+
+許可が得られるまでは、卒業生の氏名、連絡先、回答設定、面談可能頻度、匿名共有知見を取得・保存・送信せず、未確認URL、DOM書込み、直接連絡、予約、fixture成功を実連携として扱わない。再開条件が揃わないIssue 17は`blocked:institutional`であり、品質評価へ実データを投入しない。
+
 ### Evidence-grounded ES
 
 ES下書きは、確認済みEvidenceの`evidence_id`、claim、context、action、resultだけをChrome Prompt APIへ渡す。材料locator、ファイル名、`person_ref`、元の人物名、内部対応表、raw PDF、tokenは渡さない。各文にEvidence IDと、入力フィールドに実在するgrounding quoteを要求し、未知ID、未引用文、根拠にない数値、credential・連絡先・学籍番号らしい文字列を受け取った場合は生成結果を採用しない。Prompt APIが利用できない場合にAzureや別Providerへfallbackしない。
