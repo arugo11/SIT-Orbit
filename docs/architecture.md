@@ -343,6 +343,12 @@ ES生成はAzure、FastAPI、W&Bへ送信せず、Chrome Prompt APIが利用で�
 
 実装は既存の小さなtyped reducerとCareer Vaultを再利用する。XStateは調査したが、現段階の線形な6段階と明示イベントには既存境界より大きな依存・抽象化を追加するため採用しない。[XState](https://stately.ai/docs)
 
+### CAST Action Adapter
+
+`CastActionAdapter`は、応募、キャリア相談依頼、添付、Calendar登録を同じpreview／confirmation境界で扱う。previewはローカルのopaque reference、表示ラベル、締切・書類件数・予約枠・Calendar項目のallowlist済み要約だけを持ち、CASTの未確認書込みURL、フォーム値、ファイル本体、OAuth tokenを生成しない。既定executorは`institutional_write_not_configured`を返し、未確認の大学側APIやDOM書込みを成功扱いしない。
+
+通常操作は「実行を確認」の一段階、推薦応募は同じpreviewに対して一次確認後に「推薦応募を実行する」の赤色二次確認を要求する。確認前のexecutor呼出し、期限切れpreviewの実行、replay、拒否済みpreviewの再利用を防ぐ。実行は後続branchで正式なCAST API、test account、確認済みwrite pathが揃った場合にだけ注入できる。Chrome拡張のメッセージ／権限境界を越える実装は追加せず、既存のcontent-scriptとService Workerの確認経路へ接続する。[Chrome messaging](https://developer.chrome.com/docs/extensions/develop/concepts/messaging)
+
 ### 多視点キャリアレビュー
 
 `reviewCareerDraft`は、Evidence-grounded ESの下書きと確認済みEvidence projectionだけを入力にして、人事、技術部門、芝浦卒業生、初見の第三者という4つの視点をそれぞれ独立したChrome Prompt API sessionで実行する。各sessionへ他の視点の結果や人物対応表、`person_ref`、資料locator、raw HTML、tokenを渡さない。Prompt APIが利用できない場合はAzureや別Providerへfallbackせず、レビューを未実行として端末内で停止する。
