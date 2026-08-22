@@ -211,6 +211,25 @@ describe("My Library reader adversarial boundaries", () => {
     }
   });
 
+  it.each([
+    ["loan_history", "履歴"],
+    ["purchase_requests", "購入"],
+    ["interlibrary_requests", "ILL"],
+  ] as const)(
+    "rejects a broad %s marker without the scope-specific table contract",
+    (scope, marker) => {
+      const document = parseHTML(`
+        <h2>${marker}</h2>
+        <table>
+          <thead><tr><th>書名 / 著者名</th><th>状態</th></tr></thead>
+          <tbody><tr><td>無関係な資料 / 著者</td><td>表示中</td></tr></tbody>
+        </table>
+      `).document;
+
+      expect(extractMyLibraryScopePage(document, PAGE_URL, scope)).toBeNull();
+    },
+  );
+
   it("supports query, offset, and a hard maximum page size of twenty", () => {
     const loanHistory = Array.from({ length: 25 }, (_, index) =>
       fixtureItem(index),

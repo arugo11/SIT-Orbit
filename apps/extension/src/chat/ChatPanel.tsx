@@ -1401,7 +1401,10 @@ export function ChatPanel({
           <strong>サイトの読み取り許可</strong>
           {permissionPrompt.disclosure ? (
             <p>
-              {permissionPrompt.origin}を今回のTool実行で参照します。
+              {permissionPrompt.origin}
+              {permissionPrompt.response.calls[0]?.name === "my_library_read"
+                ? "をこのブラウザセッション中、必要なTool実行で参照します。"
+                : "を今回のTool実行で参照します。"}
               {permissionPrompt.disclosure}
             </p>
           ) : (
@@ -1417,7 +1420,9 @@ export function ChatPanel({
               disabled={busy}
               onClick={() => void continueWithPermission(false)}
             >
-              今回だけ許可
+              {permissionPrompt.response.calls[0]?.name === "my_library_read"
+                ? "このセッションで許可"
+                : "今回だけ許可"}
             </button>
             {!permissionPrompt.disclosure ? (
               <button

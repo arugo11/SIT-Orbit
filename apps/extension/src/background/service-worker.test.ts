@@ -498,6 +498,61 @@ describe("service worker side panel contract", () => {
     expect(JSON.stringify(storageValues)).not.toContain("same-material-secret");
   });
 
+  it("returns an action-incapable opaque ref when a visible provider ID is absent", async () => {
+    permissionsContains.mockResolvedValue(true);
+    getTab.mockResolvedValue({
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+    } as chrome.tabs.Tab);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            scope: "loan_history",
+            items: [
+              {
+                raw_id: null,
+                title: "識別子のない履歴資料".repeat(30),
+                author: "公開著者",
+                status: "返却済み",
+                due_date: null,
+                renewable: null,
+                activity_date: "2026-08-01",
+                request_type: null,
+              },
+            ],
+          },
+        },
+      ]);
+
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.myLibraryRead,
+        tool_call_id: "library-unresolved-ref",
+        scope: "loan_history",
+        offset: 0,
+        limit: 20,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const payload = response.mock.calls[0]?.[0] as {
+      status: string;
+      projection?: { items?: Array<{ resource_ref?: string }> };
+    };
+    expect(payload.status).toBe("known");
+    expect(payload.projection?.items?.[0]?.resource_ref).toMatch(
+      /^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u,
+    );
+  });
+
   it("reads public catalog DOM in an inactive isolated-world tab", async () => {
     permissionsContains.mockResolvedValue(true);
     getTab.mockResolvedValue({

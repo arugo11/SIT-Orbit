@@ -261,6 +261,10 @@ describe("ChatPanel My Library consent and history boundary", () => {
     expect(
       panel.document.querySelector(".chat-permission-prompt")?.textContent,
     ).toContain("Full access権限だけでは");
+    expect(buttonByName(panel.document, "このセッションで許可")).toBeTruthy();
+    expect(
+      panel.document.querySelector(".chat-permission-prompt")?.textContent,
+    ).not.toContain("今回だけ許可");
     expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
   });
 

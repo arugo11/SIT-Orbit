@@ -240,16 +240,31 @@ function valueForLabels(
 }
 
 const MY_LIBRARY_SCOPE_MARKERS: Record<MyLibraryScope, readonly string[]> = {
-  current_loans: ["貸出", "返却"],
-  reservations: ["予約"],
-  loan_history: ["貸出履歴一覧", "貸出履歴", "履歴"],
-  purchase_requests: ["購入依頼状況", "購入依頼", "購入"],
+  current_loans: ["貸出状況確認"],
+  reservations: ["予約状況確認"],
+  loan_history: ["貸出履歴一覧"],
+  purchase_requests: ["購入依頼状況", "図書購入リクエスト"],
   interlibrary_requests: [
     "ILL（文献複写・貸借）依頼",
-    "文献複写",
-    "相互貸借",
-    "ILL",
-    "図書館間",
+    "文献複写・図書貸借申込",
+  ],
+};
+
+const MY_LIBRARY_SCOPE_REQUIRED_COLUMNS: Record<
+  Exclude<MyLibraryScope, "current_loans" | "reservations">,
+  readonly (readonly string[])[]
+> = {
+  loan_history: [["書名 / 著者名", "書名", "タイトル", "資料名"], ["貸出日"]],
+  purchase_requests: [
+    ["書名 / 著者名", "書名", "タイトル", "資料名"],
+    ["状態", "ステータス", "処理状況"],
+    ["依頼日", "申請日"],
+  ],
+  interlibrary_requests: [
+    ["書名 / 著者名", "書名", "タイトル", "資料名"],
+    ["状態", "ステータス", "処理状況"],
+    ["依頼日", "受付日"],
+    ["依頼区分", "依頼種別", "種類", "区分"],
   ],
 };
 
@@ -280,7 +295,15 @@ function findMyLibraryScopeTable(
           .join(" ") || visibleText(table.querySelector("tr")),
         1000,
       );
-      return markers.some((marker) => header.includes(marker));
+      if (!markers.some((marker) => header.includes(marker))) return false;
+      const headerLabels = Array.from(
+        table.querySelectorAll("thead th, thead td"),
+      )
+        .map((cell) => compactText(visibleText(cell), 100))
+        .filter(Boolean);
+      return MY_LIBRARY_SCOPE_REQUIRED_COLUMNS[scope].every((alternatives) =>
+        alternatives.some((label) => headerLabels.includes(label)),
+      );
     }) ?? null
   );
 }

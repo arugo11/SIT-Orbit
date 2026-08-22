@@ -2177,35 +2177,62 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
     }
     if (scope !== "current_loans" && scope !== "reservations") {
       const markers: Record<MyLibraryScope, string[]> = {
-        current_loans: ["貸出", "返却"],
-        reservations: ["予約"],
-        loan_history: ["貸出履歴一覧", "貸出履歴", "履歴"],
-        purchase_requests: ["購入依頼状況", "購入依頼", "購入"],
+        current_loans: ["貸出状況確認"],
+        reservations: ["予約状況確認"],
+        loan_history: ["貸出履歴一覧"],
+        purchase_requests: ["購入依頼状況", "図書購入リクエスト"],
         interlibrary_requests: [
           "ILL（文献複写・貸借）依頼",
-          "文献複写",
-          "相互貸借",
-          "ILL",
-          "図書館間",
+          "文献複写・図書貸借申込",
+        ],
+      };
+      const requiredColumns: Record<
+        Exclude<MyLibraryScope, "current_loans" | "reservations">,
+        readonly (readonly string[])[]
+      > = {
+        loan_history: [
+          ["書名 / 著者名", "書名", "タイトル", "資料名"],
+          ["貸出日"],
+        ],
+        purchase_requests: [
+          ["書名 / 著者名", "書名", "タイトル", "資料名"],
+          ["状態", "ステータス", "処理状況"],
+          ["依頼日", "申請日"],
+        ],
+        interlibrary_requests: [
+          ["書名 / 著者名", "書名", "タイトル", "資料名"],
+          ["状態", "ステータス", "処理状況"],
+          ["依頼日", "受付日"],
+          ["依頼区分", "依頼種別", "種類", "区分"],
         ],
       };
       const markerList = markers[scope];
       const table = Array.from(document.querySelectorAll("table")).find(
-        (candidate) =>
-          isVisible(candidate) &&
-          markerList.some((marker) =>
-            clean(
-              Array.from(candidate.querySelectorAll("caption, thead"))
-                .map((element) => visibleLibraryText(element))
-                .concat(
-                  candidate.previousElementSibling
-                    ? [visibleLibraryText(candidate.previousElementSibling)]
-                    : [],
-                )
-                .join(" ") || visibleLibraryText(candidate.querySelector("tr")),
-              1000,
-            ).includes(marker),
-          ),
+        (candidate) => {
+          if (!isVisible(candidate)) return false;
+          const contextText = clean(
+            Array.from(candidate.querySelectorAll("caption, thead"))
+              .map((element) => visibleLibraryText(element))
+              .concat(
+                candidate.previousElementSibling
+                  ? [visibleLibraryText(candidate.previousElementSibling)]
+                  : [],
+              )
+              .join(" ") || visibleLibraryText(candidate.querySelector("tr")),
+            1000,
+          );
+          if (!markerList.some((marker) => contextText.includes(marker))) {
+            return false;
+          }
+          const headerLabels = Array.from(
+            candidate.querySelectorAll("thead th, thead td"),
+          )
+            .map((cell) => clean(visibleLibraryText(cell), 100))
+            .filter(Boolean);
+          return requiredColumns[scope].every((alternatives) =>
+            alternatives.some((label) => headerLabels.includes(label)),
+          );
+        },
       );
       if (!table)
         return { status: "unavailable", reason_code: "scope_table_not_found" };
@@ -2411,9 +2438,7 @@ function projectMyLibraryPageItems(
       typeof raw_id === "string" ? raw_id.trim() || null : null;
     const key = normalizedRawId
       ? `${scope}|raw|${encodeURIComponent(normalizedRawId)}`
-      : `${scope}|unresolved|${index}|${encodeURIComponent(
-          JSON.stringify(safeItem),
-        )}`;
+      : `${scope}|unresolved|${index}`;
     const resourceRef = createLibraryResourceRef(key);
     const previousKey = myLibraryResourceRefKeys.get(resourceRef);
     const previousTarget = myLibraryResourceRefs.get(resourceRef);
