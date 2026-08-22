@@ -18,6 +18,13 @@ import {
   projectMoodleForAgent,
 } from "../content/moodle-reader";
 import {
+  MY_LIBRARY_ENTRY_URL,
+  MY_LIBRARY_ORIGIN,
+  MY_LIBRARY_STATUS_PATH,
+  type MyLibraryLocalSnapshot,
+  projectMyLibraryForAgent,
+} from "../content/my-library-reader";
+import {
   isScombzUrl,
   isSitrusGradeUrl,
   type PageContext,
@@ -39,6 +46,8 @@ import {
   isGetWorkspaceStatusMessage,
   isMoodleOpenMessage,
   isMoodleReadMessage,
+  isMyLibraryOpenMessage,
+  isMyLibraryReadMessage,
   isOpenWorkspaceMessage,
   isPageContext,
   isPageContextUpdatedMessage,
@@ -47,6 +56,7 @@ import {
   isUpdateWorkspaceSessionMessage,
   MESSAGE_TYPES,
   type MoodleReadResponse,
+  type MyLibraryReadResponse,
   type OpenWorkspaceMessage,
   type OpenWorkspaceResponse,
   type SitrusReadResponse,
@@ -72,6 +82,7 @@ const BUILT_IN_ORIGINS = new Set([
 ]);
 
 const MOODLE_PERMISSION_PATTERN = `${MOODLE_ORIGIN}/*`;
+const MY_LIBRARY_PERMISSION_PATTERN = `${MY_LIBRARY_ORIGIN}/*`;
 
 function browserOrigin(
   value: string,
@@ -546,6 +557,308 @@ async function handleMoodleRead(): Promise<MoodleReadResponse> {
   }
 }
 
+interface MyLibraryPageRead {
+  status: "known" | "reauth_required" | "unavailable";
+  kind?: "loans" | "reservations";
+  loans?: MyLibraryLocalSnapshot["loans"];
+  reservations?: MyLibraryLocalSnapshot["reservations"];
+  reason_code?: string;
+}
+
+function clickMyLibraryMenuInPage(menuId: number): {
+  status: "clicked" | "reauth_required" | "unavailable";
+  reason_code?: string;
+} {
+  try {
+    if (
+      location.origin !== "https://library.shibaura-it.ac.jp" ||
+      !["/portal/portal/selectLogin/", "/portal/sso/ssoLogin/"].includes(
+        location.pathname,
+      )
+    ) {
+      return { status: "unavailable", reason_code: "unexpected_entry_page" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const marker = `,${menuId},`;
+    const link = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>("a"),
+    ).find((element) => {
+      const handler = element.getAttribute("onclick") ?? "";
+      return handler.includes("doSelectMainMenu") && handler.includes(marker);
+    });
+    if (!link) {
+      return { status: "unavailable", reason_code: "menu_not_found" };
+    }
+    link.click();
+    return { status: "clicked" };
+  } catch {
+    return { status: "unavailable", reason_code: "menu_click_failed" };
+  }
+}
+
+function readMyLibraryStatusInPage(): MyLibraryPageRead {
+  const clean = (value: string | null | undefined, limit: number): string =>
+    (value ?? "").replace(/\s+/gu, " ").trim().slice(0, limit);
+  const normalizeDate = (value: string): string | null => {
+    const match = value.match(/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})/u);
+    if (!match) return null;
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    ) {
+      return null;
+    }
+    return `${year.toString().padStart(4, "0")}-${month
+      .toString()
+      .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+  };
+  const splitTitleAuthor = (
+    value: string,
+  ): { title: string; author: string | null } | null => {
+    const parts = clean(value, 500).split(/\s+\/\s+/u);
+    const title = clean(parts.shift(), 300);
+    if (!title) return null;
+    const author = clean(parts.join(" / "), 200);
+    return { title, author: author || null };
+  };
+  const valueForLabel = (row: Element, label: string): Element | null => {
+    for (const cell of Array.from(row.querySelectorAll("td"))) {
+      if (clean(cell.querySelector("dt")?.textContent, 100) === label) {
+        return cell.querySelector("dd");
+      }
+    }
+    return null;
+  };
+
+  try {
+    if (
+      location.origin !== "https://library.shibaura-it.ac.jp" ||
+      location.pathname !== "/portal/admin/selectMenu/doSelectPublicUseMainMenu"
+    ) {
+      return { status: "unavailable", reason_code: "unexpected_page" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const loanTable = document.querySelector("#lendList");
+    if (loanTable) {
+      const today = new Date();
+      const todayKey = `${today.getFullYear().toString().padStart(4, "0")}-${(
+        today.getMonth() + 1
+      )
+        .toString()
+        .padStart(2, "0")}-${today.getDate().toString().padStart(2, "0")}`;
+      const loans = Array.from(loanTable.querySelectorAll("tbody tr"))
+        .filter(
+          (row) => !row.querySelector(".dataTables_empty, .empty, .no-data"),
+        )
+        .map((row) => {
+          const titleAuthor = splitTitleAuthor(
+            valueForLabel(row, "書名 / 著者名")?.textContent ?? "",
+          );
+          if (!titleAuthor) return null;
+          const dueDate = normalizeDate(
+            valueForLabel(row, "貸出返却期限延長回数")?.textContent ?? "",
+          );
+          const checkbox = row.querySelector<HTMLInputElement>(
+            'input[type="checkbox"][name="checkBoxBookNumber"]',
+          );
+          return {
+            ...titleAuthor,
+            due_date: dueDate,
+            renewable: Boolean(checkbox && !checkbox.disabled),
+            overdue: dueDate !== null && dueDate < todayKey,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null)
+        .slice(0, 1000);
+      return { status: "known", kind: "loans", loans };
+    }
+    const reservationTable = document.querySelector("#reservationList");
+    if (reservationTable) {
+      const reservations = Array.from(
+        reservationTable.querySelectorAll("tbody tr"),
+      )
+        .filter(
+          (row) => !row.querySelector(".dataTables_empty, .empty, .no-data"),
+        )
+        .map((row) => {
+          const titleAuthor = splitTitleAuthor(
+            valueForLabel(row, "書名 / 著者名")?.textContent ?? "",
+          );
+          if (!titleAuthor) return null;
+          return {
+            ...titleAuthor,
+            hold_until: normalizeDate(
+              valueForLabel(row, "受取館取置期限日")?.textContent ?? "",
+            ),
+            status: clean(valueForLabel(row, "状態")?.textContent, 100) || null,
+          };
+        })
+        .filter((item): item is NonNullable<typeof item> => item !== null)
+        .slice(0, 1000);
+      return { status: "known", kind: "reservations", reservations };
+    }
+    return { status: "unavailable", reason_code: "status_table_not_found" };
+  } catch {
+    return { status: "unavailable", reason_code: "status_read_failed" };
+  }
+}
+
+async function waitForMyLibraryStatusPage(
+  tabId: number,
+): Promise<chrome.tabs.Tab | null> {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.status === "complete" && tab.url) {
+        const url = new URL(tab.url);
+        if (
+          url.origin === MY_LIBRARY_ORIGIN &&
+          url.pathname === MY_LIBRARY_STATUS_PATH
+        ) {
+          return tab;
+        }
+      }
+    } catch {
+      return null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
+}
+
+async function readMyLibrarySection(menuId: 5 | 6): Promise<MyLibraryPageRead> {
+  const tab = await chrome.tabs.create({
+    url: MY_LIBRARY_ENTRY_URL,
+    active: false,
+  });
+  if (tab.id === undefined) {
+    return { status: "unavailable", reason_code: "entry_tab_missing" };
+  }
+  let keepForLogin = false;
+  try {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const current = await chrome.tabs.get(tab.id);
+      if (current.status === "complete") break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const [clicked] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: clickMyLibraryMenuInPage,
+      args: [menuId],
+    });
+    if (clicked?.result?.status === "reauth_required") {
+      keepForLogin = true;
+      await chrome.tabs.update(tab.id, { active: true });
+      if (tab.windowId !== undefined) {
+        await chrome.windows.update(tab.windowId, { focused: true });
+      }
+      return {
+        status: "reauth_required",
+        reason_code: clicked.result.reason_code,
+      };
+    }
+    if (clicked?.result?.status !== "clicked") {
+      return {
+        status: "unavailable",
+        reason_code: clicked?.result?.reason_code ?? "menu_result_missing",
+      };
+    }
+    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+      return { status: "unavailable", reason_code: "status_page_timeout" };
+    }
+    const [read] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: readMyLibraryStatusInPage,
+    });
+    return (
+      read?.result ?? {
+        status: "unavailable",
+        reason_code: "status_result_missing",
+      }
+    );
+  } catch {
+    return { status: "unavailable", reason_code: "my_library_read_failed" };
+  } finally {
+    if (!keepForLogin) {
+      await chrome.tabs.remove(tab.id).catch(() => undefined);
+    }
+  }
+}
+
+async function openMyLibraryEntry(): Promise<void> {
+  const tabs = await chrome.tabs.query({ url: `${MY_LIBRARY_ORIGIN}/*` });
+  const existing = tabs.find((tab) => tab.id !== undefined);
+  if (existing?.id !== undefined) {
+    await chrome.tabs.update(existing.id, { active: true });
+    if (existing.windowId !== undefined) {
+      await chrome.windows.update(existing.windowId, { focused: true });
+    }
+    return;
+  }
+  await chrome.tabs.create({ url: MY_LIBRARY_ENTRY_URL, active: true });
+}
+
+async function handleMyLibraryRead(): Promise<MyLibraryReadResponse> {
+  if (
+    !(await hasBrowserPermission(
+      MY_LIBRARY_PERMISSION_PATTERN,
+      MY_LIBRARY_ORIGIN,
+    ))
+  ) {
+    return {
+      status: "permission_required",
+      origin: MY_LIBRARY_ORIGIN,
+      pattern: MY_LIBRARY_PERMISSION_PATTERN,
+    };
+  }
+  const loanPage = await readMyLibrarySection(5);
+  if (loanPage.status !== "known" || loanPage.kind !== "loans") {
+    return loanPage.status === "reauth_required"
+      ? {
+          status: "reauth_required",
+          reason_code: loanPage.reason_code ?? "login_required",
+        }
+      : {
+          status: "unavailable",
+          reason_code: loanPage.reason_code ?? "loan_page_unavailable",
+        };
+  }
+  const reservationPage = await readMyLibrarySection(6);
+  if (
+    reservationPage.status !== "known" ||
+    reservationPage.kind !== "reservations"
+  ) {
+    return reservationPage.status === "reauth_required"
+      ? {
+          status: "reauth_required",
+          reason_code: reservationPage.reason_code ?? "login_required",
+        }
+      : {
+          status: "unavailable",
+          reason_code:
+            reservationPage.reason_code ?? "reservation_page_unavailable",
+        };
+  }
+  const detail: MyLibraryLocalSnapshot = {
+    loans: loanPage.loans ?? [],
+    reservations: reservationPage.reservations ?? [],
+  };
+  return {
+    status: "known",
+    detail,
+    projection: projectMyLibraryForAgent(detail),
+  };
+}
+
 function isTrustedExtensionPageSender(sender: chrome.runtime.MessageSender) {
   if (sender.id !== undefined && sender.id !== chrome.runtime.id) {
     return false;
@@ -1015,6 +1328,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void openMoodleEntry()
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (isMyLibraryReadMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleMyLibraryRead().then(sendResponse);
+    return true;
+  }
+
+  if (isMyLibraryOpenMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    void openMyLibraryEntry()
       .then(() => sendResponse({ ok: true }))
       .catch(() => sendResponse({ ok: false }));
     return true;

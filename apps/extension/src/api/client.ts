@@ -29,6 +29,7 @@ export type SyllabusSearchResult =
 export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
 export type SitrusGradeResult = components["schemas"]["SitrusGradeResult"];
 export type MoodleReadResult = components["schemas"]["MoodleReadResult"];
+export type MyLibraryReadResult = components["schemas"]["MyLibraryReadResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 
@@ -475,6 +476,54 @@ export function isMoodleReadResult(value: unknown): value is MoodleReadResult {
   return value.status === "known" || !hasData;
 }
 
+function isIsoDateOnly(value: unknown): value is string {
+  if (typeof value !== "string" || !/^20\d{2}-\d{2}-\d{2}$/u.test(value)) {
+    return false;
+  }
+  const date = new Date(`${value}T00:00:00Z`);
+  return (
+    !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value
+  );
+}
+
+export function isMyLibraryReadResult(
+  value: unknown,
+): value is MyLibraryReadResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "loan_count",
+      "reservation_count",
+      "overdue_count",
+      "renewable_count",
+      "earliest_due_date",
+      "reason_code",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
+    !isIntegerInRange(value.loan_count, 0, 1000) ||
+    !isIntegerInRange(value.reservation_count, 0, 1000) ||
+    !isIntegerInRange(value.overdue_count, 0, 1000) ||
+    !isIntegerInRange(value.renewable_count, 0, 1000) ||
+    value.overdue_count > value.loan_count ||
+    value.renewable_count > value.loan_count ||
+    (value.earliest_due_date !== null &&
+      !isIsoDateOnly(value.earliest_due_date)) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string")
+  ) {
+    return false;
+  }
+  const hasData =
+    value.loan_count > 0 ||
+    value.reservation_count > 0 ||
+    value.overdue_count > 0 ||
+    value.renewable_count > 0 ||
+    value.earliest_due_date !== null;
+  return value.status === "known" || !hasData;
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -508,6 +557,7 @@ const chatToolNames = [
   "browser_read_url",
   "sitrus_read",
   "moodle_read",
+  "my_library_read",
 ] as const;
 
 function isChatEvidenceMessage(value: unknown): boolean {

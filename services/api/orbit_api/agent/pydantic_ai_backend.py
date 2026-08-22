@@ -27,6 +27,7 @@ from orbit_api.models import (
     ChatHistoryMessage,
     EvidenceLink,
     MoodleReadResult,
+    MyLibraryReadResult,
     OrbitEvent,
     ScombzPageSummaryResult,
     ScombzReadResult,
@@ -51,6 +52,8 @@ SITRUS_TOOL_NAME = "sitrus_read"
 SITRUS_GRADES_LOCATOR_PREFIX = "orbit-sitrus://grades/"
 MOODLE_TOOL_NAME = "moodle_read"
 MOODLE_LOCATOR_PREFIX = "orbit-moodle://summary/"
+MY_LIBRARY_TOOL_NAME = "my_library_read"
+MY_LIBRARY_LOCATOR_PREFIX = "orbit-library://summary/"
 SUPPORTED_TOOL_NAMES = frozenset(
     {
         CALENDAR_TOOL_NAME,
@@ -59,6 +62,7 @@ SUPPORTED_TOOL_NAMES = frozenset(
         SYLLABUS_SEARCH_TOOL_NAME,
         BROWSER_READ_TOOL_NAME,
         MOODLE_TOOL_NAME,
+        MY_LIBRARY_TOOL_NAME,
     }
 )
 ToolName = Literal[
@@ -69,6 +73,7 @@ ToolName = Literal[
     "browser_read_url",
     "sitrus_read",
     "moodle_read",
+    "my_library_read",
 ]
 ActionToolName = Literal["scombz_page_summary", "google_calendar_availability"]
 ToolResult = (
@@ -79,6 +84,7 @@ ToolResult = (
     | BrowserReadResult
     | SitrusGradeResult
     | MoodleReadResult
+    | MyLibraryReadResult
 )
 
 
@@ -222,6 +228,15 @@ def is_derived_moodle_evidence(evidence: EvidenceLink) -> bool:
     )
 
 
+def is_derived_my_library_evidence(evidence: EvidenceLink) -> bool:
+    return (
+        evidence.source_type == "library"
+        and evidence.data_classification == "personal"
+        and _is_opaque_locator(evidence.locator, MY_LIBRARY_LOCATOR_PREFIX)
+        and evidence.evidence_id.startswith("my-library-summary-v1-")
+    )
+
+
 def validate_agent_data(
     event: OrbitEvent,
     context: list[EvidenceLink],
@@ -233,6 +248,7 @@ def validate_agent_data(
     allow_browser_read: bool = False,
     allow_sitrus_read: bool = False,
     allow_moodle_read: bool = False,
+    allow_my_library_read: bool = False,
 ) -> None:
     if event.data_classification not in SAFE_CLASSIFICATIONS:
         raise ValueError("The agent backend accepts only synthetic or public event data.")
@@ -252,6 +268,8 @@ def validate_agent_data(
         if allow_sitrus_read and is_derived_sitrus_evidence(evidence):
             continue
         if allow_moodle_read and is_derived_moodle_evidence(evidence):
+            continue
+        if allow_my_library_read and is_derived_my_library_evidence(evidence):
             continue
         raise ValueError(
             "The agent backend rejects personal or restricted evidence unless it is "
@@ -303,6 +321,12 @@ async def sitrus_read() -> SitrusGradeResult:
 
 async def moodle_read() -> MoodleReadResult:
     """Deferred read of explicitly confirmed Moodle dashboard aggregates."""
+
+    raise CallDeferred()
+
+
+async def my_library_read() -> MyLibraryReadResult:
+    """Deferred read of explicitly confirmed My Library aggregates."""
 
     raise CallDeferred()
 
@@ -627,6 +651,8 @@ class PydanticAIAgentBackend(AgentBackend):
             tools.append(sitrus_read)
         if MOODLE_TOOL_NAME in advertised:
             tools.append(moodle_read)
+        if MY_LIBRARY_TOOL_NAME in advertised:
+            tools.append(my_library_read)
         model_settings: OpenAIResponsesModelSettings = {"openai_store": False}
         return Agent(
             self.model,
@@ -709,6 +735,7 @@ class PydanticAIAgentBackend(AgentBackend):
             SCOMBZ_READ_TOOL_NAME,
             SITRUS_TOOL_NAME,
             MOODLE_TOOL_NAME,
+            MY_LIBRARY_TOOL_NAME,
         } and arguments:
             raise RuntimeError("This client tool does not accept arguments.")
         if call.tool_name == BROWSER_READ_TOOL_NAME:
@@ -771,6 +798,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_browser_read=True,
             allow_sitrus_read=True,
             allow_moodle_read=True,
+            allow_my_library_read=True,
         )
         advertised = set(advertised_tools or set()) & set(SUPPORTED_TOOL_NAMES)
         if advertised and os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
@@ -867,6 +895,17 @@ class PydanticAIAgentBackend(AgentBackend):
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "moodle_summary": tool_result.model_dump(mode="json"),
             }
+        elif deferred.tool_name == MY_LIBRARY_TOOL_NAME:
+            if not isinstance(tool_result, MyLibraryReadResult):
+                raise ValueError("My Library calls require a MyLibraryReadResult.")
+            evidence = next(
+                (item for item in context if is_derived_my_library_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "my_library_summary": tool_result.model_dump(mode="json"),
+            }
         else:
             raise ValueError("The deferred chat tool is unsupported.")
         if evidence is None:
@@ -886,6 +925,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_browser_read=True,
             allow_sitrus_read=True,
             allow_moodle_read=True,
+            allow_my_library_read=True,
         )
         result = await self._chat_agent(advertised_tools=advertised_tools).run(
             message_history=deferred.messages,
@@ -919,6 +959,8 @@ __all__ = [
     "SITRUS_GRADES_LOCATOR_PREFIX",
     "MOODLE_TOOL_NAME",
     "MOODLE_LOCATOR_PREFIX",
+    "MY_LIBRARY_TOOL_NAME",
+    "MY_LIBRARY_LOCATOR_PREFIX",
     "SCOMBZ_READ_TOOL_NAME",
     "SYLLABUS_SEARCH_TOOL_NAME",
     "DeferredActionRun",
@@ -934,9 +976,11 @@ __all__ = [
     "is_derived_browser_evidence",
     "is_derived_sitrus_evidence",
     "is_derived_moodle_evidence",
+    "is_derived_my_library_evidence",
     "browser_read_url",
     "sitrus_read",
     "moodle_read",
+    "my_library_read",
     "scombz_read",
     "scombz_page_summary",
     "syllabus_search",

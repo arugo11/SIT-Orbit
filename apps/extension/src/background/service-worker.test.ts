@@ -36,11 +36,14 @@ const sendMessage = vi.fn(async (_message: unknown) => undefined);
 const queryTabs = vi.fn(
   async (_query: chrome.tabs.QueryInfo): Promise<chrome.tabs.Tab[]> => [],
 );
-const getTab = vi.fn(async (tabId: number) => ({
-  id: tabId,
-  windowId: 4,
-  url: "https://scombz.shibaura-it.ac.jp/portal/home",
-}));
+function defaultTab(tabId: number): chrome.tabs.Tab {
+  return {
+    id: tabId,
+    windowId: 4,
+    url: "https://scombz.shibaura-it.ac.jp/portal/home",
+  } as chrome.tabs.Tab;
+}
+const getTab = vi.fn(async (tabId: number) => defaultTab(tabId));
 const tabSendMessage = vi.fn(
   async (_tabId: number, _message: unknown): Promise<unknown> => undefined,
 );
@@ -69,6 +72,7 @@ const createTab = vi.fn(async (properties: chrome.tabs.CreateProperties) => ({
   url: properties.url,
 }));
 const updateTab = vi.fn(async (_tabId: number, _properties: unknown) => ({}));
+const removeTab = vi.fn(async (_tabId: number) => undefined);
 const updateWindow = vi.fn(
   async (_windowId: number, _properties: unknown) => ({}),
 );
@@ -98,6 +102,7 @@ const chromeMock = {
     query: queryTabs,
     create: createTab,
     update: updateTab,
+    remove: removeTab,
     sendMessage: tabSendMessage,
   },
   identity: {
@@ -142,7 +147,8 @@ describe("service worker side panel contract", () => {
     setPanelBehavior.mockClear();
     sendMessage.mockClear();
     queryTabs.mockClear();
-    getTab.mockClear();
+    getTab.mockReset();
+    getTab.mockImplementation(async (tabId: number) => defaultTab(tabId));
     tabSendMessage.mockReset();
     tabSendMessage.mockResolvedValue(undefined);
     getAuthToken.mockClear();
@@ -151,6 +157,7 @@ describe("service worker side panel contract", () => {
     storageSet.mockClear();
     createTab.mockClear();
     updateTab.mockClear();
+    removeTab.mockClear();
     updateWindow.mockClear();
     permissionsContains.mockReset();
     permissionsContains.mockResolvedValue(false);
@@ -208,6 +215,77 @@ describe("service worker side panel contract", () => {
     );
     expect(JSON.stringify(payload.projection)).not.toContain("制御工学");
     expect(JSON.stringify(payload.projection)).not.toContain("レポート1");
+  });
+
+  it("returns only My Library aggregates while keeping titles local", async () => {
+    permissionsContains.mockResolvedValue(true);
+    getTab.mockResolvedValue({
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+    } as chrome.tabs.Tab);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            kind: "loans",
+            loans: [
+              {
+                title: "分散システム入門",
+                author: "芝浦太郎著",
+                due_date: "2026-09-01",
+                renewable: true,
+                overdue: false,
+              },
+            ],
+          },
+        },
+      ])
+      .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            kind: "reservations",
+            reservations: [
+              {
+                title: "ロボット工学",
+                author: "山田花子著",
+                hold_until: "2026-09-03",
+                status: "取置中",
+              },
+            ],
+          },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      { type: MESSAGE_TYPES.myLibraryRead, tool_call_id: "library-call-1" },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        status: "known",
+        projection: expect.objectContaining({
+          loan_count: 1,
+          reservation_count: 1,
+          renewable_count: 1,
+        }),
+      }),
+    );
+    expect(JSON.stringify(payload.projection)).not.toContain(
+      "分散システム入門",
+    );
+    expect(JSON.stringify(payload.projection)).not.toContain("ロボット工学");
+    expect(JSON.stringify(storageValues)).not.toContain("分散システム入門");
+    expect(JSON.stringify(storageValues)).not.toContain("ロボット工学");
+    expect(removeTab).toHaveBeenCalledTimes(2);
   });
 
   it("enables the panel per tab and preserves its path for ScombZ and other origins", async () => {

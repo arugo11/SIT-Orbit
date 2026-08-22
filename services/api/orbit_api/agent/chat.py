@@ -26,6 +26,7 @@ from orbit_api.models import (
     ChatToolResultRequest,
     EvidenceLink,
     MoodleReadResult,
+    MyLibraryReadResult,
     ScombzPageSummaryResult,
     ScombzReadResult,
     SitrusGradeResult,
@@ -37,6 +38,7 @@ from .pydantic_ai_backend import (
     CALENDAR_AVAILABILITY_LOCATOR_PREFIX,
     CALENDAR_TOOL_NAME,
     MOODLE_TOOL_NAME,
+    MY_LIBRARY_TOOL_NAME,
     SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX,
     SCOMBZ_READ_TOOL_NAME,
     SYLLABUS_SEARCH_TOOL_NAME,
@@ -44,6 +46,7 @@ from .pydantic_ai_backend import (
     ChatDraft,
     DeferredChatRun,
     is_derived_moodle_evidence,
+    is_derived_my_library_evidence,
     is_derived_scombz_read_evidence,
     is_derived_sitrus_evidence,
 )
@@ -58,6 +61,9 @@ _FIXTURE_SCOMBZ_QUERY = re.compile(
 _FIXTURE_SITRUS_QUERY = re.compile(r"(?:成績|単位|GPA|評価|取得済み)", re.IGNORECASE)
 _FIXTURE_MOODLE_QUERY = re.compile(
     r"(?:moodle|ムードル|教材|コース|活動|未提出)", re.IGNORECASE
+)
+_FIXTURE_MY_LIBRARY_QUERY = re.compile(
+    r"(?:my\s*library|図書館|貸出|返却|延滞|予約図書)", re.IGNORECASE
 )
 
 
@@ -84,6 +90,7 @@ class ChatBackend(Protocol):
             | BrowserReadResult
             | SitrusGradeResult
             | MoodleReadResult
+            | MyLibraryReadResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
@@ -127,6 +134,17 @@ class FixtureChatBackend:
         recent_text = "\n".join(item.content for item in history[-4:])
         return bool(_FIXTURE_MOODLE_QUERY.search(f"{recent_text}\n{message}"))
 
+    @staticmethod
+    def _requests_my_library_read(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if MY_LIBRARY_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_MY_LIBRARY_QUERY.search(f"{recent_text}\n{message}"))
+
     async def start_chat(
         self,
         *,
@@ -138,6 +156,15 @@ class FixtureChatBackend:
     ) -> ChatAgentExecution:
         del context
         advertised = set(advertised_tools or set())
+        if self._requests_my_library_read(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-my-library-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=MY_LIBRARY_TOOL_NAME,
+                )
+            )
         if self._requests_moodle_read(message, history, advertised):
             return ChatAgentExecution(
                 deferred=DeferredChatRun(
@@ -187,12 +214,37 @@ class FixtureChatBackend:
             | BrowserReadResult
             | SitrusGradeResult
             | MoodleReadResult
+            | MyLibraryReadResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
         seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
     ) -> ChatAgentExecution:
         del advertised_tools, seen_tool_call_ids
+        if deferred.tool_name == MY_LIBRARY_TOOL_NAME:
+            if not isinstance(tool_result, MyLibraryReadResult):
+                raise ValueError(
+                    "The fixture My Library call requires a MyLibraryReadResult."
+                )
+            evidence = next(
+                (item for item in context if is_derived_my_library_evidence(item)),
+                None,
+            )
+            if evidence is None:
+                raise ValueError("A resumed fixture Chat run requires My Library evidence.")
+            lines = ["My Libraryの利用状況を確認しました。"]
+            lines.append(f"- 貸出中: {tool_result.loan_count}件")
+            lines.append(f"- 予約中: {tool_result.reservation_count}件")
+            lines.append(f"- 延滞: {tool_result.overdue_count}件")
+            lines.append(f"- 延長可能: {tool_result.renewable_count}件")
+            if tool_result.earliest_due_date:
+                lines.append(f"- 最短返却期限: {tool_result.earliest_due_date}")
+            return ChatAgentExecution(
+                draft=ChatDraft(
+                    content_markdown="\n".join(lines),
+                    evidence_ids=[evidence.evidence_id],
+                )
+            )
         if deferred.tool_name == MOODLE_TOOL_NAME:
             if not isinstance(tool_result, MoodleReadResult):
                 raise ValueError("The fixture Moodle call requires a MoodleReadResult.")
@@ -527,6 +579,10 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "Moodleから導出した学習状況の概要"
         source_type = "assignment"
         locator = f"orbit-moodle://summary/{uuid4().hex}"
+    elif request.name == MY_LIBRARY_TOOL_NAME:
+        title = "My Libraryから導出した利用状況の概要"
+        source_type = "library"
+        locator = f"orbit-library://summary/{uuid4().hex}"
     else:
         raise ValueError("The chat tool is not enabled in the current API build.")
     evidence_prefix = {
@@ -537,6 +593,7 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         BROWSER_READ_TOOL_NAME: "browser-read-v1",
         "sitrus_read": "sitrus-grades-v1",
         MOODLE_TOOL_NAME: "moodle-summary-v1",
+        MY_LIBRARY_TOOL_NAME: "my-library-summary-v1",
     }[request.name]
     return EvidenceLink(
         evidence_id=f"{evidence_prefix}-{run_id}",

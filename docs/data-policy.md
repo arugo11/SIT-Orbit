@@ -100,6 +100,8 @@ SITRUSの成績は保存・ダウンロードせず、利用者が実際に開�
 
 Moodleは、利用者が`moodle_read`を明示実行した場合だけ、確認済みの`/moodle/my/`を参照する。コース名と活動・課題名を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`MoodleReadResult`のコース数、直近項目数、延滞数、最短期限、未読通知数だけである。送信内容を確認画面へ列挙し、`Full access`でもrunごとの確認を省略しない。氏名、コースID、教材本文、提出内容、private file、SSO token、query、fragmentにはSchema上の表現を与えない。ライブMoodle Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
 
+My Libraryは、利用者が`my_library_read`を明示実行した場合だけ、正規入口から貸出状況と予約状況を参照する。書名、著者、返却期限、延長可否、予約状態を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`MyLibraryReadResult`の貸出件数、予約件数、延滞件数、延長可能件数、最短返却期限だけである。`Full access`でもrunごとに送信確認を行い、資料ID、請求記号、氏名、メールアドレス、SSO tokenを結果へ含めない。ライブMy Library Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
+
 拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
 
 実データを扱うConnectorを追加する場合は、送信先、保存期間、削除方法、利用目的、大学の許可範囲を個別に確認する。

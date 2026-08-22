@@ -346,7 +346,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read";
             /**
              * Version
              * @constant
@@ -404,7 +404,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read";
             /**
              * Version
              * @constant
@@ -423,14 +423,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["MyLibraryReadResult"];
         };
         /**
          * ClientTool
@@ -505,6 +505,38 @@ export interface components {
             earliest_due_at?: string | null;
             /** Unread Notification Count */
             unread_notification_count: number;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
+         * MyLibraryReadResult
+         * @description Derived My Library counts safe for an explicitly confirmed run.
+         *
+         *     Book titles, authors, material identifiers, call numbers, user identity,
+         *     and SSO data deliberately have no representation in this model.
+         */
+        MyLibraryReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /** Loan Count */
+            loan_count: number;
+            /** Reservation Count */
+            reservation_count: number;
+            /** Overdue Count */
+            overdue_count: number;
+            /** Renewable Count */
+            renewable_count: number;
+            /** Earliest Due Date */
+            earliest_due_date?: string | null;
             /** Reason Code */
             reason_code?: string | null;
         };

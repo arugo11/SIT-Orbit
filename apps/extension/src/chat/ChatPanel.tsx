@@ -7,6 +7,7 @@ import {
   DEFAULT_AGENT_API_BASE,
   isBrowserReadResult,
   isMoodleReadResult,
+  isMyLibraryReadResult,
   isSitrusGradeResult,
   isSyllabusSearchResult,
   type SyllabusSearchResult,
@@ -21,6 +22,10 @@ import {
   type MoodleLocalSnapshot,
 } from "../content/moodle-reader";
 import {
+  MY_LIBRARY_ENTRY_URL,
+  type MyLibraryLocalSnapshot,
+} from "../content/my-library-reader";
+import {
   isSitrusGradeUrl,
   type PageContext,
   projectScombzPageSummary,
@@ -29,6 +34,7 @@ import {
 import type {
   BrowserReadResponse,
   MoodleReadResponse,
+  MyLibraryReadResponse,
   SitrusReadResponse,
 } from "../shared/messages";
 import {
@@ -76,6 +82,8 @@ function toolLabel(name: string): string {
       return "SITRUSの成績を確認中";
     case "moodle_read":
       return "Moodleを確認中";
+    case "my_library_read":
+      return "My Libraryを確認中";
     default:
       return "情報を確認中";
   }
@@ -108,7 +116,8 @@ function toolResultRequest(
     | "syllabus_search"
     | "browser_read_url"
     | "sitrus_read"
-    | "moodle_read",
+    | "moodle_read"
+    | "my_library_read",
   result: ChatToolResultRequest["result"],
 ): ChatToolResultRequest {
   return {
@@ -191,6 +200,9 @@ export function ChatPanel({
   const [localMoodleDetails, setLocalMoodleDetails] = useState<
     Record<string, MoodleLocalSnapshot>
   >({});
+  const [localMyLibraryDetails, setLocalMyLibraryDetails] = useState<
+    Record<string, MyLibraryLocalSnapshot>
+  >({});
   const sensitiveApproval = useRef(new Set<string>());
 
   const pageSummary = useMemo(
@@ -232,7 +244,8 @@ export function ChatPanel({
         | "syllabus_search"
         | "browser_read_url"
         | "sitrus_read"
-        | "moodle_read";
+        | "moodle_read"
+        | "my_library_read";
       version: 1;
     }> = [];
     if (projectScombzRead(pageContext)) {
@@ -247,6 +260,7 @@ export function ChatPanel({
       tools.push({ name: "sitrus_read", version: 1 });
     }
     tools.push({ name: "moodle_read", version: 1 });
+    tools.push({ name: "my_library_read", version: 1 });
     return tools;
   }
 
@@ -269,7 +283,8 @@ export function ChatPanel({
       call.name !== "syllabus_search" &&
       call.name !== "browser_read_url" &&
       call.name !== "sitrus_read" &&
-      call.name !== "moodle_read"
+      call.name !== "moodle_read" &&
+      call.name !== "my_library_read"
     ) {
       throw new Error("このChatではまだ対応していないToolです。");
     }
@@ -278,7 +293,8 @@ export function ChatPanel({
         call.name === "scombz_read" ||
         call.name === "google_calendar_availability" ||
         call.name === "sitrus_read" ||
-        call.name === "moodle_read") &&
+        call.name === "moodle_read" ||
+        call.name === "my_library_read") &&
       Object.keys(argumentsObject).length > 0
     ) {
       throw new Error("このToolには引数を指定できません。");
@@ -471,6 +487,55 @@ export function ChatPanel({
         call.tool_call_id,
         call.name,
         moodle.projection,
+      );
+      sensitiveApproval.current.delete(approvalKey);
+    } else if (call.name === "my_library_read") {
+      const access = hostAccessRequest(MY_LIBRARY_ENTRY_URL);
+      if (!access) throw new Error("My Libraryの参照先URLを検証できません。");
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:my-library-derived`;
+      const disclosure =
+        "My Libraryの貸出・予約状況を端末内で読み取り、貸出件数・予約件数・延滞件数・延長可能件数・最短返却期限だけを選択中のAIへ送ります。書名や著者名は送信しません。";
+      if (!sensitiveApproval.current.has(approvalKey)) {
+        throw new BrowserAccessRequiredError(
+          MY_LIBRARY_ENTRY_URL,
+          access.origin,
+          access.pattern,
+          approvalKey,
+          disclosure,
+        );
+      }
+      const library = await sendExtensionMessage<MyLibraryReadResponse>({
+        type: "my-library-read",
+        tool_call_id: call.tool_call_id,
+      });
+      if (library.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          MY_LIBRARY_ENTRY_URL,
+          library.origin,
+          library.pattern,
+          approvalKey,
+          disclosure,
+        );
+      }
+      if (library.status === "reauth_required") {
+        throw new Error(
+          "My Libraryを開きました。ログイン後、もう一度質問してください。",
+        );
+      }
+      if (
+        library.status !== "known" ||
+        !isMyLibraryReadResult(library.projection)
+      ) {
+        throw new Error("My Libraryの利用状況を読み取れませんでした。");
+      }
+      setLocalMyLibraryDetails((items) => ({
+        ...items,
+        [activity.id]: library.detail,
+      }));
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        library.projection,
       );
       sensitiveApproval.current.delete(approvalKey);
     } else {
@@ -921,6 +986,37 @@ export function ChatPanel({
                         {item.due_at ? `（期限: ${item.due_at}）` : ""}
                       </li>
                     ))}
+                  </ul>
+                </div>
+              ) : null}
+              {message.role === "tool" && localMyLibraryDetails[message.id] ? (
+                <div className="chat-local-detail">
+                  <strong>端末内のMy Library詳細</strong>
+                  <ul>
+                    {localMyLibraryDetails[message.id]?.loans.map((loan) => (
+                      <li key={`${loan.title}-${loan.due_date ?? "none"}`}>
+                        貸出: {loan.title}
+                        {loan.author ? ` / ${loan.author}` : ""}
+                        {loan.due_date ? `（返却期限: ${loan.due_date}）` : ""}
+                        {loan.overdue ? "（延滞）" : ""}
+                      </li>
+                    ))}
+                    {localMyLibraryDetails[message.id]?.reservations.map(
+                      (reservation) => (
+                        <li
+                          key={`${reservation.title}-${reservation.hold_until ?? "none"}`}
+                        >
+                          予約: {reservation.title}
+                          {reservation.author ? ` / ${reservation.author}` : ""}
+                          {reservation.status
+                            ? `（${reservation.status}）`
+                            : ""}
+                          {reservation.hold_until
+                            ? `（取置期限: ${reservation.hold_until}）`
+                            : ""}
+                        </li>
+                      ),
+                    )}
                   </ul>
                 </div>
               ) : null}

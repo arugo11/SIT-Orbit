@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   isMoodleOpenMessage,
   isMoodleReadMessage,
+  isMyLibraryOpenMessage,
+  isMyLibraryReadMessage,
   isOpenWorkspaceMessage,
   isPageContext,
   isSitrusReadMessage,
@@ -34,6 +36,21 @@ describe("page context message validation", () => {
       false,
     );
     expect(isMoodleOpenMessage({ type: "moodle-open" })).toBe(true);
+  });
+  it("accepts only typed My Library commands", () => {
+    expect(
+      isMyLibraryReadMessage({
+        type: "my-library-read",
+        tool_call_id: "tool-1",
+      }),
+    ).toBe(true);
+    expect(
+      isMyLibraryReadMessage({
+        type: "my-library-read",
+        tool_call_id: "",
+      }),
+    ).toBe(false);
+    expect(isMyLibraryOpenMessage({ type: "my-library-open" })).toBe(true);
   });
   it("accepts only the observed SITRUS grade notice route", () => {
     expect(
