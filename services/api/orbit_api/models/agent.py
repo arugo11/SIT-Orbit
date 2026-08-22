@@ -585,7 +585,8 @@ class MyLibraryReadResult(StrictApiModel):
 
     ``loan_count`` and the other aggregate fields remain for clients of the
     original v1 summary.  New callers use one requested ``scope`` and receive
-    at most twenty item projections plus a cursor.  Book titles and authors
+    at most twenty item projections plus a cursor.  Aggregates outside that
+    scope are null rather than a misleading zero.  Book titles and authors
     are intentionally present only in this minimized, explicitly consented
     projection; identifiers, call numbers, forms, identity, and SSO data have
     no representation in the model.
@@ -597,10 +598,10 @@ class MyLibraryReadResult(StrictApiModel):
     items: list[MyLibraryItem] = Field(default_factory=list, max_length=20)
     total_count: StrictInt = Field(default=0, ge=0, le=1000)
     next_offset: StrictInt | None = Field(default=None, ge=0, le=1000)
-    loan_count: StrictInt = Field(default=0, ge=0, le=1000)
-    reservation_count: StrictInt = Field(default=0, ge=0, le=1000)
-    overdue_count: StrictInt = Field(default=0, ge=0, le=1000)
-    renewable_count: StrictInt = Field(default=0, ge=0, le=1000)
+    loan_count: StrictInt | None = Field(default=None, ge=0, le=1000)
+    reservation_count: StrictInt | None = Field(default=None, ge=0, le=1000)
+    overdue_count: StrictInt | None = Field(default=None, ge=0, le=1000)
+    renewable_count: StrictInt | None = Field(default=None, ge=0, le=1000)
     earliest_due_date: StrictStr | None = Field(default=None, max_length=10)
     reason_code: StrictStr | None = Field(default=None, max_length=100)
 
@@ -619,10 +620,10 @@ class MyLibraryReadResult(StrictApiModel):
             self.items
             or self.total_count
             or self.next_offset is not None
-            or self.loan_count
-            or self.reservation_count
-            or self.overdue_count
-            or self.renewable_count
+            or self.loan_count is not None
+            or self.reservation_count is not None
+            or self.overdue_count is not None
+            or self.renewable_count is not None
             or self.earliest_due_date is not None
         ):
             raise ValueError("Unavailable My Library results cannot include derived data.")
@@ -630,9 +631,17 @@ class MyLibraryReadResult(StrictApiModel):
             raise ValueError("My Library total_count cannot be below the item count.")
         if self.total_count <= len(self.items) and self.next_offset is not None:
             raise ValueError("My Library next_offset must be null on the final page.")
-        if self.overdue_count > self.loan_count:
+        if (
+            self.overdue_count is not None
+            and self.loan_count is not None
+            and self.overdue_count > self.loan_count
+        ):
             raise ValueError("My Library overdue count cannot exceed loan count.")
-        if self.renewable_count > self.loan_count:
+        if (
+            self.renewable_count is not None
+            and self.loan_count is not None
+            and self.renewable_count > self.loan_count
+        ):
             raise ValueError("My Library renewable count cannot exceed loan count.")
         return self
 

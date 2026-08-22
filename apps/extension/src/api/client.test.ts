@@ -203,6 +203,27 @@ describe("AgentApiClient", () => {
     expect(
       isMyLibraryReadResult({ ...result, earliest_due_date: "2026-99-99" }),
     ).toBe(false);
+
+    const scoped = {
+      ...result,
+      scope: "purchase_requests",
+      items: [],
+      total_count: 0,
+      next_offset: null,
+      loan_count: null,
+      reservation_count: null,
+      overdue_count: null,
+      renewable_count: null,
+      earliest_due_date: null,
+    };
+    expect(isMyLibraryReadResult(scoped)).toBe(true);
+    expect(
+      isMyLibraryReadResult({
+        ...scoped,
+        status: "unavailable",
+        loan_count: 0,
+      }),
+    ).toBe(false);
   });
 
   it("accepts CAST aggregates and rejects local notice details", () => {

@@ -68,10 +68,10 @@ export interface MyLibraryAgentProjection {
   }>;
   total_count?: number;
   next_offset?: number | null;
-  loan_count: number;
-  reservation_count: number;
-  overdue_count: number;
-  renewable_count: number;
+  loan_count: number | null;
+  reservation_count: number | null;
+  overdue_count: number | null;
+  renewable_count: number | null;
   earliest_due_date: string | null;
   reason_code: string | null;
 }
@@ -517,7 +517,7 @@ export function projectMyLibraryForAgent(
     .map((loan) => loan.due_date)
     .filter((value): value is string => value !== null)
     .sort();
-  const aggregate = {
+  const legacyAggregate = {
     schema_version: "v1",
     status: "known",
     loan_count: snapshot.loans.length,
@@ -529,7 +529,30 @@ export function projectMyLibraryForAgent(
   } as const;
   // Preserve the v1 aggregate shape for callers that have not opted into a
   // scope. New tool calls always pass options and receive the scoped page.
-  if (!options) return aggregate;
+  if (!options) return legacyAggregate;
+
+  const unknownAggregate = {
+    loan_count: null,
+    reservation_count: null,
+    overdue_count: null,
+    renewable_count: null,
+    earliest_due_date: null,
+  } as const;
+  const scopedAggregate =
+    options.scope === "current_loans"
+      ? {
+          ...unknownAggregate,
+          loan_count: legacyAggregate.loan_count,
+          overdue_count: legacyAggregate.overdue_count,
+          renewable_count: legacyAggregate.renewable_count,
+          earliest_due_date: legacyAggregate.earliest_due_date,
+        }
+      : options.scope === "reservations"
+        ? {
+            ...unknownAggregate,
+            reservation_count: legacyAggregate.reservation_count,
+          }
+        : unknownAggregate;
 
   const offset = options.offset ?? 0;
   const limit = options.limit ?? 20;
@@ -545,7 +568,8 @@ export function projectMyLibraryForAgent(
       (typeof options.query !== "string" || options.query.length > 200))
   ) {
     return {
-      ...aggregate,
+      ...legacyAggregate,
+      ...unknownAggregate,
       status: "unavailable",
       scope: options.scope,
       items: [],
@@ -600,7 +624,8 @@ export function projectMyLibraryForAgent(
     )
   ) {
     return {
-      ...aggregate,
+      ...legacyAggregate,
+      ...unknownAggregate,
       status: "unavailable",
       scope: options.scope,
       items: [],
@@ -633,7 +658,8 @@ export function projectMyLibraryForAgent(
     });
   } catch {
     return {
-      ...aggregate,
+      ...legacyAggregate,
+      ...unknownAggregate,
       status: "unavailable",
       scope: options.scope,
       items: [],
@@ -643,7 +669,8 @@ export function projectMyLibraryForAgent(
     };
   }
   return {
-    ...aggregate,
+    ...legacyAggregate,
+    ...scopedAggregate,
     scope: options.scope,
     items,
     total_count: totalCount,

@@ -797,15 +797,26 @@ export function isMyLibraryReadResult(
   const isLegacy = hasExactlyKeys(value, legacyKeys);
   const isScoped = hasExactlyKeys(value, scopedKeys);
   if (!isLegacy && !isScoped) return false;
+  const counts = [
+    value.loan_count,
+    value.reservation_count,
+    value.overdue_count,
+    value.renewable_count,
+  ];
   if (
     value.schema_version !== "v1" ||
     !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
-    !isIntegerInRange(value.loan_count, 0, 1000) ||
-    !isIntegerInRange(value.reservation_count, 0, 1000) ||
-    !isIntegerInRange(value.overdue_count, 0, 1000) ||
-    !isIntegerInRange(value.renewable_count, 0, 1000) ||
-    value.overdue_count > value.loan_count ||
-    value.renewable_count > value.loan_count ||
+    (isLegacy && !counts.every((count) => isIntegerInRange(count, 0, 1000))) ||
+    (isScoped &&
+      !counts.every(
+        (count) => count === null || isIntegerInRange(count, 0, 1000),
+      )) ||
+    (typeof value.overdue_count === "number" &&
+      typeof value.loan_count === "number" &&
+      value.overdue_count > value.loan_count) ||
+    (typeof value.renewable_count === "number" &&
+      typeof value.loan_count === "number" &&
+      value.renewable_count > value.loan_count) ||
     (value.earliest_due_date !== null &&
       !isIsoDateOnly(value.earliest_due_date)) ||
     (value.reason_code !== null && typeof value.reason_code !== "string")
@@ -841,13 +852,14 @@ export function isMyLibraryReadResult(
       return false;
     }
   }
-  const hasData =
-    value.loan_count > 0 ||
-    value.reservation_count > 0 ||
-    value.overdue_count > 0 ||
-    value.renewable_count > 0 ||
-    value.earliest_due_date !== null;
-  return value.status === "known" || !hasData;
+  if (
+    value.status !== "known" &&
+    (counts.some((count) => count !== null) ||
+      value.earliest_due_date !== null)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function isMyLibraryItem(value: unknown): value is MyLibraryItem {

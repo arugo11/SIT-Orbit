@@ -245,6 +245,13 @@ describe("My Library reader adversarial boundaries", () => {
     expect(firstPage.items).toHaveLength(20);
     expect(firstPage.total_count).toBe(25);
     expect(firstPage.next_offset).toBe(20);
+    expect(firstPage).toMatchObject({
+      loan_count: null,
+      reservation_count: null,
+      overdue_count: null,
+      renewable_count: null,
+      earliest_due_date: null,
+    });
     expect(isMyLibraryReadResult(firstPage)).toBe(true);
     expect(
       firstPage.items?.every((item) => isLibraryResourceRef(item.resource_ref)),
@@ -271,6 +278,53 @@ describe("My Library reader adversarial boundaries", () => {
       true,
     );
     expect(Object.hasOwn(queried, "query")).toBe(false);
+
+    const loans = projectMyLibraryForAgent(
+      {
+        loans: [
+          {
+            resource_ref: createLibraryResourceRef("current-loan"),
+            title: "貸出資料",
+            author: null,
+            due_date: "2026-08-24",
+            renewable: true,
+            overdue: false,
+          },
+        ],
+        reservations: [],
+      },
+      { scope: "current_loans" },
+    );
+    expect(loans).toMatchObject({
+      loan_count: 1,
+      reservation_count: null,
+      overdue_count: 0,
+      renewable_count: 1,
+      earliest_due_date: "2026-08-24",
+    });
+
+    const reservations = projectMyLibraryForAgent(
+      {
+        loans: [],
+        reservations: [
+          {
+            resource_ref: createLibraryResourceRef("reservation"),
+            title: "予約資料",
+            author: null,
+            hold_until: "2026-08-28",
+            status: "取置中",
+          },
+        ],
+      },
+      { scope: "reservations" },
+    );
+    expect(reservations).toMatchObject({
+      loan_count: null,
+      reservation_count: 1,
+      overdue_count: null,
+      renewable_count: null,
+      earliest_due_date: null,
+    });
 
     for (const options of [
       { scope: "loan_history" as const, limit: 21 },

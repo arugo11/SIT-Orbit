@@ -51,10 +51,10 @@ def result_payload(
         "items": rows,
         "total_count": len(rows),
         "next_offset": None,
-        "loan_count": 0,
-        "reservation_count": 0,
-        "overdue_count": 0,
-        "renewable_count": 0,
+        "loan_count": None,
+        "reservation_count": None,
+        "overdue_count": None,
+        "renewable_count": None,
         "earliest_due_date": None,
         "reason_code": None,
     }
@@ -168,9 +168,20 @@ def test_fixture_chat_response_contains_only_allowed_book_fields(monkeypatch) ->
     assert completed["status"] == "completed"
     assert "端末内資料" in completed["message"]["content_markdown"]
     assert "公開著者" in completed["message"]["content_markdown"]
+    assert "貸出中:" not in completed["message"]["content_markdown"]
+    assert "予約中:" not in completed["message"]["content_markdown"]
+    assert "延滞:" not in completed["message"]["content_markdown"]
+    assert "延長可能:" not in completed["message"]["content_markdown"]
     serialized = second.text
     for marker in FORBIDDEN_VALUES:
         assert marker not in serialized
+
+
+def test_unavailable_scoped_result_rejects_even_zero_aggregate_values() -> None:
+    payload = result_payload(items=[])
+    payload.update(status="unavailable", loan_count=0, reason_code="unavailable")
+    with pytest.raises(ValidationError, match="cannot include derived data"):
+        MyLibraryReadResult.model_validate(payload)
 
 
 @pytest.mark.parametrize(

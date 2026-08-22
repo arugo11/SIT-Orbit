@@ -2056,32 +2056,56 @@
             "title": "Next Offset"
           },
           "loan_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Loan Count",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Loan Count"
           },
           "reservation_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Reservation Count",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reservation Count"
           },
           "overdue_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Overdue Count",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overdue Count"
           },
           "renewable_count": {
-            "type": "integer",
-            "maximum": 1000.0,
-            "minimum": 0.0,
-            "title": "Renewable Count",
-            "default": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 1000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Renewable Count"
           },
           "earliest_due_date": {
             "anyOf": [
@@ -2114,7 +2138,7 @@
           "status"
         ],
         "title": "MyLibraryReadResult",
-        "description": "A bounded, consent-gated My Library scope projection.\n\n``loan_count`` and the other aggregate fields remain for clients of the\noriginal v1 summary.  New callers use one requested ``scope`` and receive\nat most twenty item projections plus a cursor.  Book titles and authors\nare intentionally present only in this minimized, explicitly consented\nprojection; identifiers, call numbers, forms, identity, and SSO data have\nno representation in the model."
+        "description": "A bounded, consent-gated My Library scope projection.\n\n``loan_count`` and the other aggregate fields remain for clients of the\noriginal v1 summary.  New callers use one requested ``scope`` and receive\nat most twenty item projections plus a cursor.  Aggregates outside that\nscope are null rather than a misleading zero.  Book titles and authors\nare intentionally present only in this minimized, explicitly consented\nprojection; identifiers, call numbers, forms, identity, and SSO data have\nno representation in the model."
       },
       "OrbitEvent": {
         "properties": {

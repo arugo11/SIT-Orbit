@@ -494,10 +494,14 @@ class FixtureChatBackend:
             if evidence is None:
                 raise ValueError("A resumed fixture Chat run requires My Library evidence.")
             lines = ["My Libraryの利用状況を確認しました。"]
-            lines.append(f"- 貸出中: {tool_result.loan_count}件")
-            lines.append(f"- 予約中: {tool_result.reservation_count}件")
-            lines.append(f"- 延滞: {tool_result.overdue_count}件")
-            lines.append(f"- 延長可能: {tool_result.renewable_count}件")
+            if tool_result.loan_count is not None:
+                lines.append(f"- 貸出中: {tool_result.loan_count}件")
+            if tool_result.reservation_count is not None:
+                lines.append(f"- 予約中: {tool_result.reservation_count}件")
+            if tool_result.overdue_count is not None:
+                lines.append(f"- 延滞: {tool_result.overdue_count}件")
+            if tool_result.renewable_count is not None:
+                lines.append(f"- 延長可能: {tool_result.renewable_count}件")
             if tool_result.earliest_due_date:
                 lines.append(f"- 最短返却期限: {tool_result.earliest_due_date}")
             if tool_result.items:

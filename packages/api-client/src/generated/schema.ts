@@ -775,7 +775,8 @@ export interface components {
          *
          *     ``loan_count`` and the other aggregate fields remain for clients of the
          *     original v1 summary.  New callers use one requested ``scope`` and receive
-         *     at most twenty item projections plus a cursor.  Book titles and authors
+         *     at most twenty item projections plus a cursor.  Aggregates outside that
+         *     scope are null rather than a misleading zero.  Book titles and authors
          *     are intentionally present only in this minimized, explicitly consented
          *     projection; identifiers, call numbers, forms, identity, and SSO data have
          *     no representation in the model.
@@ -807,26 +808,14 @@ export interface components {
             total_count: number;
             /** Next Offset */
             next_offset?: number | null;
-            /**
-             * Loan Count
-             * @default 0
-             */
-            loan_count: number;
-            /**
-             * Reservation Count
-             * @default 0
-             */
-            reservation_count: number;
-            /**
-             * Overdue Count
-             * @default 0
-             */
-            overdue_count: number;
-            /**
-             * Renewable Count
-             * @default 0
-             */
-            renewable_count: number;
+            /** Loan Count */
+            loan_count?: number | null;
+            /** Reservation Count */
+            reservation_count?: number | null;
+            /** Overdue Count */
+            overdue_count?: number | null;
+            /** Renewable Count */
+            renewable_count?: number | null;
             /** Earliest Due Date */
             earliest_due_date?: string | null;
             /** Reason Code */
