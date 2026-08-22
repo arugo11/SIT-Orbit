@@ -6,6 +6,7 @@ import {
 
 describe("library discovery boundary", () => {
   it("advertises library tools only for the current explicit user turn", () => {
+    expect(requestsLibraryTools("図書館で本を探して")).toBe(true);
     expect(requestsLibraryTools("図書館でロボット工学の本を探して")).toBe(true);
     expect(
       requestsLibraryTools("orbit-library://record/0123456789abcdef の詳細"),
