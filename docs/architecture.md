@@ -277,6 +277,12 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 カードの企業名、仕事内容、職種、勤務地、対象学科、締切、CAST上の関連表示は端末内の`CastOpportunityLocalSnapshot`にだけ保持する。Agentへ渡す`CastOpportunityAgentProjection`は求人・インターンの件数、状態別件数、最短締切、状態コードだけで、企業名、仕事内容、企業コード、求人番号、raw HTMLは表現できない。projectionをPseudonymization Gateway以外の経路からモデルへ渡さない。PDF、添付、フォーム値、法人番号は抽出しない。
 
+### CAST採用実績・選考記録の参照
+
+採用実績と選考記録は、実ログイン環境で確認した企業詳細`https://shibaura.pita.services/career/company_detail_view`の`#employment`、`#company_exam_entry`、`#company_obog`領域だけをread-onlyで読む。企業コードは端末内のローカルID生成にだけ使い、応募、OB・OG名簿の閲覧要求、添付・PDF取得、`published_company_exam_view`への推測遷移は行わない。ログイン画面、未知のpath、query/fragment、必須sectionやtableの構造不一致は成功扱いしない。
+
+企業名、卒業年月、学科、職種、採用形態、選考記録の概要は端末内`CastHistoryLocalSnapshot`に保持する。行中の氏名・指導教員など人物らしい値はPseudonymization Gatewayへ渡し、Career Vaultで対応表を暗号化したうえでmission固有の別名へ置換する。Prompt projectionから元の氏名、企業コード、内部local_id、report href、raw HTML、フォーム値を除外し、外部Providerへ送る経路はこのprojectionに与えない。OB・OG名簿は有無だけを扱い、名簿本文や直接連絡先は取得しない。
+
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
 ### CAST Career Agentのプライバシー境界
