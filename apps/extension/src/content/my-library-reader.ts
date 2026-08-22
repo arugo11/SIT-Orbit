@@ -254,11 +254,16 @@ const MY_LIBRARY_SCOPE_REQUIRED_COLUMNS: Record<
   Exclude<MyLibraryScope, "current_loans" | "reservations">,
   readonly (readonly string[])[]
 > = {
-  loan_history: [["書名 / 著者名", "書名", "タイトル", "資料名"], ["貸出日"]],
+  loan_history: [
+    ["書名 / 著者名", "書名", "タイトル", "資料名"],
+    ["貸出日"],
+    ["状態", "ステータス", "処理状況"],
+  ],
   purchase_requests: [
     ["書名 / 著者名", "書名", "タイトル", "資料名"],
     ["状態", "ステータス", "処理状況"],
     ["依頼日", "申請日"],
+    ["依頼種別", "申請種別", "種類", "区分"],
   ],
   interlibrary_requests: [
     ["書名 / 著者名", "書名", "タイトル", "資料名"],
@@ -343,31 +348,34 @@ function extractGenericMyLibraryItem(
     visibleText(tableValueForLabels(["依頼種別", "申請種別", "種類", "区分"])),
     100,
   );
+  const status = compactText(
+    visibleText(tableValueForLabels(["状態", "ステータス", "処理状況"])),
+    100,
+  );
+  const activityDate = normalizeDate(
+    visibleText(
+      tableValueForLabels(
+        scope === "loan_history"
+          ? ["貸出日"]
+          : scope === "purchase_requests"
+            ? ["申請日", "依頼日"]
+            : ["受付日", "依頼日"],
+      ),
+    ),
+  );
+  // These columns are part of the page contract for each supported table.
+  // A title alone is not enough to send a row to the Agent.
+  if (!status || !activityDate) return null;
+  if (scope !== "loan_history" && !requestType) return null;
   return {
     ...titleAuthor,
-    status:
-      compactText(
-        visibleText(tableValueForLabels(["状態", "ステータス", "処理状況"])),
-        100,
-      ) || null,
+    status,
     due_date: normalizeDate(
       visibleText(tableValueForLabels(["返却期限", "返却日", "期限"])),
     ),
     renewable: renewalControl ? !renewalControl.hasAttribute("disabled") : null,
-    activity_date: normalizeDate(
-      visibleText(
-        tableValueForLabels([
-          "貸出日",
-          "利用日",
-          "申請日",
-          "受付日",
-          "依頼日",
-          "更新日",
-        ]),
-      ),
-    ),
-    request_type:
-      requestType || (scope === "interlibrary_requests" ? "ILL" : null),
+    activity_date: activityDate,
+    request_type: requestType || null,
   };
 }
 
@@ -466,6 +474,7 @@ export function extractMyLibraryLoanPage(
     if (!titleAuthor) return null;
     const dueContainer = valueForLabel(row, "貸出返却期限延長回数");
     const dueDate = normalizeDate(visibleText(dueContainer));
+    if (!dueContainer || !dueDate) return null;
     const checkbox = row.querySelector<HTMLInputElement>(
       'input[type="checkbox"][name="checkBoxBookNumber"]',
     );
@@ -504,12 +513,15 @@ export function extractMyLibraryReservationPage(
       visibleText(valueForLabel(row, "書名 / 著者名")),
     );
     if (!titleAuthor) return null;
+    const holdUntil = normalizeDate(
+      visibleText(valueForLabel(row, "受取館取置期限日")),
+    );
+    const status = compactText(visibleText(valueForLabel(row, "状態")), 100);
+    if (!holdUntil || !status) return null;
     return {
       ...titleAuthor,
-      hold_until: normalizeDate(
-        visibleText(valueForLabel(row, "受取館取置期限日")),
-      ),
-      status: compactText(visibleText(valueForLabel(row, "状態")), 100) || null,
+      hold_until: holdUntil,
+      status,
     };
   });
   if (reservations.some((item) => item === null)) return null;

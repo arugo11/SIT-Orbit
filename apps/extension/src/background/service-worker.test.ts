@@ -149,6 +149,178 @@ function stubPage(html: string, href: string): void {
   vi.stubGlobal("location", new URL(href));
 }
 
+type InlineMyLibraryScope =
+  | "current_loans"
+  | "reservations"
+  | "loan_history"
+  | "purchase_requests"
+  | "interlibrary_requests";
+
+function inlineDefinitionCell(label: string, value: string): string {
+  return `<td><dl><dt>${label}</dt><dd>${value}</dd></dl></td>`;
+}
+
+function inlineCurrentLoansHtml(title: string, dueDate: string): string {
+  return `<table id="lendList"><tbody><tr>${inlineDefinitionCell(
+    "書名 / 著者名",
+    title,
+  )}${inlineDefinitionCell(
+    "貸出返却期限延長回数",
+    dueDate,
+  )}</tr></tbody></table>`;
+}
+
+function inlineReservationsHtml(
+  title: string,
+  status: string,
+  holdUntil: string,
+): string {
+  return `<table id="reservationList"><tbody><tr>${inlineDefinitionCell(
+    "書名 / 著者名",
+    title,
+  )}${inlineDefinitionCell("状態", status)}${inlineDefinitionCell(
+    "受取館取置期限日",
+    holdUntil,
+  )}</tr></tbody></table>`;
+}
+
+function inlineGenericMyLibraryHtml(
+  marker: string,
+  headers: readonly string[],
+  values: readonly string[],
+): string {
+  return `<table><caption>${marker}</caption><thead><tr>${headers
+    .map((header) => `<th>${header}</th>`)
+    .join("")}</tr></thead><tbody><tr>${values
+    .map((value) => `<td>${value}</td>`)
+    .join("")}</tr></tbody></table>`;
+}
+
+const inlineMalformedScopeCases = [
+  {
+    scope: "current_loans",
+    field: "due date",
+    title: "貸出検証資料",
+    html: inlineCurrentLoansHtml("貸出検証資料", ""),
+  },
+  {
+    scope: "reservations",
+    field: "status",
+    title: "予約検証資料",
+    html: inlineReservationsHtml("予約検証資料", "", "2026/08/28"),
+  },
+  {
+    scope: "loan_history",
+    field: "loan date",
+    title: "履歴検証資料",
+    html: inlineGenericMyLibraryHtml(
+      "貸出履歴一覧",
+      ["書名", "貸出日", "状態"],
+      ["履歴検証資料", "2026/99/99", "返却済み"],
+    ),
+  },
+  {
+    scope: "purchase_requests",
+    field: "request type",
+    title: "購入検証資料",
+    html: inlineGenericMyLibraryHtml(
+      "購入依頼状況",
+      ["書名", "申請日", "状態", "申請種別"],
+      ["購入検証資料", "2026/08/01", "受付済み", ""],
+    ),
+  },
+  {
+    scope: "interlibrary_requests",
+    field: "accepted date",
+    title: "ILL検証資料",
+    html: inlineGenericMyLibraryHtml(
+      "ILL（文献複写・貸借）依頼",
+      ["書名", "受付日", "状態", "依頼種別"],
+      ["ILL検証資料", "2026/99/99", "処理中", "文献複写"],
+    ),
+  },
+] as const;
+
+const inlineAuthorlessScopeCases = [
+  {
+    scope: "current_loans",
+    title: "著者なし貸出",
+    html: inlineCurrentLoansHtml("著者なし貸出", "2026/08/24"),
+  },
+  {
+    scope: "reservations",
+    title: "著者なし予約",
+    html: inlineReservationsHtml("著者なし予約", "取置中", "2026/08/28"),
+  },
+  {
+    scope: "loan_history",
+    title: "著者なし履歴",
+    html: inlineGenericMyLibraryHtml(
+      "貸出履歴一覧",
+      ["書名", "貸出日", "状態"],
+      ["著者なし履歴", "2026/07/01", "返却済み"],
+    ),
+  },
+  {
+    scope: "purchase_requests",
+    title: "著者なし購入依頼",
+    html: inlineGenericMyLibraryHtml(
+      "購入依頼状況",
+      ["書名", "申請日", "状態", "申請種別"],
+      ["著者なし購入依頼", "2026/08/01", "受付済み", "図書購入"],
+    ),
+  },
+  {
+    scope: "interlibrary_requests",
+    title: "著者なしILL依頼",
+    html: inlineGenericMyLibraryHtml(
+      "ILL（文献複写・貸借）依頼",
+      ["書名", "受付日", "状態", "依頼種別"],
+      ["著者なしILL依頼", "2026/08/05", "処理中", "文献複写"],
+    ),
+  },
+] as const;
+
+async function runInlineMyLibraryReader(
+  scope: InlineMyLibraryScope,
+  html: string,
+  workerResult: Record<string, unknown>,
+): Promise<unknown> {
+  permissionsContains.mockResolvedValue(true);
+  getTab.mockResolvedValue({
+    id: 91,
+    windowId: 1,
+    status: "complete",
+    url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+  } as chrome.tabs.Tab);
+  executeScript
+    .mockResolvedValueOnce([{ result: { status: "clicked" } }])
+    .mockResolvedValueOnce([{ result: workerResult }]);
+
+  const response = vi.fn();
+  onMessage.dispatch(
+    {
+      type: MESSAGE_TYPES.myLibraryRead,
+      tool_call_id: `inline-reader-${scope}`,
+      scope,
+      offset: 0,
+      limit: 20,
+    },
+    {},
+    response,
+  );
+  await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+  stubPage(
+    html,
+    "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+  );
+  const readStatusPage = capturedScript(1) as unknown as (
+    requestedScope: InlineMyLibraryScope,
+  ) => unknown;
+  return readStatusPage(scope);
+}
+
 await import("./service-worker");
 
 afterAll(() => {
@@ -619,6 +791,36 @@ describe("service worker side panel contract", () => {
       expect(readStatusPage(scope)).toEqual({
         status: "unavailable",
         reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
+  it.each(inlineMalformedScopeCases)(
+    "inline reader fails closed for a valid-title $scope row with malformed $field",
+    async ({ scope, html, title }) => {
+      expect(html).toContain(title);
+      const result = await runInlineMyLibraryReader(scope, html, {
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+      expect(result).toEqual({
+        status: "unavailable",
+        reason_code: "scope_row_unparseable",
+      });
+    },
+  );
+
+  it.each(inlineAuthorlessScopeCases)(
+    "inline reader keeps valid $scope row when author is absent",
+    async ({ scope, html, title }) => {
+      const result = await runInlineMyLibraryReader(scope, html, {
+        status: "known",
+        scope,
+        items: [],
+      });
+      expect(result).toMatchObject({
+        status: "known",
+        items: [{ title, author: null }],
       });
     },
   );

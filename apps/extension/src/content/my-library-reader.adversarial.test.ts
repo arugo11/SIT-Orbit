@@ -34,6 +34,149 @@ const scopeFixtures: Record<MyLibraryScope, string> = {
   interlibrary_requests: "my-library-interlibrary-requests.html",
 };
 
+const malformedScopeCases = [
+  {
+    scope: "current_loans",
+    field: "due date",
+    source: "2026/08/24",
+    replacement: "",
+    title: "分散システム入門",
+  },
+  {
+    scope: "current_loans",
+    field: "due date",
+    source: "2026/08/24",
+    replacement: "2026/99/99",
+    title: "分散システム入門",
+  },
+  {
+    scope: "reservations",
+    field: "hold-until date",
+    source: "2026/08/28",
+    replacement: "",
+    title: "ロボット工学",
+  },
+  {
+    scope: "reservations",
+    field: "hold-until date",
+    source: "2026/08/28",
+    replacement: "2026/99/99",
+    title: "ロボット工学",
+  },
+  {
+    scope: "reservations",
+    field: "status",
+    source: "取置中",
+    replacement: "",
+    title: "ロボット工学",
+  },
+  {
+    scope: "loan_history",
+    field: "loan date",
+    source: "2026/07/01",
+    replacement: "",
+    title: "ロボット制御",
+  },
+  {
+    scope: "loan_history",
+    field: "loan date",
+    source: "2026/07/01",
+    replacement: "2026/99/99",
+    title: "ロボット制御",
+  },
+  {
+    scope: "loan_history",
+    field: "status",
+    source: "返却済み",
+    replacement: "",
+    title: "ロボット制御",
+  },
+  {
+    scope: "purchase_requests",
+    field: "application date",
+    source: "2026/08/01",
+    replacement: "",
+    title: "確率ロボティクス",
+  },
+  {
+    scope: "purchase_requests",
+    field: "application date",
+    source: "2026/08/01",
+    replacement: "2026/99/99",
+    title: "確率ロボティクス",
+  },
+  {
+    scope: "purchase_requests",
+    field: "status",
+    source: "受付済み",
+    replacement: "",
+    title: "確率ロボティクス",
+  },
+  {
+    scope: "purchase_requests",
+    field: "request type",
+    source: "図書購入",
+    replacement: "",
+    title: "確率ロボティクス",
+  },
+  {
+    scope: "interlibrary_requests",
+    field: "accepted date",
+    source: "2026/08/05",
+    replacement: "",
+    title: "移動ロボットの知能化",
+  },
+  {
+    scope: "interlibrary_requests",
+    field: "accepted date",
+    source: "2026/08/05",
+    replacement: "2026/99/99",
+    title: "移動ロボットの知能化",
+  },
+  {
+    scope: "interlibrary_requests",
+    field: "status",
+    source: "処理中",
+    replacement: "",
+    title: "移動ロボットの知能化",
+  },
+  {
+    scope: "interlibrary_requests",
+    field: "request type",
+    source: "文献複写",
+    replacement: "",
+    title: "移動ロボットの知能化",
+  },
+] as const;
+
+const authorlessScopeCases = [
+  {
+    scope: "current_loans",
+    source: "分散システム入門 / 芝浦太郎著",
+    title: "分散システム入門",
+  },
+  {
+    scope: "reservations",
+    source: "ロボット工学 / 佐藤次郎著",
+    title: "ロボット工学",
+  },
+  {
+    scope: "loan_history",
+    source: "ロボット制御 / 芝浦太郎著",
+    title: "ロボット制御",
+  },
+  {
+    scope: "purchase_requests",
+    source: "確率ロボティクス / 山田花子著",
+    title: "確率ロボティクス",
+  },
+  {
+    scope: "interlibrary_requests",
+    source: "移動ロボットの知能化 / 佐藤次郎著",
+    title: "移動ロボットの知能化",
+  },
+] as const;
+
 const allowedItemKeys = [
   "activity_date",
   "author",
@@ -150,6 +293,36 @@ describe("My Library reader adversarial boundaries", () => {
       for (const marker of forbiddenPersonalMarkers) {
         expect(serialized).not.toContain(marker);
       }
+    },
+  );
+
+  it.each(malformedScopeCases)(
+    "fails closed for a valid-title $scope row with a malformed $field",
+    ({ scope, source, replacement, title }) => {
+      const html = fixture(scopeFixtures[scope]).replace(source, replacement);
+      expect(html).toContain(title);
+
+      const items = extractMyLibraryScopePage(
+        parseHTML(html).document,
+        PAGE_URL,
+        scope,
+      );
+      expect(items).toBeNull();
+    },
+  );
+
+  it.each(authorlessScopeCases)(
+    "keeps a valid $scope row when author is absent",
+    ({ scope, source, title }) => {
+      const html = fixture(scopeFixtures[scope]).replace(source, title);
+      const items = extractMyLibraryScopePage(
+        parseHTML(html).document,
+        PAGE_URL,
+        scope,
+      );
+
+      expect(items).not.toBeNull();
+      expect(items?.[0]).toMatchObject({ title, author: null });
     },
   );
 

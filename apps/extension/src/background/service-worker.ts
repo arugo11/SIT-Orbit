@@ -2094,6 +2094,7 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
         const dueDate = normalizeDate(
           visibleLibraryText(valueForLabel(row, "貸出返却期限延長回数")),
         );
+        if (!dueDate) return null;
         const checkbox = row.querySelector<HTMLInputElement>(
           'input[type="checkbox"][name="checkBoxBookNumber"]',
         );
@@ -2152,6 +2153,7 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
         );
         const status =
           clean(visibleLibraryText(valueForLabel(row, "状態")), 100) || null;
+        if (!holdUntil || !status) return null;
         return {
           reservation: {
             ...titleAuthor,
@@ -2201,11 +2203,13 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
         loan_history: [
           ["書名 / 著者名", "書名", "タイトル", "資料名"],
           ["貸出日"],
+          ["状態", "ステータス", "処理状況"],
         ],
         purchase_requests: [
           ["書名 / 著者名", "書名", "タイトル", "資料名"],
           ["状態", "ステータス", "処理状況"],
           ["依頼日", "申請日"],
+          ["依頼種別", "申請種別", "種類", "区分"],
         ],
         interlibrary_requests: [
           ["書名 / 著者名", "書名", "タイトル", "資料名"],
@@ -2215,7 +2219,7 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
         ],
       };
       const markerList = markers[scope];
-      const table = Array.from(document.querySelectorAll("table")).find(
+      const markerTable = Array.from(document.querySelectorAll("table")).find(
         (candidate) => {
           if (!isVisible(candidate)) return false;
           const contextText = clean(
@@ -2229,21 +2233,38 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
               .join(" ") || visibleLibraryText(candidate.querySelector("tr")),
             1000,
           );
-          if (!markerList.some((marker) => contextText.includes(marker))) {
-            return false;
-          }
-          const headerLabels = Array.from(
-            candidate.querySelectorAll("thead th, thead td"),
-          )
-            .map((cell) => clean(visibleLibraryText(cell), 100))
-            .filter(Boolean);
-          return requiredColumns[scope].every((alternatives) =>
-            alternatives.some((label) => headerLabels.includes(label)),
-          );
+          return markerList.some((marker) => contextText.includes(marker));
         },
       );
-      if (!table)
+      if (!markerTable) {
         return { status: "unavailable", reason_code: "scope_table_not_found" };
+      }
+      const table = [markerTable].find((candidate) => {
+        const headerLabels = Array.from(
+          candidate.querySelectorAll("thead th, thead td"),
+        )
+          .map((cell) => clean(visibleLibraryText(cell), 100))
+          .filter(Boolean);
+        return requiredColumns[scope].every((alternatives) =>
+          alternatives.some((label) => headerLabels.includes(label)),
+        );
+      });
+      if (!table) {
+        const hasNonEmptyRow = Array.from(
+          markerTable.querySelectorAll("tbody tr, tr"),
+        ).some(
+          (row) =>
+            isVisible(row) &&
+            !row.querySelector(".dataTables_empty, .empty, .no-data") &&
+            clean(visibleLibraryText(row), 1000),
+        );
+        return {
+          status: "unavailable",
+          reason_code: hasNonEmptyRow
+            ? "scope_row_unparseable"
+            : "scope_table_not_found",
+        };
+      }
       const headerRow = Array.from(table.querySelectorAll("tr")).find(
         (row) => isVisible(row) && row.querySelector("th"),
       );
@@ -2295,37 +2316,42 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
             (element) =>
               /延長|更新/iu.test(clean(visibleLibraryText(element), 100)),
           );
+          const status =
+            clean(
+              visibleLibraryText(
+                tableValueForLabels(row, ["状態", "ステータス", "処理状況"]),
+              ),
+              100,
+            ) || null;
+          const activityDate = dateFor(
+            row,
+            scope === "loan_history"
+              ? ["貸出日"]
+              : scope === "purchase_requests"
+                ? ["申請日", "依頼日"]
+                : ["受付日", "依頼日"],
+          );
+          const requestType =
+            clean(
+              visibleLibraryText(
+                tableValueForLabels(row, [
+                  "依頼種別",
+                  "申請種別",
+                  "種類",
+                  "区分",
+                ]),
+              ),
+              100,
+            ) || null;
+          if (!status || !activityDate) return null;
+          if (scope !== "loan_history" && !requestType) return null;
           return {
             ...titleAuthor,
-            status:
-              clean(
-                visibleLibraryText(
-                  tableValueForLabels(row, ["状態", "ステータス", "処理状況"]),
-                ),
-                100,
-              ) || null,
+            status,
             due_date: dateFor(row, ["返却期限", "返却日", "期限"]),
             renewable: renewal ? !renewal.hasAttribute("disabled") : null,
-            activity_date: dateFor(row, [
-              "貸出日",
-              "利用日",
-              "申請日",
-              "受付日",
-              "依頼日",
-              "更新日",
-            ]),
-            request_type:
-              clean(
-                visibleLibraryText(
-                  tableValueForLabels(row, [
-                    "依頼種別",
-                    "申請種別",
-                    "種類",
-                    "区分",
-                  ]),
-                ),
-                100,
-              ) || (scope === "interlibrary_requests" ? "ILL" : null),
+            activity_date: activityDate,
+            request_type: requestType,
             raw_id: rawIdForRow(row, tableValueForLabels),
           };
         },
