@@ -37,6 +37,8 @@ export const MESSAGE_TYPES = {
   sitrusRead: "sitrus-read",
   moodleRead: "moodle-read",
   moodleOpen: "moodle-open",
+  myLibraryRead: "my-library-read",
+  myLibraryOpen: "my-library-open",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -130,6 +132,25 @@ export type MoodleReadResponse =
   | { status: "reauth_required"; reason_code: string }
   | { status: "unavailable"; reason_code: string };
 
+export interface MyLibraryReadMessage {
+  type: typeof MESSAGE_TYPES.myLibraryRead;
+  tool_call_id: string;
+}
+
+export interface MyLibraryOpenMessage {
+  type: typeof MESSAGE_TYPES.myLibraryOpen;
+}
+
+export type MyLibraryReadResponse =
+  | {
+      status: "known";
+      projection: unknown;
+      detail: import("../content/my-library-reader").MyLibraryLocalSnapshot;
+    }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
 export interface OpenWorkspaceResponse {
   ok: boolean;
   session?: WorkspaceSession;
@@ -187,7 +208,9 @@ export type ExtensionMessage =
   | SyllabusSearchMessage
   | SitrusReadMessage
   | MoodleReadMessage
-  | MoodleOpenMessage;
+  | MoodleOpenMessage
+  | MyLibraryReadMessage
+  | MyLibraryOpenMessage;
 
 export function isBrowserReadMessage(
   message: unknown,
@@ -251,6 +274,23 @@ export function isMoodleOpenMessage(
   message: unknown,
 ): message is MoodleOpenMessage {
   return isMessageType(message, MESSAGE_TYPES.moodleOpen);
+}
+
+export function isMyLibraryReadMessage(
+  message: unknown,
+): message is MyLibraryReadMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.myLibraryRead &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0
+  );
+}
+
+export function isMyLibraryOpenMessage(
+  message: unknown,
+): message is MyLibraryOpenMessage {
+  return isMessageType(message, MESSAGE_TYPES.myLibraryOpen);
 }
 
 export function isOpenWorkspaceMessage(

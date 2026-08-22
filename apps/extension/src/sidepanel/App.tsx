@@ -41,6 +41,7 @@ import {
   isWorkspaceSourceUnavailableMessage,
   MESSAGE_TYPES,
   type MoodleReadResponse,
+  type MyLibraryReadResponse,
   type OpenWorkspaceResponse,
   type WorkspaceStatusResponse,
 } from "../shared/messages";
@@ -119,20 +120,26 @@ function requestCalendarCommand(
   });
 }
 
-type MoodleConnectionStatus =
+type CampusServiceConnectionStatus =
   | "not_connected"
   | "connected"
   | "reauth_required"
   | "unavailable";
 
-function MoodleCard({
+function CampusServiceCard({
+  id,
+  title,
+  description,
   status,
   busy,
   message,
   onOpen,
   onRefresh,
 }: {
-  status: MoodleConnectionStatus;
+  id: string;
+  title: string;
+  description: string;
+  status: CampusServiceConnectionStatus;
   busy: boolean;
   message: string | null;
   onOpen: () => void;
@@ -145,15 +152,12 @@ function MoodleCard({
     unavailable: "利用できません",
   }[status];
   return (
-    <section className="connector-card" aria-labelledby="moodle-title">
+    <section className="connector-card" aria-labelledby={id}>
       <div className="section-heading">
-        <h2 id="moodle-title">SIT Moodle</h2>
+        <h2 id={id}>{title}</h2>
         <span className="section-note">{label}</span>
       </div>
-      <p className="connector-description">
-        {message ??
-          "ダッシュボードは明示的に確認したときだけ読み取ります。詳細は端末内に留めます。"}
-      </p>
+      <p className="connector-description">{message ?? description}</p>
       <div className="button-row">
         <button
           type="button"
@@ -819,9 +823,13 @@ export function App({
   });
   const [driveBusy, setDriveBusy] = useState(false);
   const [moodleStatus, setMoodleStatus] =
-    useState<MoodleConnectionStatus>("not_connected");
+    useState<CampusServiceConnectionStatus>("not_connected");
   const [moodleMessage, setMoodleMessage] = useState<string | null>(null);
   const [moodleBusy, setMoodleBusy] = useState(false);
+  const [myLibraryStatus, setMyLibraryStatus] =
+    useState<CampusServiceConnectionStatus>("not_connected");
+  const [myLibraryMessage, setMyLibraryMessage] = useState<string | null>(null);
+  const [myLibraryBusy, setMyLibraryBusy] = useState(false);
   const [driveFixtureConnector, setDriveFixtureConnector] = useState(() =>
     createFixtureDriveConnector({
       candidates: DRIVE_FIXTURE_CANDIDATE,
@@ -982,6 +990,76 @@ export function App({
       );
     } finally {
       setMoodleBusy(false);
+    }
+  };
+
+  const runMyLibraryAction = async (
+    action: "open" | "refresh",
+  ): Promise<void> => {
+    setMyLibraryBusy(true);
+    setMyLibraryMessage(null);
+    try {
+      const granted = await requestOriginPermission(
+        "https://library.shibaura-it.ac.jp/*",
+      );
+      if (!granted) {
+        setMyLibraryStatus("not_connected");
+        setMyLibraryMessage("My Libraryの読み取り許可が得られませんでした。");
+        return;
+      }
+      if (action === "open") {
+        await new Promise<void>((resolve, reject) => {
+          chrome.runtime.sendMessage(
+            { type: MESSAGE_TYPES.myLibraryOpen },
+            (response: { ok?: boolean } | undefined) => {
+              if (chrome.runtime.lastError || !response?.ok)
+                reject(new Error("open failed"));
+              else resolve();
+            },
+          );
+        });
+        setMyLibraryStatus("reauth_required");
+        setMyLibraryMessage(
+          "My Libraryを開きました。ログイン後に再確認してください。",
+        );
+        return;
+      }
+      const result = await new Promise<MyLibraryReadResponse>(
+        (resolve, reject) => {
+          chrome.runtime.sendMessage(
+            {
+              type: MESSAGE_TYPES.myLibraryRead,
+              tool_call_id: "connection-check",
+            },
+            (response: MyLibraryReadResponse | undefined) => {
+              if (chrome.runtime.lastError || !response)
+                reject(new Error("read failed"));
+              else resolve(response);
+            },
+          );
+        },
+      );
+      if (result.status === "known") {
+        setMyLibraryStatus("connected");
+        setMyLibraryMessage(
+          "貸出・予約状況を読み取れます。詳細は保存していません。",
+        );
+      } else if (result.status === "reauth_required") {
+        setMyLibraryStatus("reauth_required");
+        setMyLibraryMessage("My Libraryへログインしてから再確認してください。");
+      } else {
+        setMyLibraryStatus("unavailable");
+        setMyLibraryMessage(
+          "My Libraryの画面構造または接続状態を確認できませんでした。",
+        );
+      }
+    } catch {
+      setMyLibraryStatus("unavailable");
+      setMyLibraryMessage(
+        "My Libraryを利用できません。時間をおいて再試行してください。",
+      );
+    } finally {
+      setMyLibraryBusy(false);
     }
   };
 
@@ -1392,12 +1470,26 @@ export function App({
               }
             />
 
-            <MoodleCard
+            <CampusServiceCard
+              id="moodle-title"
+              title="SIT Moodle"
+              description="ダッシュボードは明示的に確認したときだけ読み取ります。詳細は端末内に留めます。"
               status={moodleStatus}
               busy={moodleBusy || interactionLocked}
               message={moodleMessage}
               onOpen={() => void runMoodleAction("open")}
               onRefresh={() => void runMoodleAction("refresh")}
+            />
+
+            <CampusServiceCard
+              id="my-library-title"
+              title="My Library"
+              description="貸出・予約状況は明示的に確認したときだけ読み取ります。書名などの詳細は端末内に留めます。"
+              status={myLibraryStatus}
+              busy={myLibraryBusy || interactionLocked}
+              message={myLibraryMessage}
+              onOpen={() => void runMyLibraryAction("open")}
+              onRefresh={() => void runMyLibraryAction("refresh")}
             />
 
             <DriveFixtureCard

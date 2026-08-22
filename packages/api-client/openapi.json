@@ -836,7 +836,8 @@
               "syllabus_search",
               "browser_read_url",
               "sitrus_read",
-              "moodle_read"
+              "moodle_read",
+              "my_library_read"
             ],
             "title": "Name"
           },
@@ -996,7 +997,8 @@
               "syllabus_search",
               "browser_read_url",
               "sitrus_read",
-              "moodle_read"
+              "moodle_read",
+              "my_library_read"
             ],
             "title": "Name"
           },
@@ -1037,7 +1039,8 @@
               "syllabus_search",
               "browser_read_url",
               "sitrus_read",
-              "moodle_read"
+              "moodle_read",
+              "my_library_read"
             ],
             "title": "Name"
           },
@@ -1068,6 +1071,9 @@
               },
               {
                 "$ref": "#/components/schemas/MoodleReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/MyLibraryReadResult"
               }
             ],
             "title": "Result"
@@ -1251,6 +1257,84 @@
         ],
         "title": "MoodleReadResult",
         "description": "Derived Moodle dashboard counts safe for an explicitly confirmed run.\n\nCourse names, activity titles, course IDs, user identity, submission data,\nand source HTML deliberately have no representation in this model."
+      },
+      "MyLibraryReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "loan_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Loan Count"
+          },
+          "reservation_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Reservation Count"
+          },
+          "overdue_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Overdue Count"
+          },
+          "renewable_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Renewable Count"
+          },
+          "earliest_due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Due Date"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "loan_count",
+          "reservation_count",
+          "overdue_count",
+          "renewable_count"
+        ],
+        "title": "MyLibraryReadResult",
+        "description": "Derived My Library counts safe for an explicitly confirmed run.\n\nBook titles, authors, material identifiers, call numbers, user identity,\nand SSO data deliberately have no representation in this model."
       },
       "OrbitEvent": {
         "properties": {

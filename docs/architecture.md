@@ -247,6 +247,10 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。送信前には、Full accessでもrunごとに確認し、Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
 
+`my_library_read`は、確認済みの正規入口`library.shibaura-it.ac.jp/portal/portal/selectLogin/?lang=ja`から、画面内の貸出状況・予約状況メニューだけを操作する。確認済みの`/portal/admin/selectMenu/doSelectPublicUseMainMenu`以外は読まず、代替URLを推測しない。読み取り用に開いた非アクティブタブは結果取得後に閉じ、未認証時だけ正規入口を表示して利用者のログインを待つ。資格情報の入力、貸出延長、予約取消は行わない。
+
+書名、著者、返却期限、延長可否、予約状態は拡張機能のReact stateにだけ保持する。Agentへ渡す`MyLibraryReadResult`は貸出件数、予約件数、延滞件数、延長可能件数、最短返却期限だけで、Evidence locatorは`orbit-library://summary/<opaque>`とする。資料ID、請求記号、氏名、メールアドレス、SSO URLのtoken、query、fragmentにはAPI Schema上の表現を与えない。
+
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
 ## Connectorの境界

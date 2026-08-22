@@ -6,6 +6,7 @@ import {
   type Fetcher,
   isActionProposal,
   isMoodleReadResult,
+  isMyLibraryReadResult,
   isSitrusGradeResult,
 } from "./client";
 
@@ -67,6 +68,29 @@ describe("AgentApiClient", () => {
     expect(isMoodleReadResult({ ...result, status: "reauth_required" })).toBe(
       false,
     );
+  });
+
+  it("accepts My Library aggregates and rejects bibliographic details", () => {
+    const result = {
+      schema_version: "v1",
+      status: "known",
+      loan_count: 2,
+      reservation_count: 1,
+      overdue_count: 0,
+      renewable_count: 1,
+      earliest_due_date: "2026-09-01",
+      reason_code: null,
+    };
+    expect(isMyLibraryReadResult(result)).toBe(true);
+    expect(
+      isMyLibraryReadResult({ ...result, titles: ["must stay local"] }),
+    ).toBe(false);
+    expect(
+      isMyLibraryReadResult({ ...result, status: "reauth_required" }),
+    ).toBe(false);
+    expect(
+      isMyLibraryReadResult({ ...result, earliest_due_date: "2026-99-99" }),
+    ).toBe(false);
   });
 
   it("accepts a minimized SITRUS result but not a PDF or identity field", () => {

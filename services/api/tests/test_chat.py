@@ -5,12 +5,14 @@ from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     MOODLE_TOOL_NAME,
+    MY_LIBRARY_TOOL_NAME,
     SCOMBZ_READ_TOOL_NAME,
     SCOMBZ_TOOL_NAME,
     ChatDraft,
     DeferredChatRun,
     google_calendar_availability,
     moodle_read,
+    my_library_read,
     scombz_page_summary,
 )
 from orbit_api.main import app
@@ -21,6 +23,7 @@ from orbit_api.models import (
     ChatRunRequest,
     EvidenceLink,
     MoodleReadResult,
+    MyLibraryReadResult,
     ScombzPageSummaryResult,
     ScombzReadResult,
 )
@@ -263,6 +266,74 @@ def test_moodle_projection_rejects_detail_and_unavailable_data() -> None:
         )
 
 
+def test_fixture_chat_route_runs_my_library_derived_tool_loop(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-my-library",
+                "message": "My Libraryの貸出と予約を確認して",
+                "history": [],
+                "client_tools": [{"name": "my_library_read", "version": 1}],
+            },
+        ).json()
+        assert first["status"] == "tool_required"
+        call = first["calls"][0]
+        second = client.post(
+            f"/v1/chat/runs/{first['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": "my_library_read",
+                "version": 1,
+                "result": {
+                    "schema_version": "v1",
+                    "status": "known",
+                    "loan_count": 6,
+                    "reservation_count": 0,
+                    "overdue_count": 0,
+                    "renewable_count": 5,
+                    "earliest_due_date": "2026-09-01",
+                    "reason_code": None,
+                },
+            },
+        )
+    assert second.status_code == 200
+    completed = second.json()
+    assert completed["status"] == "completed"
+    assert "貸出中: 6件" in completed["message"]["content_markdown"]
+    assert completed["message"]["evidence"][0]["source_type"] == "library"
+    serialized = second.text
+    assert "分散システム入門" not in serialized
+    assert "material-secret" not in serialized
+
+
+def test_my_library_projection_rejects_detail_and_unavailable_data() -> None:
+    with pytest.raises(ValueError):
+        MyLibraryReadResult.model_validate(
+            {
+                "schema_version": "v1",
+                "status": "known",
+                "loan_count": 1,
+                "reservation_count": 0,
+                "overdue_count": 0,
+                "renewable_count": 1,
+                "earliest_due_date": "2026-09-01",
+                "reason_code": None,
+                "titles": ["must stay local"],
+            }
+        )
+    with pytest.raises(ValueError, match="cannot include derived data"):
+        MyLibraryReadResult(
+            status="reauth_required",
+            loan_count=1,
+            reservation_count=0,
+            overdue_count=0,
+            renewable_count=0,
+            earliest_due_date=None,
+            reason_code="login_required",
+        )
 @pytest.mark.asyncio
 async def test_fixture_chat_replays_local_scombz_read_without_exposing_restricted_values() -> None:
     backend = FixtureChatBackend()
@@ -526,3 +597,77 @@ async def test_function_model_sends_only_moodle_derived_projection(monkeypatch) 
     assert "course_count" in captured[0]
     assert "制御工学" not in captured[0]
     assert "レポート1" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_function_model_sends_only_my_library_derived_projection(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    calls = [0]
+    captured = [""]
+
+    def model_function(messages, _info):
+        calls[0] += 1
+        if calls[0] == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        MY_LIBRARY_TOOL_NAME,
+                        {},
+                        tool_call_id="my-library-call-1",
+                    )
+                ]
+            )
+        captured[0] = str(messages)
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "返却期限を確認しました。",
+                        "evidence_ids": ["my-library-summary-v1-run"],
+                    },
+                    tool_call_id="final-my-library-1",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="my-library-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[my_library_read],
+    )
+    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    first = await backend.start_chat(
+        conversation_id="conversation-my-library",
+        message="My Libraryを確認して",
+        history=[],
+        advertised_tools={MY_LIBRARY_TOOL_NAME},
+    )
+    assert first.deferred is not None
+    evidence = EvidenceLink(
+        evidence_id="my-library-summary-v1-run",
+        title="My Library概要",
+        source_type="library",
+        locator="orbit-library://summary/1234567890abcdef",
+        data_classification="personal",
+    )
+    second = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=MyLibraryReadResult(
+            status="known",
+            loan_count=2,
+            reservation_count=1,
+            overdue_count=0,
+            renewable_count=1,
+            earliest_due_date="2026-09-01",
+            reason_code=None,
+        ),
+        context=[evidence],
+        advertised_tools={MY_LIBRARY_TOOL_NAME},
+    )
+    assert second.draft is not None
+    assert "loan_count" in captured[0]
+    assert "分散システム入門" not in captured[0]
+    assert "material-secret" not in captured[0]

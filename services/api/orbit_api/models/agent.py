@@ -334,6 +334,46 @@ class MoodleReadResult(StrictApiModel):
         return self
 
 
+class MyLibraryReadResult(StrictApiModel):
+    """Derived My Library counts safe for an explicitly confirmed run.
+
+    Book titles, authors, material identifiers, call numbers, user identity,
+    and SSO data deliberately have no representation in this model.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "reauth_required", "unavailable"]
+    loan_count: StrictInt = Field(ge=0, le=1000)
+    reservation_count: StrictInt = Field(ge=0, le=1000)
+    overdue_count: StrictInt = Field(ge=0, le=1000)
+    renewable_count: StrictInt = Field(ge=0, le=1000)
+    earliest_due_date: StrictStr | None = Field(default=None, max_length=10)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "MyLibraryReadResult":
+        if self.earliest_due_date is not None:
+            try:
+                datetime.strptime(self.earliest_due_date, "%Y-%m-%d")
+            except ValueError as error:
+                raise ValueError(
+                    "My Library due dates must use YYYY-MM-DD."
+                ) from error
+        if self.status != "known" and (
+            self.loan_count
+            or self.reservation_count
+            or self.overdue_count
+            or self.renewable_count
+            or self.earliest_due_date is not None
+        ):
+            raise ValueError("Unavailable My Library results cannot include derived data.")
+        if self.overdue_count > self.loan_count:
+            raise ValueError("My Library overdue count cannot exceed loan count.")
+        if self.renewable_count > self.loan_count:
+            raise ValueError("My Library renewable count cannot exceed loan count.")
+        return self
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
@@ -419,6 +459,7 @@ ChatToolName = Literal[
     "browser_read_url",
     "sitrus_read",
     "moodle_read",
+    "my_library_read",
 ]
 
 
@@ -467,6 +508,7 @@ class ChatToolResultRequest(StrictApiModel):
         | BrowserReadResult
         | SitrusGradeResult
         | MoodleReadResult
+        | MyLibraryReadResult
     )
 
     @model_validator(mode="after")
@@ -489,6 +531,10 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("SITRUS results must use SitrusGradeResult.")
         if self.name == "moodle_read" and not isinstance(self.result, MoodleReadResult):
             raise ValueError("Moodle results must use MoodleReadResult.")
+        if self.name == "my_library_read" and not isinstance(
+            self.result, MyLibraryReadResult
+        ):
+            raise ValueError("My Library results must use MyLibraryReadResult.")
         return self
 
 
