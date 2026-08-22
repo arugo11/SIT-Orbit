@@ -349,6 +349,12 @@ ES生成はAzure、FastAPI、W&Bへ送信せず、Chrome Prompt APIが利用で�
 
 通常操作は「実行を確認」の一段階、推薦応募は同じpreviewに対して一次確認後に「推薦応募を実行する」の赤色二次確認を要求する。確認前のexecutor呼出し、期限切れpreviewの実行、replay、拒否済みpreviewの再利用を防ぐ。実行は後続branchで正式なCAST API、test account、確認済みwrite pathが揃った場合にだけ注入できる。Chrome拡張のメッセージ／権限境界を越える実装は追加せず、既存のcontent-scriptとService Workerの確認経路へ接続する。[Chrome messaging](https://developer.chrome.com/docs/extensions/develop/concepts/messaging)
 
+### CAST品質リリース検証
+
+`runCastQualityRelease`は、CAST Career Agentを公開する前にsyntheticまたはpublic fixtureだけで実行する決定的な品質評価器である。仮名化payloadの漏洩件数、Evidence-grounded ESの全文章にEvidence IDと引用があること、変更フィードの期待キーに対するprecision／recall、応募ミッションのイベント順序とCalendar preview後のconfirmを検査する。報告書には名前、人物ID、URL、Snapshot本文、禁止語そのものを含めず、件数・真偽値・集計値だけを返す。
+
+検索、Prompt、仮名化の処理時間はmedian／p95の観測値として記録できるが、固定閾値の品質Gateにはしない。これらは環境差を原因に機能を成功扱い・失敗扱いするためではなく、改善のための計測である。CIは既存のfixture品質検査へこの評価器を含め、CAST、Azure、Googleのlive APIや外部モデルを呼び出さない。新しいquality専用サービス、database、queue、modelは追加しない。
+
 ### 多視点キャリアレビュー
 
 `reviewCareerDraft`は、Evidence-grounded ESの下書きと確認済みEvidence projectionだけを入力にして、人事、技術部門、芝浦卒業生、初見の第三者という4つの視点をそれぞれ独立したChrome Prompt API sessionで実行する。各sessionへ他の視点の結果や人物対応表、`person_ref`、資料locator、raw HTML、tokenを渡さない。Prompt APIが利用できない場合はAzureや別Providerへfallbackせず、レビューを未実行として端末内で停止する。
