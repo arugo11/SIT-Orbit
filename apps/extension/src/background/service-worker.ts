@@ -11,6 +11,13 @@ import {
   searchOfficialSyllabus,
 } from "../connectors/syllabus-search";
 import {
+  CAST_ENTRY_URL,
+  CAST_ORIGIN,
+  CAST_TOP_URL,
+  type CastLocalSnapshot,
+  projectCastForAgent,
+} from "../content/cast-reader";
+import {
   MOODLE_DASHBOARD_URL,
   MOODLE_LOGIN_URL,
   MOODLE_ORIGIN,
@@ -37,9 +44,12 @@ import {
 import {
   type BrowserReadResponse,
   type CalendarCommandMessage,
+  type CastReadResponse,
   type DriveCommandMessage,
   isBrowserReadMessage,
   isCalendarCommandMessage,
+  isCastOpenMessage,
+  isCastReadMessage,
   isDriveCommandMessage,
   isGetPageContextMessage,
   isGetWorkspaceSessionMessage,
@@ -83,6 +93,7 @@ const BUILT_IN_ORIGINS = new Set([
 
 const MOODLE_PERMISSION_PATTERN = `${MOODLE_ORIGIN}/*`;
 const MY_LIBRARY_PERMISSION_PATTERN = `${MY_LIBRARY_ORIGIN}/*`;
+const CAST_PERMISSION_PATTERN = `${CAST_ORIGIN}/*`;
 
 function browserOrigin(
   value: string,
@@ -859,6 +870,175 @@ async function handleMyLibraryRead(): Promise<MyLibraryReadResponse> {
   };
 }
 
+async function readCastDashboardInPage(): Promise<
+  | { status: "known"; detail: CastLocalSnapshot }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string }
+> {
+  try {
+    const origin = "https://shibaura.pita.services";
+    const current = new URL(location.href);
+    if (current.origin !== origin) {
+      return { status: "unavailable", reason_code: "unexpected_origin" };
+    }
+    if (
+      current.pathname === "/career/session_timeout" ||
+      current.pathname === "/career/login" ||
+      document.querySelector('input[type="password"]')
+    ) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    if (current.pathname !== "/career/top/student") {
+      return { status: "unavailable", reason_code: "unexpected_path" };
+    }
+    const clean = (value: string | null | undefined, limit: number) =>
+      (value ?? "").replace(/\s+/gu, " ").trim().slice(0, limit);
+    const count = (selector: string): number | null => {
+      const value = clean(document.querySelector(selector)?.textContent, 20);
+      if (!/^\d+$/u.test(value)) return null;
+      const parsed = Number(value);
+      return Number.isSafeInteger(parsed) && parsed <= 100_000 ? parsed : null;
+    };
+    const date = (value: string): string | null => {
+      const match = value.match(/(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})/u);
+      if (!match) return null;
+      const year = Number(match[1]);
+      const month = Number(match[2]);
+      const day = Number(match[3]);
+      const parsed = new Date(Date.UTC(year, month - 1, day));
+      if (
+        parsed.getUTCFullYear() !== year ||
+        parsed.getUTCMonth() !== month - 1 ||
+        parsed.getUTCDate() !== day
+      ) {
+        return null;
+      }
+      return `${year.toString().padStart(4, "0")}-${month
+        .toString()
+        .padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+    };
+    const newJobCount = count("#job_offer_count");
+    const newInternshipCount = count("#internship_count");
+    const newEventCount = count("#company_session_count");
+    if (
+      newJobCount === null ||
+      newInternshipCount === null ||
+      newEventCount === null
+    ) {
+      return { status: "unavailable", reason_code: "structure_changed" };
+    }
+    const notices = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>(
+        'a[href^="/career/notice_detail_view"]:not(.notice-detail)',
+      ),
+    )
+      .map((link) => {
+        const title = clean(link.textContent, 300);
+        if (!title) return null;
+        const row = link.closest(".row");
+        if (!row) return null;
+        return {
+          title,
+          published_date: date(row?.textContent ?? ""),
+        };
+      })
+      .filter(
+        (item): item is { title: string; published_date: string | null } =>
+          item !== null,
+      )
+      .slice(0, 1000);
+    const hasCounselingReservation = Array.from(
+      document.querySelectorAll(".myCareerNotice"),
+    ).some((element) => {
+      const text = clean((element.closest(".row") ?? element).textContent, 500);
+      return /(相談|面談)/u.test(text) && /予約/u.test(text);
+    });
+    return {
+      status: "known",
+      detail: {
+        notices,
+        new_job_count: newJobCount,
+        new_internship_count: newInternshipCount,
+        new_event_count: newEventCount,
+        has_counseling_reservation: hasCounselingReservation,
+      },
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "dashboard_read_failed" };
+  }
+}
+
+function isCastEntryTab(tab: chrome.tabs.Tab): boolean {
+  if (!tab.url || tab.id === undefined) return false;
+  try {
+    const url = new URL(tab.url);
+    return (
+      url.origin === CAST_ORIGIN &&
+      ["/career", "/career/top/student", "/career/session_timeout"].includes(
+        url.pathname,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function openCastEntry(): Promise<void> {
+  const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
+  const existing = tabs.find(isCastEntryTab);
+  if (existing?.id !== undefined) {
+    await chrome.tabs.update(existing.id, { active: true });
+    if (existing.windowId !== undefined) {
+      await chrome.windows.update(existing.windowId, { focused: true });
+    }
+    if (existing.url !== CAST_TOP_URL) {
+      await chrome.tabs.update(existing.id, { url: CAST_ENTRY_URL });
+    }
+    return;
+  }
+  await chrome.tabs.create({ url: CAST_ENTRY_URL, active: true });
+}
+
+async function handleCastRead(): Promise<CastReadResponse> {
+  if (!(await hasBrowserPermission(CAST_PERMISSION_PATTERN, CAST_ORIGIN))) {
+    return {
+      status: "permission_required",
+      origin: CAST_ORIGIN,
+      pattern: CAST_PERMISSION_PATTERN,
+    };
+  }
+  try {
+    const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
+    const tab = tabs.find(
+      (candidate) =>
+        candidate.url === CAST_TOP_URL && candidate.id !== undefined,
+    );
+    if (!tab?.id) {
+      await openCastEntry();
+      return { status: "reauth_required", reason_code: "dashboard_not_open" };
+    }
+    const [injected] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: readCastDashboardInPage,
+    });
+    const value = injected?.result;
+    if (value?.status === "reauth_required") return value;
+    if (value?.status !== "known") {
+      return {
+        status: "unavailable",
+        reason_code: value?.reason_code ?? "invalid_projection",
+      };
+    }
+    return {
+      status: "known",
+      detail: value.detail,
+      projection: projectCastForAgent(value.detail),
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "cast_read_failed" };
+  }
+}
+
 function isTrustedExtensionPageSender(sender: chrome.runtime.MessageSender) {
   if (sender.id !== undefined && sender.id !== chrome.runtime.id) {
     return false;
@@ -1348,6 +1528,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void openMyLibraryEntry()
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+
+  if (isCastReadMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleCastRead().then(sendResponse);
+    return true;
+  }
+
+  if (isCastOpenMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    void openCastEntry()
       .then(() => sendResponse({ ok: true }))
       .catch(() => sendResponse({ ok: false }));
     return true;

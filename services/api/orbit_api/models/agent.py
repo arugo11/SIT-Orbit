@@ -374,6 +374,42 @@ class MyLibraryReadResult(StrictApiModel):
         return self
 
 
+class CastReadResult(StrictApiModel):
+    """Derived CAST dashboard counts safe for an explicitly confirmed run.
+
+    Notice text, career preferences, application history, user identity, and
+    submitted documents deliberately have no representation in this model.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "reauth_required", "unavailable"]
+    notice_count: StrictInt = Field(ge=0, le=1000)
+    new_job_count: StrictInt = Field(ge=0, le=100_000)
+    new_internship_count: StrictInt = Field(ge=0, le=100_000)
+    new_event_count: StrictInt = Field(ge=0, le=100_000)
+    has_counseling_reservation: StrictBool
+    nearest_notice_date: StrictStr | None = Field(default=None, max_length=10)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "CastReadResult":
+        if self.nearest_notice_date is not None:
+            try:
+                datetime.strptime(self.nearest_notice_date, "%Y-%m-%d")
+            except ValueError as error:
+                raise ValueError("CAST notice dates must use YYYY-MM-DD.") from error
+        if self.status != "known" and (
+            self.notice_count
+            or self.new_job_count
+            or self.new_internship_count
+            or self.new_event_count
+            or self.has_counseling_reservation
+            or self.nearest_notice_date is not None
+        ):
+            raise ValueError("Unavailable CAST results cannot include derived data.")
+        return self
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
@@ -460,6 +496,7 @@ ChatToolName = Literal[
     "sitrus_read",
     "moodle_read",
     "my_library_read",
+    "cast_read",
 ]
 
 
@@ -509,6 +546,7 @@ class ChatToolResultRequest(StrictApiModel):
         | SitrusGradeResult
         | MoodleReadResult
         | MyLibraryReadResult
+        | CastReadResult
     )
 
     @model_validator(mode="after")
@@ -535,6 +573,8 @@ class ChatToolResultRequest(StrictApiModel):
             self.result, MyLibraryReadResult
         ):
             raise ValueError("My Library results must use MyLibraryReadResult.")
+        if self.name == "cast_read" and not isinstance(self.result, CastReadResult):
+            raise ValueError("CAST results must use CastReadResult.")
         return self
 
 
@@ -587,9 +627,11 @@ __all__ = [
     "ChatToolResultRequest",
     "BrowserReadLink",
     "BrowserReadResult",
+    "CastReadResult",
     "SitrusGradeItem",
     "SitrusGradeResult",
     "MoodleReadResult",
+    "MyLibraryReadResult",
     "CalendarAvailabilityInterval",
     "CalendarAvailabilityResult",
     "ClientTool",

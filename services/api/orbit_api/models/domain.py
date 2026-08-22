@@ -21,6 +21,7 @@ class EvidenceLink(BaseModel):
         "calendar",
         "scombz",
         "library",
+        "career",
         "google_drive",
         "web",
     ]

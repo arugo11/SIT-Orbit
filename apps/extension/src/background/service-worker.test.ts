@@ -288,6 +288,56 @@ describe("service worker side panel contract", () => {
     expect(removeTab).toHaveBeenCalledTimes(2);
   });
 
+  it("returns only CAST aggregates while keeping notice titles local", async () => {
+    permissionsContains.mockResolvedValue(true);
+    queryTabs.mockResolvedValue([
+      {
+        id: 77,
+        url: "https://shibaura.pita.services/career/top/student",
+      },
+    ] as chrome.tabs.Tab[]);
+    executeScript.mockResolvedValue([
+      {
+        result: {
+          status: "known",
+          detail: {
+            notices: [
+              { title: "合成キャリア講座", published_date: "2026-08-20" },
+            ],
+            new_job_count: 4,
+            new_internship_count: 7,
+            new_event_count: 2,
+            has_counseling_reservation: true,
+          },
+        },
+      },
+    ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      { type: MESSAGE_TYPES.castRead, tool_call_id: "cast-call-1" },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        status: "known",
+        projection: expect.objectContaining({
+          notice_count: 1,
+          new_job_count: 4,
+          new_internship_count: 7,
+          new_event_count: 2,
+          has_counseling_reservation: true,
+        }),
+      }),
+    );
+    expect(JSON.stringify(payload.projection)).not.toContain(
+      "合成キャリア講座",
+    );
+    expect(JSON.stringify(storageValues)).not.toContain("合成キャリア講座");
+  });
+
   it("enables the panel per tab and preserves its path for ScombZ and other origins", async () => {
     onUpdated.dispatch(
       11,

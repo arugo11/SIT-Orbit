@@ -5,6 +5,7 @@ import {
   AgentApiError,
   type Fetcher,
   isActionProposal,
+  isCastReadResult,
   isMoodleReadResult,
   isMyLibraryReadResult,
   isSitrusGradeResult,
@@ -91,6 +92,47 @@ describe("AgentApiClient", () => {
     expect(
       isMyLibraryReadResult({ ...result, earliest_due_date: "2026-99-99" }),
     ).toBe(false);
+  });
+
+  it("accepts CAST aggregates and rejects local notice details", () => {
+    const result = {
+      schema_version: "v1",
+      status: "known",
+      notice_count: 3,
+      new_job_count: 4,
+      new_internship_count: 7,
+      new_event_count: 2,
+      has_counseling_reservation: false,
+      nearest_notice_date: "2026-08-20",
+      reason_code: null,
+    };
+    expect(isCastReadResult(result)).toBe(true);
+    expect(
+      isCastReadResult({ ...result, notice_titles: ["must stay local"] }),
+    ).toBe(false);
+    expect(isCastReadResult({ ...result, status: "reauth_required" })).toBe(
+      false,
+    );
+    expect(
+      isCastReadResult({ ...result, nearest_notice_date: "2026-99-99" }),
+    ).toBe(false);
+  });
+
+  it("accepts opaque CAST evidence as a career source", () => {
+    expect(
+      isActionProposal({
+        ...proposal,
+        evidence: [
+          {
+            evidence_id: "cast-summary-v1-synthetic",
+            title: "CAST概要",
+            source_type: "career",
+            locator: "orbit-cast://summary/1234567890abcdef",
+            data_classification: "personal",
+          },
+        ],
+      }),
+    ).toBe(true);
   });
 
   it("accepts a minimized SITRUS result but not a PDF or identity field", () => {
