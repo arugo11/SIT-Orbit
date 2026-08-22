@@ -139,6 +139,14 @@ Typed Snapshot
 
 Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM暗号化し、IndexedDBには暗号文、IV、schema versionだけを保存する。鍵は`chrome.storage.session`の短命領域とメモリにだけ置き、15分の無操作またはChrome終了でロックする。raw HTML、Cookie、OAuth token、PDF本体、復号済み対応表は保存しない。Vault全削除は利用者の明示操作で暗号文とmetadataを削除する。
 
+### Career Evidence Bank
+
+授業、研究、PBL、サークル、アルバイト、個人開発などの経験証拠は、Career Vault内の暗号化レコードとして保存する。各レコードは、主張、状況、利用者が行った行動、結果、出典種別、任意の`person_ref`、裏付け資料の種別・表示ラベル・sanitized locator、`draft`／`confirmed`状態を持つ。W3C PROV-Oは概念モデルとして参照するが、RDFやGraph Databaseは導入しない。
+
+`confirmed`記録だけを、Chrome Prompt APIに渡すためのローカルprojectionへ変換する。projectionは`evidence_id`、主張、状況、行動、結果、出典種別、資料件数に限定し、`person_ref`、元URLのquery／fragment、ファイル本体、ファイル名、復号済みVault値、作成・更新時刻を除外する。入力された数値・成果はそのまま保持し、モデルが新しい成果、人数、割合、因果関係を生成することを許可しない。
+
+Career Evidence Bankの記録、資料locator、人物対応表は、Azure、OpenAI、W&B、FastAPI、Chat履歴、runtime messageへ送信しない。個人証拠を外部モデルで扱う必要が生じた場合は、この例外を暗黙に広げず、Pseudonymization Gateway、Context Manifest、大学の許可範囲を満たす別変更として再審査する。raw PDFや添付ファイルは保存・アップロードせず、利用者が明示した表示情報だけを端末内で参照する。
+
 個人・第三者のCAST記録は仮名化しても現行ポリシーではAzureへ送らず、ChromeのオンデバイスPrompt APIで処理する。Prompt APIが利用できない場合にAzureや別Providerへ暗黙fallbackしない。Context Manifestで、データ種別、処理先、置換数、一般化項目、保存期間、送信payload previewを利用者へ示す。GoogleのGranular Consentと[Chromeの権限ガイド](https://developer.chrome.com/docs/extensions/develop/concepts/permission-warnings)をUI設計の参考にする。[Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api)、[OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)、[W3C Web Crypto](https://www.w3.org/TR/WebCryptoAPI/)に基づく。
 
 ### CAST横断検索のデータ境界
