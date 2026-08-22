@@ -35,6 +35,8 @@ export const MESSAGE_TYPES = {
   browserRead: "browser-read",
   syllabusSearch: "syllabus-search",
   sitrusRead: "sitrus-read",
+  moodleRead: "moodle-read",
+  moodleOpen: "moodle-open",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -109,6 +111,25 @@ export type SitrusReadResponse =
   | { status: "permission_required"; origin: string; pattern: string }
   | { status: "unavailable"; reason_code: string };
 
+export interface MoodleReadMessage {
+  type: typeof MESSAGE_TYPES.moodleRead;
+  tool_call_id: string;
+}
+
+export interface MoodleOpenMessage {
+  type: typeof MESSAGE_TYPES.moodleOpen;
+}
+
+export type MoodleReadResponse =
+  | {
+      status: "known";
+      projection: unknown;
+      detail: import("../content/moodle-reader").MoodleLocalSnapshot;
+    }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
 export interface OpenWorkspaceResponse {
   ok: boolean;
   session?: WorkspaceSession;
@@ -164,7 +185,9 @@ export type ExtensionMessage =
   | WorkspaceSourceUnavailableMessage
   | BrowserReadMessage
   | SyllabusSearchMessage
-  | SitrusReadMessage;
+  | SitrusReadMessage
+  | MoodleReadMessage
+  | MoodleOpenMessage;
 
 export function isBrowserReadMessage(
   message: unknown,
@@ -211,6 +234,23 @@ export function isSitrusReadMessage(
       message.page_url,
     )
   );
+}
+
+export function isMoodleReadMessage(
+  message: unknown,
+): message is MoodleReadMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.moodleRead &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0
+  );
+}
+
+export function isMoodleOpenMessage(
+  message: unknown,
+): message is MoodleOpenMessage {
+  return isMessageType(message, MESSAGE_TYPES.moodleOpen);
 }
 
 export function isOpenWorkspaceMessage(

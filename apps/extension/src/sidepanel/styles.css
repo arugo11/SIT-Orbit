@@ -869,6 +869,22 @@ textarea {
   padding-left: 18px;
 }
 
+.chat-local-detail {
+  margin-top: 8px;
+  border-top: 1px solid #dce5eb;
+  padding-top: 8px;
+  color: #3f5666;
+}
+
+.chat-local-detail p,
+.chat-local-detail ul {
+  margin: 4px 0 0;
+}
+
+.chat-local-detail ul {
+  padding-left: 18px;
+}
+
 .chat-proposal {
   display: grid;
   gap: 6px;

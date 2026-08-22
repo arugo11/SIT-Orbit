@@ -72,6 +72,10 @@ const updateTab = vi.fn(async (_tabId: number, _properties: unknown) => ({}));
 const updateWindow = vi.fn(
   async (_windowId: number, _properties: unknown) => ({}),
 );
+const permissionsContains = vi.fn(async (_permissions: unknown) => false);
+const executeScript = vi.fn(
+  async (_details: unknown): Promise<Array<{ result?: unknown }>> => [],
+);
 
 const chromeMock = {
   runtime: {
@@ -109,6 +113,12 @@ const chromeMock = {
   windows: {
     update: updateWindow,
   },
+  permissions: {
+    contains: permissionsContains,
+  },
+  scripting: {
+    executeScript,
+  },
 } as unknown as typeof chrome;
 
 Object.defineProperty(globalThis, "chrome", {
@@ -142,9 +152,62 @@ describe("service worker side panel contract", () => {
     createTab.mockClear();
     updateTab.mockClear();
     updateWindow.mockClear();
+    permissionsContains.mockReset();
+    permissionsContains.mockResolvedValue(false);
+    executeScript.mockReset();
+    executeScript.mockResolvedValue([]);
     for (const key of Object.keys(storageValues)) {
       delete storageValues[key];
     }
+  });
+
+  it("returns only Moodle aggregates while keeping local detail in the extension response", async () => {
+    permissionsContains.mockResolvedValue(true);
+    queryTabs.mockResolvedValue([
+      {
+        id: 55,
+        url: "https://moodle.sic.shibaura-it.ac.jp/moodle/my/",
+      },
+    ] as chrome.tabs.Tab[]);
+    executeScript.mockResolvedValue([
+      {
+        result: {
+          status: "known",
+          detail: {
+            courses: ["制御工学"],
+            upcoming: [
+              {
+                title: "レポート1",
+                course: "制御工学",
+                due_at: "2026-08-24T06:00:00.000Z",
+                overdue: false,
+              },
+            ],
+            unread_notification_count: 2,
+          },
+        },
+      },
+    ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      { type: MESSAGE_TYPES.moodleRead, tool_call_id: "moodle-call-1" },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload).toEqual(
+      expect.objectContaining({
+        status: "known",
+        projection: expect.objectContaining({
+          course_count: 1,
+          upcoming_item_count: 1,
+          unread_notification_count: 2,
+        }),
+      }),
+    );
+    expect(JSON.stringify(payload.projection)).not.toContain("制御工学");
+    expect(JSON.stringify(payload.projection)).not.toContain("レポート1");
   });
 
   it("enables the panel per tab and preserves its path for ScombZ and other origins", async () => {

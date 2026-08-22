@@ -7,6 +7,7 @@ import {
   DEFAULT_AGENT_API_BASE,
   type OrbitEvent,
 } from "../api/client";
+import { requestOriginPermission } from "../chat/access-policy";
 import { ChatPanel } from "../chat/ChatPanel";
 import {
   type CalendarConnector,
@@ -39,6 +40,7 @@ import {
   isWorkspaceOwnershipChangedMessage,
   isWorkspaceSourceUnavailableMessage,
   MESSAGE_TYPES,
+  type MoodleReadResponse,
   type OpenWorkspaceResponse,
   type WorkspaceStatusResponse,
 } from "../shared/messages";
@@ -115,6 +117,63 @@ function requestCalendarCommand(
       },
     );
   });
+}
+
+type MoodleConnectionStatus =
+  | "not_connected"
+  | "connected"
+  | "reauth_required"
+  | "unavailable";
+
+function MoodleCard({
+  status,
+  busy,
+  message,
+  onOpen,
+  onRefresh,
+}: {
+  status: MoodleConnectionStatus;
+  busy: boolean;
+  message: string | null;
+  onOpen: () => void;
+  onRefresh: () => void;
+}) {
+  const label = {
+    not_connected: "未接続",
+    connected: "接続済み",
+    reauth_required: "再認証が必要",
+    unavailable: "利用できません",
+  }[status];
+  return (
+    <section className="connector-card" aria-labelledby="moodle-title">
+      <div className="section-heading">
+        <h2 id="moodle-title">SIT Moodle</h2>
+        <span className="section-note">{label}</span>
+      </div>
+      <p className="connector-description">
+        {message ??
+          "ダッシュボードは明示的に確認したときだけ読み取ります。詳細は端末内に留めます。"}
+      </p>
+      <div className="button-row">
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy}
+          onClick={onOpen}
+        >
+          開く
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy}
+          onClick={onRefresh}
+        >
+          {busy ? "確認中…" : "再確認"}
+        </button>
+      </div>
+    </section>
+  );
 }
 
 export function requestDriveCommand(
@@ -759,6 +818,10 @@ export function App({
     retryable: false,
   });
   const [driveBusy, setDriveBusy] = useState(false);
+  const [moodleStatus, setMoodleStatus] =
+    useState<MoodleConnectionStatus>("not_connected");
+  const [moodleMessage, setMoodleMessage] = useState<string | null>(null);
+  const [moodleBusy, setMoodleBusy] = useState(false);
   const [driveFixtureConnector, setDriveFixtureConnector] = useState(() =>
     createFixtureDriveConnector({
       candidates: DRIVE_FIXTURE_CANDIDATE,
@@ -851,6 +914,74 @@ export function App({
       }));
     } finally {
       setDriveFixtureBusy(false);
+    }
+  };
+
+  const runMoodleAction = async (action: "open" | "refresh"): Promise<void> => {
+    setMoodleBusy(true);
+    setMoodleMessage(null);
+    try {
+      const granted = await requestOriginPermission(
+        "https://moodle.sic.shibaura-it.ac.jp/*",
+      );
+      if (!granted) {
+        setMoodleStatus("not_connected");
+        setMoodleMessage("Moodleの読み取り許可が得られませんでした。");
+        return;
+      }
+      if (action === "open") {
+        await new Promise<void>((resolve, reject) => {
+          chrome.runtime.sendMessage(
+            { type: MESSAGE_TYPES.moodleOpen },
+            (response: { ok?: boolean } | undefined) => {
+              if (chrome.runtime.lastError || !response?.ok)
+                reject(new Error("open failed"));
+              else resolve();
+            },
+          );
+        });
+        setMoodleStatus("reauth_required");
+        setMoodleMessage(
+          "Moodleを開きました。ログイン後に再確認してください。",
+        );
+        return;
+      }
+      const result = await new Promise<MoodleReadResponse>(
+        (resolve, reject) => {
+          chrome.runtime.sendMessage(
+            {
+              type: MESSAGE_TYPES.moodleRead,
+              tool_call_id: "connection-check",
+            },
+            (response: MoodleReadResponse | undefined) => {
+              if (chrome.runtime.lastError || !response)
+                reject(new Error("read failed"));
+              else resolve(response);
+            },
+          );
+        },
+      );
+      if (result.status === "known") {
+        setMoodleStatus("connected");
+        setMoodleMessage(
+          "ダッシュボードを読み取れます。詳細は保存していません。",
+        );
+      } else if (result.status === "reauth_required") {
+        setMoodleStatus("reauth_required");
+        setMoodleMessage("Moodleへログインしてから再確認してください。");
+      } else {
+        setMoodleStatus("unavailable");
+        setMoodleMessage(
+          "Moodleの画面構造または接続状態を確認できませんでした。",
+        );
+      }
+    } catch {
+      setMoodleStatus("unavailable");
+      setMoodleMessage(
+        "Moodleを利用できません。時間をおいて再試行してください。",
+      );
+    } finally {
+      setMoodleBusy(false);
     }
   };
 
@@ -1259,6 +1390,14 @@ export function App({
               onDeselect={(selectionId) =>
                 void runDriveAction("deselect", selectionId)
               }
+            />
+
+            <MoodleCard
+              status={moodleStatus}
+              busy={moodleBusy || interactionLocked}
+              message={moodleMessage}
+              onOpen={() => void runMoodleAction("open")}
+              onRefresh={() => void runMoodleAction("refresh")}
             />
 
             <DriveFixtureCard

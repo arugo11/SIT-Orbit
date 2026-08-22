@@ -241,6 +241,12 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 成績値は個人情報のため、都度の利用者確認を必須とする。現行のAgent契約ではこの結果を外部LLMやW&Bへ送らず、`fixture` BackendのローカルChatでのみ回答に使う。ページが閉じた、別URLへ遷移した、またはPDF.jsを利用できない場合は成功扱いにしない。
 
+### SIT Moodleダッシュボードの参照
+
+`moodle_read`は、確認済みの正規origin `moodle.sic.shibaura-it.ac.jp`と`/moodle/my/`だけを対象にする。利用者がChatまたは接続設定から明示的に実行した場合だけ、既に開かれているダッシュボードをIsolated Worldで読み取る。未認証時は`/moodle/login/index.php`を開くが、資格情報の入力や保存は行わない。未知のpath、404、ログイン画面、構造不一致を空データの成功として扱わない。
+
+コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。送信前には、Full accessでもrunごとに確認し、Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
+
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
 ## Connectorの境界

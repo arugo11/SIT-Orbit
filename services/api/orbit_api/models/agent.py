@@ -296,6 +296,44 @@ class SitrusGradeResult(StrictApiModel):
         return self
 
 
+class MoodleReadResult(StrictApiModel):
+    """Derived Moodle dashboard counts safe for an explicitly confirmed run.
+
+    Course names, activity titles, course IDs, user identity, submission data,
+    and source HTML deliberately have no representation in this model.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "reauth_required", "unavailable"]
+    course_count: StrictInt = Field(ge=0, le=1000)
+    upcoming_item_count: StrictInt = Field(ge=0, le=1000)
+    overdue_count: StrictInt = Field(ge=0, le=1000)
+    earliest_due_at: StrictStr | None = Field(default=None, max_length=40)
+    unread_notification_count: StrictInt = Field(ge=0, le=10000)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "MoodleReadResult":
+        if self.earliest_due_at is not None:
+            try:
+                due_at = datetime.fromisoformat(
+                    self.earliest_due_at.replace("Z", "+00:00")
+                )
+            except ValueError as error:
+                raise ValueError("Moodle due dates must use RFC3339 timestamps.") from error
+            if due_at.tzinfo is None:
+                raise ValueError("Moodle due dates must include a timezone.")
+        if self.status != "known" and (
+            self.course_count
+            or self.upcoming_item_count
+            or self.overdue_count
+            or self.earliest_due_at is not None
+            or self.unread_notification_count
+        ):
+            raise ValueError("Unavailable Moodle results cannot include derived data.")
+        return self
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
@@ -380,6 +418,7 @@ ChatToolName = Literal[
     "syllabus_search",
     "browser_read_url",
     "sitrus_read",
+    "moodle_read",
 ]
 
 
@@ -397,7 +436,7 @@ class ChatRunRequest(StrictApiModel):
     conversation_id: StrictStr = Field(min_length=1, max_length=200)
     message: StrictStr = Field(min_length=1, max_length=8000)
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
-    client_tools: list[ChatClientTool] = Field(default_factory=list, max_length=8)
+    client_tools: list[ChatClientTool] = Field(default_factory=list, max_length=12)
 
     @model_validator(mode="after")
     def history_is_bounded(self) -> "ChatRunRequest":
@@ -427,6 +466,7 @@ class ChatToolResultRequest(StrictApiModel):
         | SyllabusSearchResult
         | BrowserReadResult
         | SitrusGradeResult
+        | MoodleReadResult
     )
 
     @model_validator(mode="after")
@@ -447,6 +487,8 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("Browser results must use BrowserReadResult.")
         if self.name == "sitrus_read" and not isinstance(self.result, SitrusGradeResult):
             raise ValueError("SITRUS results must use SitrusGradeResult.")
+        if self.name == "moodle_read" and not isinstance(self.result, MoodleReadResult):
+            raise ValueError("Moodle results must use MoodleReadResult.")
         return self
 
 
@@ -501,6 +543,7 @@ __all__ = [
     "BrowserReadResult",
     "SitrusGradeItem",
     "SitrusGradeResult",
+    "MoodleReadResult",
     "CalendarAvailabilityInterval",
     "CalendarAvailabilityResult",
     "ClientTool",

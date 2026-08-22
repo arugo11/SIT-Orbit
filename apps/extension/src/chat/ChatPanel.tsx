@@ -6,6 +6,7 @@ import {
   type ChatToolResultRequest,
   DEFAULT_AGENT_API_BASE,
   isBrowserReadResult,
+  isMoodleReadResult,
   isSitrusGradeResult,
   isSyllabusSearchResult,
   type SyllabusSearchResult,
@@ -16,6 +17,10 @@ import {
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
 import {
+  MOODLE_DASHBOARD_URL,
+  type MoodleLocalSnapshot,
+} from "../content/moodle-reader";
+import {
   isSitrusGradeUrl,
   type PageContext,
   projectScombzPageSummary,
@@ -23,6 +28,7 @@ import {
 } from "../content/page-context";
 import type {
   BrowserReadResponse,
+  MoodleReadResponse,
   SitrusReadResponse,
 } from "../shared/messages";
 import {
@@ -68,6 +74,8 @@ function toolLabel(name: string): string {
       return "ページを参照中";
     case "sitrus_read":
       return "SITRUSの成績を確認中";
+    case "moodle_read":
+      return "Moodleを確認中";
     default:
       return "情報を確認中";
   }
@@ -99,7 +107,8 @@ function toolResultRequest(
     | "google_calendar_availability"
     | "syllabus_search"
     | "browser_read_url"
-    | "sitrus_read",
+    | "sitrus_read"
+    | "moodle_read",
   result: ChatToolResultRequest["result"],
 ): ChatToolResultRequest {
   return {
@@ -126,13 +135,23 @@ class BrowserAccessRequiredError extends Error {
   readonly pattern: string;
   readonly origin: string;
   readonly url: string;
+  readonly approvalKey: string;
+  readonly disclosure: string | null;
 
-  constructor(url: string, origin: string, pattern: string) {
+  constructor(
+    url: string,
+    origin: string,
+    pattern: string,
+    approvalKey = url,
+    disclosure: string | null = null,
+  ) {
     super("このサイトを読むには許可が必要です。");
     this.name = "BrowserAccessRequiredError";
     this.url = url;
     this.origin = origin;
     this.pattern = pattern;
+    this.approvalKey = approvalKey;
+    this.disclosure = disclosure;
   }
 }
 
@@ -143,6 +162,8 @@ interface PendingPermission {
   response: Extract<ChatRunResponse, { status: "tool_required" }>;
   conversation: ChatConversation;
   seenCallIds: string[];
+  approvalKey: string;
+  disclosure: string | null;
 }
 
 export function ChatPanel({
@@ -167,6 +188,9 @@ export function ChatPanel({
   const [error, setError] = useState<string | null>(null);
   const [permissionPrompt, setPermissionPrompt] =
     useState<PendingPermission | null>(null);
+  const [localMoodleDetails, setLocalMoodleDetails] = useState<
+    Record<string, MoodleLocalSnapshot>
+  >({});
   const sensitiveApproval = useRef(new Set<string>());
 
   const pageSummary = useMemo(
@@ -207,7 +231,8 @@ export function ChatPanel({
         | "google_calendar_availability"
         | "syllabus_search"
         | "browser_read_url"
-        | "sitrus_read";
+        | "sitrus_read"
+        | "moodle_read";
       version: 1;
     }> = [];
     if (projectScombzRead(pageContext)) {
@@ -221,6 +246,7 @@ export function ChatPanel({
     if (isSitrusGradeUrl(pageContext?.url)) {
       tools.push({ name: "sitrus_read", version: 1 });
     }
+    tools.push({ name: "moodle_read", version: 1 });
     return tools;
   }
 
@@ -242,7 +268,8 @@ export function ChatPanel({
       call.name !== "google_calendar_availability" &&
       call.name !== "syllabus_search" &&
       call.name !== "browser_read_url" &&
-      call.name !== "sitrus_read"
+      call.name !== "sitrus_read" &&
+      call.name !== "moodle_read"
     ) {
       throw new Error("このChatではまだ対応していないToolです。");
     }
@@ -250,7 +277,8 @@ export function ChatPanel({
       (call.name === "scombz_page_summary" ||
         call.name === "scombz_read" ||
         call.name === "google_calendar_availability" ||
-        call.name === "sitrus_read") &&
+        call.name === "sitrus_read" ||
+        call.name === "moodle_read") &&
       Object.keys(argumentsObject).length > 0
     ) {
       throw new Error("このToolには引数を指定できません。");
@@ -401,6 +429,50 @@ export function ChatPanel({
         call.name,
         sitrus.projection,
       );
+    } else if (call.name === "moodle_read") {
+      const access = hostAccessRequest(MOODLE_DASHBOARD_URL);
+      if (!access) throw new Error("Moodleの参照先URLを検証できません。");
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:moodle-derived`;
+      if (!sensitiveApproval.current.has(approvalKey)) {
+        throw new BrowserAccessRequiredError(
+          MOODLE_DASHBOARD_URL,
+          access.origin,
+          access.pattern,
+          approvalKey,
+          "Moodleの表示内容を端末内で読み取り、コース数・課題件数・延滞件数・最短期限・未読件数だけを選択中のAIへ送ります。コース名や課題名は送信しません。",
+        );
+      }
+      const moodle = await sendExtensionMessage<MoodleReadResponse>({
+        type: "moodle-read",
+        tool_call_id: call.tool_call_id,
+      });
+      if (moodle.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          MOODLE_DASHBOARD_URL,
+          moodle.origin,
+          moodle.pattern,
+          approvalKey,
+          "Moodleの表示内容を端末内で読み取り、コース数・課題件数・延滞件数・最短期限・未読件数だけを選択中のAIへ送ります。コース名や課題名は送信しません。",
+        );
+      }
+      if (moodle.status === "reauth_required") {
+        throw new Error(
+          "Moodleのログインページを開きました。ログイン後、もう一度質問してください。",
+        );
+      }
+      if (moodle.status !== "known" || !isMoodleReadResult(moodle.projection)) {
+        throw new Error("Moodleのダッシュボードを読み取れませんでした。");
+      }
+      setLocalMoodleDetails((items) => ({
+        ...items,
+        [activity.id]: moodle.detail,
+      }));
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        moodle.projection,
+      );
+      sensitiveApproval.current.delete(approvalKey);
     } else {
       const url = argumentsObject.url as string;
       const access = hostAccessRequest(url);
@@ -505,6 +577,8 @@ export function ChatPanel({
           response,
           conversation: current,
           seenCallIds: [...retrySeenCallIds],
+          approvalKey: caught.approvalKey,
+          disclosure: caught.disclosure,
         });
         setError("このサイトを読む前に、Chat内でアクセスを許可してください。");
         return;
@@ -578,7 +652,7 @@ export function ChatPanel({
         setError("サイトの読み取り許可が得られませんでした。");
         return;
       }
-      sensitiveApproval.current.add(pending.url);
+      sensitiveApproval.current.add(pending.approvalKey);
       setPermissionPrompt(null);
       await finishResponse(
         pending.response,
@@ -591,12 +665,12 @@ export function ChatPanel({
       const pendingTool = pending.response.calls[0]?.name;
       if (
         !remember &&
-        pendingTool === "browser_read_url" &&
+        (pendingTool === "browser_read_url" || pending.disclosure !== null) &&
         typeof chrome.permissions?.remove === "function"
       ) {
         await chrome.permissions.remove({ origins: [pending.pattern] });
       }
-      sensitiveApproval.current.delete(pending.url);
+      sensitiveApproval.current.delete(pending.approvalKey);
     } catch (caught) {
       setError(
         caught instanceof Error
@@ -770,6 +844,9 @@ export function ChatPanel({
             {permissionPrompt.origin}
             を今回のTool実行で参照します。ページの表示情報だけを使い、送信・変更は行いません。
           </p>
+          {permissionPrompt.disclosure ? (
+            <p>{permissionPrompt.disclosure}</p>
+          ) : null}
           <div className="button-row">
             <button
               type="button"
@@ -779,14 +856,16 @@ export function ChatPanel({
             >
               今回だけ許可
             </button>
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={busy}
-              onClick={() => void continueWithPermission(true)}
-            >
-              このサイトを常に許可
-            </button>
+            {!permissionPrompt.disclosure ? (
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={busy}
+                onClick={() => void continueWithPermission(true)}
+              >
+                このサイトを常に許可
+              </button>
+            ) : null}
             <button
               type="button"
               className="text-button"
@@ -826,6 +905,25 @@ export function ChatPanel({
             </span>
             <div className="chat-message-content">
               <p>{message.content}</p>
+              {message.role === "tool" && localMoodleDetails[message.id] ? (
+                <div className="chat-local-detail">
+                  <strong>端末内のMoodle詳細</strong>
+                  <p>
+                    コース:{" "}
+                    {localMoodleDetails[message.id]?.courses.join("、") ||
+                      "なし"}
+                  </p>
+                  <ul>
+                    {localMoodleDetails[message.id]?.upcoming.map((item) => (
+                      <li key={`${item.title}-${item.due_at ?? "none"}`}>
+                        {item.course ? `${item.course}: ` : ""}
+                        {item.title}
+                        {item.due_at ? `（期限: ${item.due_at}）` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
               {message.evidence && message.evidence.length > 0 ? (
                 <div className="chat-citations">
                   <strong>参照</strong>
