@@ -11,6 +11,13 @@ import {
   searchOfficialSyllabus,
 } from "../connectors/syllabus-search";
 import {
+  MOODLE_DASHBOARD_URL,
+  MOODLE_LOGIN_URL,
+  MOODLE_ORIGIN,
+  type MoodleLocalSnapshot,
+  projectMoodleForAgent,
+} from "../content/moodle-reader";
+import {
   isScombzUrl,
   isSitrusGradeUrl,
   type PageContext,
@@ -30,6 +37,8 @@ import {
   isGetPageContextMessage,
   isGetWorkspaceSessionMessage,
   isGetWorkspaceStatusMessage,
+  isMoodleOpenMessage,
+  isMoodleReadMessage,
   isOpenWorkspaceMessage,
   isPageContext,
   isPageContextUpdatedMessage,
@@ -37,6 +46,7 @@ import {
   isSyllabusSearchMessage,
   isUpdateWorkspaceSessionMessage,
   MESSAGE_TYPES,
+  type MoodleReadResponse,
   type OpenWorkspaceMessage,
   type OpenWorkspaceResponse,
   type SitrusReadResponse,
@@ -60,6 +70,8 @@ const BUILT_IN_ORIGINS = new Set([
   "https://sitrus.sic.shibaura-it.ac.jp",
   "http://localhost:8000",
 ]);
+
+const MOODLE_PERMISSION_PATTERN = `${MOODLE_ORIGIN}/*`;
 
 function browserOrigin(
   value: string,
@@ -395,6 +407,142 @@ async function handleSitrusRead(
     };
   } catch {
     return { status: "unavailable", reason_code: "grade_read_failed" };
+  }
+}
+
+async function readMoodleDashboardInPage(): Promise<
+  | { status: "known"; detail: MoodleLocalSnapshot }
+  | { status: "unavailable"; reason_code: string }
+> {
+  try {
+    const clean = (value: string | null | undefined, limit: number) =>
+      (value ?? "").replace(/\s+/gu, " ").trim().slice(0, limit);
+    const parseDueAt = (element: Element): string | null => {
+      const raw =
+        element.querySelector("time[datetime]")?.getAttribute("datetime") ??
+        element.getAttribute("data-timestamp") ??
+        element
+          .querySelector("[data-timestamp]")
+          ?.getAttribute("data-timestamp");
+      if (!raw) return null;
+      const date = /^\d{10,13}$/u.test(raw)
+        ? new Date(Number(raw) * (raw.length === 10 ? 1000 : 1))
+        : new Date(raw);
+      return Number.isNaN(date.getTime()) ? null : date.toISOString();
+    };
+    const courses = Array.from(
+      document.querySelectorAll(
+        '[data-region="course-content"] .coursename, a[href*="/moodle/course/view.php"]',
+      ),
+    )
+      .map((element) => clean(element.textContent, 200))
+      .filter(
+        (value, index, values) =>
+          value.length > 0 && values.indexOf(value) === index,
+      )
+      .slice(0, 1000);
+    const upcoming = Array.from(
+      document.querySelectorAll(
+        '[data-region="event-list-content"] [data-region="event-list-item"], .timeline-event-list-item, [data-moodle-activity]',
+      ),
+    )
+      .slice(0, 1000)
+      .map((element) => {
+        const title = clean(
+          element.querySelector(
+            '[data-region="event-name"], .event-name, [data-activity-title]',
+          )?.textContent ?? element.getAttribute("data-activity-title"),
+          300,
+        );
+        if (!title) return null;
+        const course = clean(
+          element.querySelector(
+            '[data-region="event-course-name"], .course-name',
+          )?.textContent,
+          200,
+        );
+        const due_at = parseDueAt(element);
+        return {
+          title,
+          course: course || null,
+          due_at,
+          overdue: due_at ? new Date(due_at).getTime() < Date.now() : false,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+    const notificationText = clean(
+      document.querySelector(
+        '[data-region="notification-count"], [data-region="count-container"]',
+      )?.textContent,
+      20,
+    );
+    const unread = Number.parseInt(notificationText.replace(/\D/gu, ""), 10);
+    return {
+      status: "known",
+      detail: {
+        courses,
+        upcoming,
+        unread_notification_count: Number.isFinite(unread)
+          ? Math.min(unread, 10_000)
+          : 0,
+      },
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "dashboard_read_failed" };
+  }
+}
+
+async function findMoodleDashboardTab(): Promise<chrome.tabs.Tab | null> {
+  const tabs = await chrome.tabs.query({ url: `${MOODLE_DASHBOARD_URL}*` });
+  return tabs.find((tab) => tab.id !== undefined) ?? null;
+}
+
+async function openMoodleEntry(): Promise<void> {
+  const existing = await chrome.tabs.query({
+    url: [`${MOODLE_DASHBOARD_URL}*`, `${MOODLE_LOGIN_URL}*`],
+  });
+  const tab = existing.find((candidate) => candidate.id !== undefined);
+  if (tab?.id !== undefined) {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId !== undefined)
+      await chrome.windows.update(tab.windowId, { focused: true });
+    return;
+  }
+  await chrome.tabs.create({ url: MOODLE_LOGIN_URL, active: true });
+}
+
+async function handleMoodleRead(): Promise<MoodleReadResponse> {
+  if (!(await hasBrowserPermission(MOODLE_PERMISSION_PATTERN, MOODLE_ORIGIN))) {
+    return {
+      status: "permission_required",
+      origin: MOODLE_ORIGIN,
+      pattern: MOODLE_PERMISSION_PATTERN,
+    };
+  }
+  try {
+    const tab = await findMoodleDashboardTab();
+    if (!tab?.id) {
+      await openMoodleEntry();
+      return { status: "reauth_required", reason_code: "dashboard_not_open" };
+    }
+    const [injected] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: readMoodleDashboardInPage,
+    });
+    const value = injected?.result;
+    if (value?.status !== "known") {
+      return {
+        status: "unavailable",
+        reason_code: value?.reason_code ?? "invalid_projection",
+      };
+    }
+    return {
+      status: "known",
+      detail: value.detail,
+      projection: projectMoodleForAgent(value.detail),
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "moodle_read_failed" };
   }
 }
 
@@ -849,6 +997,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleSitrusRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isMoodleReadMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleMoodleRead().then(sendResponse);
+    return true;
+  }
+
+  if (isMoodleOpenMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    void openMoodleEntry()
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 

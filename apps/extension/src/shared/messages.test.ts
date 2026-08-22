@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  isMoodleOpenMessage,
+  isMoodleReadMessage,
   isOpenWorkspaceMessage,
   isPageContext,
   isSitrusReadMessage,
@@ -24,6 +26,15 @@ const validContext = {
 } as const;
 
 describe("page context message validation", () => {
+  it("accepts only typed Moodle commands", () => {
+    expect(
+      isMoodleReadMessage({ type: "moodle-read", tool_call_id: "tool-1" }),
+    ).toBe(true);
+    expect(isMoodleReadMessage({ type: "moodle-read", tool_call_id: "" })).toBe(
+      false,
+    );
+    expect(isMoodleOpenMessage({ type: "moodle-open" })).toBe(true);
+  });
   it("accepts only the observed SITRUS grade notice route", () => {
     expect(
       isSitrusReadMessage({

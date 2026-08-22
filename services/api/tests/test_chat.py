@@ -4,11 +4,13 @@ from orbit_api.agent.chat import ChatRunStore, FixtureChatBackend
 from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
+    MOODLE_TOOL_NAME,
     SCOMBZ_READ_TOOL_NAME,
     SCOMBZ_TOOL_NAME,
     ChatDraft,
     DeferredChatRun,
     google_calendar_availability,
+    moodle_read,
     scombz_page_summary,
 )
 from orbit_api.main import app
@@ -18,6 +20,7 @@ from orbit_api.models import (
     ChatHistoryMessage,
     ChatRunRequest,
     EvidenceLink,
+    MoodleReadResult,
     ScombzPageSummaryResult,
     ScombzReadResult,
 )
@@ -188,6 +191,76 @@ def test_sitrus_unavailable_result_cannot_resume(monkeypatch) -> None:
             },
         )
     assert response.status_code == 422
+
+
+def test_fixture_chat_route_runs_moodle_derived_tool_loop(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-moodle",
+                "message": "Moodleの課題を確認して",
+                "history": [],
+                "client_tools": [{"name": "moodle_read", "version": 1}],
+            },
+        ).json()
+        assert first["status"] == "tool_required"
+        call = first["calls"][0]
+        second = client.post(
+            f"/v1/chat/runs/{first['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": "moodle_read",
+                "version": 1,
+                "result": {
+                    "schema_version": "v1",
+                    "status": "known",
+                    "course_count": 4,
+                    "upcoming_item_count": 2,
+                    "overdue_count": 1,
+                    "earliest_due_at": "2026-08-24T06:00:00Z",
+                    "unread_notification_count": 3,
+                    "reason_code": None,
+                },
+            },
+        )
+    assert second.status_code == 200
+    completed = second.json()
+    assert completed["status"] == "completed"
+    assert "コース: 4件" in completed["message"]["content_markdown"]
+    assert completed["message"]["evidence"][0]["source_type"] == "assignment"
+    serialized = second.text
+    assert "制御工学" not in serialized
+    assert "レポート1" not in serialized
+
+
+def test_moodle_projection_rejects_detail_and_unavailable_data() -> None:
+    with pytest.raises(ValueError):
+        MoodleReadResult.model_validate(
+            {
+                "schema_version": "v1",
+                "status": "known",
+                "course_count": 1,
+                "upcoming_item_count": 1,
+                "overdue_count": 0,
+                "earliest_due_at": None,
+                "unread_notification_count": 0,
+                "reason_code": None,
+                "course_names": ["must stay local"],
+            }
+        )
+    with pytest.raises(ValueError, match="cannot include derived data"):
+        MoodleReadResult(
+            status="reauth_required",
+            course_count=1,
+            upcoming_item_count=0,
+            overdue_count=0,
+            earliest_due_at=None,
+            unread_notification_count=0,
+            reason_code="login_required",
+        )
 
 
 @pytest.mark.asyncio
@@ -383,3 +456,73 @@ async def test_function_model_replays_scombz_calendar_then_answer(monkeypatch) -
         "scombz-page-summary-v1-run",
         "calendar-availability-v1-run",
     ]
+
+
+@pytest.mark.asyncio
+async def test_function_model_sends_only_moodle_derived_projection(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    calls = [0]
+    captured = [""]
+
+    def model_function(messages, _info):
+        calls[0] += 1
+        if calls[0] == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(MOODLE_TOOL_NAME, {}, tool_call_id="moodle-call-1")
+                ]
+            )
+        captured[0] = str(messages)
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "Moodleの期限を確認しました。",
+                        "evidence_ids": ["moodle-summary-v1-run"],
+                    },
+                    tool_call_id="final-moodle-1",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="moodle-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[moodle_read],
+    )
+    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    first = await backend.start_chat(
+        conversation_id="conversation-moodle",
+        message="Moodleを確認して",
+        history=[],
+        advertised_tools={MOODLE_TOOL_NAME},
+    )
+    assert first.deferred is not None
+    evidence = EvidenceLink(
+        evidence_id="moodle-summary-v1-run",
+        title="Moodle概要",
+        source_type="assignment",
+        locator="orbit-moodle://summary/1234567890abcdef",
+        data_classification="personal",
+    )
+    second = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=MoodleReadResult(
+            status="known",
+            course_count=2,
+            upcoming_item_count=1,
+            overdue_count=0,
+            earliest_due_at="2026-08-24T06:00:00Z",
+            unread_notification_count=2,
+            reason_code=None,
+        ),
+        context=[evidence],
+        advertised_tools={MOODLE_TOOL_NAME},
+    )
+    assert second.draft is not None
+    assert "course_count" in captured[0]
+    assert "制御工学" not in captured[0]
+    assert "レポート1" not in captured[0]

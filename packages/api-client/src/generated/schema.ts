@@ -346,7 +346,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read";
             /**
              * Version
              * @constant
@@ -404,7 +404,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read";
             /**
              * Version
              * @constant
@@ -423,14 +423,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"];
         };
         /**
          * ClientTool
@@ -475,6 +475,38 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * MoodleReadResult
+         * @description Derived Moodle dashboard counts safe for an explicitly confirmed run.
+         *
+         *     Course names, activity titles, course IDs, user identity, submission data,
+         *     and source HTML deliberately have no representation in this model.
+         */
+        MoodleReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /** Course Count */
+            course_count: number;
+            /** Upcoming Item Count */
+            upcoming_item_count: number;
+            /** Overdue Count */
+            overdue_count: number;
+            /** Earliest Due At */
+            earliest_due_at?: string | null;
+            /** Unread Notification Count */
+            unread_notification_count: number;
+            /** Reason Code */
+            reason_code?: string | null;
         };
         /**
          * OrbitEvent

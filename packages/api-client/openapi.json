@@ -835,7 +835,8 @@
               "google_calendar_availability",
               "syllabus_search",
               "browser_read_url",
-              "sitrus_read"
+              "sitrus_read",
+              "moodle_read"
             ],
             "title": "Name"
           },
@@ -934,7 +935,7 @@
               "$ref": "#/components/schemas/ChatClientTool"
             },
             "type": "array",
-            "maxItems": 8,
+            "maxItems": 12,
             "title": "Client Tools"
           }
         },
@@ -994,7 +995,8 @@
               "google_calendar_availability",
               "syllabus_search",
               "browser_read_url",
-              "sitrus_read"
+              "sitrus_read",
+              "moodle_read"
             ],
             "title": "Name"
           },
@@ -1034,7 +1036,8 @@
               "google_calendar_availability",
               "syllabus_search",
               "browser_read_url",
-              "sitrus_read"
+              "sitrus_read",
+              "moodle_read"
             ],
             "title": "Name"
           },
@@ -1062,6 +1065,9 @@
               },
               {
                 "$ref": "#/components/schemas/SitrusGradeResult"
+              },
+              {
+                "$ref": "#/components/schemas/MoodleReadResult"
               }
             ],
             "title": "Result"
@@ -1167,6 +1173,84 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "MoodleReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "course_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Course Count"
+          },
+          "upcoming_item_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Upcoming Item Count"
+          },
+          "overdue_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Overdue Count"
+          },
+          "earliest_due_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earliest Due At"
+          },
+          "unread_notification_count": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Unread Notification Count"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "course_count",
+          "upcoming_item_count",
+          "overdue_count",
+          "unread_notification_count"
+        ],
+        "title": "MoodleReadResult",
+        "description": "Derived Moodle dashboard counts safe for an explicitly confirmed run.\n\nCourse names, activity titles, course IDs, user identity, submission data,\nand source HTML deliberately have no representation in this model."
       },
       "OrbitEvent": {
         "properties": {

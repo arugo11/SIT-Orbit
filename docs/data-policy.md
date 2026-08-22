@@ -98,6 +98,8 @@ Chat APIへ送るTool結果は、Toolごとの厳密な最小Schemaだけにす�
 
 SITRUSの成績は保存・ダウンロードせず、利用者が実際に開いている画面を参照する。優先経路は、SITRUS画面から確認できた`/SITRUS/login/ShutokuTaniShukei.html`のHTML表である。Service Workerは表示中の表の「判定・評価・科目名」だけをメモリ上で抽出し、科目コードや単位数が表にない場合は`null`のまま扱い、値を推測しない。成績通知書の`/SITRUS/login/SeisekiTsutiSho.html`は、HTML表が利用できない場合のメモリ内PDF.jsテキスト層フォールバックであり、PDF本体やBase64を保存・返却しない。いずれも氏名、学籍番号、予定情報、Cookie、tokenは返さない。この個人データは現在のプロジェクト契約上、外部LLM、W&B、共有ログへ送信しない。`ORBIT_AGENT_BACKEND=fixture`のローカルChat/toolだけで表示し、外部Provider実行時はSITRUS Toolを広告しない。ページが閉じた、別URLへ遷移した、表やPDF.jsを利用できない場合は成功扱いにせず、利用者へ再表示を案内する。
 
+Moodleは、利用者が`moodle_read`を明示実行した場合だけ、確認済みの`/moodle/my/`を参照する。コース名と活動・課題名を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`MoodleReadResult`のコース数、直近項目数、延滞数、最短期限、未読通知数だけである。送信内容を確認画面へ列挙し、`Full access`でもrunごとの確認を省略しない。氏名、コースID、教材本文、提出内容、private file、SSO token、query、fragmentにはSchema上の表現を与えない。ライブMoodle Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
+
 拡張機能のローカルキャッシュは短期間の表示補助に限り、長期的な証跡の正本にはしない。
 
 実データを扱うConnectorを追加する場合は、送信先、保存期間、削除方法、利用目的、大学の許可範囲を個別に確認する。

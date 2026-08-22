@@ -28,6 +28,7 @@ export type SyllabusSearchResult =
   components["schemas"]["SyllabusSearchResult"];
 export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
 export type SitrusGradeResult = components["schemas"]["SitrusGradeResult"];
+export type MoodleReadResult = components["schemas"]["MoodleReadResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 
@@ -439,6 +440,41 @@ export function isSitrusGradeResult(
   return false;
 }
 
+export function isMoodleReadResult(value: unknown): value is MoodleReadResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "course_count",
+      "upcoming_item_count",
+      "overdue_count",
+      "earliest_due_at",
+      "unread_notification_count",
+      "reason_code",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
+    !isIntegerInRange(value.course_count, 0, 1000) ||
+    !isIntegerInRange(value.upcoming_item_count, 0, 1000) ||
+    !isIntegerInRange(value.overdue_count, 0, 1000) ||
+    !isIntegerInRange(value.unread_notification_count, 0, 10000) ||
+    (value.earliest_due_at !== null &&
+      (typeof value.earliest_due_at !== "string" ||
+        Number.isNaN(Date.parse(value.earliest_due_at)))) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string")
+  ) {
+    return false;
+  }
+  const hasData =
+    value.course_count > 0 ||
+    value.upcoming_item_count > 0 ||
+    value.overdue_count > 0 ||
+    value.earliest_due_at !== null ||
+    value.unread_notification_count > 0;
+  return value.status === "known" || !hasData;
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -471,6 +507,7 @@ const chatToolNames = [
   "syllabus_search",
   "browser_read_url",
   "sitrus_read",
+  "moodle_read",
 ] as const;
 
 function isChatEvidenceMessage(value: unknown): boolean {

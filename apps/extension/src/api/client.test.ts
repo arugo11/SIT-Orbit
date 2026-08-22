@@ -5,6 +5,7 @@ import {
   AgentApiError,
   type Fetcher,
   isActionProposal,
+  isMoodleReadResult,
   isSitrusGradeResult,
 } from "./client";
 
@@ -48,6 +49,26 @@ function createFetcher(response: Response): Fetcher & ReturnType<typeof vi.fn> {
 }
 
 describe("AgentApiClient", () => {
+  it("accepts Moodle aggregates and rejects local course details", () => {
+    const result = {
+      schema_version: "v1",
+      status: "known",
+      course_count: 2,
+      upcoming_item_count: 1,
+      overdue_count: 0,
+      earliest_due_at: "2026-08-24T06:00:00Z",
+      unread_notification_count: 3,
+      reason_code: null,
+    };
+    expect(isMoodleReadResult(result)).toBe(true);
+    expect(
+      isMoodleReadResult({ ...result, course_names: ["must stay local"] }),
+    ).toBe(false);
+    expect(isMoodleReadResult({ ...result, status: "reauth_required" })).toBe(
+      false,
+    );
+  });
+
   it("accepts a minimized SITRUS result but not a PDF or identity field", () => {
     const result = {
       schema_version: "v1",
