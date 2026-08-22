@@ -364,6 +364,52 @@ export interface components {
             reason_code?: string | null;
         };
         /**
+         * CastAlumniReadResult
+         * @description Generalized CAST supporter data with no person or contact fields.
+         *
+         *     The extension keeps the authenticated page and local detail card.  Only
+         *     these bounded categories cross the Chat API; names, contact values, CAST
+         *     identifiers, URLs, and free text have no representation here.
+         */
+        CastAlumniReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /**
+             * Data Classification
+             * @default personal
+             * @constant
+             */
+            data_classification: "personal";
+            /** Profile Count */
+            profile_count: number;
+            /** Topic Categories */
+            topic_categories?: string[];
+            /** Availability Frequencies */
+            availability_frequencies?: ("weekly" | "monthly" | "occasional" | "unknown")[];
+            /** Meeting Modes */
+            meeting_modes?: ("online" | "in_person" | "unknown")[];
+            /** Shareable Insight Categories */
+            shareable_insight_categories?: string[];
+            /**
+             * Contact Present
+             * @default false
+             */
+            contact_present: boolean;
+            /** Discovered Link Count */
+            discovered_link_count: number;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
          * CastReadResult
          * @description Derived CAST dashboard counts safe for an explicitly confirmed run.
          *
@@ -412,7 +458,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -470,7 +516,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -489,14 +535,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
         };
         /**
          * ClientTool

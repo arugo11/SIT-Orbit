@@ -15,6 +15,7 @@ from orbit_api.models import (
     ActionProposal,
     BrowserReadResult,
     CalendarAvailabilityResult,
+    CastAlumniReadResult,
     CastReadResult,
     ChatAssistantMessage,
     ChatClientTool,
@@ -45,6 +46,8 @@ from .pydantic_ai_backend import (
     BROWSER_READ_TOOL_NAME,
     CALENDAR_AVAILABILITY_LOCATOR_PREFIX,
     CALENDAR_TOOL_NAME,
+    CAST_ALUMNI_LOCATOR_PREFIX,
+    CAST_ALUMNI_TOOL_NAME,
     CAST_LOCATOR_PREFIX,
     CAST_TOOL_NAME,
     LIBRARY_ACTION_OPTIONS_TOOL_NAME,
@@ -61,6 +64,7 @@ from .pydantic_ai_backend import (
     ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
+    is_derived_cast_alumni_evidence,
     is_derived_cast_evidence,
     is_derived_library_action_evidence,
     is_derived_library_evidence,
@@ -87,6 +91,11 @@ _FIXTURE_MY_LIBRARY_QUERY = re.compile(
 )
 _FIXTURE_CAST_QUERY = re.compile(
     r"(?:cast|キャリア|就活|求人|インターン|会社説明会|相談予約)", re.IGNORECASE
+)
+_FIXTURE_CAST_ALUMNI_QUERY = re.compile(
+    r"(?:就活サポーター|キャリアサポーター|OB.?OG|卒業生|alumni|supporter|"
+    r"面談可能|回答可能テーマ|就活支援者)",
+    re.IGNORECASE,
 )
 _FIXTURE_LIBRARY_CATALOG_QUERY = re.compile(
     r"(?:opac|蔵書|図書館|書籍|本を?検索|資料を?検索|catalog|isbn)", re.IGNORECASE
@@ -124,6 +133,7 @@ class ChatBackend(Protocol):
             | MoodleReadResult
             | MyLibraryReadResult
             | CastReadResult
+            | CastAlumniReadResult
             | LibraryCatalogSearchResult
             | LibraryItemReadResult
             | LibraryCatalogBrowseResult
@@ -212,6 +222,17 @@ class FixtureChatBackend:
             return False
         recent_text = "\n".join(item.content for item in history[-4:])
         return bool(_FIXTURE_CAST_QUERY.search(f"{recent_text}\n{message}"))
+
+    @staticmethod
+    def _requests_cast_alumni_read(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if CAST_ALUMNI_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_CAST_ALUMNI_QUERY.search(f"{recent_text}\n{message}"))
 
     @staticmethod
     def _requests_library_catalog_search(
@@ -341,6 +362,15 @@ class FixtureChatBackend:
                     arguments={"query": message.strip()[:200], "limit": 10},
                 )
             )
+        if self._requests_cast_alumni_read(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-cast-alumni-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=CAST_ALUMNI_TOOL_NAME,
+                )
+            )
         if self._requests_cast_read(message, history, advertised):
             return ChatAgentExecution(
                 deferred=DeferredChatRun(
@@ -412,6 +442,7 @@ class FixtureChatBackend:
             | MoodleReadResult
             | MyLibraryReadResult
             | CastReadResult
+            | CastAlumniReadResult
             | LibraryCatalogSearchResult
             | LibraryItemReadResult
             | LibraryCatalogBrowseResult
@@ -527,6 +558,42 @@ class FixtureChatBackend:
             )
             if tool_result.nearest_notice_date:
                 lines.append(f"- 直近掲載日: {tool_result.nearest_notice_date}")
+            return ChatAgentExecution(
+                draft=ChatDraft(
+                    content_markdown="\n".join(lines),
+                    evidence_ids=[evidence.evidence_id],
+                )
+            )
+        if deferred.tool_name == CAST_ALUMNI_TOOL_NAME:
+            if not isinstance(tool_result, CastAlumniReadResult):
+                raise ValueError("The fixture CAST alumni call requires a CastAlumniReadResult.")
+            evidence = next(
+                (item for item in context if is_derived_cast_alumni_evidence(item)),
+                None,
+            )
+            if evidence is None:
+                raise ValueError("A resumed fixture Chat run requires CAST alumni evidence.")
+            lines = ["CASTの就活サポーター情報を確認しました。"]
+            lines.append(f"- 登録プロフィール: {tool_result.profile_count}件")
+            if tool_result.topic_categories:
+                lines.append(f"- 回答可能テーマ: {', '.join(tool_result.topic_categories)}")
+            if tool_result.availability_frequencies:
+                lines.append(
+                    "- 面談可能頻度: "
+                    + ", ".join(tool_result.availability_frequencies)
+                )
+            if tool_result.meeting_modes:
+                lines.append(f"- 面談形式: {', '.join(tool_result.meeting_modes)}")
+            if tool_result.shareable_insight_categories:
+                lines.append(
+                    "- 匿名共有可能な知見: "
+                    + ", ".join(tool_result.shareable_insight_categories)
+                )
+            lines.append(
+                "- 連絡先の有無: 端末内でのみ確認しました。"
+                if tool_result.contact_present
+                else "- 連絡先: 表示されていません。"
+            )
             return ChatAgentExecution(
                 draft=ChatDraft(
                     content_markdown="\n".join(lines),
@@ -927,6 +994,10 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "CASTから導出したキャリア情報の概要"
         source_type = "career"
         locator = f"{CAST_LOCATOR_PREFIX}{uuid4().hex}"
+    elif request.name == CAST_ALUMNI_TOOL_NAME:
+        title = "CASTから取得した就活サポーター情報（一般化）"
+        source_type = "career"
+        locator = f"{CAST_ALUMNI_LOCATOR_PREFIX}{uuid4().hex}"
     elif request.name == LIBRARY_CATALOG_SEARCH_TOOL_NAME:
         title = "芝浦工業大学公式OPACの公開カタログ検索"
         source_type = "library"
@@ -963,6 +1034,7 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         MOODLE_TOOL_NAME: "moodle-summary-v1",
         MY_LIBRARY_TOOL_NAME: "my-library-summary-v1",
         CAST_TOOL_NAME: "cast-summary-v1",
+        CAST_ALUMNI_TOOL_NAME: "cast-alumni-v1",
         LIBRARY_CATALOG_SEARCH_TOOL_NAME: "library-catalog-search-v1",
         LIBRARY_ITEM_READ_TOOL_NAME: "library-item-read-v1",
         LIBRARY_CATALOG_BROWSE_TOOL_NAME: "library-catalog-browse-v1",

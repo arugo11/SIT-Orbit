@@ -37,6 +37,8 @@ export type MyLibraryReadResult =
   | components["schemas"]["LegacyMyLibraryReadResult"]
   | components["schemas"]["ScopedMyLibraryReadResult"];
 export type CastReadResult = components["schemas"]["CastReadResult"];
+export type CastAlumniReadResult =
+  components["schemas"]["CastAlumniReadResult"];
 export type LibraryHoldingSummary =
   components["schemas"]["LibraryHoldingSummary"];
 export type LibraryRelatedRecordRef =
@@ -1127,6 +1129,68 @@ export function isCastReadResult(value: unknown): value is CastReadResult {
   return value.status === "known" || !hasData;
 }
 
+export function isCastAlumniReadResult(
+  value: unknown,
+): value is CastAlumniReadResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "data_classification",
+      "profile_count",
+      "topic_categories",
+      "availability_frequencies",
+      "meeting_modes",
+      "shareable_insight_categories",
+      "contact_present",
+      "discovered_link_count",
+      "reason_code",
+    ]) ||
+    value.schema_version !== "v1" ||
+    value.data_classification !== "personal" ||
+    !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
+    !isIntegerInRange(value.profile_count, 0, 64) ||
+    !Array.isArray(value.topic_categories) ||
+    value.topic_categories.length > 32 ||
+    !value.topic_categories.every(
+      (item) =>
+        typeof item === "string" && item.length > 0 && item.length <= 100,
+    ) ||
+    !Array.isArray(value.availability_frequencies) ||
+    value.availability_frequencies.length > 4 ||
+    !value.availability_frequencies.every((item) =>
+      isOneOf(item, ["weekly", "monthly", "occasional", "unknown"]),
+    ) ||
+    !Array.isArray(value.meeting_modes) ||
+    value.meeting_modes.length > 3 ||
+    !value.meeting_modes.every((item) =>
+      isOneOf(item, ["online", "in_person", "unknown"]),
+    ) ||
+    !Array.isArray(value.shareable_insight_categories) ||
+    value.shareable_insight_categories.length > 32 ||
+    !value.shareable_insight_categories.every(
+      (item) =>
+        typeof item === "string" && item.length > 0 && item.length <= 100,
+    ) ||
+    typeof value.contact_present !== "boolean" ||
+    !isIntegerInRange(value.discovered_link_count, 0, 32) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string")
+  ) {
+    return false;
+  }
+  if (value.status === "known") return true;
+  return (
+    value.profile_count === 0 &&
+    value.topic_categories.length === 0 &&
+    value.availability_frequencies.length === 0 &&
+    value.meeting_modes.length === 0 &&
+    value.shareable_insight_categories.length === 0 &&
+    !value.contact_present &&
+    value.discovered_link_count === 0
+  );
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -1162,6 +1226,7 @@ const chatToolNames = [
   "moodle_read",
   "my_library_read",
   "cast_read",
+  "cast_alumni_read",
   "library_catalog_search",
   "library_item_read",
   "library_catalog_browse",

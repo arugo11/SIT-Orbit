@@ -33,6 +33,12 @@ import {
   searchOfficialSyllabus,
 } from "../connectors/syllabus-search";
 import {
+  CAST_ALUMNI_INTERNAL_MESSAGE,
+  type CastAlumniLocalSnapshot,
+  type CastAlumniPageReadResult,
+  projectCastAlumniForAgent,
+} from "../content/cast-alumni-reader";
+import {
   CAST_ENTRY_URL,
   CAST_ORIGIN,
   CAST_TOP_URL,
@@ -70,10 +76,12 @@ import {
 import {
   type BrowserReadResponse,
   type CalendarCommandMessage,
+  type CastAlumniReadResponse,
   type CastReadResponse,
   type DriveCommandMessage,
   isBrowserReadMessage,
   isCalendarCommandMessage,
+  isCastAlumniReadMessage,
   isCastOpenMessage,
   isCastReadMessage,
   isDriveCommandMessage,
@@ -4179,6 +4187,84 @@ async function handleCastRead(): Promise<CastReadResponse> {
   }
 }
 
+function isCastAlumniCandidateTab(tab: chrome.tabs.Tab): boolean {
+  if (!tab.url || tab.id === undefined) return false;
+  try {
+    const url = new URL(tab.url);
+    return (
+      url.origin === CAST_ORIGIN &&
+      url.pathname.startsWith("/career/") &&
+      !["/career", "/career/login", "/career/session_timeout"].includes(
+        url.pathname,
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function readCastAlumniPage(
+  tabId: number,
+): Promise<CastAlumniPageReadResult> {
+  try {
+    const projection = await chrome.tabs.sendMessage(tabId, {
+      type: CAST_ALUMNI_INTERNAL_MESSAGE,
+    });
+    if (typeof projection === "object" && projection !== null) {
+      return projection as CastAlumniPageReadResult;
+    }
+  } catch {
+    // Existing tabs may have been opened before the extension was reloaded.
+    // Inject the already-bundled content script once, then retry the same page.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content-script.js"],
+      });
+      const projection = await chrome.tabs.sendMessage(tabId, {
+        type: CAST_ALUMNI_INTERNAL_MESSAGE,
+      });
+      if (typeof projection === "object" && projection !== null) {
+        return projection as CastAlumniPageReadResult;
+      }
+    } catch {
+      // handled below
+    }
+  }
+  return { status: "unavailable", reason_code: "alumni_reader_unavailable" };
+}
+
+async function handleCastAlumniRead(): Promise<CastAlumniReadResponse> {
+  if (!(await hasBrowserPermission(CAST_PERMISSION_PATTERN, CAST_ORIGIN))) {
+    return {
+      status: "permission_required",
+      origin: CAST_ORIGIN,
+      pattern: CAST_PERMISSION_PATTERN,
+    };
+  }
+  try {
+    const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
+    const tab = tabs.find(isCastAlumniCandidateTab);
+    if (!tab?.id) {
+      await openCastEntry();
+      return {
+        status: "reauth_required",
+        reason_code: "alumni_page_not_open",
+      };
+    }
+    const page = await readCastAlumniPage(tab.id);
+    if (page.status !== "known") return page;
+    const detail: CastAlumniLocalSnapshot = page.detail;
+    return {
+      status: "known",
+      detail,
+      projection: projectCastAlumniForAgent(detail),
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "alumni_read_failed" };
+  }
+}
+
 function isTrustedExtensionPageSender(sender: chrome.runtime.MessageSender) {
   if (sender.id !== undefined && sender.id !== chrome.runtime.id) {
     return false;
@@ -4699,6 +4785,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleCastRead().then(sendResponse);
+    return true;
+  }
+
+  if (isCastAlumniReadMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleCastAlumniRead().then(sendResponse);
     return true;
   }
 

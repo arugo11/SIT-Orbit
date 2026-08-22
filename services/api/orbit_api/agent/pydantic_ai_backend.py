@@ -26,6 +26,7 @@ from orbit_api.models import (
     ActionProposal,
     BrowserReadResult,
     CalendarAvailabilityResult,
+    CastAlumniReadResult,
     CastReadResult,
     ChatHistoryMessage,
     EvidenceLink,
@@ -69,6 +70,8 @@ MY_LIBRARY_TOOL_NAME = "my_library_read"
 MY_LIBRARY_LOCATOR_PREFIX = "orbit-library://summary/"
 CAST_TOOL_NAME = "cast_read"
 CAST_LOCATOR_PREFIX = "orbit-cast://summary/"
+CAST_ALUMNI_TOOL_NAME = "cast_alumni_read"
+CAST_ALUMNI_LOCATOR_PREFIX = "orbit-cast://alumni/"
 LIBRARY_CATALOG_SEARCH_TOOL_NAME = "library_catalog_search"
 LIBRARY_ITEM_READ_TOOL_NAME = "library_item_read"
 LIBRARY_CATALOG_BROWSE_TOOL_NAME = "library_catalog_browse"
@@ -89,6 +92,7 @@ SUPPORTED_TOOL_NAMES = frozenset(
         MOODLE_TOOL_NAME,
         MY_LIBRARY_TOOL_NAME,
         CAST_TOOL_NAME,
+        CAST_ALUMNI_TOOL_NAME,
         LIBRARY_CATALOG_SEARCH_TOOL_NAME,
         LIBRARY_ITEM_READ_TOOL_NAME,
         LIBRARY_CATALOG_BROWSE_TOOL_NAME,
@@ -106,6 +110,7 @@ ToolName = Literal[
     "moodle_read",
     "my_library_read",
     "cast_read",
+    "cast_alumni_read",
     "library_catalog_search",
     "library_item_read",
     "library_catalog_browse",
@@ -123,6 +128,7 @@ ToolResult = (
     | MoodleReadResult
     | MyLibraryReadResult
     | CastReadResult
+    | CastAlumniReadResult
     | LibraryCatalogSearchResult
     | LibraryItemReadResult
     | LibraryCatalogBrowseResult
@@ -362,6 +368,17 @@ def is_derived_cast_evidence(evidence: EvidenceLink) -> bool:
     )
 
 
+def is_derived_cast_alumni_evidence(evidence: EvidenceLink) -> bool:
+    """Accept only the server-issued generalized alumni projection."""
+
+    return (
+        evidence.source_type == "career"
+        and evidence.data_classification == "personal"
+        and _is_opaque_locator(evidence.locator, CAST_ALUMNI_LOCATOR_PREFIX)
+        and evidence.evidence_id.startswith("cast-alumni-v1-")
+    )
+
+
 def is_derived_library_evidence(evidence: EvidenceLink) -> bool:
     """Accept only server-issued public evidence for the four Branch 1 tools."""
 
@@ -397,6 +414,7 @@ def validate_agent_data(
     allow_moodle_read: bool = False,
     allow_my_library_read: bool = False,
     allow_cast_read: bool = False,
+    allow_cast_alumni_read: bool = False,
     allow_library_read: bool = False,
 ) -> None:
     if event.data_classification not in SAFE_CLASSIFICATIONS:
@@ -421,6 +439,8 @@ def validate_agent_data(
         if allow_my_library_read and is_derived_my_library_evidence(evidence):
             continue
         if allow_cast_read and is_derived_cast_evidence(evidence):
+            continue
+        if allow_cast_alumni_read and is_derived_cast_alumni_evidence(evidence):
             continue
         if allow_library_read and is_derived_library_evidence(evidence):
             continue
@@ -540,6 +560,12 @@ def validate_my_library_result_page(
 
 async def cast_read() -> CastReadResult:
     """Deferred read of explicitly confirmed CAST dashboard aggregates."""
+
+    raise CallDeferred()
+
+
+async def cast_alumni_read() -> CastAlumniReadResult:
+    """Deferred read of generalized CAST alumni-supporter aggregates."""
 
     raise CallDeferred()
 
@@ -1083,6 +1109,8 @@ class PydanticAIAgentBackend(AgentBackend):
             tools.append(my_library_read)
         if CAST_TOOL_NAME in advertised:
             tools.append(cast_read)
+        if CAST_ALUMNI_TOOL_NAME in advertised:
+            tools.append(cast_alumni_read)
         if LIBRARY_CATALOG_SEARCH_TOOL_NAME in advertised:
             tools.append(library_catalog_search)
         if LIBRARY_ITEM_READ_TOOL_NAME in advertised:
@@ -1184,6 +1212,7 @@ class PydanticAIAgentBackend(AgentBackend):
             SITRUS_TOOL_NAME,
             MOODLE_TOOL_NAME,
             CAST_TOOL_NAME,
+            CAST_ALUMNI_TOOL_NAME,
         } and arguments:
             raise RuntimeError("This client tool does not accept arguments.")
         if call.tool_name == BROWSER_READ_TOOL_NAME:
@@ -1263,6 +1292,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_moodle_read=True,
             allow_my_library_read=True,
             allow_cast_read=True,
+            allow_cast_alumni_read=True,
             allow_library_read=True,
         )
         advertised = set(advertised_tools or set()) & set(SUPPORTED_TOOL_NAMES)
@@ -1407,6 +1437,20 @@ class PydanticAIAgentBackend(AgentBackend):
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "cast_summary": tool_result.model_dump(mode="json"),
             }
+        elif deferred.tool_name == CAST_ALUMNI_TOOL_NAME:
+            if not isinstance(tool_result, CastAlumniReadResult):
+                raise ValueError("CAST alumni calls require a CastAlumniReadResult.")
+            evidence = next(
+                (item for item in context if is_derived_cast_alumni_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                # This model is deliberately an allow-listed aggregate.  The
+                # local detail snapshot (names and source links) never crosses
+                # this boundary; contact_present is only a boolean.
+                "cast_alumni_summary": tool_result.model_dump(mode="json"),
+            }
         elif deferred.tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME:
             if not isinstance(tool_result, LibraryCatalogSearchResult):
                 raise ValueError(
@@ -1504,6 +1548,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_moodle_read=True,
             allow_my_library_read=True,
             allow_cast_read=True,
+            allow_cast_alumni_read=True,
             allow_library_read=True,
         )
         web_search_state = (
@@ -1562,6 +1607,8 @@ __all__ = [
     "MOODLE_LOCATOR_PREFIX",
     "MY_LIBRARY_TOOL_NAME",
     "MY_LIBRARY_LOCATOR_PREFIX",
+    "CAST_ALUMNI_TOOL_NAME",
+    "CAST_ALUMNI_LOCATOR_PREFIX",
     "LIBRARY_CATALOG_SEARCH_TOOL_NAME",
     "LIBRARY_ITEM_READ_TOOL_NAME",
     "LIBRARY_CATALOG_BROWSE_TOOL_NAME",
@@ -1585,11 +1632,14 @@ __all__ = [
     "is_derived_sitrus_evidence",
     "is_derived_moodle_evidence",
     "is_derived_my_library_evidence",
+    "is_derived_cast_evidence",
+    "is_derived_cast_alumni_evidence",
     "is_derived_library_evidence",
     "browser_read_url",
     "sitrus_read",
     "moodle_read",
     "my_library_read",
+    "cast_alumni_read",
     "library_catalog_search",
     "library_item_read",
     "library_catalog_browse",

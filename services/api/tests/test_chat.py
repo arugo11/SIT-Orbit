@@ -4,6 +4,7 @@ from orbit_api.agent.chat import ChatRunService, ChatRunStore, FixtureChatBacken
 from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
+    CAST_ALUMNI_TOOL_NAME,
     CAST_TOOL_NAME,
     MOODLE_TOOL_NAME,
     MY_LIBRARY_TOOL_NAME,
@@ -21,6 +22,7 @@ from orbit_api.agent.pydantic_ai_backend import (
 from orbit_api.main import app
 from orbit_api.models import (
     CalendarAvailabilityResult,
+    CastAlumniReadResult,
     CastReadResult,
     ChatClientTool,
     ChatHistoryMessage,
@@ -546,6 +548,73 @@ def test_cast_projection_rejects_detail_and_unavailable_data() -> None:
             has_counseling_reservation=False,
             nearest_notice_date=None,
             reason_code="login_required",
+        )
+
+
+def test_fixture_chat_route_runs_cast_alumni_aggregate_loop(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-cast-alumni",
+                "message": "就活サポーターの回答可能テーマと面談可能頻度を確認して",
+                "history": [],
+                "client_tools": [{"name": CAST_ALUMNI_TOOL_NAME, "version": 1}],
+            },
+        ).json()
+        assert first["status"] == "tool_required"
+        call = first["calls"][0]
+        second = client.post(
+            f"/v1/chat/runs/{first['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": CAST_ALUMNI_TOOL_NAME,
+                "version": 1,
+                "result": {
+                    "schema_version": "v1",
+                    "status": "known",
+                    "data_classification": "personal",
+                    "profile_count": 2,
+                    "topic_categories": ["技術・研究", "選考・応募書類"],
+                    "availability_frequencies": ["monthly"],
+                    "meeting_modes": ["online"],
+                    "shareable_insight_categories": ["選考体験"],
+                    "contact_present": True,
+                    "discovered_link_count": 1,
+                    "reason_code": None,
+                },
+            },
+        )
+    assert second.status_code == 200
+    completed = second.json()
+    assert completed["status"] == "completed"
+    assert "登録プロフィール: 2件" in completed["message"]["content_markdown"]
+    assert completed["message"]["evidence"][0]["evidence_id"].startswith(
+        "cast-alumni-v1-"
+    )
+    assert "氏名" not in second.text
+    assert "連絡先" in completed["message"]["content_markdown"]
+
+
+def test_cast_alumni_result_has_no_person_fields() -> None:
+    with pytest.raises(ValueError):
+        CastAlumniReadResult.model_validate(
+            {
+                "schema_version": "v1",
+                "status": "known",
+                "data_classification": "personal",
+                "profile_count": 1,
+                "topic_categories": [],
+                "availability_frequencies": [],
+                "meeting_modes": [],
+                "shareable_insight_categories": [],
+                "contact_present": False,
+                "discovered_link_count": 0,
+                "reason_code": None,
+                "names": ["must stay local"],
+            }
         )
 @pytest.mark.asyncio
 async def test_fixture_chat_replays_local_scombz_read_without_exposing_restricted_values() -> None:

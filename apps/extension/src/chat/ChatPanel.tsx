@@ -5,6 +5,7 @@ import {
   type ChatRunResponse,
   type ChatToolResultRequest,
   isBrowserReadResult,
+  isCastAlumniReadResult,
   isCastReadResult,
   isLibraryActionOptionsResult,
   isLibraryCatalogBrowseResult,
@@ -30,6 +31,7 @@ import {
   LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
   requestsLibraryTools,
 } from "../connectors/library-discovery";
+import type { CastAlumniLocalSnapshot } from "../content/cast-alumni-reader";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
   MOODLE_DASHBOARD_URL,
@@ -53,6 +55,7 @@ import {
 } from "../content/page-context";
 import type {
   BrowserReadResponse,
+  CastAlumniReadResponse,
   CastReadResponse,
   LibraryActionOptionsResponse,
   LibraryActionPreviewResponse,
@@ -114,6 +117,8 @@ function toolLabel(name: string): string {
       return "My Libraryを確認中";
     case "cast_read":
       return "CASTを確認中";
+    case "cast_alumni_read":
+      return "CASTの就活サポーターを確認中";
     case "library_catalog_search":
       return "OPACを検索中";
     case "library_item_read":
@@ -172,6 +177,7 @@ function toolResultRequest(
     | "moodle_read"
     | "my_library_read"
     | "cast_read"
+    | "cast_alumni_read"
     | "library_catalog_search"
     | "library_item_read"
     | "library_catalog_browse"
@@ -266,6 +272,9 @@ export function ChatPanel({
   const [localCastDetails, setLocalCastDetails] = useState<
     Record<string, CastLocalSnapshot>
   >({});
+  const [localCastAlumniDetails, setLocalCastAlumniDetails] = useState<
+    Record<string, CastAlumniLocalSnapshot>
+  >({});
   const [libraryPreviews, setLibraryPreviews] = useState<
     Record<string, Extract<LibraryActionPreviewResponse, { status: "ready" }>>
   >({});
@@ -322,6 +331,7 @@ export function ChatPanel({
         | "moodle_read"
         | "my_library_read"
         | "cast_read"
+        | "cast_alumni_read"
         | "library_catalog_search"
         | "library_item_read"
         | "library_catalog_browse"
@@ -343,6 +353,7 @@ export function ChatPanel({
     tools.push({ name: "moodle_read", version: 1 });
     tools.push({ name: "my_library_read", version: 1 });
     tools.push({ name: "cast_read", version: 1 });
+    tools.push({ name: "cast_alumni_read", version: 1 });
     if (requestsLibraryTools(message)) {
       tools.push({ name: "library_catalog_search", version: 1 });
       tools.push({ name: "library_item_read", version: 1 });
@@ -375,6 +386,7 @@ export function ChatPanel({
       call.name !== "moodle_read" &&
       call.name !== "my_library_read" &&
       call.name !== "cast_read" &&
+      call.name !== "cast_alumni_read" &&
       call.name !== "library_catalog_search" &&
       call.name !== "library_item_read" &&
       call.name !== "library_catalog_browse" &&
@@ -389,7 +401,8 @@ export function ChatPanel({
         call.name === "google_calendar_availability" ||
         call.name === "sitrus_read" ||
         call.name === "moodle_read" ||
-        call.name === "cast_read") &&
+        call.name === "cast_read" ||
+        call.name === "cast_alumni_read") &&
       Object.keys(argumentsObject).length > 0
     ) {
       throw new Error("このToolには引数を指定できません。");
@@ -1096,6 +1109,55 @@ export function ChatPanel({
         call.tool_call_id,
         call.name,
         cast.projection,
+      );
+      sensitiveApproval.current.delete(approvalKey);
+    } else if (call.name === "cast_alumni_read") {
+      const access = hostAccessRequest(CAST_ENTRY_URL);
+      if (!access) throw new Error("CASTの参照先URLを検証できません。");
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:cast-alumni-derived`;
+      const disclosure =
+        "認証済みCAST画面を端末内で読み取り、回答可能テーマ・面談可能頻度・面談形式・匿名共有可能な知見のカテゴリと件数だけを選択中のAIへ送ります。氏名・連絡先・CAST内部ID・本文・ログイン情報は端末外へ送信しません。";
+      if (!sensitiveApproval.current.has(approvalKey)) {
+        throw new BrowserAccessRequiredError(
+          CAST_ENTRY_URL,
+          access.origin,
+          access.pattern,
+          approvalKey,
+          disclosure,
+        );
+      }
+      const alumni = await sendExtensionMessage<CastAlumniReadResponse>({
+        type: "cast-alumni-read",
+        tool_call_id: call.tool_call_id,
+      });
+      if (alumni.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          CAST_ENTRY_URL,
+          alumni.origin,
+          alumni.pattern,
+          approvalKey,
+          disclosure,
+        );
+      }
+      if (alumni.status === "reauth_required") {
+        throw new Error(
+          "CASTの就活サポーター画面を開いてログイン後、もう一度質問してください。",
+        );
+      }
+      if (
+        alumni.status !== "known" ||
+        !isCastAlumniReadResult(alumni.projection)
+      ) {
+        throw new Error("CASTの就活サポーター情報を読み取れませんでした。");
+      }
+      setLocalCastAlumniDetails((items) => ({
+        ...items,
+        [activity.id]: alumni.detail,
+      }));
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        alumni.projection,
       );
       sensitiveApproval.current.delete(approvalKey);
     } else {
@@ -1896,6 +1958,44 @@ export function ChatPanel({
                       ? "あり"
                       : "なし"}
                   </p>
+                </div>
+              ) : null}
+              {message.role === "tool" && localCastAlumniDetails[message.id] ? (
+                <div className="chat-local-detail">
+                  <strong>端末内のCAST就活サポーター詳細</strong>
+                  <p>
+                    参照ページ: {localCastAlumniDetails[message.id]?.page_path}
+                  </p>
+                  <ul>
+                    {localCastAlumniDetails[message.id]?.profiles.map(
+                      (profile) => (
+                        <li key={profile.local_id}>
+                          {profile.display_name ?? "氏名は端末内でマスク"}
+                          {profile.answerable_topics.length > 0
+                            ? ` / テーマ: ${profile.answerable_topics.join(", ")}`
+                            : ""}
+                          {profile.availability_frequency !== "unknown"
+                            ? ` / 頻度: ${profile.availability_frequency}`
+                            : ""}
+                          {profile.meeting_modes.length > 0
+                            ? ` / 形式: ${profile.meeting_modes.join(", ")}`
+                            : ""}
+                          {profile.shareable_insights.length > 0
+                            ? ` / 知見: ${profile.shareable_insights.join(", ")}`
+                            : ""}
+                          {profile.contact_present
+                            ? " / 連絡先あり（値は非表示）"
+                            : ""}
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                  {(localCastAlumniDetails[message.id]?.discovered_links
+                    .length ?? 0) > 0 ? (
+                    <p>
+                      CAST上の関連リンクを検出しました。リンク先を開いてから、再度確認できます。
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
               {message.evidence && message.evidence.length > 0 ? (

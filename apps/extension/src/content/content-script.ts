@@ -1,4 +1,8 @@
 import { isRequestPageContextMessage, MESSAGE_TYPES } from "../shared/messages";
+import {
+  CAST_ALUMNI_INTERNAL_MESSAGE,
+  extractCastAlumniPage,
+} from "./cast-alumni-reader";
 import { parseScombzPageContext } from "./page-context";
 
 function readPageContext() {
@@ -26,6 +30,14 @@ function reportPageContextAfterNavigation(): void {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (
+    typeof message === "object" &&
+    message !== null &&
+    (message as { type?: unknown }).type === CAST_ALUMNI_INTERNAL_MESSAGE
+  ) {
+    sendResponse(extractCastAlumniPage(document, window.location.href));
+    return;
+  }
   if (!isRequestPageContextMessage(message)) {
     return;
   }

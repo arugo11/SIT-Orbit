@@ -782,6 +782,55 @@ class CastReadResult(StrictApiModel):
         return self
 
 
+class CastAlumniReadResult(StrictApiModel):
+    """Generalized CAST supporter data with no person or contact fields.
+
+    The extension keeps the authenticated page and local detail card.  Only
+    these bounded categories cross the Chat API; names, contact values, CAST
+    identifiers, URLs, and free text have no representation here.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "reauth_required", "unavailable"]
+    data_classification: Literal["personal"] = "personal"
+    profile_count: StrictInt = Field(ge=0, le=64)
+    topic_categories: list[StrictStr] = Field(default_factory=list, max_length=32)
+    availability_frequencies: list[
+        Literal["weekly", "monthly", "occasional", "unknown"]
+    ] = Field(default_factory=list, max_length=4)
+    meeting_modes: list[Literal["online", "in_person", "unknown"]] = Field(
+        default_factory=list, max_length=3
+    )
+    shareable_insight_categories: list[StrictStr] = Field(
+        default_factory=list, max_length=32
+    )
+    contact_present: StrictBool = False
+    discovered_link_count: StrictInt = Field(ge=0, le=32)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "CastAlumniReadResult":
+        if self.status != "known" and (
+            self.profile_count
+            or self.topic_categories
+            or self.availability_frequencies
+            or self.meeting_modes
+            or self.shareable_insight_categories
+            or self.contact_present
+            or self.discovered_link_count
+        ):
+            raise ValueError(
+                "Unavailable CAST alumni results cannot include derived data."
+            )
+        if len(set(self.topic_categories)) != len(self.topic_categories):
+            raise ValueError("CAST alumni topic categories must be unique.")
+        if len(set(self.shareable_insight_categories)) != len(
+            self.shareable_insight_categories
+        ):
+            raise ValueError("CAST alumni insight categories must be unique.")
+        return self
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
@@ -869,6 +918,7 @@ ChatToolName = Literal[
     "moodle_read",
     "my_library_read",
     "cast_read",
+    "cast_alumni_read",
     "library_catalog_search",
     "library_item_read",
     "library_catalog_browse",
@@ -924,6 +974,7 @@ class ChatToolResultRequest(StrictApiModel):
         | MoodleReadResult
         | MyLibraryReadResult
         | CastReadResult
+        | CastAlumniReadResult
         | LibraryCatalogSearchResult
         | LibraryItemReadResult
         | LibraryCatalogBrowseResult
@@ -955,6 +1006,10 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("My Library results must use MyLibraryReadResult.")
         if self.name == "cast_read" and not isinstance(self.result, CastReadResult):
             raise ValueError("CAST results must use CastReadResult.")
+        if self.name == "cast_alumni_read" and not isinstance(
+            self.result, CastAlumniReadResult
+        ):
+            raise ValueError("CAST alumni results must use CastAlumniReadResult.")
         if self.name == "library_catalog_search" and not isinstance(
             self.result, LibraryCatalogSearchResult
         ):
@@ -1027,6 +1082,7 @@ __all__ = [
     "BrowserReadLink",
     "BrowserReadResult",
     "CastReadResult",
+    "CastAlumniReadResult",
     "SitrusGradeItem",
     "SitrusGradeResult",
     "MoodleReadResult",

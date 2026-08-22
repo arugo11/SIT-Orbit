@@ -143,7 +143,7 @@ Typed Snapshot
   → Chrome Prompt API（個人情報）またはAzure（公開・匿名集計）
 ```
 
-同じCAST人物は端末内のCareer Vaultで安定した内部人物IDへ対応させるが、外部へ送る別名はミッションごとに変更する。内部人物ID、HMAC、元の氏名、対応表、Vault鍵はFastAPI、Azure、W&B、Chat履歴、ログ、runtime messageへ送らない。自由記述を安全に仮名化できない場合は外部送信せず、端末内処理へ固定する。
+同じCAST人物は端末内のCareer Vaultで安定した内部人物IDへ対応させるが、外部へ送る別名はミッションごとに変更する。内部人物ID、HMAC、元の氏名、対応表、Vault鍵はFastAPI、Azure、W&B、Chat履歴、ログへ送らない。Service WorkerとSide Panelのruntime messageには、端末内詳細表示のための短命なlocal snapshotが含まれ得るが、外部ページ・API・履歴へ転送せず、run終了時に破棄する。自由記述を安全に仮名化できない場合は外部送信せず、端末内処理へ固定する。
 
 Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM暗号化し、IndexedDBには暗号文、IV、schema versionだけを保存する。鍵は`chrome.storage.session`の短命領域とメモリにだけ置き、15分の無操作またはChrome終了でロックする。raw HTML、Cookie、OAuth token、PDF本体、復号済み対応表は保存しない。Vault全削除は利用者の明示操作で暗号文とmetadataを削除する。
 
@@ -155,11 +155,17 @@ Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM�
 
 Career Evidence Bankの記録、資料locator、人物対応表は、Azure、OpenAI、W&B、FastAPI、Chat履歴、runtime messageへ送信しない。個人証拠を外部モデルで扱う必要が生じた場合は、この例外を暗黙に広げず、Pseudonymization Gateway、Context Manifest、大学の許可範囲を満たす別変更として再審査する。raw PDFや添付ファイルは保存・アップロードせず、利用者が明示した表示情報だけを端末内で参照する。
 
-### CAST Alumni Portal（blocked:institutional）
+### CAST Alumni Portal
 
-卒業生の回答可能テーマ、面談頻度、匿名共有可能情報を扱う機能は、大学側の明示許可、正式APIまたは許可されたExport、read/write scope、専用test account、保持・削除手順が確認できるまで停止する。学生向けCASTの就活サポーター案内だけでは、卒業生の個人記録を取得・登録・更新する権限の根拠にならない。仮名化は外部送信の安全策であって、大学側のアクセス許可や同意の代替ではない。
+大学のキャリアサポート課または情報管理担当から、外部拡張機能によるCASTデータの読み取り許可を得ている。対象は就活サポーターの回答可能テーマ、面談可能頻度・形式、匿名共有可能な知見であり、読み取り専用とする。公式APIはないため、利用者が認証済みアカウントで開いた`https://shibaura.pita.services/career/`配下の表示DOMを、表示中のcontent scriptから必要最小限だけ抽出する。[大学公式FAQ](https://www.shibaura-it.ac.jp/career_support/guide/question.html)の案内と[CASTログイン](https://shibaura.pita.services/career/login)を起点にし、実画面に表示されていないURLやendpointは推測しない。
 
-許可が得られるまでは、卒業生の氏名、連絡先、回答設定、面談可能頻度、匿名共有知見を取得・保存・送信せず、未確認URL、DOM書込み、直接連絡、予約、fixture成功を実連携として扱わない。再開条件が揃わないIssue 17は`blocked:institutional`であり、品質評価へ実データを投入しない。
+氏名・連絡先は、利用者へ端末内の詳細を表示する目的と、必要な場合のマスキング判定のためだけに扱う。Chat API・Azure・OpenAI・W&B・FastAPI・Chat履歴へ送るallowlist projectionには、プロフィール件数、回答可能テーマのカテゴリ、面談頻度・形式、匿名共有知見のカテゴリ、連絡先の有無、発見リンク件数しか存在しない。Service WorkerとSide Panelのruntime messageには端末内詳細表示用の短命なlocal snapshotが含まれ得るが、外部へ転送せず、run終了時に破棄する。CAST内部ID、SSO token、メール、電話、自由記述、source URL、raw HTMLはSchema上表現できず、外部へ出ない。これは完全匿名化ではなく、端末内表示のためのマスキングと間接識別子の削減である。
+
+人物単位の端末内Promptが必要な場合は、同じlocal snapshotを既存のPseudonymization Gatewayへ渡し、Career Vaultの暗号化対応表からmission固有の別名を生成する。現在のChat API経路は集計projectionだけを送るため、人物別名を外部へ送る必要はない。
+
+Service Workerは現在のCASTタブだけへ問い合わせる。表示DOMにログイン画面、404、構造不一致、権限不足、DNS失敗がある場合は、`reauth_required`または`unavailable`を返し、空データやfixture成功へ置換しない。実画面で発見した同一originリンク以外を開かず、卒業生設定の更新、直接連絡、面談予約、応募、フォーム送信、ファイル添付は行わない。将来の確定操作は別途previewと本人確認を要求する。
+
+検証は利用者の認証済みアカウントで行い、専用sandboxやtest accountは前提にしない。通常CIはsynthetic fixtureだけを使用する。保存期間と削除方法は大学側の正式規則が定まるまで暫定的に無期限とするが、raw HTML、Cookie、OAuth token、PDF本体は保存しない。UIのローカル詳細SnapshotはChat履歴やIndexedDBへコピーせず、実行中の拡張機能メモリだけに保持する。
 
 ### Evidence-grounded ES
 

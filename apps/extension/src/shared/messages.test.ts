@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  isCastAlumniReadMessage,
   isCastOpenMessage,
   isCastReadMessage,
   isLibraryCatalogBrowseMessage,
@@ -134,6 +135,18 @@ describe("page context message validation", () => {
       false,
     );
     expect(isCastOpenMessage({ type: "cast-open" })).toBe(true);
+    expect(
+      isCastAlumniReadMessage({
+        type: "cast-alumni-read",
+        tool_call_id: "alumni-1",
+      }),
+    ).toBe(true);
+    expect(
+      isCastAlumniReadMessage({
+        type: "cast-alumni-read",
+        tool_call_id: "",
+      }),
+    ).toBe(false);
   });
   it("accepts only the observed SITRUS grade notice route", () => {
     expect(
