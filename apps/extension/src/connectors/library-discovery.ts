@@ -132,8 +132,12 @@ export type LibraryToolResult =
 /** Advertise public-library tools only for the current explicit user turn. */
 export function requestsLibraryTools(message: string): boolean {
   return (
-    /図書館|図書|本|蔵書|書籍|論文|電子(?:書籍|ブック)|OPAC|SIT\s*Search|貸出|請求記号|新着図書|貸出ランキング/iu.test(
+    /図書館|蔵書|電子(?:書籍|ブック)|OPAC|SIT\s*Search|貸出|請求記号|新着図書|貸出ランキング/iu.test(
       message,
-    ) || /orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}/u.test(message)
+    ) ||
+    /(?:本|図書|書籍|論文).{0,20}(?:探|検索|所蔵|借|読|閲覧|取り寄|取寄|予約|場所|どこ|ある|ない|新着|おすすめ|関連|詳細)|(?:探|検索|所蔵|借|読|閲覧|取り寄|取寄|予約|場所|どこ|ある|ない|新着|おすすめ|関連|詳細).{0,20}(?:本|図書|書籍|論文)/iu.test(
+      message,
+    ) ||
+    /orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}/u.test(message)
   );
 }

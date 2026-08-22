@@ -13,6 +13,8 @@ describe("library discovery boundary", () => {
     expect(
       requestsLibraryTools("ありがとう。今日はここまでで大丈夫です。"),
     ).toBe(false);
+    expect(requestsLibraryTools("本当にありがとう")).toBe(false);
+    expect(requestsLibraryTools("論文を書き直して")).toBe(false);
   });
 
   it("rejects SIT Search links carrying query or fragment state", () => {

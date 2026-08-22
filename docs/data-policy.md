@@ -86,7 +86,7 @@ ScombZへのログイン状態を、Google Drive、Google Calendar、Microsoft G
 
 ### Branch 1 公開図書館ディスカバリー
 
-`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`は、利用者がChatで明示的に要求した場合だけ、公開されたOPACまたは公式SIT Searchの表示DOMを読む。OPACの検索・レコード・新着図書・貸出ランキング、およびSIT Searchのフォームと結果リンクは、確認済みの公式origin/pathに限定する。必要なoptional host permissionがないときはToolを広告せず、フォーム・DOM・origin・pathの不一致、ログイン画面、エラー、availabilityの未解決は`unavailable`として扱う。
+`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`は、利用者が現在のChatターンで図書館利用を明示的に要求した場合だけ広告し、公開されたOPACまたは公式SIT Searchの表示DOMを読む。必要なoptional host permissionがなくても、この明示要求に限ってToolを広告する。AgentがToolを選んだ後、読み取り前にChat内でサイト単位の許可を求め、拒否された場合は実行しない。OPACの検索・レコード・新着図書・貸出ランキング、およびSIT Searchのフォームと結果リンクは、確認済みの公式origin/pathに限定する。フォーム・DOM・origin・pathの不一致、ログイン画面、エラー、availabilityの未解決は`unavailable`として扱う。
 
 Agent APIへ送るのは、厳格な公開書誌メタデータ、表示されたholdingのcampus/location/call number/status/due date/reservation count、公式リンク、検索結果の短い表示スニペットだけである。material ID、copy ID、内部AJAXの応答、Cookie、session token、認証情報、個人の貸出・予約情報は送らない。`resource_ref`は公開レコードIDから導出したopaque値で、元IDはService Workerの短命な対応表にのみ保持し、再起動後や衝突時は解決しない。SIT Searchでは契約本文の全文取得、ダウンロード、保存、一般Web検索へのfallbackを行わない。
 

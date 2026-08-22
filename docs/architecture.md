@@ -239,7 +239,7 @@ Composerでは`Ask every time`を既定にし、未許可ホストの読み取�
 
 Branch 1では、個人のMy Libraryを拡張せず、公開ページの検索・閲覧だけを4つのChat client tool（`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`）として追加する。OPACは確認済みの`https://library.shibaura-it.ac.jp/opc/`、レコードは`/opc/recordID/catalog.bib/<record>`、新着図書と貸出ランキングはそれぞれ確認済みの`/cgi-bin/nbk/nbk_seek.cgi?ulang=jpn`と`/cgi-bin/loan_best10/loan_best10.cgi?ulang=jpn`だけを使う。SIT SearchはOPACから到達する`https://slib.shibaura-it.ac.jp/sublib/`だけを使い、表示された書誌メタデータとリンク以外（契約本文、ダウンロード、保存）は扱わない。
 
-Service Workerは必要なoptional host permissionが付与されている場合だけ該当Toolを広告する。実行時は公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
+現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。optional host permissionが未付与でもTool要求までは進め、読み取り直前にChat内でサイト単位の許可を求める。許可後、Service Workerは公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
 
 書誌レコードの`resource_ref`は安定した公開レコードIDから導出したopaque値であり、元IDはService Workerの短命なメモリ対応表にだけ保持する。対応表が失われた再起動後や衝突検出時は解決せず、推測で読み替えない。Holdingは表示されたcampus、location、call number、status、due date、reservation countだけを返し、未表示の値は`unknown`または`null`とする。Evidenceは`source_type=library`、`classification=public`、`orbit-library://public/` locatorに限定する。
 
