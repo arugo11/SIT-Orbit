@@ -68,6 +68,15 @@ def test_public_library_result_is_strict_and_has_no_internal_ids() -> None:
             snippet=None,
             resource_ref=None,
         )
+    with pytest.raises(ValueError):
+        LibraryDiscoveryItem(
+            title="公開論文",
+            authors=[],
+            source_label="SIT Search",
+            url="https://slib.shibaura-it.ac.jp/sublib/#result",
+            snippet=None,
+            resource_ref=None,
+        )
 
 
 def test_library_tool_result_matching_and_public_evidence_allowlist() -> None:
