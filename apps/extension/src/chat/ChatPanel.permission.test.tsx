@@ -1,5 +1,5 @@
 import { act } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentApiClient, ChatRunResponse } from "../api/client";
 import {
   buttonByName,
@@ -10,6 +10,7 @@ import {
   waitFor,
 } from "../sidepanel/ui-test-helpers";
 import { ChatPanel } from "./ChatPanel";
+import { deleteAllConversations } from "./chat-history";
 
 const LIBRARY_DISCLOSURE =
   "検索語をこのサイトへ送信し、表示された結果のみを読み取ります。予約等の変更はしません。";
@@ -17,13 +18,18 @@ const LIBRARY_DISCLOSURE =
 function toolRequired(
   name: string,
   argumentsValue: Record<string, unknown>,
+  options: {
+    runId?: string;
+    toolCallId?: string;
+  } = {},
 ): ChatRunResponse {
+  const runId = options.runId ?? "chat-permission-run";
   return {
     status: "tool_required",
-    run_id: "chat-permission-run",
+    run_id: runId,
     calls: [
       {
-        tool_call_id: `chat-permission-${name}`,
+        tool_call_id: options.toolCallId ?? `chat-permission-${name}`,
         name,
         version: 1,
         arguments: argumentsValue,
@@ -32,7 +38,10 @@ function toolRequired(
   } as ChatRunResponse;
 }
 
-function createApiClient(response: ChatRunResponse): AgentApiClient & {
+function createApiClient(
+  response: ChatRunResponse,
+  completionId = "unexpected-completion",
+): AgentApiClient & {
   startChat: ReturnType<typeof vi.fn>;
   submitChatToolResult: ReturnType<typeof vi.fn>;
 } {
@@ -41,7 +50,7 @@ function createApiClient(response: ChatRunResponse): AgentApiClient & {
     submitChatToolResult: vi.fn(async () => ({
       status: "completed",
       message: {
-        message_id: "unexpected-completion",
+        message_id: completionId,
         content_markdown: "unexpected",
         evidence: [],
       },
@@ -51,6 +60,39 @@ function createApiClient(response: ChatRunResponse): AgentApiClient & {
     startChat: ReturnType<typeof vi.fn>;
     submitChatToolResult: ReturnType<typeof vi.fn>;
   };
+}
+
+type TestChromePermissions = {
+  contains: ReturnType<typeof vi.fn>;
+  request: ReturnType<typeof vi.fn>;
+  remove: ReturnType<typeof vi.fn>;
+};
+
+function installKnownLibraryRuntime(
+  mounted: MountedSidePanel,
+  query: string,
+): TestChromePermissions {
+  const permissions: TestChromePermissions = {
+    contains: vi.fn(async () => true),
+    request: vi.fn(async () => true),
+    remove: vi.fn(async () => true),
+  };
+  Object.assign(chrome, { permissions });
+  mounted.chromeRuntime.sendMessage.mockImplementation(
+    (_message: unknown, callback?: (response: unknown) => void) => {
+      callback?.({
+        status: "known",
+        projection: {
+          schema_version: "v1",
+          status: "known",
+          query,
+          items: [],
+          reason_code: null,
+        },
+      });
+    },
+  );
+  return permissions;
 }
 
 async function sendMessage(
@@ -107,11 +149,16 @@ async function sendMessage(
 describe("ChatPanel library permission disclosure", () => {
   let mounted: MountedSidePanel | undefined;
 
+  beforeEach(async () => {
+    await deleteAllConversations();
+  });
+
   afterEach(async () => {
     if (mounted) {
       await unmountSidePanel(mounted.root);
       mounted = undefined;
     }
+    await deleteAllConversations();
   });
 
   it.each([
@@ -170,6 +217,85 @@ describe("ChatPanel library permission disclosure", () => {
       expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
       expect(mounted.document.body.textContent).toContain(
         "サイトの読み取りを拒否しました。",
+      );
+    },
+  );
+
+  it.each([
+    ["catalog/ask", "library_catalog_search", "図書館で本を検索して", false],
+    [
+      "discovery/ask",
+      "library_discovery_search",
+      "電子ジャーナルを検索して",
+      false,
+    ],
+    ["catalog/full", "library_catalog_search", "図書館で本を検索して", true],
+    [
+      "discovery/full",
+      "library_discovery_search",
+      "電子ジャーナルを検索して",
+      true,
+    ],
+  ] as const)(
+    "requires run-scoped library approval before runtime known result (%s)",
+    async (caseName, toolName, message, fullAccess) => {
+      const runId = `known-${caseName}`;
+      const toolCallId = `${runId}-call`;
+      const apiClient = createApiClient(
+        toolRequired(
+          toolName,
+          { query: message, limit: 10 },
+          { runId, toolCallId },
+        ),
+        `${runId}-completed`,
+      );
+      const panel = await mountSidePanel(() => (
+        <ChatPanel
+          apiClient={apiClient}
+          pageContext={null}
+          calendarState={{ status: "not_connected" }}
+          calendarRequest={async () => ({ status: "not_connected" })}
+        />
+      ));
+      mounted = panel;
+      const permissions = installKnownLibraryRuntime(panel, message);
+
+      if (fullAccess) {
+        await click(buttonByName(panel.document, "Full access"));
+        await waitFor(
+          () =>
+            buttonByName(panel.document, "Full access").getAttribute(
+              "aria-pressed",
+            ) === "true",
+        );
+      }
+      expect(panel.chromeRuntime.sendMessage).not.toHaveBeenCalled();
+
+      await sendMessage(panel, message);
+      const prompt = panel.document.querySelector(".chat-permission-prompt");
+      expect(prompt?.textContent).toContain(LIBRARY_DISCLOSURE);
+      expect(panel.chromeRuntime.sendMessage).not.toHaveBeenCalled();
+
+      await click(buttonByName(panel.document, "今回だけ許可"));
+      await waitFor(
+        () => panel.chromeRuntime.sendMessage.mock.calls.length === 1,
+      );
+      expect(panel.chromeRuntime.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: toolName.replaceAll("_", "-"),
+          tool_call_id: toolCallId,
+        }),
+        expect.any(Function),
+      );
+      expect(permissions.request).toHaveBeenLastCalledWith({
+        origins: [
+          toolName === "library_catalog_search"
+            ? "https://library.shibaura-it.ac.jp/*"
+            : "https://slib.shibaura-it.ac.jp/*",
+        ],
+      });
+      await waitFor(
+        () => apiClient.submitChatToolResult.mock.calls.length === 1,
       );
     },
   );

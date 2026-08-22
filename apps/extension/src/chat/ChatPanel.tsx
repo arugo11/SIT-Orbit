@@ -21,7 +21,13 @@ import {
   type CalendarConnectorResult,
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
-import { requestsLibraryTools } from "../connectors/library-discovery";
+import {
+  LIBRARY_OPAC_ORIGIN,
+  LIBRARY_OPAC_PERMISSION_PATTERN,
+  LIBRARY_SIT_SEARCH_ORIGIN,
+  LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
+  requestsLibraryTools,
+} from "../connectors/library-discovery";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
   MOODLE_DASHBOARD_URL,
@@ -557,6 +563,16 @@ export function ChatPanel({
       }
       request = toolResultRequest(call.tool_call_id, call.name, syllabus);
     } else if (call.name === "library_catalog_search") {
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-catalog-search`;
+      if (!sensitiveApproval.current.has(approvalKey)) {
+        throw new BrowserAccessRequiredError(
+          LIBRARY_OPAC_ORIGIN,
+          LIBRARY_OPAC_ORIGIN,
+          LIBRARY_OPAC_PERMISSION_PATTERN,
+          approvalKey,
+          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
+        );
+      }
       const library = await sendExtensionMessage<LibraryCatalogSearchResponse>({
         type: "library-catalog-search",
         tool_call_id: call.tool_call_id,
@@ -595,7 +611,7 @@ export function ChatPanel({
           library.origin,
           library.origin,
           library.pattern,
-          `${response.run_id}:${call.tool_call_id}:library-catalog-search`,
+          approvalKey,
           LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
         );
       }
@@ -689,6 +705,16 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_discovery_search") {
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-discovery-search`;
+      if (!sensitiveApproval.current.has(approvalKey)) {
+        throw new BrowserAccessRequiredError(
+          LIBRARY_SIT_SEARCH_ORIGIN,
+          LIBRARY_SIT_SEARCH_ORIGIN,
+          LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
+          approvalKey,
+          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
+        );
+      }
       const library =
         await sendExtensionMessage<LibraryDiscoverySearchResponse>({
           type: "library-discovery-search",
@@ -704,7 +730,7 @@ export function ChatPanel({
           library.origin,
           library.origin,
           library.pattern,
-          `${response.run_id}:${call.tool_call_id}:library-discovery-search`,
+          approvalKey,
           LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
         );
       }
