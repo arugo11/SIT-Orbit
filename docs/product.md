@@ -42,6 +42,8 @@ SIT ORBITは、合成関数の微分を2問確認する12分間の行動を提�
 - 複数Agentによる自律実行
 - B1からB4までのLearner Twinの完成
 
+図書館操作はfoundation loopの外側にあるBranch 3として、公式ページからのread-only options、棚／公式viewerの案内、明示確認付きのbounded previewまでを提供する。予約・延長・購入・ILLなどのlive writeは、providerのform/CSRF/submit/read-backを検証できるまで利用不可として表示し、成功をシミュレートしない。
+
 ## Product language
 
 - Product name: `SIT ORBIT`

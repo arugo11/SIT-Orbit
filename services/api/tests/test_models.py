@@ -4,6 +4,8 @@ from orbit_api.models import (
     AgentToolResultRequest,
     CalendarAvailabilityResult,
     EvidenceLink,
+    LibraryActionOptionsResult,
+    RenewOperation,
     ScombzPageSummaryResult,
 )
 from pydantic import ValidationError
@@ -28,6 +30,82 @@ def test_external_action_requires_confirmation() -> None:
             requires_confirmation=False,
             prompt_version="test-v1",
         )
+
+
+def test_library_action_options_are_typed_and_personal_classified() -> None:
+    result = LibraryActionOptionsResult.model_validate(
+        {
+            "status": "known",
+            "resource_ref": "orbit-library://record/ABCDEFGHIJKLMNOP",
+            "data_classification": "personal",
+            "options": [
+                {
+                    "action_type": action,
+                    "available": action == "open_online",
+                    "reason_code": (
+                        "available" if action == "open_online" else "not_available"
+                    ),
+                    "required_inputs": {
+                        "reserve": ["pickup_campus"],
+                        "intercampus_transfer": ["pickup_campus"],
+                        "purchase_request": ["reason"],
+                        "ill_loan": ["receiver", "payment", "fee"],
+                        "ill_copy": ["receiver", "payment", "fee", "page_range"],
+                    }.get(action, []),
+                }
+                for action in (
+                    "visit_shelf",
+                    "open_online",
+                    "reserve",
+                    "intercampus_transfer",
+                    "renew",
+                    "purchase_request",
+                    "ill_loan",
+                    "ill_copy",
+                )
+            ],
+        }
+    )
+    assert result.data_classification == "personal"
+    assert len(result.options) == 8
+
+
+def test_library_write_operation_requires_library_write_and_confirmation() -> None:
+    evidence = EvidenceLink(
+        evidence_id="library-action-options-v1-ABCDEFGHIJKLMNOP",
+        title="Official library action options",
+        source_type="library",
+        locator="orbit-library://record/ABCDEFGHIJKLMNOP",
+        data_classification="public",
+    )
+    operation = RenewOperation(
+        action_type="renew",
+        resource_ref="orbit-library://record/ABCDEFGHIJKLMNOP",
+    )
+    with pytest.raises(ValidationError):
+        ActionProposal(
+            action_id="act-library-1",
+            title="Renew",
+            reason="The current official loan page allows renewal.",
+            duration_minutes=2,
+            evidence=[evidence],
+            external_action="none",
+            requires_confirmation=True,
+            prompt_version="test-v1",
+            operation=operation,
+        )
+    proposal = ActionProposal(
+        action_id="act-library-2",
+        title="Renew",
+        reason="The current official loan page allows renewal.",
+        duration_minutes=2,
+        evidence=[evidence],
+        external_action="library_write",
+        requires_confirmation=True,
+        prompt_version="test-v1",
+        operation=operation,
+    )
+    assert proposal.operation == operation
 
 
 @pytest.mark.parametrize("extra_field", ["title", "event_id", "oauth_token"])

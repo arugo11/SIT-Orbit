@@ -7,6 +7,14 @@ import {
   GoogleDriveConnector,
 } from "../connectors/google-drive";
 import {
+  isLibraryActionEditableInputs,
+  type LibraryActionEditableInputs,
+  type LibraryActionOption,
+  type LibraryActionPreviewOfficial,
+  readOnlyInputsForOperation,
+  unavailableLibraryActionOptions,
+} from "../connectors/library-actions";
+import {
   createLibraryResourceRef,
   isLibraryResourceRef,
   isOfficialDiscoveryUrl,
@@ -72,6 +80,9 @@ import {
   isGetPageContextMessage,
   isGetWorkspaceSessionMessage,
   isGetWorkspaceStatusMessage,
+  isLibraryActionOptionsMessage,
+  isLibraryActionPreviewMessage,
+  isLibraryActionSubmitMessage,
   isLibraryCatalogBrowseMessage,
   isLibraryCatalogSearchMessage,
   isLibraryDiscoverySearchMessage,
@@ -87,6 +98,12 @@ import {
   isSitrusReadMessage,
   isSyllabusSearchMessage,
   isUpdateWorkspaceSessionMessage,
+  type LibraryActionOptionsMessage,
+  type LibraryActionOptionsResponse,
+  type LibraryActionPreviewMessage,
+  type LibraryActionPreviewResponse,
+  type LibraryActionSubmitMessage,
+  type LibraryActionSubmitResponse,
   type LibraryCatalogBrowseMessage,
   type LibraryCatalogBrowseResponse,
   type LibraryCatalogSearchMessage,
@@ -131,6 +148,9 @@ const CAST_PERMISSION_PATTERN = `${CAST_ORIGIN}/*`;
 // an opaque resource_ref can be resolved for the next item-read call. A
 // worker restart therefore fails closed instead of guessing a record URL.
 const libraryRecordRefs = new Map<string, string>();
+const libraryRecordSnapshots = new Map<string, LibraryMaterializedRecord>();
+const libraryActionRefExpiry = new Map<string, number>();
+const LIBRARY_ACTION_REF_TTL_MS = 10 * 60 * 1000;
 
 interface MyLibraryResourceTarget {
   scope: MyLibraryScope;
@@ -145,8 +165,36 @@ const myLibraryResourceRefs = new Map<string, MyLibraryResourceTarget>();
 const myLibraryResourceRefKeys = new Map<string, string>();
 
 function clearMyLibraryResourceMaps(): void {
+  for (const resourceRef of myLibraryResourceRefs.keys()) {
+    libraryActionRefExpiry.delete(resourceRef);
+  }
   myLibraryResourceRefs.clear();
   myLibraryResourceRefKeys.clear();
+}
+
+function clearLibraryRecordMaps(): void {
+  libraryRecordRefs.clear();
+  libraryRecordSnapshots.clear();
+  libraryActionRefExpiry.clear();
+}
+
+function rememberLibraryActionRef(resourceRef: string): void {
+  libraryActionRefExpiry.set(
+    resourceRef,
+    Date.now() + LIBRARY_ACTION_REF_TTL_MS,
+  );
+}
+
+function isLiveLibraryActionRef(resourceRef: string): boolean {
+  const expiresAt = libraryActionRefExpiry.get(resourceRef);
+  if (expiresAt === undefined || expiresAt <= Date.now()) {
+    libraryActionRefExpiry.delete(resourceRef);
+    libraryRecordRefs.delete(resourceRef);
+    myLibraryResourceRefs.delete(resourceRef);
+    myLibraryResourceRefKeys.delete(resourceRef);
+    return false;
+  }
+  return true;
 }
 
 function browserOrigin(
@@ -264,6 +312,90 @@ type LibraryPageProjection =
   | { status: "known"; records: LibraryRawRecord[] }
   | { status: "loading" }
   | { status: "unavailable"; reason_code: string };
+
+type LibraryActionPageProjection =
+  | {
+      status: "known";
+      holding_visible: boolean;
+      official_viewer_visible: boolean;
+      official_viewer_url: string | null;
+    }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
+type MyLibraryActionPageProjection =
+  | {
+      status: "known";
+      target_found: boolean;
+      target_renewable: boolean;
+      any_overdue: boolean;
+      target_reserved: boolean;
+      viewer_visible: boolean;
+    }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
+type LibraryActionPreviewEntry = {
+  tool_call_id: string;
+  operation: LibraryActionPreviewMessage["operation"];
+  inputs: LibraryActionEditableInputs;
+  resource_ref: string;
+  action_type: LibraryActionPreviewMessage["operation"]["action_type"];
+  exact_origin: string;
+  exact_path: string;
+  state_fingerprint: string;
+  created_at: number;
+  state: "pending" | "consumed";
+  official_url: string;
+};
+
+const LIBRARY_PREVIEW_TTL_MS = 90_000;
+const libraryActionPreviews = new Map<string, LibraryActionPreviewEntry>();
+
+function clearLibraryActionPreviews(): void {
+  libraryActionPreviews.clear();
+}
+
+function libraryActionStateFingerprint(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function fingerprintableLibraryHoldings(
+  holdings:
+    | ReadonlyArray<{
+        campus: "toyosu" | "omiya" | "unknown";
+        location: string | null;
+        call_number: string | null;
+        status: string;
+      }>
+    | null
+    | undefined,
+) {
+  return (
+    holdings
+      ?.filter(
+        (holding) =>
+          holding.campus !== "unknown" &&
+          Boolean(holding.location) &&
+          Boolean(holding.call_number),
+      )
+      .map((holding) => ({
+        campus: holding.campus,
+        location: holding.location,
+        call_number: holding.call_number,
+        status: holding.status,
+      })) ?? []
+  );
+}
+
+function newLibraryPreviewId(): string {
+  const bytes = new Uint8Array(18);
+  crypto.getRandomValues(bytes);
+  const token = Array.from(bytes, (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `orbit-library://preview/${token}`;
+}
 
 function submitLibraryCatalogSearchInPage(filters: {
   query: string;
@@ -1032,6 +1164,608 @@ function libraryUnavailable(reason_code: string): {
   return { status: "unavailable", reason_code };
 }
 
+function readLibraryActionOptionsInPage(): LibraryActionPageProjection {
+  try {
+    const current = new URL(location.href);
+    if (
+      current.origin !== LIBRARY_OPAC_ORIGIN ||
+      !current.pathname.startsWith(LIBRARY_RECORD_PATH_PREFIX) ||
+      current.pathname.slice(LIBRARY_RECORD_PATH_PREFIX.length).length === 0 ||
+      current.search !== "" ||
+      current.hash !== ""
+    ) {
+      return { status: "unavailable", reason_code: "unexpected_record_page" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const visible = (element: Element): boolean => {
+      for (
+        let currentElement: Element | null = element;
+        currentElement;
+        currentElement = currentElement.parentElement
+      ) {
+        if (
+          currentElement.hasAttribute("hidden") ||
+          currentElement.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        const style = (currentElement.getAttribute("style") ?? "")
+          .replace(/\s+/gu, "")
+          .toLowerCase();
+        if (
+          /(?:^|;)display:none(?:;|$)/u.test(style) ||
+          /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(style) ||
+          /(?:^|;)opacity:0(?:;|$)/u.test(style)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+    const text = (element: Element | null): string =>
+      (element?.textContent ?? "").replace(/\s+/gu, " ").trim();
+    const bodyText = text(document.body);
+    if (!bodyText) {
+      return { status: "unavailable", reason_code: "record_not_rendered" };
+    }
+    const campusValue = (value: string): boolean =>
+      /(?:豊洲|大宮|toyosu|omiya)/iu.test(value.replace(/[\s　]/gu, ""));
+    const isCampusLabel = (value: string): boolean =>
+      /^(?:所蔵館|所蔵場所|配置場所|所在|キャンパス|館)$/iu.test(value);
+    const isCallNumberLabel = (value: string): boolean =>
+      /^(?:請求記号|call\s*(?:no\.?|number))$/iu.test(value);
+    const hasExplicitHoldingRow = (row: Element): boolean => {
+      if (!visible(row)) return false;
+      const labels = Array.from(row.querySelectorAll("dt, th"));
+      let location: string | null = null;
+      let callNumber: string | null = null;
+      for (const label of labels) {
+        const labelText = text(label);
+        const value = label.nextElementSibling;
+        if (!value || !visible(value)) continue;
+        if (isCampusLabel(labelText)) location = text(value);
+        if (isCallNumberLabel(labelText)) callNumber = text(value);
+      }
+      if (location !== null && callNumber !== null) {
+        return campusValue(location) && callNumber.length > 0;
+      }
+      const headerRows = Array.from(row.querySelectorAll("tr"));
+      for (const header of headerRows) {
+        const headers = Array.from(header.querySelectorAll("th")).map(text);
+        const locationIndex = headers.findIndex(isCampusLabel);
+        const callIndex = headers.findIndex(isCallNumberLabel);
+        if (locationIndex < 0 || callIndex < 0) continue;
+        const dataRows = Array.from(
+          header.parentElement?.querySelectorAll("tr") ?? [],
+        );
+        for (const dataRow of dataRows) {
+          if (dataRow === header || !visible(dataRow)) continue;
+          const cells = Array.from(dataRow.querySelectorAll("td"));
+          const locationCell = cells[locationIndex];
+          const callCell = cells[callIndex];
+          if (
+            locationCell &&
+            callCell &&
+            campusValue(text(locationCell)) &&
+            text(callCell).length > 0
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    const holding_visible = Array.from(
+      document.querySelectorAll("dl, table"),
+    ).some(hasExplicitHoldingRow);
+    const viewerLink = Array.from(
+      document.querySelectorAll<HTMLAnchorElement>("a[href]"),
+    ).find((link) => {
+      if (!visible(link)) return false;
+      const label = text(link);
+      if (!/電子|本文|閲覧|viewer|view/iu.test(label)) return false;
+      try {
+        const url = new URL(link.href, current.href);
+        return (
+          url.protocol === "https:" &&
+          (url.origin === LIBRARY_OPAC_ORIGIN ||
+            url.origin === LIBRARY_SIT_SEARCH_ORIGIN) &&
+          url.search === "" &&
+          url.hash === "" &&
+          url.href !== current.href
+        );
+      } catch {
+        return false;
+      }
+    });
+    return {
+      status: "known",
+      holding_visible,
+      official_viewer_visible: viewerLink !== undefined,
+      official_viewer_url: viewerLink
+        ? new URL(viewerLink.href, current.href).href
+        : null,
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "action_options_read_failed" };
+  }
+}
+
+function readMyLibraryActionOptionsInPage(
+  scope: MyLibraryScope,
+  targetRawId: string,
+): MyLibraryActionPageProjection {
+  try {
+    if (
+      location.origin !== MY_LIBRARY_ORIGIN ||
+      location.pathname !== MY_LIBRARY_STATUS_PATH ||
+      location.search !== "" ||
+      location.hash !== ""
+    ) {
+      return { status: "unavailable", reason_code: "unexpected_page" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const clean = (value: string | null | undefined): string =>
+      (value ?? "").replace(/\s+/gu, " ").trim();
+    const visible = (element: Element): boolean => {
+      for (
+        let currentElement: Element | null = element;
+        currentElement;
+        currentElement = currentElement.parentElement
+      ) {
+        if (
+          currentElement.hasAttribute("hidden") ||
+          currentElement.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        const style = (currentElement.getAttribute("style") ?? "")
+          .replace(/\s+/gu, "")
+          .toLowerCase();
+        if (
+          /(?:^|;)display:none(?:;|$)/u.test(style) ||
+          /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(style) ||
+          /(?:^|;)opacity:0(?:;|$)/u.test(style)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+    const tableSelector =
+      scope === "current_loans"
+        ? "#lendList"
+        : scope === "reservations"
+          ? "#reservationList"
+          : "table";
+    const table = document.querySelector(tableSelector);
+    if (!table || !visible(table)) {
+      return { status: "unavailable", reason_code: "scope_table_not_found" };
+    }
+    const rows = Array.from(table.querySelectorAll("tbody tr")).filter(visible);
+    if (rows.length === 0) {
+      return { status: "unavailable", reason_code: "scope_row_unparseable" };
+    }
+    const targetRows = rows.filter((row) => {
+      const visibleIds: string[] = [];
+      for (const label of Array.from(row.querySelectorAll("dt, th"))) {
+        if (!visible(label)) continue;
+        if (
+          !/^(?:資料ID|資料番号|受付番号|依頼番号|申請番号|整理番号|ILL番号)$/u.test(
+            clean(label.textContent),
+          )
+        ) {
+          continue;
+        }
+        const value = label.nextElementSibling;
+        if (value && visible(value)) visibleIds.push(clean(value.textContent));
+      }
+      for (const checkbox of Array.from(
+        row.querySelectorAll<HTMLInputElement>(
+          'input[type="checkbox"][name="checkBoxBookNumber"]',
+        ),
+      )) {
+        if (!visible(checkbox) || checkbox.disabled) continue;
+        if (clean(checkbox.value) === targetRawId) visibleIds.push(targetRawId);
+        if (checkbox.id) {
+          const label = Array.from(row.querySelectorAll("label")).find(
+            (candidate) => candidate.htmlFor === checkbox.id,
+          );
+          if (label && clean(label.textContent) === targetRawId) {
+            visibleIds.push(targetRawId);
+          }
+        }
+      }
+      return visibleIds.some((value) => value === targetRawId);
+    });
+    if (targetRows.length !== 1) {
+      return {
+        status: "known",
+        target_found: false,
+        target_renewable: false,
+        any_overdue: false,
+        target_reserved: false,
+        viewer_visible: false,
+      };
+    }
+    const dateFromText = (value: string): string | null => {
+      const match = value.match(/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})/u);
+      if (!match) return null;
+      const year = match[1];
+      const month = match[2];
+      const day = match[3];
+      if (!year || !month || !day) return null;
+      return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+    };
+    const now = new Date();
+    const today = `${now.getFullYear()}-${(now.getMonth() + 1)
+      .toString()
+      .padStart(2, "0")}-${now.getDate().toString().padStart(2, "0")}`;
+    const allDates = rows.map((row) => dateFromText(clean(row.textContent)));
+    const any_overdue = allDates.some((date) => date !== null && date < today);
+    const target = targetRows[0];
+    if (!target) {
+      return {
+        status: "known",
+        target_found: false,
+        target_renewable: false,
+        any_overdue: false,
+        target_reserved: false,
+        viewer_visible: false,
+      };
+    }
+    const targetText = clean(target.textContent);
+    const target_renewable =
+      scope === "current_loans" &&
+      Array.from(
+        target.querySelectorAll<HTMLInputElement>(
+          'input[type="checkbox"][name="checkBoxBookNumber"]',
+        ),
+      ).some((element) => {
+        if (!visible(element) || element.disabled) return false;
+        if (clean(element.value) === targetRawId) return true;
+        if (!element.id) return false;
+        const label = Array.from(target.querySelectorAll("label")).find(
+          (candidate) => candidate.htmlFor === element.id,
+        );
+        return label !== undefined && clean(label.textContent) === targetRawId;
+      });
+    const target_reserved =
+      scope === "reservations" || /予約|取置/iu.test(targetText);
+    const viewer_visible = Array.from(
+      target.querySelectorAll<HTMLAnchorElement>("a[href]"),
+    ).some((link) =>
+      /電子|本文|閲覧|viewer|view/iu.test(clean(link.textContent)),
+    );
+    return {
+      status: "known",
+      target_found: true,
+      target_renewable,
+      any_overdue,
+      target_reserved,
+      viewer_visible,
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "action_options_read_failed" };
+  }
+}
+
+type LibraryWriteSurfaceProjection =
+  | {
+      status: "validated";
+      exact_origin: string;
+      exact_path: string;
+      target_found: boolean;
+      form_post: boolean;
+      form_path: string;
+      csrf_present: boolean;
+      state_fingerprint: string;
+    }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
+/** Validate only the live write surface shape; this function never submits. */
+function validateMyLibraryWriteSurfaceInPage(
+  scope: MyLibraryScope,
+  targetRawId: string,
+): LibraryWriteSurfaceProjection {
+  try {
+    if (
+      location.origin !== MY_LIBRARY_ORIGIN ||
+      location.pathname !== MY_LIBRARY_STATUS_PATH ||
+      location.search !== "" ||
+      location.hash !== ""
+    ) {
+      return { status: "unavailable", reason_code: "unexpected_page" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const clean = (value: string | null | undefined): string =>
+      (value ?? "").replace(/\s+/gu, " ").trim();
+    const visible = (element: Element): boolean => {
+      for (
+        let current: Element | null = element;
+        current;
+        current = current.parentElement
+      ) {
+        if (
+          current.hasAttribute("hidden") ||
+          current.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        const style = (current.getAttribute("style") ?? "")
+          .replace(/\s+/gu, "")
+          .toLowerCase();
+        if (
+          /(?:^|;)display:none(?:;|$)/u.test(style) ||
+          /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(style) ||
+          /(?:^|;)opacity:0(?:;|$)/u.test(style)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+    const tableSelector =
+      scope === "current_loans"
+        ? "#lendList"
+        : scope === "reservations"
+          ? "#reservationList"
+          : "table";
+    const table = document.querySelector(tableSelector);
+    if (!table || !visible(table)) {
+      return { status: "unavailable", reason_code: "scope_table_not_found" };
+    }
+    const targetRows = Array.from(table.querySelectorAll("tbody tr")).filter(
+      (row) => {
+        if (!visible(row)) return false;
+        const values: string[] = [];
+        for (const label of Array.from(row.querySelectorAll("dt, th"))) {
+          if (
+            /^(?:資料ID|資料番号|受付番号|依頼番号|申請番号|整理番号|ILL番号)$/u.test(
+              clean(label.textContent),
+            )
+          ) {
+            const value = label.nextElementSibling;
+            if (value && visible(value)) values.push(clean(value.textContent));
+          }
+        }
+        for (const checkbox of Array.from(
+          row.querySelectorAll<HTMLInputElement>(
+            'input[type="checkbox"][name="checkBoxBookNumber"]',
+          ),
+        )) {
+          if (!visible(checkbox) || checkbox.disabled) continue;
+          if (clean(checkbox.value) === targetRawId) values.push(targetRawId);
+          if (checkbox.id) {
+            const label = Array.from(row.querySelectorAll("label")).find(
+              (candidate) => candidate.htmlFor === checkbox.id,
+            );
+            if (label && clean(label.textContent) === targetRawId) {
+              values.push(targetRawId);
+            }
+          }
+        }
+        return values.some((value) => value === targetRawId);
+      },
+    );
+    if (targetRows.length !== 1) {
+      return { status: "unavailable", reason_code: "target_not_current" };
+    }
+    const form = document.querySelector<HTMLFormElement>("form#frmMain");
+    if (!form)
+      return { status: "unavailable", reason_code: "write_form_missing" };
+    const method = (form.getAttribute("method") ?? "get").toLowerCase();
+    const action = form.getAttribute("action") ?? "";
+    const formUrl = new URL(action || location.pathname, location.href);
+    const formPost = method === "post";
+    if (
+      !formPost ||
+      action !== "" ||
+      formUrl.origin !== MY_LIBRARY_ORIGIN ||
+      formUrl.pathname !== MY_LIBRARY_STATUS_PATH ||
+      formUrl.search !== "" ||
+      formUrl.hash !== ""
+    ) {
+      return {
+        status: "unavailable",
+        reason_code: "write_form_shape_unverified",
+      };
+    }
+    const csrfPresent = Array.from(
+      form.querySelectorAll<HTMLInputElement>('input[type="hidden"]'),
+    ).some(
+      (input) =>
+        /csrf|token/iu.test(input.name) && input.value.trim().length > 0,
+    );
+    if (!csrfPresent) {
+      return { status: "unavailable", reason_code: "csrf_not_visible" };
+    }
+    return {
+      status: "validated",
+      exact_origin: location.origin,
+      exact_path: location.pathname,
+      target_found: true,
+      form_post: true,
+      form_path: formUrl.pathname,
+      csrf_present: true,
+      state_fingerprint: JSON.stringify({
+        scope,
+        target_found: true,
+        form_post: true,
+        form_path: formUrl.pathname,
+      }),
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "write_surface_read_failed" };
+  }
+}
+
+function publicLibraryActionOptions(
+  resource_ref: string,
+  projection: Extract<LibraryActionPageProjection, { status: "known" }>,
+): LibraryActionOptionsResponse {
+  const unavailableWriteReason = "write_form_not_verified";
+  const options: LibraryActionOption[] = [
+    {
+      action_type: "visit_shelf",
+      available: projection.holding_visible,
+      reason_code: projection.holding_visible
+        ? "available"
+        : "holding_not_visible",
+      required_inputs: [],
+    },
+    {
+      action_type: "open_online",
+      available: projection.official_viewer_visible,
+      reason_code: projection.official_viewer_visible
+        ? "available"
+        : "official_viewer_not_visible",
+      required_inputs: [],
+    },
+    {
+      action_type: "reserve",
+      available: false,
+      reason_code: unavailableWriteReason,
+      required_inputs: ["pickup_campus"],
+    },
+    {
+      action_type: "intercampus_transfer",
+      available: false,
+      reason_code: unavailableWriteReason,
+      required_inputs: ["pickup_campus"],
+    },
+    {
+      action_type: "renew",
+      available: false,
+      reason_code: "not_personal_loan",
+      required_inputs: [],
+    },
+    {
+      action_type: "purchase_request",
+      available: false,
+      reason_code: unavailableWriteReason,
+      required_inputs: ["reason"],
+    },
+    {
+      action_type: "ill_loan",
+      available: false,
+      reason_code: unavailableWriteReason,
+      required_inputs: ["receiver", "payment", "fee"],
+    },
+    {
+      action_type: "ill_copy",
+      available: false,
+      reason_code: unavailableWriteReason,
+      required_inputs: ["receiver", "payment", "fee", "page_range"],
+    },
+  ];
+  return {
+    status: "known",
+    projection: {
+      schema_version: "v1",
+      status: "known",
+      resource_ref,
+      options,
+      data_classification: "public",
+      reason_code: null,
+    },
+  };
+}
+
+function myLibraryActionOptions(
+  resource_ref: string,
+  projection: Extract<MyLibraryActionPageProjection, { status: "known" }>,
+): LibraryActionOptionsResponse {
+  const targetReason = projection.target_found
+    ? "not_available"
+    : "target_not_current";
+  const renewable =
+    projection.target_found &&
+    projection.target_renewable &&
+    !projection.any_overdue &&
+    !projection.target_reserved;
+  const renewReason = renewable
+    ? "available"
+    : !projection.target_found
+      ? "target_not_current"
+      : projection.any_overdue
+        ? "overdue_items"
+        : projection.target_reserved
+          ? "target_reserved"
+          : "not_renewable";
+  const options: LibraryActionOption[] = [
+    {
+      action_type: "visit_shelf",
+      available: false,
+      reason_code: "holding_not_visible",
+      required_inputs: [],
+    },
+    {
+      action_type: "open_online",
+      available: projection.target_found && projection.viewer_visible,
+      reason_code:
+        projection.target_found && projection.viewer_visible
+          ? "available"
+          : "official_viewer_not_visible",
+      required_inputs: [],
+    },
+    {
+      action_type: "reserve",
+      available: false,
+      reason_code: targetReason,
+      required_inputs: ["pickup_campus"],
+    },
+    {
+      action_type: "intercampus_transfer",
+      available: false,
+      reason_code: targetReason,
+      required_inputs: ["pickup_campus"],
+    },
+    {
+      action_type: "renew",
+      available: false,
+      reason_code: renewable ? "write_form_not_verified" : renewReason,
+      required_inputs: [],
+    },
+    {
+      action_type: "purchase_request",
+      available: false,
+      reason_code: "write_form_not_verified",
+      required_inputs: ["reason"],
+    },
+    {
+      action_type: "ill_loan",
+      available: false,
+      reason_code: "write_form_not_verified",
+      required_inputs: ["receiver", "payment", "fee"],
+    },
+    {
+      action_type: "ill_copy",
+      available: false,
+      reason_code: "write_form_not_verified",
+      required_inputs: ["receiver", "payment", "fee", "page_range"],
+    },
+  ];
+  return {
+    status: "known",
+    projection: {
+      schema_version: "v1",
+      status: "known",
+      resource_ref,
+      options,
+      data_classification: "personal",
+      reason_code: null,
+    },
+  };
+}
+
 function materializeLibraryRecord(
   raw: LibraryRawRecord,
 ): LibraryMaterializedRecord | null {
@@ -1043,6 +1777,7 @@ function materializeLibraryRecord(
       return null;
     }
     libraryRecordRefs.set(resource_ref, raw.record_id);
+    rememberLibraryActionRef(resource_ref);
     let relatedInvalid = false;
     const related_records = raw.related_records
       .map((related) => {
@@ -1057,6 +1792,7 @@ function materializeLibraryRecord(
             return null;
           }
           libraryRecordRefs.set(related_ref, related.record_id);
+          rememberLibraryActionRef(related_ref);
           return {
             resource_ref: related_ref,
             title: related.title,
@@ -1077,7 +1813,7 @@ function materializeLibraryRecord(
         } => item !== null,
       );
     if (relatedInvalid) return null;
-    return {
+    const materialized = {
       resource_ref,
       title: raw.title,
       authors: raw.authors,
@@ -1103,6 +1839,8 @@ function materializeLibraryRecord(
             ],
       related_records,
     } as LibraryMaterializedRecord;
+    libraryRecordSnapshots.set(resource_ref, materialized);
+    return materialized;
   } catch {
     return null;
   }
@@ -1279,6 +2017,627 @@ async function handleLibraryItemRead(
   }
 }
 
+type PublicLibraryActionSurface =
+  | {
+      status: "known";
+      projection: Extract<LibraryActionPageProjection, { status: "known" }>;
+      item: LibraryMaterializedRecord | null;
+      official_url: string;
+    }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
+async function readPublicLibraryActionSurface(
+  resourceRef: string,
+  recordId: string,
+): Promise<PublicLibraryActionSurface> {
+  const officialUrl = `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`;
+  const tabId = await createLibraryTab(officialUrl);
+  if (tabId === null) {
+    return { status: "unavailable", reason_code: "record_tab_create_failed" };
+  }
+  try {
+    const page = await readLibraryCatalogPage(tabId, "record", recordId);
+    if (page.status !== "known") {
+      return {
+        status: "unavailable",
+        reason_code:
+          page.status === "unavailable"
+            ? page.reason_code
+            : "availability_loading_timeout",
+      };
+    }
+    const raw = page.records[0];
+    if (!raw)
+      return {
+        status: "unavailable",
+        reason_code: "record_projection_invalid",
+      };
+    const item = materializeLibraryRecord(raw);
+    if (!item || item.resource_ref !== resourceRef) {
+      return { status: "unavailable", reason_code: "resource_ref_mismatch" };
+    }
+    const [injected] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      func: readLibraryActionOptionsInPage,
+    });
+    const projection = injected?.result as
+      | LibraryActionPageProjection
+      | undefined;
+    if (!projection || projection.status === "unavailable") {
+      return {
+        status: "unavailable",
+        reason_code:
+          projection?.reason_code ?? "action_options_projection_invalid",
+      };
+    }
+    if (projection.status === "reauth_required") {
+      return { status: "reauth_required", reason_code: projection.reason_code };
+    }
+    return { status: "known", projection, item, official_url: officialUrl };
+  } catch {
+    return { status: "unavailable", reason_code: "action_options_read_failed" };
+  } finally {
+    await chrome.tabs.remove(tabId).catch(() => undefined);
+  }
+}
+
+function emptyLibraryActionPreviewOfficial(): LibraryActionPreviewOfficial {
+  return {
+    title: null,
+    holdings: [],
+    pickup_campus: null,
+    current_due_date: null,
+    resulting_due_date: null,
+    receiver: null,
+    payment: null,
+    fee: null,
+    page_range: null,
+  };
+}
+
+async function readMyLibraryWriteSurface(
+  target: MyLibraryResourceTarget,
+): Promise<LibraryWriteSurfaceProjection> {
+  if (!target.raw_id) {
+    return { status: "unavailable", reason_code: "unresolved_resource_ref" };
+  }
+  const tab = await chrome.tabs.create({
+    url: MY_LIBRARY_ENTRY_URL,
+    active: false,
+  });
+  if (tab.id === undefined) {
+    return { status: "unavailable", reason_code: "entry_tab_missing" };
+  }
+  let keepForLogin = false;
+  try {
+    await waitForTabReady(tab.id);
+    const [clicked] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: clickMyLibraryMenuInPage,
+      args: [MY_LIBRARY_MENU_IDS[target.scope]],
+    });
+    if (clicked?.result?.status === "reauth_required") {
+      keepForLogin = true;
+      await chrome.tabs.update(tab.id, { active: true });
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    if (clicked?.result?.status !== "clicked") {
+      return { status: "unavailable", reason_code: "menu_result_missing" };
+    }
+    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+      return { status: "unavailable", reason_code: "status_page_timeout" };
+    }
+    const [validated] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: validateMyLibraryWriteSurfaceInPage,
+      args: [target.scope, target.raw_id],
+    });
+    const projection = validated?.result as
+      | LibraryWriteSurfaceProjection
+      | undefined;
+    return (
+      projection ?? {
+        status: "unavailable",
+        reason_code: "write_surface_projection_invalid",
+      }
+    );
+  } catch {
+    return { status: "unavailable", reason_code: "write_surface_read_failed" };
+  } finally {
+    if (!keepForLogin) await chrome.tabs.remove(tab.id).catch(() => undefined);
+  }
+}
+
+async function handleLibraryActionPreview(
+  message: LibraryActionPreviewMessage,
+): Promise<LibraryActionPreviewResponse> {
+  if (!isLiveLibraryActionRef(message.operation.resource_ref)) {
+    return { status: "unavailable", reason_code: "unknown_resource_ref" };
+  }
+  const publicRecordId = libraryRecordRefs.get(message.operation.resource_ref);
+  const personalTarget = myLibraryResourceRefs.get(
+    message.operation.resource_ref,
+  );
+  if (publicRecordId && personalTarget) {
+    return { status: "unavailable", reason_code: "ambiguous_resource_ref" };
+  }
+  if (!publicRecordId && !personalTarget) {
+    return { status: "unavailable", reason_code: "unknown_resource_ref" };
+  }
+  const writeAction = !["visit_shelf", "open_online"].includes(
+    message.operation.action_type,
+  );
+  if (personalTarget) {
+    if (
+      !(await hasBrowserPermission(
+        MY_LIBRARY_PERMISSION_PATTERN,
+        MY_LIBRARY_ORIGIN,
+      ))
+    ) {
+      return {
+        status: "permission_required",
+        origin: MY_LIBRARY_ORIGIN,
+        pattern: MY_LIBRARY_PERMISSION_PATTERN,
+      };
+    }
+    if (writeAction) {
+      const surface = await readMyLibraryWriteSurface(personalTarget);
+      if (surface.status === "reauth_required") {
+        return { status: "reauth_required", reason_code: surface.reason_code };
+      }
+      return {
+        status: "unavailable",
+        reason_code:
+          surface.status === "validated"
+            ? "write_form_not_verified"
+            : surface.reason_code,
+      };
+    }
+    return {
+      status: "unavailable",
+      reason_code: "personal_read_action_unsupported",
+    };
+  }
+  if (
+    !(await hasBrowserPermission(
+      LIBRARY_OPAC_PERMISSION_PATTERN,
+      LIBRARY_OPAC_ORIGIN,
+    ))
+  ) {
+    return {
+      status: "permission_required",
+      origin: LIBRARY_OPAC_ORIGIN,
+      pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
+    };
+  }
+  if (!publicRecordId) {
+    return { status: "unavailable", reason_code: "unknown_resource_ref" };
+  }
+  const surface = await readPublicLibraryActionSurface(
+    message.operation.resource_ref,
+    publicRecordId,
+  );
+  if (surface.status === "reauth_required") {
+    return { status: "reauth_required", reason_code: surface.reason_code };
+  }
+  if (surface.status === "unavailable") {
+    return { status: "unavailable", reason_code: surface.reason_code };
+  }
+  if (writeAction) {
+    return { status: "unavailable", reason_code: "write_form_not_verified" };
+  }
+  if (
+    message.operation.action_type === "visit_shelf" &&
+    (!surface.projection.holding_visible ||
+      !surface.item?.holdings.some(
+        (holding) =>
+          holding.campus !== "unknown" &&
+          Boolean(holding.location) &&
+          Boolean(holding.call_number),
+      ))
+  ) {
+    return {
+      status: "unavailable",
+      reason_code: "holding_projection_unparseable",
+    };
+  }
+  if (
+    message.operation.action_type === "open_online" &&
+    !surface.projection.official_viewer_url
+  ) {
+    return {
+      status: "unavailable",
+      reason_code: "official_viewer_not_visible",
+    };
+  }
+  const officialUrl =
+    message.operation.action_type === "open_online"
+      ? surface.projection.official_viewer_url
+      : surface.official_url;
+  if (!officialUrl)
+    return { status: "unavailable", reason_code: "official_url_missing" };
+  const previewId = newLibraryPreviewId();
+  const fingerprint = libraryActionStateFingerprint({
+    operation: message.operation.action_type,
+    projection: surface.projection,
+    title: surface.item?.title ?? null,
+    holdings: fingerprintableLibraryHoldings(surface.item?.holdings),
+  });
+  const previewInputs = readOnlyInputsForOperation(message.operation);
+  if (!previewInputs) {
+    return { status: "unavailable", reason_code: "write_form_not_verified" };
+  }
+  libraryActionPreviews.set(previewId, {
+    tool_call_id: message.tool_call_id,
+    operation: message.operation,
+    inputs: previewInputs,
+    resource_ref: message.operation.resource_ref,
+    action_type: message.operation.action_type,
+    exact_origin: LIBRARY_OPAC_ORIGIN,
+    exact_path: new URL(surface.official_url).pathname,
+    state_fingerprint: fingerprint,
+    created_at: Date.now(),
+    state: "pending",
+    official_url: officialUrl,
+  });
+  return {
+    status: "ready",
+    preview_id: previewId,
+    action_type: message.operation.action_type,
+    official: {
+      ...emptyLibraryActionPreviewOfficial(),
+      title: surface.item?.title ?? null,
+      holdings:
+        surface.item?.holdings
+          .filter(
+            (holding) =>
+              holding.campus !== "unknown" &&
+              Boolean(holding.location) &&
+              Boolean(holding.call_number),
+          )
+          .map((holding) => ({
+            campus: holding.campus,
+            location: holding.location,
+            call_number: holding.call_number,
+          })) ?? [],
+    },
+    inputs: previewInputs,
+  };
+}
+
+async function handleLibraryActionSubmit(
+  message: LibraryActionSubmitMessage,
+): Promise<LibraryActionSubmitResponse> {
+  const preview = libraryActionPreviews.get(message.preview_id);
+  if (!preview || Date.now() - preview.created_at > LIBRARY_PREVIEW_TTL_MS) {
+    libraryActionPreviews.delete(message.preview_id);
+    return { status: "expired", reason_code: "preview_expired" };
+  }
+  if (preview.state !== "pending") {
+    return { status: "expired", reason_code: "preview_already_consumed" };
+  }
+  if (!isLiveLibraryActionRef(preview.resource_ref)) {
+    return { status: "expired", reason_code: "resource_ref_expired" };
+  }
+  if (message.tool_call_id !== preview.tool_call_id) {
+    return { status: "unavailable", reason_code: "preview_binding_mismatch" };
+  }
+  if (
+    !isLibraryActionEditableInputs(preview.action_type, message.inputs) ||
+    message.inputs.action_type !== preview.action_type
+  ) {
+    return { status: "unavailable", reason_code: "invalid_editable_inputs" };
+  }
+  if (
+    preview.action_type === "visit_shelf" ||
+    preview.action_type === "open_online"
+  ) {
+    if (message.confirmation_label !== "公式ページを開く") {
+      return { status: "unavailable", reason_code: "wrong_confirmation_label" };
+    }
+  } else if (message.confirmation_label !== "この内容で送信") {
+    return { status: "unavailable", reason_code: "wrong_confirmation_label" };
+  }
+  // No live write surface has a verified submit/read-back path yet. A preview
+  // for a write is never created, so this branch is an explicit guard against
+  // forged or stale preview IDs and cannot submit a provider form.
+  if (!["visit_shelf", "open_online"].includes(preview.action_type)) {
+    return { status: "unavailable", reason_code: "write_form_not_verified" };
+  }
+  const recordId = libraryRecordRefs.get(preview.resource_ref);
+  if (!recordId) {
+    return { status: "unavailable", reason_code: "unknown_resource_ref" };
+  }
+  const surface = await readPublicLibraryActionSurface(
+    preview.resource_ref,
+    recordId,
+  );
+  if (surface.status === "reauth_required") {
+    return { status: "unavailable", reason_code: surface.reason_code };
+  }
+  if (surface.status === "unavailable") {
+    return { status: "unavailable", reason_code: surface.reason_code };
+  }
+  const currentFingerprint = libraryActionStateFingerprint({
+    operation: preview.action_type,
+    projection: surface.projection,
+    title: surface.item?.title ?? null,
+    holdings: fingerprintableLibraryHoldings(surface.item?.holdings),
+  });
+  const currentRecordUrl = new URL(surface.official_url);
+  if (
+    currentRecordUrl.origin !== preview.exact_origin ||
+    currentRecordUrl.pathname !== preview.exact_path ||
+    currentFingerprint !== preview.state_fingerprint
+  ) {
+    return { status: "unavailable", reason_code: "official_state_changed" };
+  }
+  if (
+    preview.action_type === "visit_shelf" &&
+    (!surface.projection.holding_visible ||
+      !surface.item?.holdings.some(
+        (holding) =>
+          holding.campus !== "unknown" &&
+          Boolean(holding.location) &&
+          Boolean(holding.call_number),
+      ))
+  ) {
+    return {
+      status: "unavailable",
+      reason_code: "holding_projection_unparseable",
+    };
+  }
+  if (
+    preview.action_type === "open_online" &&
+    !surface.projection.official_viewer_url
+  ) {
+    return {
+      status: "unavailable",
+      reason_code: "official_viewer_not_visible",
+    };
+  }
+  const latestUrl =
+    preview.action_type === "open_online"
+      ? surface.projection.official_viewer_url
+      : surface.official_url;
+  if (!latestUrl || latestUrl !== preview.official_url) {
+    return { status: "unavailable", reason_code: "official_state_changed" };
+  }
+  preview.state = "consumed";
+  try {
+    const tab = await chrome.tabs.create({ url: latestUrl, active: true });
+    if (tab.id === undefined) {
+      return {
+        status: "unavailable",
+        reason_code: "official_tab_create_failed",
+      };
+    }
+    return { status: "verified", action_type: preview.action_type };
+  } catch {
+    return { status: "unavailable", reason_code: "official_tab_create_failed" };
+  }
+}
+
+async function handleLibraryActionOptions(
+  message: LibraryActionOptionsMessage,
+): Promise<LibraryActionOptionsResponse> {
+  if (!isLibraryResourceRef(message.resource_ref)) {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "invalid_resource_ref",
+      ),
+    };
+  }
+  if (!isLiveLibraryActionRef(message.resource_ref)) {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "unknown_resource_ref",
+      ),
+    };
+  }
+  const publicRecordId = libraryRecordRefs.get(message.resource_ref);
+  const personalTarget = myLibraryResourceRefs.get(message.resource_ref);
+  if (publicRecordId && personalTarget) {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "ambiguous_resource_ref",
+      ),
+    };
+  }
+  if (!publicRecordId && !personalTarget) {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "unknown_resource_ref",
+      ),
+    };
+  }
+  if (publicRecordId) {
+    if (
+      !(await hasBrowserPermission(
+        LIBRARY_OPAC_PERMISSION_PATTERN,
+        LIBRARY_OPAC_ORIGIN,
+      ))
+    ) {
+      return {
+        status: "permission_required",
+        origin: LIBRARY_OPAC_ORIGIN,
+        pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
+      };
+    }
+    const tabId = await createLibraryTab(
+      `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(
+        publicRecordId,
+      )}`,
+    );
+    if (tabId === null) {
+      return {
+        status: "known",
+        projection: unavailableLibraryActionOptions(
+          message.resource_ref,
+          "record_tab_create_failed",
+        ),
+      };
+    }
+    try {
+      const [injected] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        func: readLibraryActionOptionsInPage,
+      });
+      const projection = injected?.result as
+        | LibraryActionPageProjection
+        | undefined;
+      if (!projection || projection.status === "unavailable") {
+        return {
+          status: "known",
+          projection: unavailableLibraryActionOptions(
+            message.resource_ref,
+            projection?.reason_code ?? "action_options_projection_invalid",
+          ),
+        };
+      }
+      if (projection.status === "reauth_required") {
+        return {
+          status: "reauth_required",
+          reason_code: projection.reason_code,
+        };
+      }
+      return publicLibraryActionOptions(message.resource_ref, projection);
+    } catch {
+      return {
+        status: "known",
+        projection: unavailableLibraryActionOptions(
+          message.resource_ref,
+          "action_options_read_failed",
+        ),
+      };
+    } finally {
+      await chrome.tabs.remove(tabId).catch(() => undefined);
+    }
+  }
+
+  if (
+    !(await hasBrowserPermission(
+      MY_LIBRARY_PERMISSION_PATTERN,
+      MY_LIBRARY_ORIGIN,
+    ))
+  ) {
+    return {
+      status: "permission_required",
+      origin: MY_LIBRARY_ORIGIN,
+      pattern: MY_LIBRARY_PERMISSION_PATTERN,
+    };
+  }
+  if (!personalTarget?.raw_id) {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "unresolved_resource_ref",
+        "personal",
+      ),
+    };
+  }
+  const tab = await chrome.tabs.create({
+    url: MY_LIBRARY_ENTRY_URL,
+    active: false,
+  });
+  if (tab.id === undefined) {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "entry_tab_missing",
+        "personal",
+      ),
+    };
+  }
+  let keepForLogin = false;
+  try {
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const current = await chrome.tabs.get(tab.id);
+      if (current.status === "complete") break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const [clicked] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: clickMyLibraryMenuInPage,
+      args: [MY_LIBRARY_MENU_IDS[personalTarget.scope]],
+    });
+    if (clicked?.result?.status === "reauth_required") {
+      keepForLogin = true;
+      await chrome.tabs.update(tab.id, { active: true });
+      return {
+        status: "reauth_required",
+        reason_code: clicked.result.reason_code ?? "login_required",
+      };
+    }
+    if (clicked?.result?.status !== "clicked") {
+      return {
+        status: "known",
+        projection: unavailableLibraryActionOptions(
+          message.resource_ref,
+          clicked?.result?.reason_code ?? "menu_result_missing",
+          "personal",
+        ),
+      };
+    }
+    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+      return {
+        status: "known",
+        projection: unavailableLibraryActionOptions(
+          message.resource_ref,
+          "status_page_timeout",
+          "personal",
+        ),
+      };
+    }
+    const [injected] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: readMyLibraryActionOptionsInPage,
+      args: [personalTarget.scope, personalTarget.raw_id],
+    });
+    const projection = injected?.result as
+      | MyLibraryActionPageProjection
+      | undefined;
+    if (!projection || projection.status === "unavailable") {
+      return {
+        status: "known",
+        projection: unavailableLibraryActionOptions(
+          message.resource_ref,
+          projection?.reason_code ?? "action_options_projection_invalid",
+          "personal",
+        ),
+      };
+    }
+    if (projection.status === "reauth_required") {
+      return { status: "reauth_required", reason_code: projection.reason_code };
+    }
+    return myLibraryActionOptions(message.resource_ref, projection);
+  } catch {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "action_options_read_failed",
+        "personal",
+      ),
+    };
+  } finally {
+    if (!keepForLogin) await chrome.tabs.remove(tab.id).catch(() => undefined);
+  }
+}
+
 async function handleLibraryCatalogBrowse(
   message: LibraryCatalogBrowseMessage,
 ): Promise<LibraryCatalogBrowseResponse> {
@@ -1415,6 +2774,7 @@ async function handleLibraryDiscoverySearch(
           return libraryUnavailable("resource_ref_collision");
         }
         libraryRecordRefs.set(resource_ref, item.record_id);
+        rememberLibraryActionRef(resource_ref);
       }
       items.push({
         title: item.title,
@@ -2513,6 +3873,7 @@ function projectMyLibraryPageItems(
     }
     myLibraryResourceRefKeys.set(resourceRef, key);
     myLibraryResourceRefs.set(resourceRef, target);
+    rememberLibraryActionRef(resourceRef);
     return { ...safeItem, resource_ref: resourceRef };
   });
 }
@@ -3214,9 +4575,15 @@ configureActionClick();
 chrome.runtime.onInstalled.addListener(configureActionClick);
 chrome.runtime.onStartup.addListener(() => {
   clearMyLibraryResourceMaps();
+  clearLibraryRecordMaps();
+  clearLibraryActionPreviews();
   configureActionClick();
 });
-chrome.runtime.onSuspend?.addListener(clearMyLibraryResourceMaps);
+chrome.runtime.onSuspend?.addListener(() => {
+  clearMyLibraryResourceMaps();
+  clearLibraryRecordMaps();
+  clearLibraryActionPreviews();
+});
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.url !== undefined || changeInfo.status !== undefined) {
@@ -3382,6 +4749,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleLibraryItemRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isLibraryActionOptionsMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({
+        status: "known",
+        projection: unavailableLibraryActionOptions(
+          message.resource_ref,
+          "untrusted_sender",
+        ),
+      });
+      return true;
+    }
+    void handleLibraryActionOptions(message).then(sendResponse);
+    return true;
+  }
+
+  if (isLibraryActionPreviewMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleLibraryActionPreview(message).then(sendResponse);
+    return true;
+  }
+
+  if (isLibraryActionSubmitMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleLibraryActionSubmit(message).then(sendResponse);
     return true;
   }
 

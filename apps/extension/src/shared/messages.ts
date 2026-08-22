@@ -4,7 +4,13 @@ import type {
   LibraryDiscoverySearchResult,
   LibraryItemReadResult,
 } from "../api/client";
+import { isLibraryOperation, type LibraryOperation } from "../api/client";
 import { isOpaqueDriveSelectionId } from "../connectors/google-drive";
+import {
+  isLibraryActionEditableInputs,
+  type LibraryActionEditableInputs,
+  type LibraryActionPreviewOfficial,
+} from "../connectors/library-actions";
 import type {
   LibraryCatalogBrowseArguments,
   LibraryCatalogSearchArguments,
@@ -59,6 +65,9 @@ export const MESSAGE_TYPES = {
   libraryItemRead: "library-item-read",
   libraryCatalogBrowse: "library-catalog-browse",
   libraryDiscoverySearch: "library-discovery-search",
+  libraryActionOptions: "library-action-options",
+  libraryActionPreview: "library-action-preview",
+  libraryActionSubmit: "library-action-submit",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -214,6 +223,26 @@ export interface LibraryDiscoverySearchMessage
   tool_call_id: string;
 }
 
+export interface LibraryActionOptionsMessage {
+  type: typeof MESSAGE_TYPES.libraryActionOptions;
+  tool_call_id: string;
+  resource_ref: string;
+}
+
+export interface LibraryActionPreviewMessage {
+  type: typeof MESSAGE_TYPES.libraryActionPreview;
+  tool_call_id: string;
+  operation: LibraryOperation;
+}
+
+export interface LibraryActionSubmitMessage {
+  type: typeof MESSAGE_TYPES.libraryActionSubmit;
+  tool_call_id: string;
+  preview_id: string;
+  inputs: LibraryActionEditableInputs;
+  confirmation_label: "この内容で送信" | "公式ページを開く";
+}
+
 export type LibraryCatalogSearchResponse =
   | { status: "known"; projection: LibraryCatalogSearchResult }
   | { status: "permission_required"; origin: string; pattern: string }
@@ -232,6 +261,32 @@ export type LibraryCatalogBrowseResponse =
 export type LibraryDiscoverySearchResponse =
   | { status: "known"; projection: LibraryDiscoverySearchResult }
   | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "unavailable"; reason_code: string };
+
+export type LibraryActionOptionsResponse =
+  | {
+      status: "known";
+      projection: import("../api/client").LibraryActionOptionsResult;
+    }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
+export type LibraryActionPreviewResponse =
+  | {
+      status: "ready";
+      preview_id: string;
+      action_type: LibraryOperation["action_type"];
+      official: LibraryActionPreviewOfficial;
+      inputs: LibraryActionEditableInputs;
+    }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "unavailable"; reason_code: string };
+
+export type LibraryActionSubmitResponse =
+  | { status: "verified"; action_type: LibraryOperation["action_type"] }
+  | { status: "expired"; reason_code: string }
   | { status: "unavailable"; reason_code: string };
 
 export type CastReadResponse =
@@ -310,7 +365,10 @@ export type ExtensionMessage =
   | LibraryCatalogSearchMessage
   | LibraryItemReadMessage
   | LibraryCatalogBrowseMessage
-  | LibraryDiscoverySearchMessage;
+  | LibraryDiscoverySearchMessage
+  | LibraryActionOptionsMessage
+  | LibraryActionPreviewMessage
+  | LibraryActionSubmitMessage;
 
 export function isBrowserReadMessage(
   message: unknown,
@@ -577,6 +635,58 @@ export function isLibraryDiscoverySearchMessage(
         Number.isInteger(message.limit) &&
         message.limit >= 1 &&
         message.limit <= 10))
+  );
+}
+
+export function isLibraryActionOptionsMessage(
+  message: unknown,
+): message is LibraryActionOptionsMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.libraryActionOptions &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    isLibraryResourceRef(message.resource_ref)
+  );
+}
+
+const LIBRARY_PREVIEW_ID_PATTERN =
+  /^orbit-library:\/\/preview\/[A-Za-z0-9_-]{16,128}$/u;
+
+export function isLibraryActionPreviewMessage(
+  message: unknown,
+): message is LibraryActionPreviewMessage {
+  return (
+    isRecord(message) &&
+    Object.keys(message).length === 3 &&
+    Object.keys(message).every((key) =>
+      ["type", "tool_call_id", "operation"].includes(key),
+    ) &&
+    message.type === MESSAGE_TYPES.libraryActionPreview &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    isLibraryOperation(message.operation)
+  );
+}
+
+export function isLibraryActionSubmitMessage(
+  message: unknown,
+): message is LibraryActionSubmitMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.libraryActionSubmit &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0 &&
+    typeof message.preview_id === "string" &&
+    LIBRARY_PREVIEW_ID_PATTERN.test(message.preview_id) &&
+    isRecord(message.inputs) &&
+    typeof message.inputs.action_type === "string" &&
+    isLibraryActionEditableInputs(
+      message.inputs.action_type as LibraryOperation["action_type"],
+      message.inputs,
+    ) &&
+    (message.confirmation_label === "この内容で送信" ||
+      message.confirmation_label === "公式ページを開く")
   );
 }
 

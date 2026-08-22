@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   driveCommandMessage,
   isDriveCommandMessage,
+  isLibraryActionPreviewMessage,
   isPageContext,
   isPageContextUpdatedMessage,
   MESSAGE_TYPES,
@@ -188,4 +189,48 @@ describe("Google Drive command message boundaries", () => {
     expect(() => driveCommandMessage("deselect", "")).toThrow();
     expect(() => driveCommandMessage("deselect", "sel_auth_01")).toThrow();
   });
+});
+
+describe("library action preview message boundaries", () => {
+  it.each([
+    "visit_shelf",
+    "open_online",
+    "reserve",
+    "intercampus_transfer",
+    "renew",
+    "purchase_request",
+    "ill_loan",
+    "ill_copy",
+  ] as const)(
+    "accepts only an opaque %s operation reference",
+    (action_type) => {
+      const operation = {
+        action_type,
+        resource_ref: "orbit-library://record/ABCDEFGHIJKLMNOP",
+      } as const;
+      expect(
+        isLibraryActionPreviewMessage({
+          type: MESSAGE_TYPES.libraryActionPreview,
+          tool_call_id: "library-preview-call",
+          operation,
+        }),
+      ).toBe(true);
+      expect(
+        isLibraryActionPreviewMessage({
+          type: MESSAGE_TYPES.libraryActionPreview,
+          tool_call_id: "library-preview-call",
+          operation,
+          reason: "must-stay-in-local-confirmation-memory",
+        }),
+      ).toBe(false);
+      expect(
+        isLibraryActionPreviewMessage({
+          type: MESSAGE_TYPES.libraryActionPreview,
+          tool_call_id: "library-preview-call",
+          operation,
+          arguments: { page_range: "12-18", payment: "private" },
+        }),
+      ).toBe(false);
+    },
+  );
 });

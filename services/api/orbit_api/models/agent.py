@@ -21,7 +21,7 @@ from pydantic import (
     model_validator,
 )
 
-from .domain import ActionProposal, EvidenceLink, OrbitEvent
+from .domain import ActionProposal, EvidenceLink, LibraryActionOptionsResult, OrbitEvent
 
 
 class StrictApiModel(BaseModel):
@@ -873,6 +873,7 @@ ChatToolName = Literal[
     "library_item_read",
     "library_catalog_browse",
     "library_discovery_search",
+    "library_action_options",
 ]
 
 
@@ -927,6 +928,7 @@ class ChatToolResultRequest(StrictApiModel):
         | LibraryItemReadResult
         | LibraryCatalogBrowseResult
         | LibraryDiscoverySearchResult
+        | LibraryActionOptionsResult
     )
 
     @model_validator(mode="after")
@@ -967,6 +969,10 @@ class ChatToolResultRequest(StrictApiModel):
             self.result, LibraryDiscoverySearchResult
         ):
             raise ValueError("Library discovery results must use LibraryDiscoverySearchResult.")
+        if self.name == "library_action_options" and not isinstance(
+            self.result, LibraryActionOptionsResult
+        ):
+            raise ValueError("Library action results must use LibraryActionOptionsResult.")
         return self
 
 
@@ -1038,6 +1044,7 @@ __all__ = [
     "LibraryCatalogBrowseResult",
     "LibraryDiscoveryItem",
     "LibraryDiscoverySearchResult",
+    "LibraryActionOptionsResult",
     "CalendarAvailabilityInterval",
     "CalendarAvailabilityResult",
     "ClientTool",

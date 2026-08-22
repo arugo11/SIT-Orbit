@@ -164,7 +164,7 @@ export interface components {
              * @default none
              * @enum {string}
              */
-            external_action: "none" | "calendar_draft" | "checklist_update";
+            external_action: "none" | "calendar_draft" | "checklist_update" | "library_write";
             /**
              * Requires Confirmation
              * @default true
@@ -172,6 +172,8 @@ export interface components {
             requires_confirmation: boolean;
             /** Prompt Version */
             prompt_version: string;
+            /** Operation */
+            operation?: (components["schemas"]["VisitShelfOperation"] | components["schemas"]["OpenOnlineOperation"] | components["schemas"]["ReserveOperation"] | components["schemas"]["IntercampusTransferOperation"] | components["schemas"]["RenewOperation"] | components["schemas"]["PurchaseRequestOperation"] | components["schemas"]["IllLoanOperation"] | components["schemas"]["IllCopyOperation"]) | null;
         };
         /**
          * AgentCapabilities
@@ -410,7 +412,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -468,7 +470,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -487,14 +489,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
         };
         /**
          * ClientTool
@@ -540,6 +542,36 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** IllCopyOperation */
+        IllCopyOperation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action_type: "ill_copy";
+            /** Resource Ref */
+            resource_ref: string;
+        };
+        /** IllLoanOperation */
+        IllLoanOperation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action_type: "ill_loan";
+            /** Resource Ref */
+            resource_ref: string;
+        };
+        /** IntercampusTransferOperation */
+        IntercampusTransferOperation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action_type: "intercampus_transfer";
+            /** Resource Ref */
+            resource_ref: string;
+        };
         /**
          * LegacyMyLibraryReadResult
          * @description The original aggregate-only My Library result shape.
@@ -568,6 +600,52 @@ export interface components {
             earliest_due_date: string | null;
             /** Reason Code */
             reason_code: string | null;
+        };
+        /**
+         * LibraryActionOption
+         * @description One current-provider action capability for an opaque resource.
+         */
+        LibraryActionOption: {
+            /**
+             * Action Type
+             * @enum {string}
+             */
+            action_type: "visit_shelf" | "open_online" | "reserve" | "intercampus_transfer" | "renew" | "purchase_request" | "ill_loan" | "ill_copy";
+            /** Available */
+            available: boolean;
+            /** Reason Code */
+            reason_code: string;
+            /** Required Inputs */
+            required_inputs?: ("pickup_campus" | "reason" | "receiver" | "payment" | "fee" | "page_range")[];
+        };
+        /**
+         * LibraryActionOptionsResult
+         * @description Read-only action capabilities derived from the current official page.
+         */
+        LibraryActionOptionsResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /** Resource Ref */
+            resource_ref: string;
+            /** Options */
+            options?: components["schemas"]["LibraryActionOption"][];
+            /**
+             * Data Classification
+             * @default public
+             * @enum {string}
+             */
+            data_classification: "public" | "personal";
+            /** Reason Code */
+            reason_code?: string | null;
         };
         /**
          * LibraryBibliographicRecord
@@ -828,6 +906,16 @@ export interface components {
             /** Request Type */
             request_type?: string | null;
         };
+        /** OpenOnlineOperation */
+        OpenOnlineOperation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action_type: "open_online";
+            /** Resource Ref */
+            resource_ref: string;
+        };
         /**
          * OrbitEvent
          * @description An observed event in the student's campus journey.
@@ -868,6 +956,36 @@ export interface components {
             event: components["schemas"]["OrbitEvent"];
             /** Context */
             context: components["schemas"]["EvidenceLink"][];
+        };
+        /** PurchaseRequestOperation */
+        PurchaseRequestOperation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action_type: "purchase_request";
+            /** Resource Ref */
+            resource_ref: string;
+        };
+        /** RenewOperation */
+        RenewOperation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action_type: "renew";
+            /** Resource Ref */
+            resource_ref: string;
+        };
+        /** ReserveOperation */
+        ReserveOperation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action_type: "reserve";
+            /** Resource Ref */
+            resource_ref: string;
         };
         /**
          * ScombzPageSummaryResult
@@ -1138,6 +1256,16 @@ export interface components {
              * @default
              */
             notes: string;
+        };
+        /** VisitShelfOperation */
+        VisitShelfOperation: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            action_type: "visit_shelf";
+            /** Resource Ref */
+            resource_ref: string;
         };
     };
     responses: never;

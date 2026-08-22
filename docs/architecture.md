@@ -239,9 +239,11 @@ Composerでは`Ask every time`を既定にし、未許可ホストの読み取�
 
 Branch 1では、公開ページの検索・閲覧だけを4つのChat client tool（`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`）として扱う。個人My Libraryは次節の明示接続・同意境界で別に扱う。OPACは確認済みの`https://library.shibaura-it.ac.jp/opc/`、レコードは`/opc/recordID/catalog.bib/<record>`、新着図書と貸出ランキングはそれぞれ確認済みの`/cgi-bin/nbk/nbk_seek.cgi?ulang=jpn`と`/cgi-bin/loan_best10/loan_best10.cgi?ulang=jpn`だけを使う。SIT SearchはOPACから到達する`https://slib.shibaura-it.ac.jp/sublib/`だけを使い、表示された書誌メタデータとリンク以外（契約本文、ダウンロード、保存）は扱わない。
 
+Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命なopaque対応表から解決できた公開OPACまたは同意済みMy Libraryの参照だけを、現在の公式ページから再読して8操作の可否として返す。`ActionProposal.operation`はこのoptions evidenceの同じ`resource_ref`に結び付き、write操作は`external_action=library_write`かつ常に明示確認を要求する。提案承認は送信ではなく、Chrome内の短命previewを開始するだけである。previewでは公式origin/path、対象、現在状態、フォームとCSRFの形を再検証し、別UI操作の`この内容で送信`を経なければsubmitしない。読み取り専用の棚・公式viewer操作は再読込後に公式ページを開く。live providerのフォーム挙動を検証できないwrite操作は、previewも送信ボタンも出さず`write_form_not_verified`で停止する。fixtureのwrite state machine以外は、実送信・擬似成功・完了イベントを生成しない。
+
 現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。optional host permissionが未付与でもTool要求までは進め、読み取り直前にChat内でサイト単位の許可を求める。許可後、Service Workerは公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
 
-書誌レコードの`resource_ref`は安定した公開レコードIDから導出したopaque値であり、元IDはService Workerの短命なメモリ対応表にだけ保持する。対応表が失われた再起動後や衝突検出時は解決せず、推測で読み替えない。Holdingは表示されたcampus、location、call number、status、due date、reservation countだけを返し、未表示の値は`unknown`または`null`とする。Evidenceは`source_type=library`、`classification=public`、`orbit-library://public/` locatorに限定する。
+書誌レコードの`resource_ref`は安定した公開レコードIDから導出したopaque値であり、元IDはService Workerの短命なメモリ対応表にだけ保持する。対応表が失われた再起動後や衝突検出時は解決せず、推測で読み替えない。Holdingは表示されたcampus、location、call number、status、due date、reservation countだけを返し、未表示の値は`unknown`または`null`とする。通常の公開Evidenceは`source_type=library`、`classification=public`、`orbit-library://public/` locatorに限定し、Branch 3 action-options Evidenceは専用IDとopaque `resource_ref` locatorへ分離する。
 
 ### Azure一般Web検索
 

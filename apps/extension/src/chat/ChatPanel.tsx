@@ -6,6 +6,7 @@ import {
   type ChatToolResultRequest,
   isBrowserReadResult,
   isCastReadResult,
+  isLibraryActionOptionsResult,
   isLibraryCatalogBrowseResult,
   isLibraryCatalogSearchResult,
   isLibraryDiscoverySearchResult,
@@ -21,6 +22,7 @@ import {
   type CalendarConnectorResult,
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
+import type { LibraryActionEditableInputs } from "../connectors/library-actions";
 import {
   LIBRARY_OPAC_ORIGIN,
   LIBRARY_OPAC_PERMISSION_PATTERN,
@@ -40,6 +42,7 @@ import {
 } from "../content/my-library-consent";
 import {
   MY_LIBRARY_ENTRY_URL,
+  MY_LIBRARY_ORIGIN,
   type MyLibraryLocalSnapshot,
 } from "../content/my-library-reader";
 import {
@@ -51,6 +54,9 @@ import {
 import type {
   BrowserReadResponse,
   CastReadResponse,
+  LibraryActionOptionsResponse,
+  LibraryActionPreviewResponse,
+  LibraryActionSubmitResponse,
   LibraryCatalogBrowseResponse,
   LibraryCatalogSearchResponse,
   LibraryDiscoverySearchResponse,
@@ -116,6 +122,8 @@ function toolLabel(name: string): string {
       return "OPACの新着・ランキングを確認中";
     case "library_discovery_search":
       return "SIT Searchを検索中";
+    case "library_action_options":
+      return "図書館の操作可否を確認中";
     default:
       return "情報を確認中";
   }
@@ -126,6 +134,16 @@ const LIBRARY_SEARCH_PERMISSION_DISCLOSURE =
 
 function evidenceText(proposal: ActionProposal | null | undefined): string[] {
   return proposal?.evidence.map((item) => item.title) ?? [];
+}
+
+function editableInputValue(
+  inputs: LibraryActionEditableInputs | undefined,
+  key: string,
+): string {
+  if (!inputs) return "";
+  const values = inputs.values as unknown as Record<string, unknown>;
+  const value = values[key];
+  return typeof value === "string" ? value : "";
 }
 
 function messageFromResponse(response: ChatRunResponse): ChatTimelineMessage {
@@ -157,7 +175,8 @@ function toolResultRequest(
     | "library_catalog_search"
     | "library_item_read"
     | "library_catalog_browse"
-    | "library_discovery_search",
+    | "library_discovery_search"
+    | "library_action_options",
   result: ChatToolResultRequest["result"],
 ): ChatToolResultRequest {
   return {
@@ -247,6 +266,18 @@ export function ChatPanel({
   const [localCastDetails, setLocalCastDetails] = useState<
     Record<string, CastLocalSnapshot>
   >({});
+  const [libraryPreviews, setLibraryPreviews] = useState<
+    Record<string, Extract<LibraryActionPreviewResponse, { status: "ready" }>>
+  >({});
+  const [libraryPreviewInputs, setLibraryPreviewInputs] = useState<
+    Record<string, LibraryActionEditableInputs>
+  >({});
+  const [libraryPreviewStates, setLibraryPreviewStates] = useState<
+    Record<string, "previewing" | "submitting" | "verified" | "unavailable">
+  >({});
+  const [libraryPreviewErrors, setLibraryPreviewErrors] = useState<
+    Record<string, string>
+  >({});
   const sensitiveApproval = useRef(new Set<string>());
 
   const pageSummary = useMemo(
@@ -294,7 +325,8 @@ export function ChatPanel({
         | "library_catalog_search"
         | "library_item_read"
         | "library_catalog_browse"
-        | "library_discovery_search";
+        | "library_discovery_search"
+        | "library_action_options";
       version: 1;
     }> = [];
     if (projectScombzRead(pageContext)) {
@@ -316,6 +348,7 @@ export function ChatPanel({
       tools.push({ name: "library_item_read", version: 1 });
       tools.push({ name: "library_catalog_browse", version: 1 });
       tools.push({ name: "library_discovery_search", version: 1 });
+      tools.push({ name: "library_action_options", version: 1 });
     }
     return tools;
   }
@@ -345,7 +378,8 @@ export function ChatPanel({
       call.name !== "library_catalog_search" &&
       call.name !== "library_item_read" &&
       call.name !== "library_catalog_browse" &&
-      call.name !== "library_discovery_search"
+      call.name !== "library_discovery_search" &&
+      call.name !== "library_action_options"
     ) {
       throw new Error("このChatではまだ対応していないToolです。");
     }
@@ -526,6 +560,16 @@ export function ChatPanel({
     ) {
       throw new Error("SIT Searchの引数を検証できません。");
     }
+    if (
+      call.name === "library_action_options" &&
+      (Object.keys(argumentsObject).length !== 1 ||
+        typeof argumentsObject.resource_ref !== "string" ||
+        !/^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u.test(
+          argumentsObject.resource_ref,
+        ))
+    ) {
+      throw new Error("図書館操作可否の引数を検証できません。");
+    }
     const activity: ChatTimelineMessage = {
       id: `tool-${call.tool_call_id}`,
       role: "tool",
@@ -697,6 +741,55 @@ export function ChatPanel({
           library.projection,
         );
       }
+    } else if (call.name === "library_action_options") {
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-action-options`;
+      const library = await sendExtensionMessage<LibraryActionOptionsResponse>({
+        type: MESSAGE_TYPES.libraryActionOptions,
+        tool_call_id: call.tool_call_id,
+        resource_ref: argumentsObject.resource_ref as string,
+      });
+      if (library.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          library.origin,
+          library.origin,
+          library.pattern,
+          approvalKey,
+          "図書館の現在の表示を端末内で再確認し、操作可否だけを選択中のAgentへ送ります。予約・延長・申請の送信は行いません。",
+        );
+      }
+      if (library.status === "reauth_required") {
+        throw new Error(
+          "図書館のログイン状態を確認できません。公式ページでログイン後、もう一度お試しください。",
+        );
+      }
+      const projection = library.status === "known" ? library.projection : null;
+      if (!projection || !isLibraryActionOptionsResult(projection)) {
+        throw new Error("図書館の操作可否を検証できませんでした。");
+      }
+      if (projection.data_classification === "personal") {
+        const capabilities = await apiClient.capabilities();
+        if (
+          capabilities.agent_backend !== "azure_openai" ||
+          !capabilities.my_library_personal_context
+        ) {
+          throw new Error(
+            "My Library由来の操作可否は、明示同意済みのAzure Agentだけに送信できます。",
+          );
+        }
+        if (
+          !(await hasMyLibrarySessionConsent()) &&
+          !sensitiveApproval.current.has(approvalKey)
+        ) {
+          throw new BrowserAccessRequiredError(
+            MY_LIBRARY_ENTRY_URL,
+            MY_LIBRARY_ORIGIN,
+            `${MY_LIBRARY_ORIGIN}/*`,
+            approvalKey,
+            "My Libraryの現在の表示を端末内で再確認し、対象refと操作可否だけを明示同意済みのAzure Agentへ送ります。書名・ID・フォーム値は送信しません。",
+          );
+        }
+      }
+      request = toolResultRequest(call.tool_call_id, call.name, projection);
     } else if (call.name === "library_catalog_browse") {
       const library = await sendExtensionMessage<LibraryCatalogBrowseResponse>({
         type: "library-catalog-browse",
@@ -1185,7 +1278,11 @@ export function ChatPanel({
         return;
       }
       const pendingTool = pending.response.calls[0]?.name;
-      if (pendingTool === "my_library_read") {
+      if (
+        pendingTool === "my_library_read" ||
+        (pendingTool === "library_action_options" &&
+          pending.origin === MY_LIBRARY_ORIGIN)
+      ) {
         const stored = await grantMyLibrarySessionConsent();
         if (!stored) {
           setError("My Libraryのsession consentを保存できませんでした。");
@@ -1289,6 +1386,185 @@ export function ChatPanel({
     await createConversation();
   }
 
+  async function requestLibraryActionPreview(
+    messageId: string,
+    proposal: ActionProposal,
+  ): Promise<void> {
+    const operation = proposal.operation;
+    if (!operation) return;
+    setLibraryPreviewStates((states) => ({
+      ...states,
+      [messageId]: "previewing",
+    }));
+    setLibraryPreviewErrors((errors) => {
+      const next = { ...errors };
+      delete next[messageId];
+      return next;
+    });
+    try {
+      const result = await sendExtensionMessage<LibraryActionPreviewResponse>({
+        type: MESSAGE_TYPES.libraryActionPreview,
+        tool_call_id: `proposal-${messageId}`,
+        operation,
+      });
+      if (result.status !== "ready") {
+        setLibraryPreviewStates((states) => ({
+          ...states,
+          [messageId]: "unavailable",
+        }));
+        setLibraryPreviewErrors((errors) => ({
+          ...errors,
+          [messageId]:
+            result.status === "permission_required"
+              ? "公式ページの権限が必要です。"
+              : result.reason_code,
+        }));
+        return;
+      }
+      setLibraryPreviews((previews) => ({ ...previews, [messageId]: result }));
+      setLibraryPreviewInputs((values) => ({
+        ...values,
+        [messageId]: result.inputs,
+      }));
+      setLibraryPreviewStates((states) => ({
+        ...states,
+        [messageId]: "previewing",
+      }));
+    } catch {
+      setLibraryPreviewStates((states) => ({
+        ...states,
+        [messageId]: "unavailable",
+      }));
+      setLibraryPreviewErrors((errors) => ({
+        ...errors,
+        [messageId]: "公式ページを再確認できませんでした。",
+      }));
+    }
+  }
+
+  function updateLibraryPreviewInput(
+    messageId: string,
+    key:
+      | "pickup_campus"
+      | "reason"
+      | "receiver"
+      | "payment"
+      | "fee"
+      | "page_range",
+    value: string,
+  ): void {
+    const current = libraryPreviewInputs[messageId];
+    if (!current) return;
+    switch (current.action_type) {
+      case "reserve":
+      case "intercampus_transfer":
+        if (key !== "pickup_campus") return;
+        setLibraryPreviewInputs((values) => ({
+          ...values,
+          [messageId]: {
+            action_type: current.action_type,
+            values: { pickup_campus: value as "omiya" | "toyosu" },
+          },
+        }));
+        return;
+      case "purchase_request":
+        if (key !== "reason") return;
+        setLibraryPreviewInputs((values) => ({
+          ...values,
+          [messageId]: {
+            action_type: current.action_type,
+            values: { reason: value },
+          },
+        }));
+        return;
+      case "ill_loan":
+        if (key !== "receiver" && key !== "payment" && key !== "fee") return;
+        setLibraryPreviewInputs((values) => ({
+          ...values,
+          [messageId]: {
+            action_type: "ill_loan",
+            values: {
+              ...current.values,
+              [key]: value,
+            },
+          },
+        }));
+        return;
+      case "ill_copy":
+        if (
+          key !== "receiver" &&
+          key !== "payment" &&
+          key !== "fee" &&
+          key !== "page_range"
+        )
+          return;
+        setLibraryPreviewInputs((values) => ({
+          ...values,
+          [messageId]: {
+            action_type: "ill_copy",
+            values: {
+              ...current.values,
+              [key]: value,
+            },
+          },
+        }));
+        return;
+      case "visit_shelf":
+      case "open_online":
+      case "renew":
+        return;
+    }
+  }
+
+  async function submitLibraryAction(
+    messageId: string,
+    preview: Extract<LibraryActionPreviewResponse, { status: "ready" }>,
+  ): Promise<void> {
+    if (libraryPreviewStates[messageId] === "submitting") return;
+    const inputs = libraryPreviewInputs[messageId] ?? preview.inputs;
+    setLibraryPreviewStates((states) => ({
+      ...states,
+      [messageId]: "submitting",
+    }));
+    try {
+      const result = await sendExtensionMessage<LibraryActionSubmitResponse>({
+        type: MESSAGE_TYPES.libraryActionSubmit,
+        tool_call_id: `proposal-${messageId}`,
+        preview_id: preview.preview_id,
+        inputs,
+        confirmation_label:
+          preview.action_type === "visit_shelf" ||
+          preview.action_type === "open_online"
+            ? "公式ページを開く"
+            : "この内容で送信",
+      });
+      if (result.status !== "verified") {
+        setLibraryPreviewStates((states) => ({
+          ...states,
+          [messageId]: "unavailable",
+        }));
+        setLibraryPreviewErrors((errors) => ({
+          ...errors,
+          [messageId]: result.reason_code,
+        }));
+        return;
+      }
+      setLibraryPreviewStates((states) => ({
+        ...states,
+        [messageId]: "verified",
+      }));
+    } catch {
+      setLibraryPreviewStates((states) => ({
+        ...states,
+        [messageId]: "unavailable",
+      }));
+      setLibraryPreviewErrors((errors) => ({
+        ...errors,
+        [messageId]: "公式ページの状態を再確認できませんでした。",
+      }));
+    }
+  }
+
   async function updateProposal(
     messageId: string,
     state: "approved" | "rejected",
@@ -1303,6 +1579,14 @@ export function ChatPanel({
       ),
     };
     await persist(next);
+    if (state === "approved") {
+      const approved = conversation.messages.find(
+        (message) => message.id === messageId,
+      );
+      if (approved?.proposal?.operation) {
+        await requestLibraryActionPreview(messageId, approved.proposal);
+      }
+    }
   }
 
   return (
@@ -1648,6 +1932,244 @@ export function ChatPanel({
                     {message.proposal.reason}（
                     {message.proposal.duration_minutes}分）
                   </small>
+                  {message.proposalState === "approved" &&
+                  message.proposal.operation ? (
+                    <div className="library-action-confirmation">
+                      {libraryPreviewStates[message.id] === "previewing" &&
+                      !libraryPreviews[message.id] ? (
+                        <p className="state-message">
+                          公式ページを再確認してプレビューを作成中…
+                        </p>
+                      ) : null}
+                      {libraryPreviewErrors[message.id] ? (
+                        <p className="state-message" role="alert">
+                          送信不可: {libraryPreviewErrors[message.id]}
+                        </p>
+                      ) : null}
+                      {libraryPreviews[message.id] ? (
+                        <>
+                          <strong>公式ページで確認した内容</strong>
+                          {libraryPreviews[message.id]?.official.title ? (
+                            <p>
+                              資料:{" "}
+                              {libraryPreviews[message.id]?.official.title}
+                            </p>
+                          ) : null}
+                          {(libraryPreviews[message.id]?.official.holdings
+                            .length ?? 0) > 0 ? (
+                            <ul>
+                              {libraryPreviews[
+                                message.id
+                              ]?.official.holdings.map((holding) => (
+                                <li
+                                  key={`${holding.campus}-${holding.location ?? ""}-${holding.call_number ?? ""}`}
+                                >
+                                  {holding.campus} ·{" "}
+                                  {holding.location ?? "場所不明"} ·{" "}
+                                  {holding.call_number ?? "請求記号不明"}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                          {libraryPreviewInputs[message.id]?.action_type ===
+                            "reserve" ||
+                          libraryPreviewInputs[message.id]?.action_type ===
+                            "intercampus_transfer" ? (
+                            <label>
+                              受取キャンパス
+                              <select
+                                value={editableInputValue(
+                                  libraryPreviewInputs[message.id],
+                                  "pickup_campus",
+                                )}
+                                onChange={(event) => {
+                                  const current =
+                                    libraryPreviewInputs[message.id];
+                                  if (
+                                    !current ||
+                                    (current.action_type !== "reserve" &&
+                                      current.action_type !==
+                                        "intercampus_transfer")
+                                  ) {
+                                    return;
+                                  }
+                                  updateLibraryPreviewInput(
+                                    message.id,
+                                    "pickup_campus",
+                                    event.target.value,
+                                  );
+                                }}
+                              >
+                                <option value="omiya">大宮</option>
+                                <option value="toyosu">豊洲</option>
+                              </select>
+                            </label>
+                          ) : null}
+                          {libraryPreviewInputs[message.id]?.action_type ===
+                          "purchase_request" ? (
+                            <label>
+                              購入理由
+                              <textarea
+                                maxLength={500}
+                                value={editableInputValue(
+                                  libraryPreviewInputs[message.id],
+                                  "reason",
+                                )}
+                                onChange={(event) => {
+                                  const current =
+                                    libraryPreviewInputs[message.id];
+                                  if (
+                                    current?.action_type !== "purchase_request"
+                                  )
+                                    return;
+                                  updateLibraryPreviewInput(
+                                    message.id,
+                                    "reason",
+                                    event.target.value,
+                                  );
+                                }}
+                              />
+                            </label>
+                          ) : null}
+                          {libraryPreviewInputs[message.id]?.action_type ===
+                            "ill_loan" ||
+                          libraryPreviewInputs[message.id]?.action_type ===
+                            "ill_copy" ? (
+                            <>
+                              <label>
+                                受取人
+                                <input
+                                  maxLength={200}
+                                  value={editableInputValue(
+                                    libraryPreviewInputs[message.id],
+                                    "receiver",
+                                  )}
+                                  onChange={(event) => {
+                                    const current =
+                                      libraryPreviewInputs[message.id];
+                                    if (
+                                      !current ||
+                                      (current.action_type !== "ill_loan" &&
+                                        current.action_type !== "ill_copy")
+                                    )
+                                      return;
+                                    updateLibraryPreviewInput(
+                                      message.id,
+                                      "receiver",
+                                      event.target.value,
+                                    );
+                                  }}
+                                />
+                              </label>
+                              <label>
+                                支払方法
+                                <input
+                                  maxLength={100}
+                                  value={editableInputValue(
+                                    libraryPreviewInputs[message.id],
+                                    "payment",
+                                  )}
+                                  onChange={(event) => {
+                                    const current =
+                                      libraryPreviewInputs[message.id];
+                                    if (
+                                      !current ||
+                                      (current.action_type !== "ill_loan" &&
+                                        current.action_type !== "ill_copy")
+                                    )
+                                      return;
+                                    updateLibraryPreviewInput(
+                                      message.id,
+                                      "payment",
+                                      event.target.value,
+                                    );
+                                  }}
+                                />
+                              </label>
+                              <label>
+                                手数料（不明なら空欄）
+                                <input
+                                  maxLength={100}
+                                  value={editableInputValue(
+                                    libraryPreviewInputs[message.id],
+                                    "fee",
+                                  )}
+                                  onChange={(event) => {
+                                    const current =
+                                      libraryPreviewInputs[message.id];
+                                    if (
+                                      !current ||
+                                      (current.action_type !== "ill_loan" &&
+                                        current.action_type !== "ill_copy")
+                                    )
+                                      return;
+                                    updateLibraryPreviewInput(
+                                      message.id,
+                                      "fee",
+                                      event.target.value,
+                                    );
+                                  }}
+                                />
+                              </label>
+                              {libraryPreviewInputs[message.id]?.action_type ===
+                              "ill_copy" ? (
+                                <label>
+                                  ページ範囲
+                                  <input
+                                    maxLength={100}
+                                    value={editableInputValue(
+                                      libraryPreviewInputs[message.id],
+                                      "page_range",
+                                    )}
+                                    onChange={(event) => {
+                                      const current =
+                                        libraryPreviewInputs[message.id];
+                                      if (current?.action_type !== "ill_copy")
+                                        return;
+                                      updateLibraryPreviewInput(
+                                        message.id,
+                                        "page_range",
+                                        event.target.value,
+                                      );
+                                    }}
+                                  />
+                                </label>
+                              ) : null}
+                            </>
+                          ) : null}
+                          {libraryPreviewStates[message.id] === "verified" ? (
+                            <p className="state-message success-message">
+                              公式ページを開きました。
+                            </p>
+                          ) : (
+                            <button
+                              type="button"
+                              className="primary-button"
+                              disabled={
+                                libraryPreviewStates[message.id] ===
+                                "submitting"
+                              }
+                              onClick={() => {
+                                const preview = libraryPreviews[message.id];
+                                if (preview) {
+                                  void submitLibraryAction(message.id, preview);
+                                }
+                              }}
+                            >
+                              {libraryPreviewStates[message.id] === "submitting"
+                                ? "確認中…"
+                                : libraryPreviews[message.id]?.action_type ===
+                                      "visit_shelf" ||
+                                    libraryPreviews[message.id]?.action_type ===
+                                      "open_online"
+                                  ? "公式ページを開く"
+                                  : "この内容で送信"}
+                            </button>
+                          )}
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
                   {message.proposalState === "pending" ? (
                     <div className="button-row">
                       <button

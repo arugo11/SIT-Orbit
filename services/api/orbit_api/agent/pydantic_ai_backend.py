@@ -30,10 +30,12 @@ from orbit_api.models import (
     ChatHistoryMessage,
     EvidenceLink,
     LegacyMyLibraryReadResult,
+    LibraryActionOptionsResult,
     LibraryCatalogBrowseResult,
     LibraryCatalogSearchResult,
     LibraryDiscoverySearchResult,
     LibraryItemReadResult,
+    LibraryOperation,
     MoodleReadResult,
     MyLibraryReadResult,
     MyLibraryScope,
@@ -71,6 +73,7 @@ LIBRARY_CATALOG_SEARCH_TOOL_NAME = "library_catalog_search"
 LIBRARY_ITEM_READ_TOOL_NAME = "library_item_read"
 LIBRARY_CATALOG_BROWSE_TOOL_NAME = "library_catalog_browse"
 LIBRARY_DISCOVERY_SEARCH_TOOL_NAME = "library_discovery_search"
+LIBRARY_ACTION_OPTIONS_TOOL_NAME = "library_action_options"
 LIBRARY_LOCATOR_PREFIX = "orbit-library://public/"
 LIBRARY_RESOURCE_REF_PREFIX = "orbit-library://record/"
 _LIBRARY_EVIDENCE_ID_RE = re.compile(
@@ -90,6 +93,7 @@ SUPPORTED_TOOL_NAMES = frozenset(
         LIBRARY_ITEM_READ_TOOL_NAME,
         LIBRARY_CATALOG_BROWSE_TOOL_NAME,
         LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+        LIBRARY_ACTION_OPTIONS_TOOL_NAME,
     }
 )
 ToolName = Literal[
@@ -106,6 +110,7 @@ ToolName = Literal[
     "library_item_read",
     "library_catalog_browse",
     "library_discovery_search",
+    "library_action_options",
 ]
 ActionToolName = Literal["scombz_page_summary", "google_calendar_availability"]
 ToolResult = (
@@ -122,6 +127,7 @@ ToolResult = (
     | LibraryItemReadResult
     | LibraryCatalogBrowseResult
     | LibraryDiscoverySearchResult
+    | LibraryActionOptionsResult
 )
 
 
@@ -133,14 +139,41 @@ class ActionDraft(BaseModel):
     title: str = Field(min_length=1, max_length=200)
     reason: str = Field(min_length=1, max_length=1000)
     duration_minutes: int = Field(ge=1, le=180)
-    external_action: Literal["none", "calendar_draft", "checklist_update"] = "none"
+    external_action: Literal[
+        "none",
+        "calendar_draft",
+        "checklist_update",
+        "library_write",
+    ] = "none"
     requires_confirmation: bool = True
     evidence_ids: list[str] = Field(min_length=1, max_length=100)
+    operation: LibraryOperation | None = None
 
     @model_validator(mode="after")
     def external_actions_require_confirmation(self) -> "ActionDraft":
         if self.external_action != "none" and not self.requires_confirmation:
             raise ValueError("External actions must require explicit confirmation.")
+        if self.operation is not None:
+            if not self.requires_confirmation:
+                raise ValueError("Library operations require explicit confirmation.")
+            write_action = self.operation.action_type in {
+                "reserve",
+                "intercampus_transfer",
+                "renew",
+                "purchase_request",
+                "ill_loan",
+                "ill_copy",
+            }
+            if write_action and self.external_action != "library_write":
+                raise ValueError(
+                    "Library write operations must use external_action=library_write."
+                )
+            if not write_action and self.external_action == "library_write":
+                raise ValueError(
+                    "Read-only library operations cannot use external_action=library_write."
+                )
+        elif self.external_action == "library_write":
+            raise ValueError("library_write requires a library operation.")
         return self
 
 
@@ -334,9 +367,20 @@ def is_derived_library_evidence(evidence: EvidenceLink) -> bool:
 
     return (
         evidence.source_type == "library"
-        and evidence.data_classification == "public"
+        and evidence.data_classification in {"public", "personal"}
         and _is_opaque_locator(evidence.locator, LIBRARY_LOCATOR_PREFIX)
         and _LIBRARY_EVIDENCE_ID_RE.fullmatch(evidence.evidence_id) is not None
+    )
+
+
+def is_derived_library_action_evidence(evidence: EvidenceLink) -> bool:
+    """Accept action-capability evidence bound to exactly one opaque ref."""
+
+    return (
+        evidence.source_type == "library"
+        and evidence.data_classification in {"public", "personal"}
+        and _LIBRARY_ACTION_EVIDENCE_ID_RE.fullmatch(evidence.evidence_id) is not None
+        and _LIBRARY_RESOURCE_REF_RE.fullmatch(evidence.locator) is not None
     )
 
 
@@ -379,6 +423,8 @@ def validate_agent_data(
         if allow_cast_read and is_derived_cast_evidence(evidence):
             continue
         if allow_library_read and is_derived_library_evidence(evidence):
+            continue
+        if allow_library_read and is_derived_library_action_evidence(evidence):
             continue
         raise ValueError(
             "The agent backend rejects personal or restricted evidence unless it is "
@@ -542,6 +588,13 @@ async def library_discovery_search(
     raise CallDeferred()
 
 
+async def library_action_options(resource_ref: str) -> LibraryActionOptionsResult:
+    """Read current official capabilities for one opaque library reference."""
+
+    del resource_ref
+    raise CallDeferred()
+
+
 def _tool_arguments(raw: Any) -> dict[str, Any]:
     if raw in ({}, "{}", None):
         return {}
@@ -559,6 +612,50 @@ def _tool_arguments(raw: Any) -> dict[str, Any]:
 _LIBRARY_RESOURCE_REF_RE = re.compile(
     r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$"
 )
+_LIBRARY_ACTION_EVIDENCE_ID_RE = re.compile(
+    r"^library-action-options-v1-[A-Za-z0-9_-]{16,200}$"
+)
+
+_LIBRARY_WRITE_ACTIONS = frozenset(
+    {
+        "reserve",
+        "intercampus_transfer",
+        "renew",
+        "purchase_request",
+        "ill_loan",
+        "ill_copy",
+    }
+)
+
+
+def validate_library_operation_evidence(
+    operation: Any,
+    evidence: Iterable[EvidenceLink],
+) -> None:
+    """Require an operation ref to be bound to the exact library evidence.
+
+    The provider identifier is never accepted here. The extension associates
+    the opaque reference with the server-issued evidence in memory; if that
+    association is absent or points at another ref, the proposal is rejected.
+    """
+
+    resource_ref = getattr(operation, "resource_ref", None)
+    if not isinstance(resource_ref, str) or not _LIBRARY_RESOURCE_REF_RE.fullmatch(
+        resource_ref
+    ):
+        raise ValueError("Library operations require a valid opaque resource_ref.")
+    options_evidence = [
+        item
+        for item in evidence
+        if is_derived_library_action_evidence(item)
+    ]
+    if not options_evidence:
+        raise ValueError(
+            "Library operations require evidence from library_action_options."
+        )
+    matching = [item for item in options_evidence if item.locator == resource_ref]
+    if len(matching) != 1:
+        raise ValueError("Library operation resource_ref does not match its evidence.")
 
 
 def _validate_library_tool_arguments(tool_name: str, arguments: dict[str, Any]) -> None:
@@ -655,6 +752,14 @@ def _validate_library_tool_arguments(tool_name: str, arguments: dict[str, Any]) 
         limit = arguments.get("limit", 10)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10:
             raise RuntimeError("library_discovery_search limit is invalid.")
+        return
+    if tool_name == LIBRARY_ACTION_OPTIONS_TOOL_NAME:
+        if set(arguments) != {"resource_ref"} or not isinstance(
+            arguments.get("resource_ref"), str
+        ) or not _LIBRARY_RESOURCE_REF_RE.fullmatch(arguments["resource_ref"]):
+            raise RuntimeError(
+                "library_action_options requires a valid opaque resource_ref."
+            )
         return
 
 
@@ -758,6 +863,8 @@ class PydanticAIAgentBackend(AgentBackend):
         if unknown_ids:
             raise ValueError("ActionDraft contains unknown evidence IDs.")
         selected_evidence = [evidence_by_id[evidence_id] for evidence_id in draft.evidence_ids]
+        if draft.operation is not None:
+            validate_library_operation_evidence(draft.operation, selected_evidence)
         return ActionProposal(
             action_id=f"{self.action_id_prefix}-{uuid4()}",
             title=draft.title,
@@ -767,6 +874,7 @@ class PydanticAIAgentBackend(AgentBackend):
             external_action=draft.external_action,
             requires_confirmation=draft.requires_confirmation,
             prompt_version=PROMPT_VERSION,
+            operation=draft.operation,
         )
 
     @staticmethod
@@ -983,6 +1091,8 @@ class PydanticAIAgentBackend(AgentBackend):
             tools.append(library_catalog_browse)
         if LIBRARY_DISCOVERY_SEARCH_TOOL_NAME in advertised:
             tools.append(library_discovery_search)
+        if LIBRARY_ACTION_OPTIONS_TOOL_NAME in advertised:
+            tools.append(library_action_options)
         if web_search_state is not None:
             tools.append(web_search_state.general_web_search)
         model_settings: OpenAIResponsesModelSettings = {"openai_store": False}
@@ -1110,6 +1220,7 @@ class PydanticAIAgentBackend(AgentBackend):
             LIBRARY_ITEM_READ_TOOL_NAME,
             LIBRARY_CATALOG_BROWSE_TOOL_NAME,
             LIBRARY_DISCOVERY_SEARCH_TOOL_NAME,
+            LIBRARY_ACTION_OPTIONS_TOOL_NAME,
         }:
             _validate_library_tool_arguments(call.tool_name, arguments)
         return ChatAgentExecution(
@@ -1346,6 +1457,32 @@ class PydanticAIAgentBackend(AgentBackend):
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "library_discovery_search": tool_result.model_dump(mode="json"),
             }
+        elif deferred.tool_name == LIBRARY_ACTION_OPTIONS_TOOL_NAME:
+            if not isinstance(tool_result, LibraryActionOptionsResult):
+                raise ValueError(
+                    "Library action calls require a LibraryActionOptionsResult."
+                )
+            if (
+                tool_result.data_classification == "personal"
+                and self.provider_name != "Azure OpenAI"
+            ):
+                raise ValueError(
+                    "Personal library action capabilities require the explicitly "
+                    "consented Azure Agent."
+                )
+            evidence = next(
+                (
+                    item
+                    for item in context
+                    if is_derived_library_action_evidence(item)
+                    and item.locator == tool_result.resource_ref
+                ),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "library_action_options": tool_result.model_dump(mode="json"),
+            }
         else:
             raise ValueError("The deferred chat tool is unsupported.")
         if evidence is None:
@@ -1429,6 +1566,7 @@ __all__ = [
     "LIBRARY_ITEM_READ_TOOL_NAME",
     "LIBRARY_CATALOG_BROWSE_TOOL_NAME",
     "LIBRARY_DISCOVERY_SEARCH_TOOL_NAME",
+    "LIBRARY_ACTION_OPTIONS_TOOL_NAME",
     "LIBRARY_LOCATOR_PREFIX",
     "LIBRARY_RESOURCE_REF_PREFIX",
     "SCOMBZ_READ_TOOL_NAME",
