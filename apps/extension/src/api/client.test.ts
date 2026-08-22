@@ -294,6 +294,44 @@ describe("AgentApiClient", () => {
     ).toBe(true);
   });
 
+  it("accepts a bounded ILL copy operation and rejects extra provider fields", () => {
+    const libraryEvidence = {
+      evidence_id: "library-action-options-v1-test",
+      title: "図書館の現在の操作可否",
+      source_type: "library",
+      locator: "orbit-library://record/0123456789abcdef",
+      data_classification: "public",
+    } as const;
+    const illCopyProposal = {
+      ...proposal,
+      evidence: [libraryEvidence],
+      external_action: "library_write",
+      operation: {
+        action_type: "ill_copy",
+        resource_ref: libraryEvidence.locator,
+        arguments: {
+          receiver: "豊洲図書館",
+          payment: "私費",
+          fee: null,
+          page_range: "10-20",
+        },
+      },
+    };
+    expect(isActionProposal(illCopyProposal)).toBe(true);
+    expect(
+      isActionProposal({
+        ...illCopyProposal,
+        operation: {
+          ...illCopyProposal.operation,
+          arguments: {
+            ...illCopyProposal.operation.arguments,
+            csrf_token: "must-not-cross-the-boundary",
+          },
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("accepts a minimized SITRUS result but not a PDF or identity field", () => {
     const result = {
       schema_version: "v1",

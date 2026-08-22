@@ -42,7 +42,13 @@ def test_library_action_options_are_typed_and_personal_classified() -> None:
                 "action_type": action,
                 "available": action == "renew",
                 "reason_code": "available" if action == "renew" else "not_available",
-                "required_inputs": [],
+                "required_inputs": {
+                    "reserve": ["pickup_campus"],
+                    "intercampus_transfer": ["pickup_campus"],
+                    "purchase_request": ["reason"],
+                    "ill_loan": ["receiver", "payment", "fee"],
+                    "ill_copy": ["receiver", "payment", "fee", "page_range"],
+                }.get(action, []),
             }
             for action in (
                 "visit_shelf",

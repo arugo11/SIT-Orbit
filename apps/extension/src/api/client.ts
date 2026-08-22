@@ -247,7 +247,6 @@ export function isLibraryOperation(value: unknown): value is LibraryOperation {
     );
   }
   const common =
-    hasExactlyKeys(value.arguments, ["receiver", "payment", "fee"]) &&
     typeof value.arguments.receiver === "string" &&
     value.arguments.receiver.trim().length > 0 &&
     value.arguments.receiver.length <= 200 &&
@@ -257,7 +256,11 @@ export function isLibraryOperation(value: unknown): value is LibraryOperation {
     (value.arguments.fee === null ||
       (typeof value.arguments.fee === "string" &&
         value.arguments.fee.length <= 100));
-  if (value.action_type === "ill_loan") return common;
+  if (value.action_type === "ill_loan") {
+    return (
+      hasExactlyKeys(value.arguments, ["receiver", "payment", "fee"]) && common
+    );
+  }
   return (
     common &&
     hasExactlyKeys(value.arguments, [

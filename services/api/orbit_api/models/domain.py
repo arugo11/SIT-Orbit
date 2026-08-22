@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 DataClassification = Literal["synthetic", "public", "personal", "restricted"]
 Campus = Literal["omiya", "toyosu", "other"]
@@ -75,11 +75,25 @@ class RenewArguments(LibraryOperationArguments):
 class PurchaseRequestArguments(LibraryOperationArguments):
     reason: str = Field(min_length=1, max_length=500)
 
+    @field_validator("reason")
+    @classmethod
+    def reason_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Purchase request reason cannot be blank.")
+        return value
+
 
 class IllLoanArguments(LibraryOperationArguments):
     receiver: str = Field(min_length=1, max_length=200)
     payment: str = Field(min_length=1, max_length=100)
     fee: str | None = Field(default=None, max_length=100)
+
+    @field_validator("receiver", "payment")
+    @classmethod
+    def required_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("ILL required text cannot be blank.")
+        return value
 
 
 class IllCopyArguments(LibraryOperationArguments):
@@ -87,6 +101,13 @@ class IllCopyArguments(LibraryOperationArguments):
     payment: str = Field(min_length=1, max_length=100)
     fee: str | None = Field(default=None, max_length=100)
     page_range: str = Field(min_length=1, max_length=100)
+
+    @field_validator("receiver", "payment", "page_range")
+    @classmethod
+    def required_text_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("ILL required text cannot be blank.")
+        return value
 
 
 class VisitShelfOperation(LibraryOperationArguments):
@@ -159,6 +180,24 @@ class LibraryActionOption(BaseModel):
     available: bool
     reason_code: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_]*$")
     required_inputs: list[LibraryActionInput] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def capability_is_consistent(self) -> "LibraryActionOption":
+        expected_inputs: dict[LibraryActionType, list[LibraryActionInput]] = {
+            "visit_shelf": [],
+            "open_online": [],
+            "reserve": ["pickup_campus"],
+            "intercampus_transfer": ["pickup_campus"],
+            "renew": [],
+            "purchase_request": ["reason"],
+            "ill_loan": ["receiver", "payment", "fee"],
+            "ill_copy": ["receiver", "payment", "fee", "page_range"],
+        }
+        if self.required_inputs != expected_inputs[self.action_type]:
+            raise ValueError("Library action inputs must match the action type.")
+        if self.available != (self.reason_code == "available"):
+            raise ValueError("Library action availability must match its reason code.")
+        return self
 
 
 class LibraryActionOptionsResult(BaseModel):
@@ -257,9 +296,7 @@ class ActionProposal(BaseModel):
                 "ill_copy",
             }
             if write_action and self.external_action != "library_write":
-                raise ValueError(
-                    "Library write operations must use external_action=library_write."
-                )
+                raise ValueError("Library write operations must use external_action=library_write.")
             if not write_action and self.external_action == "library_write":
                 raise ValueError(
                     "Read-only library operations cannot use external_action=library_write."
