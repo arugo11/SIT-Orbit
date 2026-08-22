@@ -39,6 +39,8 @@ export const MESSAGE_TYPES = {
   moodleOpen: "moodle-open",
   myLibraryRead: "my-library-read",
   myLibraryOpen: "my-library-open",
+  castRead: "cast-read",
+  castOpen: "cast-open",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -151,6 +153,25 @@ export type MyLibraryReadResponse =
   | { status: "reauth_required"; reason_code: string }
   | { status: "unavailable"; reason_code: string };
 
+export interface CastReadMessage {
+  type: typeof MESSAGE_TYPES.castRead;
+  tool_call_id: string;
+}
+
+export interface CastOpenMessage {
+  type: typeof MESSAGE_TYPES.castOpen;
+}
+
+export type CastReadResponse =
+  | {
+      status: "known";
+      projection: unknown;
+      detail: import("../content/cast-reader").CastLocalSnapshot;
+    }
+  | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
 export interface OpenWorkspaceResponse {
   ok: boolean;
   session?: WorkspaceSession;
@@ -210,7 +231,9 @@ export type ExtensionMessage =
   | MoodleReadMessage
   | MoodleOpenMessage
   | MyLibraryReadMessage
-  | MyLibraryOpenMessage;
+  | MyLibraryOpenMessage
+  | CastReadMessage
+  | CastOpenMessage;
 
 export function isBrowserReadMessage(
   message: unknown,
@@ -291,6 +314,23 @@ export function isMyLibraryOpenMessage(
   message: unknown,
 ): message is MyLibraryOpenMessage {
   return isMessageType(message, MESSAGE_TYPES.myLibraryOpen);
+}
+
+export function isCastReadMessage(
+  message: unknown,
+): message is CastReadMessage {
+  return (
+    isRecord(message) &&
+    message.type === MESSAGE_TYPES.castRead &&
+    typeof message.tool_call_id === "string" &&
+    message.tool_call_id.length > 0
+  );
+}
+
+export function isCastOpenMessage(
+  message: unknown,
+): message is CastOpenMessage {
+  return isMessageType(message, MESSAGE_TYPES.castOpen);
 }
 
 export function isOpenWorkspaceMessage(

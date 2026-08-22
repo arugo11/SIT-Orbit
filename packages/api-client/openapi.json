@@ -794,6 +794,89 @@
         "title": "CalendarAvailabilityResult",
         "description": "Minimal v1 result accepted from the extension's Calendar connector.\n\nEvent IDs, titles, attendees, locations, descriptions, and raw Google\nresponses deliberately have no representation in this model."
       },
+      "CastReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "notice_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Notice Count"
+          },
+          "new_job_count": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "New Job Count"
+          },
+          "new_internship_count": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "New Internship Count"
+          },
+          "new_event_count": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "New Event Count"
+          },
+          "has_counseling_reservation": {
+            "type": "boolean",
+            "title": "Has Counseling Reservation"
+          },
+          "nearest_notice_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nearest Notice Date"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "notice_count",
+          "new_job_count",
+          "new_internship_count",
+          "new_event_count",
+          "has_counseling_reservation"
+        ],
+        "title": "CastReadResult",
+        "description": "Derived CAST dashboard counts safe for an explicitly confirmed run.\n\nNotice text, career preferences, application history, user identity, and\nsubmitted documents deliberately have no representation in this model."
+      },
       "ChatAssistantMessage": {
         "properties": {
           "message_id": {
@@ -837,7 +920,8 @@
               "browser_read_url",
               "sitrus_read",
               "moodle_read",
-              "my_library_read"
+              "my_library_read",
+              "cast_read"
             ],
             "title": "Name"
           },
@@ -998,7 +1082,8 @@
               "browser_read_url",
               "sitrus_read",
               "moodle_read",
-              "my_library_read"
+              "my_library_read",
+              "cast_read"
             ],
             "title": "Name"
           },
@@ -1040,7 +1125,8 @@
               "browser_read_url",
               "sitrus_read",
               "moodle_read",
-              "my_library_read"
+              "my_library_read",
+              "cast_read"
             ],
             "title": "Name"
           },
@@ -1074,6 +1160,9 @@
               },
               {
                 "$ref": "#/components/schemas/MyLibraryReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/CastReadResult"
               }
             ],
             "title": "Result"
@@ -1135,6 +1224,7 @@
               "calendar",
               "scombz",
               "library",
+              "career",
               "google_drive",
               "web"
             ],

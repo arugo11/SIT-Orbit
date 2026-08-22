@@ -4,12 +4,14 @@ from orbit_api.agent.chat import ChatRunStore, FixtureChatBackend
 from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
+    CAST_TOOL_NAME,
     MOODLE_TOOL_NAME,
     MY_LIBRARY_TOOL_NAME,
     SCOMBZ_READ_TOOL_NAME,
     SCOMBZ_TOOL_NAME,
     ChatDraft,
     DeferredChatRun,
+    cast_read,
     google_calendar_availability,
     moodle_read,
     my_library_read,
@@ -18,6 +20,7 @@ from orbit_api.agent.pydantic_ai_backend import (
 from orbit_api.main import app
 from orbit_api.models import (
     CalendarAvailabilityResult,
+    CastReadResult,
     ChatClientTool,
     ChatHistoryMessage,
     ChatRunRequest,
@@ -332,6 +335,78 @@ def test_my_library_projection_rejects_detail_and_unavailable_data() -> None:
             overdue_count=0,
             renewable_count=0,
             earliest_due_date=None,
+            reason_code="login_required",
+        )
+
+
+def test_fixture_chat_route_runs_cast_derived_tool_loop(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-cast",
+                "message": "CASTの求人と説明会を確認して",
+                "history": [],
+                "client_tools": [{"name": "cast_read", "version": 1}],
+            },
+        ).json()
+        assert first["status"] == "tool_required"
+        call = first["calls"][0]
+        second = client.post(
+            f"/v1/chat/runs/{first['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": "cast_read",
+                "version": 1,
+                "result": {
+                    "schema_version": "v1",
+                    "status": "known",
+                    "notice_count": 3,
+                    "new_job_count": 4,
+                    "new_internship_count": 7,
+                    "new_event_count": 2,
+                    "has_counseling_reservation": False,
+                    "nearest_notice_date": "2026-08-20",
+                    "reason_code": None,
+                },
+            },
+        )
+    assert second.status_code == 200
+    completed = second.json()
+    assert completed["status"] == "completed"
+    assert "新着求人: 4件" in completed["message"]["content_markdown"]
+    assert completed["message"]["evidence"][0]["source_type"] == "career"
+    assert "合成キャリア講座" not in second.text
+    assert "応募履歴" not in second.text
+
+
+def test_cast_projection_rejects_detail_and_unavailable_data() -> None:
+    with pytest.raises(ValueError):
+        CastReadResult.model_validate(
+            {
+                "schema_version": "v1",
+                "status": "known",
+                "notice_count": 1,
+                "new_job_count": 4,
+                "new_internship_count": 7,
+                "new_event_count": 2,
+                "has_counseling_reservation": False,
+                "nearest_notice_date": "2026-08-20",
+                "reason_code": None,
+                "notice_titles": ["must stay local"],
+            }
+        )
+    with pytest.raises(ValueError, match="cannot include derived data"):
+        CastReadResult(
+            status="reauth_required",
+            notice_count=1,
+            new_job_count=0,
+            new_internship_count=0,
+            new_event_count=0,
+            has_counseling_reservation=False,
+            nearest_notice_date=None,
             reason_code="login_required",
         )
 @pytest.mark.asyncio
@@ -671,3 +746,142 @@ async def test_function_model_sends_only_my_library_derived_projection(monkeypat
     assert "loan_count" in captured[0]
     assert "分散システム入門" not in captured[0]
     assert "material-secret" not in captured[0]
+
+
+@pytest.mark.asyncio
+async def test_function_model_runs_moodle_library_cast_sequence_with_derived_values_only(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    calls = [0]
+    captured: list[str] = []
+
+    def model_function(messages, _info):
+        calls[0] += 1
+        captured.append(str(messages))
+        if calls[0] == 1:
+            return ModelResponse(
+                parts=[ToolCallPart(MOODLE_TOOL_NAME, {}, tool_call_id="moodle-1")]
+            )
+        if calls[0] == 2:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        MY_LIBRARY_TOOL_NAME,
+                        {},
+                        tool_call_id="library-1",
+                    )
+                ]
+            )
+        if calls[0] == 3:
+            return ModelResponse(
+                parts=[ToolCallPart(CAST_TOOL_NAME, {}, tool_call_id="cast-1")]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "学内サービスの要約を確認しました。",
+                        "evidence_ids": [
+                            "moodle-summary-v1-sequence",
+                            "my-library-summary-v1-sequence",
+                            "cast-summary-v1-sequence",
+                        ],
+                    },
+                    tool_call_id="final-sequence",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="campus-sequence-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[moodle_read, my_library_read, cast_read],
+    )
+    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    advertised = {MOODLE_TOOL_NAME, MY_LIBRARY_TOOL_NAME, CAST_TOOL_NAME}
+    evidence = [
+        EvidenceLink(
+            evidence_id="moodle-summary-v1-sequence",
+            title="Moodle概要",
+            source_type="assignment",
+            locator="orbit-moodle://summary/1234567890abcdef",
+            data_classification="personal",
+        ),
+        EvidenceLink(
+            evidence_id="my-library-summary-v1-sequence",
+            title="My Library概要",
+            source_type="library",
+            locator="orbit-library://summary/1234567890abcdef",
+            data_classification="personal",
+        ),
+        EvidenceLink(
+            evidence_id="cast-summary-v1-sequence",
+            title="CAST概要",
+            source_type="career",
+            locator="orbit-cast://summary/1234567890abcdef",
+            data_classification="personal",
+        ),
+    ]
+    first = await backend.start_chat(
+        conversation_id="conversation-campus-sequence",
+        message="課題、返却期限、就活情報を順番に確認して",
+        history=[],
+        advertised_tools=advertised,
+    )
+    assert first.deferred is not None
+    second = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=MoodleReadResult(
+            status="known",
+            course_count=2,
+            upcoming_item_count=1,
+            overdue_count=0,
+            earliest_due_at="2026-08-24T06:00:00Z",
+            unread_notification_count=3,
+            reason_code=None,
+        ),
+        context=evidence,
+        advertised_tools=advertised,
+    )
+    assert second.deferred is not None
+    third = await backend.resume_chat(
+        deferred=second.deferred,
+        tool_result=MyLibraryReadResult(
+            status="known",
+            loan_count=2,
+            reservation_count=1,
+            overdue_count=0,
+            renewable_count=1,
+            earliest_due_date="2026-09-01",
+            reason_code=None,
+        ),
+        context=evidence,
+        advertised_tools=advertised,
+    )
+    assert third.deferred is not None
+    fourth = await backend.resume_chat(
+        deferred=third.deferred,
+        tool_result=CastReadResult(
+            status="known",
+            notice_count=3,
+            new_job_count=4,
+            new_internship_count=7,
+            new_event_count=2,
+            has_counseling_reservation=False,
+            nearest_notice_date="2026-08-20",
+            reason_code=None,
+        ),
+        context=evidence,
+        advertised_tools=advertised,
+    )
+    assert fourth.draft is not None
+    serialized = "\n".join(captured)
+    assert "course_count" in serialized
+    assert "loan_count" in serialized
+    assert "new_job_count" in serialized
+    assert "合成キャリア講座" not in serialized
+    assert "応募履歴" not in serialized

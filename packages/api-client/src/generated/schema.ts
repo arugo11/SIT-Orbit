@@ -331,6 +331,40 @@ export interface components {
             /** Reason Code */
             reason_code?: string | null;
         };
+        /**
+         * CastReadResult
+         * @description Derived CAST dashboard counts safe for an explicitly confirmed run.
+         *
+         *     Notice text, career preferences, application history, user identity, and
+         *     submitted documents deliberately have no representation in this model.
+         */
+        CastReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "unavailable";
+            /** Notice Count */
+            notice_count: number;
+            /** New Job Count */
+            new_job_count: number;
+            /** New Internship Count */
+            new_internship_count: number;
+            /** New Event Count */
+            new_event_count: number;
+            /** Has Counseling Reservation */
+            has_counseling_reservation: boolean;
+            /** Nearest Notice Date */
+            nearest_notice_date?: string | null;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
         /** ChatAssistantMessage */
         ChatAssistantMessage: {
             /** Message Id */
@@ -346,7 +380,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read";
             /**
              * Version
              * @constant
@@ -404,7 +438,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read";
             /**
              * Version
              * @constant
@@ -423,14 +457,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["MyLibraryReadResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["MyLibraryReadResult"] | components["schemas"]["CastReadResult"];
         };
         /**
          * ClientTool
@@ -461,7 +495,7 @@ export interface components {
              * Source Type
              * @enum {string}
              */
-            source_type: "syllabus" | "assignment" | "learning_history" | "calendar" | "scombz" | "library" | "google_drive" | "web";
+            source_type: "syllabus" | "assignment" | "learning_history" | "calendar" | "scombz" | "library" | "career" | "google_drive" | "web";
             /** Locator */
             locator: string;
             /**

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  isCastOpenMessage,
+  isCastReadMessage,
   isMoodleOpenMessage,
   isMoodleReadMessage,
   isMyLibraryOpenMessage,
@@ -51,6 +53,16 @@ describe("page context message validation", () => {
       }),
     ).toBe(false);
     expect(isMyLibraryOpenMessage({ type: "my-library-open" })).toBe(true);
+  });
+
+  it("accepts only typed CAST commands", () => {
+    expect(
+      isCastReadMessage({ type: "cast-read", tool_call_id: "tool-1" }),
+    ).toBe(true);
+    expect(isCastReadMessage({ type: "cast-read", tool_call_id: "" })).toBe(
+      false,
+    );
+    expect(isCastOpenMessage({ type: "cast-open" })).toBe(true);
   });
   it("accepts only the observed SITRUS grade notice route", () => {
     expect(

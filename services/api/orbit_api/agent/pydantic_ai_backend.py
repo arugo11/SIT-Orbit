@@ -24,6 +24,7 @@ from orbit_api.models import (
     ActionProposal,
     BrowserReadResult,
     CalendarAvailabilityResult,
+    CastReadResult,
     ChatHistoryMessage,
     EvidenceLink,
     MoodleReadResult,
@@ -54,6 +55,8 @@ MOODLE_TOOL_NAME = "moodle_read"
 MOODLE_LOCATOR_PREFIX = "orbit-moodle://summary/"
 MY_LIBRARY_TOOL_NAME = "my_library_read"
 MY_LIBRARY_LOCATOR_PREFIX = "orbit-library://summary/"
+CAST_TOOL_NAME = "cast_read"
+CAST_LOCATOR_PREFIX = "orbit-cast://summary/"
 SUPPORTED_TOOL_NAMES = frozenset(
     {
         CALENDAR_TOOL_NAME,
@@ -63,6 +66,7 @@ SUPPORTED_TOOL_NAMES = frozenset(
         BROWSER_READ_TOOL_NAME,
         MOODLE_TOOL_NAME,
         MY_LIBRARY_TOOL_NAME,
+        CAST_TOOL_NAME,
     }
 )
 ToolName = Literal[
@@ -74,6 +78,7 @@ ToolName = Literal[
     "sitrus_read",
     "moodle_read",
     "my_library_read",
+    "cast_read",
 ]
 ActionToolName = Literal["scombz_page_summary", "google_calendar_availability"]
 ToolResult = (
@@ -85,6 +90,7 @@ ToolResult = (
     | SitrusGradeResult
     | MoodleReadResult
     | MyLibraryReadResult
+    | CastReadResult
 )
 
 
@@ -237,6 +243,15 @@ def is_derived_my_library_evidence(evidence: EvidenceLink) -> bool:
     )
 
 
+def is_derived_cast_evidence(evidence: EvidenceLink) -> bool:
+    return (
+        evidence.source_type == "career"
+        and evidence.data_classification == "personal"
+        and _is_opaque_locator(evidence.locator, CAST_LOCATOR_PREFIX)
+        and evidence.evidence_id.startswith("cast-summary-v1-")
+    )
+
+
 def validate_agent_data(
     event: OrbitEvent,
     context: list[EvidenceLink],
@@ -249,6 +264,7 @@ def validate_agent_data(
     allow_sitrus_read: bool = False,
     allow_moodle_read: bool = False,
     allow_my_library_read: bool = False,
+    allow_cast_read: bool = False,
 ) -> None:
     if event.data_classification not in SAFE_CLASSIFICATIONS:
         raise ValueError("The agent backend accepts only synthetic or public event data.")
@@ -270,6 +286,8 @@ def validate_agent_data(
         if allow_moodle_read and is_derived_moodle_evidence(evidence):
             continue
         if allow_my_library_read and is_derived_my_library_evidence(evidence):
+            continue
+        if allow_cast_read and is_derived_cast_evidence(evidence):
             continue
         raise ValueError(
             "The agent backend rejects personal or restricted evidence unless it is "
@@ -327,6 +345,12 @@ async def moodle_read() -> MoodleReadResult:
 
 async def my_library_read() -> MyLibraryReadResult:
     """Deferred read of explicitly confirmed My Library aggregates."""
+
+    raise CallDeferred()
+
+
+async def cast_read() -> CastReadResult:
+    """Deferred read of explicitly confirmed CAST dashboard aggregates."""
 
     raise CallDeferred()
 
@@ -653,6 +677,8 @@ class PydanticAIAgentBackend(AgentBackend):
             tools.append(moodle_read)
         if MY_LIBRARY_TOOL_NAME in advertised:
             tools.append(my_library_read)
+        if CAST_TOOL_NAME in advertised:
+            tools.append(cast_read)
         model_settings: OpenAIResponsesModelSettings = {"openai_store": False}
         return Agent(
             self.model,
@@ -736,6 +762,7 @@ class PydanticAIAgentBackend(AgentBackend):
             SITRUS_TOOL_NAME,
             MOODLE_TOOL_NAME,
             MY_LIBRARY_TOOL_NAME,
+            CAST_TOOL_NAME,
         } and arguments:
             raise RuntimeError("This client tool does not accept arguments.")
         if call.tool_name == BROWSER_READ_TOOL_NAME:
@@ -799,6 +826,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_sitrus_read=True,
             allow_moodle_read=True,
             allow_my_library_read=True,
+            allow_cast_read=True,
         )
         advertised = set(advertised_tools or set()) & set(SUPPORTED_TOOL_NAMES)
         if advertised and os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
@@ -906,6 +934,17 @@ class PydanticAIAgentBackend(AgentBackend):
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "my_library_summary": tool_result.model_dump(mode="json"),
             }
+        elif deferred.tool_name == CAST_TOOL_NAME:
+            if not isinstance(tool_result, CastReadResult):
+                raise ValueError("CAST calls require a CastReadResult.")
+            evidence = next(
+                (item for item in context if is_derived_cast_evidence(item)),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "cast_summary": tool_result.model_dump(mode="json"),
+            }
         else:
             raise ValueError("The deferred chat tool is unsupported.")
         if evidence is None:
@@ -926,6 +965,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_sitrus_read=True,
             allow_moodle_read=True,
             allow_my_library_read=True,
+            allow_cast_read=True,
         )
         result = await self._chat_agent(advertised_tools=advertised_tools).run(
             message_history=deferred.messages,

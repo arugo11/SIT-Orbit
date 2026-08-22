@@ -15,6 +15,7 @@ from orbit_api.models import (
     ActionProposal,
     BrowserReadResult,
     CalendarAvailabilityResult,
+    CastReadResult,
     ChatAssistantMessage,
     ChatClientTool,
     ChatHistoryMessage,
@@ -37,6 +38,8 @@ from .pydantic_ai_backend import (
     BROWSER_READ_TOOL_NAME,
     CALENDAR_AVAILABILITY_LOCATOR_PREFIX,
     CALENDAR_TOOL_NAME,
+    CAST_LOCATOR_PREFIX,
+    CAST_TOOL_NAME,
     MOODLE_TOOL_NAME,
     MY_LIBRARY_TOOL_NAME,
     SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX,
@@ -45,6 +48,7 @@ from .pydantic_ai_backend import (
     ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
+    is_derived_cast_evidence,
     is_derived_moodle_evidence,
     is_derived_my_library_evidence,
     is_derived_scombz_read_evidence,
@@ -64,6 +68,9 @@ _FIXTURE_MOODLE_QUERY = re.compile(
 )
 _FIXTURE_MY_LIBRARY_QUERY = re.compile(
     r"(?:my\s*library|図書館|貸出|返却|延滞|予約図書)", re.IGNORECASE
+)
+_FIXTURE_CAST_QUERY = re.compile(
+    r"(?:cast|キャリア|就活|求人|インターン|会社説明会|相談予約)", re.IGNORECASE
 )
 
 
@@ -91,6 +98,7 @@ class ChatBackend(Protocol):
             | SitrusGradeResult
             | MoodleReadResult
             | MyLibraryReadResult
+            | CastReadResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
@@ -145,6 +153,17 @@ class FixtureChatBackend:
         recent_text = "\n".join(item.content for item in history[-4:])
         return bool(_FIXTURE_MY_LIBRARY_QUERY.search(f"{recent_text}\n{message}"))
 
+    @staticmethod
+    def _requests_cast_read(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if CAST_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_CAST_QUERY.search(f"{recent_text}\n{message}"))
+
     async def start_chat(
         self,
         *,
@@ -156,6 +175,15 @@ class FixtureChatBackend:
     ) -> ChatAgentExecution:
         del context
         advertised = set(advertised_tools or set())
+        if self._requests_cast_read(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-cast-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=CAST_TOOL_NAME,
+                )
+            )
         if self._requests_my_library_read(message, history, advertised):
             return ChatAgentExecution(
                 deferred=DeferredChatRun(
@@ -215,12 +243,40 @@ class FixtureChatBackend:
             | SitrusGradeResult
             | MoodleReadResult
             | MyLibraryReadResult
+            | CastReadResult
         ),
         context: list[EvidenceLink],
         advertised_tools: set[str],
         seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
     ) -> ChatAgentExecution:
         del advertised_tools, seen_tool_call_ids
+        if deferred.tool_name == CAST_TOOL_NAME:
+            if not isinstance(tool_result, CastReadResult):
+                raise ValueError("The fixture CAST call requires a CastReadResult.")
+            evidence = next(
+                (item for item in context if is_derived_cast_evidence(item)),
+                None,
+            )
+            if evidence is None:
+                raise ValueError("A resumed fixture Chat run requires CAST evidence.")
+            lines = ["CASTのトップ画面を確認しました。"]
+            lines.append(f"- お知らせ: {tool_result.notice_count}件")
+            lines.append(f"- 新着求人: {tool_result.new_job_count}件")
+            lines.append(f"- 新着インターン: {tool_result.new_internship_count}件")
+            lines.append(f"- 新着説明会: {tool_result.new_event_count}件")
+            lines.append(
+                "- 相談予約: あり"
+                if tool_result.has_counseling_reservation
+                else "- 相談予約: なし"
+            )
+            if tool_result.nearest_notice_date:
+                lines.append(f"- 直近掲載日: {tool_result.nearest_notice_date}")
+            return ChatAgentExecution(
+                draft=ChatDraft(
+                    content_markdown="\n".join(lines),
+                    evidence_ids=[evidence.evidence_id],
+                )
+            )
         if deferred.tool_name == MY_LIBRARY_TOOL_NAME:
             if not isinstance(tool_result, MyLibraryReadResult):
                 raise ValueError(
@@ -583,6 +639,10 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "My Libraryから導出した利用状況の概要"
         source_type = "library"
         locator = f"orbit-library://summary/{uuid4().hex}"
+    elif request.name == CAST_TOOL_NAME:
+        title = "CASTから導出したキャリア情報の概要"
+        source_type = "career"
+        locator = f"{CAST_LOCATOR_PREFIX}{uuid4().hex}"
     else:
         raise ValueError("The chat tool is not enabled in the current API build.")
     evidence_prefix = {
@@ -594,6 +654,7 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         "sitrus_read": "sitrus-grades-v1",
         MOODLE_TOOL_NAME: "moodle-summary-v1",
         MY_LIBRARY_TOOL_NAME: "my-library-summary-v1",
+        CAST_TOOL_NAME: "cast-summary-v1",
     }[request.name]
     return EvidenceLink(
         evidence_id=f"{evidence_prefix}-{run_id}",

@@ -251,6 +251,12 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 書名、著者、返却期限、延長可否、予約状態は拡張機能のReact stateにだけ保持する。Agentへ渡す`MyLibraryReadResult`は貸出件数、予約件数、延滞件数、延長可能件数、最短返却期限だけで、Evidence locatorは`orbit-library://summary/<opaque>`とする。資料ID、請求記号、氏名、メールアドレス、SSO URLのtoken、query、fragmentにはAPI Schema上の表現を与えない。
 
+### CASTトップ画面の参照
+
+`cast_read`は、SCombZ掲載の正規入口`https://shibaura.pita.services/career`と、実ログイン環境で確認した`/career/top/student`だけを対象にする。利用者が明示的に実行した場合だけ、既に開かれているトップ画面をIsolated Worldで読み取る。セッション切れでは正規入口を開くが、資格情報の入力・保存や、予約履歴・応募履歴など別画面への遷移は行わない。未知のpath、404、ログイン画面、件数selectorの構造不一致を空データの成功として扱わない。
+
+お知らせの件名と掲載日、新着求人・インターン・会社説明会の件数、個人向け通知領域に表示された相談予約の有無は、拡張機能のReact stateにだけ保持する。Agentへ渡す`CastReadResult`はお知らせ件数、各新着件数、相談予約の有無、直近掲載日だけで、Evidence locatorは`orbit-cast://summary/<opaque>`とする。進路希望、自己PR、応募履歴、氏名、前回ログイン、提出内容にはAPI Schema上の表現を与えない。
+
 外部サービスへの書き込みを含む提案は、必ず承認後に実行する。
 
 ## Connectorの境界

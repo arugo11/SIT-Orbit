@@ -30,6 +30,7 @@ export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
 export type SitrusGradeResult = components["schemas"]["SitrusGradeResult"];
 export type MoodleReadResult = components["schemas"]["MoodleReadResult"];
 export type MyLibraryReadResult = components["schemas"]["MyLibraryReadResult"];
+export type CastReadResult = components["schemas"]["CastReadResult"];
 
 export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 
@@ -101,6 +102,7 @@ const sourceTypes = [
   "calendar",
   "scombz",
   "library",
+  "career",
   "google_drive",
   "web",
 ] as const;
@@ -524,6 +526,43 @@ export function isMyLibraryReadResult(
   return value.status === "known" || !hasData;
 }
 
+export function isCastReadResult(value: unknown): value is CastReadResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "notice_count",
+      "new_job_count",
+      "new_internship_count",
+      "new_event_count",
+      "has_counseling_reservation",
+      "nearest_notice_date",
+      "reason_code",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
+    !isIntegerInRange(value.notice_count, 0, 1000) ||
+    !isIntegerInRange(value.new_job_count, 0, 100_000) ||
+    !isIntegerInRange(value.new_internship_count, 0, 100_000) ||
+    !isIntegerInRange(value.new_event_count, 0, 100_000) ||
+    typeof value.has_counseling_reservation !== "boolean" ||
+    (value.nearest_notice_date !== null &&
+      !isIsoDateOnly(value.nearest_notice_date)) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string")
+  ) {
+    return false;
+  }
+  const hasData =
+    value.notice_count > 0 ||
+    value.new_job_count > 0 ||
+    value.new_internship_count > 0 ||
+    value.new_event_count > 0 ||
+    value.has_counseling_reservation ||
+    value.nearest_notice_date !== null;
+  return value.status === "known" || !hasData;
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -558,6 +597,7 @@ const chatToolNames = [
   "sitrus_read",
   "moodle_read",
   "my_library_read",
+  "cast_read",
 ] as const;
 
 function isChatEvidenceMessage(value: unknown): boolean {

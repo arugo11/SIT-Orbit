@@ -6,6 +6,7 @@ import {
   type ChatToolResultRequest,
   DEFAULT_AGENT_API_BASE,
   isBrowserReadResult,
+  isCastReadResult,
   isMoodleReadResult,
   isMyLibraryReadResult,
   isSitrusGradeResult,
@@ -17,6 +18,7 @@ import {
   type CalendarConnectorResult,
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
+import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
   MOODLE_DASHBOARD_URL,
   type MoodleLocalSnapshot,
@@ -33,6 +35,7 @@ import {
 } from "../content/page-context";
 import type {
   BrowserReadResponse,
+  CastReadResponse,
   MoodleReadResponse,
   MyLibraryReadResponse,
   SitrusReadResponse,
@@ -84,6 +87,8 @@ function toolLabel(name: string): string {
       return "Moodleを確認中";
     case "my_library_read":
       return "My Libraryを確認中";
+    case "cast_read":
+      return "CASTを確認中";
     default:
       return "情報を確認中";
   }
@@ -117,7 +122,8 @@ function toolResultRequest(
     | "browser_read_url"
     | "sitrus_read"
     | "moodle_read"
-    | "my_library_read",
+    | "my_library_read"
+    | "cast_read",
   result: ChatToolResultRequest["result"],
 ): ChatToolResultRequest {
   return {
@@ -203,6 +209,9 @@ export function ChatPanel({
   const [localMyLibraryDetails, setLocalMyLibraryDetails] = useState<
     Record<string, MyLibraryLocalSnapshot>
   >({});
+  const [localCastDetails, setLocalCastDetails] = useState<
+    Record<string, CastLocalSnapshot>
+  >({});
   const sensitiveApproval = useRef(new Set<string>());
 
   const pageSummary = useMemo(
@@ -245,7 +254,8 @@ export function ChatPanel({
         | "browser_read_url"
         | "sitrus_read"
         | "moodle_read"
-        | "my_library_read";
+        | "my_library_read"
+        | "cast_read";
       version: 1;
     }> = [];
     if (projectScombzRead(pageContext)) {
@@ -261,6 +271,7 @@ export function ChatPanel({
     }
     tools.push({ name: "moodle_read", version: 1 });
     tools.push({ name: "my_library_read", version: 1 });
+    tools.push({ name: "cast_read", version: 1 });
     return tools;
   }
 
@@ -284,7 +295,8 @@ export function ChatPanel({
       call.name !== "browser_read_url" &&
       call.name !== "sitrus_read" &&
       call.name !== "moodle_read" &&
-      call.name !== "my_library_read"
+      call.name !== "my_library_read" &&
+      call.name !== "cast_read"
     ) {
       throw new Error("このChatではまだ対応していないToolです。");
     }
@@ -294,7 +306,8 @@ export function ChatPanel({
         call.name === "google_calendar_availability" ||
         call.name === "sitrus_read" ||
         call.name === "moodle_read" ||
-        call.name === "my_library_read") &&
+        call.name === "my_library_read" ||
+        call.name === "cast_read") &&
       Object.keys(argumentsObject).length > 0
     ) {
       throw new Error("このToolには引数を指定できません。");
@@ -536,6 +549,52 @@ export function ChatPanel({
         call.tool_call_id,
         call.name,
         library.projection,
+      );
+      sensitiveApproval.current.delete(approvalKey);
+    } else if (call.name === "cast_read") {
+      const access = hostAccessRequest(CAST_ENTRY_URL);
+      if (!access) throw new Error("CASTの参照先URLを検証できません。");
+      const approvalKey = `${response.run_id}:${call.tool_call_id}:cast-derived`;
+      const disclosure =
+        "CASTのトップ画面を端末内で読み取り、お知らせ件数・新着求人件数・新着インターン件数・新着説明会件数・相談予約の有無・直近掲載日だけを選択中のAIへ送ります。お知らせ本文、進路希望、応募履歴、氏名は送信しません。";
+      if (!sensitiveApproval.current.has(approvalKey)) {
+        throw new BrowserAccessRequiredError(
+          CAST_ENTRY_URL,
+          access.origin,
+          access.pattern,
+          approvalKey,
+          disclosure,
+        );
+      }
+      const cast = await sendExtensionMessage<CastReadResponse>({
+        type: "cast-read",
+        tool_call_id: call.tool_call_id,
+      });
+      if (cast.status === "permission_required") {
+        throw new BrowserAccessRequiredError(
+          CAST_ENTRY_URL,
+          cast.origin,
+          cast.pattern,
+          approvalKey,
+          disclosure,
+        );
+      }
+      if (cast.status === "reauth_required") {
+        throw new Error(
+          "CASTを開きました。ログイン後、もう一度質問してください。",
+        );
+      }
+      if (cast.status !== "known" || !isCastReadResult(cast.projection)) {
+        throw new Error("CASTのトップ画面を読み取れませんでした。");
+      }
+      setLocalCastDetails((items) => ({
+        ...items,
+        [activity.id]: cast.detail,
+      }));
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        cast.projection,
       );
       sensitiveApproval.current.delete(approvalKey);
     } else {
@@ -1018,6 +1077,35 @@ export function ChatPanel({
                       ),
                     )}
                   </ul>
+                </div>
+              ) : null}
+              {message.role === "tool" && localCastDetails[message.id] ? (
+                <div className="chat-local-detail">
+                  <strong>端末内のCAST詳細</strong>
+                  <ul>
+                    {localCastDetails[message.id]?.notices.map((notice) => (
+                      <li
+                        key={`${notice.title}-${notice.published_date ?? "none"}`}
+                      >
+                        {notice.published_date
+                          ? `${notice.published_date}: `
+                          : ""}
+                        {notice.title}
+                      </li>
+                    ))}
+                  </ul>
+                  <p>
+                    新着求人: {localCastDetails[message.id]?.new_job_count}件 /
+                    インターン:
+                    {localCastDetails[message.id]?.new_internship_count}件 /
+                    説明会: {localCastDetails[message.id]?.new_event_count}件
+                  </p>
+                  <p>
+                    相談予約:
+                    {localCastDetails[message.id]?.has_counseling_reservation
+                      ? "あり"
+                      : "なし"}
+                  </p>
                 </div>
               ) : null}
               {message.evidence && message.evidence.length > 0 ? (

@@ -32,6 +32,7 @@ import {
 } from "../content/page-context";
 import {
   type CalendarCommand,
+  type CastReadResponse,
   calendarCommandMessage,
   type DriveCommand,
   driveCommandMessage,
@@ -830,6 +831,10 @@ export function App({
     useState<CampusServiceConnectionStatus>("not_connected");
   const [myLibraryMessage, setMyLibraryMessage] = useState<string | null>(null);
   const [myLibraryBusy, setMyLibraryBusy] = useState(false);
+  const [castStatus, setCastStatus] =
+    useState<CampusServiceConnectionStatus>("not_connected");
+  const [castMessage, setCastMessage] = useState<string | null>(null);
+  const [castBusy, setCastBusy] = useState(false);
   const [driveFixtureConnector, setDriveFixtureConnector] = useState(() =>
     createFixtureDriveConnector({
       candidates: DRIVE_FIXTURE_CANDIDATE,
@@ -1060,6 +1065,63 @@ export function App({
       );
     } finally {
       setMyLibraryBusy(false);
+    }
+  };
+
+  const runCastAction = async (action: "open" | "refresh"): Promise<void> => {
+    setCastBusy(true);
+    setCastMessage(null);
+    try {
+      const granted = await requestOriginPermission(
+        "https://shibaura.pita.services/*",
+      );
+      if (!granted) {
+        setCastStatus("not_connected");
+        setCastMessage("CASTの読み取り許可が得られませんでした。");
+        return;
+      }
+      if (action === "open") {
+        await new Promise<void>((resolve, reject) => {
+          chrome.runtime.sendMessage(
+            { type: MESSAGE_TYPES.castOpen },
+            (response: { ok?: boolean } | undefined) => {
+              if (chrome.runtime.lastError || !response?.ok)
+                reject(new Error("open failed"));
+              else resolve();
+            },
+          );
+        });
+        setCastStatus("reauth_required");
+        setCastMessage("CASTを開きました。ログイン後に再確認してください。");
+        return;
+      }
+      const result = await new Promise<CastReadResponse>((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          { type: MESSAGE_TYPES.castRead, tool_call_id: "connection-check" },
+          (response: CastReadResponse | undefined) => {
+            if (chrome.runtime.lastError || !response)
+              reject(new Error("read failed"));
+            else resolve(response);
+          },
+        );
+      });
+      if (result.status === "known") {
+        setCastStatus("connected");
+        setCastMessage(
+          "トップ画面を読み取れます。お知らせなどの詳細は保存していません。",
+        );
+      } else if (result.status === "reauth_required") {
+        setCastStatus("reauth_required");
+        setCastMessage("CASTへログインしてから再確認してください。");
+      } else {
+        setCastStatus("unavailable");
+        setCastMessage("CASTの画面構造または接続状態を確認できませんでした。");
+      }
+    } catch {
+      setCastStatus("unavailable");
+      setCastMessage("CASTを利用できません。時間をおいて再試行してください。");
+    } finally {
+      setCastBusy(false);
     }
   };
 
@@ -1490,6 +1552,17 @@ export function App({
               message={myLibraryMessage}
               onOpen={() => void runMyLibraryAction("open")}
               onRefresh={() => void runMyLibraryAction("refresh")}
+            />
+
+            <CampusServiceCard
+              id="cast-title"
+              title="CAST"
+              description="キャリア支援のお知らせと新着件数は、明示的に確認したときだけ読み取ります。詳細は端末内に留めます。"
+              status={castStatus}
+              busy={castBusy || interactionLocked}
+              message={castMessage}
+              onOpen={() => void runCastAction("open")}
+              onRefresh={() => void runCastAction("refresh")}
             />
 
             <DriveFixtureCard
