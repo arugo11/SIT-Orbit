@@ -1,6 +1,7 @@
 import os
 import secrets
 from contextlib import asynccontextmanager
+from typing import Literal, cast
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -22,6 +23,7 @@ from orbit_api.agent.chat import (
 from orbit_api.agent.runs import ConsumedRunError, ExpiredRunError, UnknownRunError
 from orbit_api.models import (
     ActionProposal,
+    AgentCapabilities,
     AgentRunRequest,
     AgentRunResponse,
     AgentToolResultRequest,
@@ -125,6 +127,18 @@ chat_run_service = ChatRunService(backend_factory=get_chat_backend)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/v1/capabilities", response_model=AgentCapabilities)
+async def capabilities() -> AgentCapabilities:
+    backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
+    if backend not in {"fixture", "openai", "azure_openai"}:
+        raise HTTPException(status_code=503, detail="Agent backend is not supported.")
+    supported_backend = cast(Literal["fixture", "openai", "azure_openai"], backend)
+    return AgentCapabilities(
+        agent_backend=supported_backend,
+        my_library_personal_context=supported_backend == "azure_openai",
+    )
 
 
 @app.post("/v1/agent/runs", response_model=AgentRunResponse)

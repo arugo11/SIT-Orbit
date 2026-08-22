@@ -403,6 +403,32 @@ describe("AgentApiClient", () => {
     });
   });
 
+  it("reads authenticated Agent capabilities before personal data transfer", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        agent_backend: "azure_openai",
+        my_library_personal_context: true,
+      }),
+    );
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      accessToken: "demo-token",
+      fetcher,
+    });
+
+    await expect(client.capabilities()).resolves.toEqual({
+      agent_backend: "azure_openai",
+      my_library_personal_context: true,
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://agent.example.test/v1/capabilities",
+      {
+        method: "GET",
+        headers: { Authorization: "Bearer demo-token" },
+      },
+    );
+  });
+
   it("accepts a google_drive EvidenceLink with an opaque locator", async () => {
     const driveProposal = {
       ...proposal,

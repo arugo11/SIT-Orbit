@@ -1,4 +1,5 @@
 from .agent import (
+    AgentCapabilities,
     AgentRunCompleted,
     AgentRunRequest,
     AgentRunResponse,
@@ -55,6 +56,7 @@ from .domain import (
 
 __all__ = [
     "ActionProposal",
+    "AgentCapabilities",
     "AgentRunCompleted",
     "AgentRunRequest",
     "AgentRunResponse",

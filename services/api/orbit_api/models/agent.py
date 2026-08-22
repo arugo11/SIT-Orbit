@@ -29,6 +29,13 @@ class StrictApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+class AgentCapabilities(StrictApiModel):
+    """Authenticated runtime capabilities used before personal data leaves Chrome."""
+
+    agent_backend: Literal["fixture", "openai", "azure_openai"]
+    my_library_personal_context: StrictBool
+
+
 class CalendarAvailabilityInterval(StrictApiModel):
     """One derived free-time interval, without calendar event details."""
 
@@ -968,6 +975,7 @@ AgentRunResponse = Annotated[
 
 
 __all__ = [
+    "AgentCapabilities",
     "AgentRunCompleted",
     "AgentRunRequest",
     "AgentRunResponse",

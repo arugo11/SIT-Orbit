@@ -896,6 +896,15 @@ export function ChatPanel({
         typeof argumentsObject.offset === "number" ? argumentsObject.offset : 0;
       const requestedLimit =
         typeof argumentsObject.limit === "number" ? argumentsObject.limit : 20;
+      const capabilities = await apiClient.capabilities();
+      if (
+        capabilities.agent_backend !== "azure_openai" ||
+        !capabilities.my_library_personal_context
+      ) {
+        throw new Error(
+          "My Libraryの個人情報はAzure OpenAI Agentに接続している場合だけ送信できます。",
+        );
+      }
       const library = await sendExtensionMessage<MyLibraryReadResponse>({
         type: "my-library-read",
         tool_call_id: call.tool_call_id,

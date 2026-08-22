@@ -103,10 +103,15 @@ const localDetail = {
 };
 
 function createApiClient(): AgentApiClient & {
+  capabilities: ReturnType<typeof vi.fn>;
   startChat: ReturnType<typeof vi.fn>;
   submitChatToolResult: ReturnType<typeof vi.fn>;
 } {
   return {
+    capabilities: vi.fn(async () => ({
+      agent_backend: "azure_openai",
+      my_library_personal_context: true,
+    })),
     startChat: vi.fn(async () => toolRequired()),
     submitChatToolResult: vi.fn(async () => ({
       status: "completed",
@@ -119,6 +124,7 @@ function createApiClient(): AgentApiClient & {
       proposal: null,
     })),
   } as unknown as AgentApiClient & {
+    capabilities: ReturnType<typeof vi.fn>;
     startChat: ReturnType<typeof vi.fn>;
     submitChatToolResult: ReturnType<typeof vi.fn>;
   };
@@ -363,6 +369,36 @@ describe("ChatPanel My Library consent and history boundary", () => {
     expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
     expect(mounted?.document.querySelector('[role="alert"]')?.textContent).toBe(
       "My Libraryの利用状況を読み取れませんでした。",
+    );
+  });
+
+  it("does not read or send personal library data to a non-Azure backend", async () => {
+    const apiClient = createApiClient();
+    apiClient.capabilities.mockResolvedValue({
+      agent_backend: "openai",
+      my_library_personal_context: false,
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    installLibraryChrome({ consented: true });
+
+    await submitMessage(mounted, "購入依頼の状況を確認して");
+    await waitFor(
+      () =>
+        mounted?.document.querySelector('[role="alert"]')?.textContent ===
+        "My Libraryの個人情報はAzure OpenAI Agentに接続している場合だけ送信できます。",
+    );
+
+    expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
+    expect(mounted.chromeRuntime.sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "my-library-read" }),
+      expect.any(Function),
     );
   });
 });

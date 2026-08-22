@@ -302,6 +302,30 @@ describe("My Library reader adversarial boundaries", () => {
       renewable_count: 1,
       earliest_due_date: "2026-08-24",
     });
+    const filteredLoans = projectMyLibraryForAgent(
+      {
+        loans: [
+          {
+            resource_ref: createLibraryResourceRef("current-loan"),
+            title: "貸出資料",
+            author: null,
+            due_date: "2026-08-24",
+            renewable: true,
+            overdue: false,
+          },
+        ],
+        reservations: [],
+      },
+      { scope: "current_loans", query: "一致しない" },
+    );
+    expect(filteredLoans).toMatchObject({
+      items: [],
+      total_count: 0,
+      loan_count: 0,
+      overdue_count: 0,
+      renewable_count: 0,
+      earliest_due_date: null,
+    });
 
     const reservations = projectMyLibraryForAgent(
       {
@@ -324,6 +348,26 @@ describe("My Library reader adversarial boundaries", () => {
       overdue_count: null,
       renewable_count: null,
       earliest_due_date: null,
+    });
+    const filteredReservations = projectMyLibraryForAgent(
+      {
+        loans: [],
+        reservations: [
+          {
+            resource_ref: createLibraryResourceRef("reservation"),
+            title: "予約資料",
+            author: null,
+            hold_until: "2026-08-28",
+            status: "取置中",
+          },
+        ],
+      },
+      { scope: "reservations", query: "一致しない" },
+    );
+    expect(filteredReservations).toMatchObject({
+      items: [],
+      total_count: 0,
+      reservation_count: 0,
     });
 
     for (const options of [

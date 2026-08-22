@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Capabilities */
+        get: operations["capabilities_v1_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agent/runs": {
         parameters: {
             query?: never;
@@ -155,6 +172,19 @@ export interface components {
             requires_confirmation: boolean;
             /** Prompt Version */
             prompt_version: string;
+        };
+        /**
+         * AgentCapabilities
+         * @description Authenticated runtime capabilities used before personal data leaves Chrome.
+         */
+        AgentCapabilities: {
+            /**
+             * Agent Backend
+             * @enum {string}
+             */
+            agent_backend: "fixture" | "openai" | "azure_openai";
+            /** My Library Personal Context */
+            my_library_personal_context: boolean;
         };
         /** AgentRunCompleted */
         AgentRunCompleted: {
@@ -1136,6 +1166,26 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    capabilities_v1_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentCapabilities"];
                 };
             };
         };

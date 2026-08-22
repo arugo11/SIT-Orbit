@@ -6,6 +6,7 @@ export type ProposeActionRequest =
   components["schemas"]["ProposeActionRequest"];
 export type VerifyActionRequest = components["schemas"]["VerifyActionRequest"];
 export type AgentRunRequest = components["schemas"]["AgentRunRequest"];
+export type AgentCapabilities = components["schemas"]["AgentCapabilities"];
 export type AgentRunResponse =
   | components["schemas"]["AgentRunCompleted"]
   | components["schemas"]["AgentRunToolRequired"];
@@ -115,6 +116,15 @@ function isOneOf<T extends string>(
   values: readonly T[],
 ): value is T {
   return typeof value === "string" && values.includes(value as T);
+}
+
+function isAgentCapabilities(value: unknown): value is AgentCapabilities {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, ["agent_backend", "my_library_personal_context"]) &&
+    isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) &&
+    typeof value.my_library_personal_context === "boolean"
+  );
 }
 
 const sourceTypes = [
@@ -1136,6 +1146,36 @@ export class AgentApiClient {
       throw new AgentApiError(`Agent API request failed: ${message}`, 0, error);
     }
     return responseIsOk(response);
+  }
+
+  async capabilities(): Promise<AgentCapabilities> {
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/v1/capabilities`, {
+        method: "GET",
+        headers: this.headers(false),
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "The request failed.";
+      throw new AgentApiError(`Agent API request failed: ${message}`, 0, error);
+    }
+    const payload = await readJson(response);
+    if (!responseIsOk(response)) {
+      throw new AgentApiError(
+        `Agent API returned HTTP ${response.status}.`,
+        response.status,
+        payload,
+      );
+    }
+    if (!isAgentCapabilities(payload)) {
+      throw new AgentApiError(
+        "Agent API returned invalid capabilities.",
+        response.status,
+        payload,
+      );
+    }
+    return payload;
   }
 
   propose(request: ProposeActionRequest): Promise<ActionProposal> {

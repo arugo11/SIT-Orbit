@@ -28,6 +28,24 @@
         }
       }
     },
+    "/v1/capabilities": {
+      "get": {
+        "summary": "Capabilities",
+        "operationId": "capabilities_v1_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentCapabilities"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agent/runs": {
       "post": {
         "summary": "Start Agent Run",
@@ -415,6 +433,31 @@
         ],
         "title": "ActionProposal",
         "description": "An evidence-backed next action that remains a proposal until approved."
+      },
+      "AgentCapabilities": {
+        "properties": {
+          "agent_backend": {
+            "type": "string",
+            "enum": [
+              "fixture",
+              "openai",
+              "azure_openai"
+            ],
+            "title": "Agent Backend"
+          },
+          "my_library_personal_context": {
+            "type": "boolean",
+            "title": "My Library Personal Context"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "agent_backend",
+          "my_library_personal_context"
+        ],
+        "title": "AgentCapabilities",
+        "description": "Authenticated runtime capabilities used before personal data leaves Chrome."
       },
       "AgentRunCompleted": {
         "properties": {

@@ -547,22 +547,6 @@ export function projectMyLibraryForAgent(
     renewable_count: null,
     earliest_due_date: null,
   } as const;
-  const scopedAggregate =
-    options.scope === "current_loans"
-      ? {
-          ...unknownAggregate,
-          loan_count: legacyAggregate.loan_count,
-          overdue_count: legacyAggregate.overdue_count,
-          renewable_count: legacyAggregate.renewable_count,
-          earliest_due_date: legacyAggregate.earliest_due_date,
-        }
-      : options.scope === "reservations"
-        ? {
-            ...unknownAggregate,
-            reservation_count: legacyAggregate.reservation_count,
-          }
-        : unknownAggregate;
-
   const offset = options.offset ?? 0;
   const limit = options.limit ?? 20;
   if (
@@ -625,6 +609,27 @@ export function projectMyLibraryForAgent(
           .includes(query),
       )
     : source;
+  const filteredDueDates = filtered
+    .map((item) => item.due_date)
+    .filter((value): value is string => value !== null)
+    .sort();
+  const scopedAggregate =
+    options.scope === "current_loans"
+      ? {
+          ...unknownAggregate,
+          loan_count: filtered.length,
+          overdue_count: filtered.filter((item) => item.status === "overdue")
+            .length,
+          renewable_count: filtered.filter((item) => item.renewable === true)
+            .length,
+          earliest_due_date: filteredDueDates[0] ?? null,
+        }
+      : options.scope === "reservations"
+        ? {
+            ...unknownAggregate,
+            reservation_count: filtered.length,
+          }
+        : unknownAggregate;
   const totalCount = filtered.length;
   const page = filtered.slice(offset, offset + limit);
   if (
