@@ -157,6 +157,10 @@ Decision Roomが表示する次の一歩は読み取り専用の確認案内だ�
 
 個人・第三者のCAST記録は仮名化しても現行ポリシーではAzureへ送らず、ChromeのオンデバイスPrompt APIで処理する。Prompt APIが利用できない場合にAzureや別Providerへ暗黙fallbackしない。Context Manifestで、データ種別、処理先、置換数、一般化項目、保存期間、送信payload previewを利用者へ示す。GoogleのGranular Consentと[Chromeの権限ガイド](https://developer.chrome.com/docs/extensions/develop/concepts/permission-warnings)をUI設計の参考にする。[Chrome Prompt API](https://developer.chrome.com/docs/ai/prompt-api)、[OWASP Password Storage](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)、[W3C Web Crypto](https://www.w3.org/TR/WebCryptoAPI/)に基づく。
 
+### 芝浦キャリア地図
+
+全画面モードのグラフは端末内でのみ描画する。入力はCASTのTyped Snapshotと、個人を含まない科目・技術・職種・進路集計に限定し、進路集計は5件未満を表示しない。個人名、内部人物ID、卒業生ノード、会社コード、求人番号、選考報告URL、raw HTML、tokenはノード・エッジへ変換しない。Cytoscape.jsは表示用ランタイムであり、Graph Database、Embedding索引、外部Providerは導入しない。地図モデルはChat履歴、FastAPI、Azure、W&B、IndexedDBへ保存・送信せず、ワークスペースの安定状態にも含めない。
+
 ### CAST横断検索のデータ境界
 
 横断検索のPrompt入力は、利用者が明示した自然言語の質問だけとする。求人カード、採用実績、選考記録、人物名、内部ID、URL、raw HTMLをPrompt APIの入力へ連結しない。Chrome Prompt APIが返した構造化クエリは、配列長・文字数・種別を検証してから端末内MiniSearchへ渡す。MiniSearchの結果と詳細Snapshotは拡張機能メモリ内だけで扱い、FastAPI、Azure、W&B、IndexedDB、Chat履歴へ保存しない。

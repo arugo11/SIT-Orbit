@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@sit-orbit/api-client": "workspace:*",
+    "cytoscape": "3.34.1",
     "hash-wasm": "4.12.0",
     "minisearch": "7.2.0",
     "react": "19.2.8",

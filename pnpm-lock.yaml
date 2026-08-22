@@ -26,6 +26,9 @@ importers:
       '@sit-orbit/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
+      cytoscape:
+        specifier: 3.34.1
+        version: 3.34.1
       hash-wasm:
         specifier: 4.12.0
         version: 4.12.0
@@ -1705,6 +1708,10 @@ packages:
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
+
+  cytoscape@3.34.1:
+    resolution: {integrity: sha512-Lr0RvH9H75y9ar8h9Toy6u4lxRSCcxUq+hHcQ26sVWo6BnaQp1gwEZOYqwuYTZhyW7npyKnNLP8oJ2p1/3OZ7g==}
+    engines: {node: '>=0.10'}
 
   debug@2.6.9:
     resolution: {integrity: sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA==}
@@ -4846,6 +4853,8 @@ snapshots:
   cssom@0.5.0: {}
 
   csstype@3.2.3: {}
+
+  cytoscape@3.34.1: {}
 
   debug@2.6.9(supports-color@10.2.2):
     dependencies:
