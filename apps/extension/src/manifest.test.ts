@@ -58,6 +58,8 @@ describe("production extension contract", () => {
       new URL("../scripts/build.mjs", import.meta.url),
       "utf8",
     );
+    expect(buildSource).toContain("ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID");
+    expect(buildSource).toContain("ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID");
     for (const source of [manifestSource, buildSource]) {
       expect(source).not.toMatch(/googleapis\.com\/auth\/drive/i);
       expect(source).not.toMatch(/googleapis\.com\/auth\/drive\.readonly/i);

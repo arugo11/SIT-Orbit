@@ -16,9 +16,17 @@ describe("managed Agent authentication", () => {
 
   it("exchanges a Chrome Identity ID token and keeps the session in memory/storage", async () => {
     const stored: Record<string, unknown> = {};
+    vi.stubGlobal(
+      "__ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__",
+      "agent-web-client.apps.googleusercontent.com",
+    );
     const launchWebAuthFlow = vi.fn(async ({ url }: { url: string }) => {
       const state = new URL(url).searchParams.get("state");
-      return `https://onlkblmignmbeaogocmhgkiecmdlihci.chromiumapp.org/agent-auth#state=${state}&id_token=google-id-token`;
+      const redirectUri = new URL(url).searchParams.get("redirect_uri");
+      expect(redirectUri).toBe(
+        "https://onlkblmignmbeaogocmhgkiecmdlihci.chromiumapp.org/agent-auth",
+      );
+      return `${redirectUri}#state=${state}&id_token=google-id-token`;
     });
     const fetcher = vi.fn(async () =>
       jsonResponse({
@@ -28,13 +36,11 @@ describe("managed Agent authentication", () => {
     );
     vi.stubGlobal("chrome", {
       runtime: {
-        getManifest: () => ({
-          oauth2: { client_id: "client-id.apps.googleusercontent.com" },
-        }),
+        getManifest: () => ({}),
       },
       identity: {
-        getRedirectURL: () =>
-          "https://onlkblmignmbeaogocmhgkiecmdlihci.chromiumapp.org/",
+        getRedirectURL: (path?: string) =>
+          `https://onlkblmignmbeaogocmhgkiecmdlihci.chromiumapp.org/${path ?? ""}`,
         launchWebAuthFlow,
       },
       storage: {

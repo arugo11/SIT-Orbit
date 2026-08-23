@@ -80,7 +80,7 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
 
 ### Chrome権限と管理認証
 
-通常のAgent会話は設定なしで実行できる。Productionでは固定Azure Agent APIを使用し、Chrome IdentityでSITアカウントのGoogle ID tokenを取得して`POST /v1/auth/session`へ交換する。Google ID tokenとOAuth tokenは認証交換以外へ渡さず、交換後の短命なsession tokenだけをメモリと`chrome.storage.session`に保持する。ローカルのAgent APIは開発時に明示的な環境変数を設定した場合だけ利用する。
+通常のAgent会話は設定なしで実行できる。Productionでは固定Azure Agent APIを使用し、Chrome Identityの`launchWebAuthFlow`でSITアカウントのGoogle ID tokenを取得して`POST /v1/auth/session`へ交換する。Agent用Google OAuth clientはWeb application型とし、`https://<extension-id>.chromiumapp.org/agent-auth`をAuthorized redirect URIへ完全一致で登録する。Google ID tokenとOAuth tokenは認証交換以外へ渡さず、交換後の短命なsession tokenだけをメモリと`chrome.storage.session`に保持する。ローカルのAgent APIは開発時に明示的な環境変数を設定した場合だけ利用する。
 
 拡張機能の権限は、ScombZ、Connector、公開Web読取、Agent API、認証交換を含む。全サイトhost permissionはインストールまたは更新時のChrome権限確認で一度だけ扱い、Chat中に読み取り許可を表示しない。
 
@@ -109,7 +109,7 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
 
 Side Panelのパスは、ScombZのタブを検出したService Workerが`sidePanel.setOptions()`へ渡す。全サイト共通の`default_path`は宣言しない。
 
-`identity`はSITアカウントの認証交換とConnector固有のOAuthに使用し、`storage`はsession tokenとGoogle Driveの選択メタデータをブラウザのセッション中だけ保持するために使用する。
+`identity`はSITアカウントの認証交換とConnector固有のOAuthに使用する。AgentのWeb application clientと、Calendarの`getAuthToken`で使うChrome Extension clientは分離する。`storage`はsession tokenとGoogle Driveの選択メタデータをブラウザのセッション中だけ保持するために使用する。
 
 `debugger`、`cookies`、`history`、`webRequest`、`browsingData`は使用しない。`chrome.permissions.request`は使用せず、host permissionの追加要求をChatへ持ち込まない。
 
@@ -430,7 +430,7 @@ ExtensionのSide Panelから、利用者が明示的に接続、更新、再認�
 トークンをFastAPI、DOM、Extension storage、ログへ渡さず、予定の書き込みも行わない。OAuth失効以外の外部エンドポイントへトークンを送信しない。
 
 通常のfixture CIにはGoogle OAuth client IDを含めない。
-登録済みChrome拡張OAuth client IDは`ORBIT_GOOGLE_OAUTH_CLIENT_ID`のbuild-time設定として後から注入できるが、Calendar API有効化、同意設定、demo accountを含むProvider acceptanceが成立するまでは、実Google連携を成功済みとは扱わない。
+登録済みAgent Web application OAuth client IDは`ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID`のbuild-time設定として後から注入できる。Calendar用のChrome Extension OAuth client IDは`ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID`へ分ける。Calendar API有効化、同意設定、demo accountを含むProvider acceptanceが成立するまでは、実Google連携を成功済みとは扱わない。
 
 ### Branch 5 Google Drive選択ファイルの実装境界
 

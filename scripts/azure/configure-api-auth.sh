@@ -4,7 +4,7 @@ set -euo pipefail
 : "${ORBIT_AZURE_RESOURCE_GROUP:?Set ORBIT_AZURE_RESOURCE_GROUP to the demo resource group.}"
 : "${ORBIT_AZURE_CONTAINER_APP:?Set ORBIT_AZURE_CONTAINER_APP to the Container App name.}"
 : "${ORBIT_AZURE_API_TOKEN:?Set ORBIT_AZURE_API_TOKEN to a random demo access token.}"
-: "${ORBIT_GOOGLE_OAUTH_CLIENT_ID:?Set ORBIT_GOOGLE_OAUTH_CLIENT_ID to the public Chrome OAuth client ID.}"
+: "${ORBIT_GOOGLE_OAUTH_CLIENT_ID:?Set ORBIT_GOOGLE_OAUTH_CLIENT_ID to the public Agent Web application OAuth client ID.}"
 
 subscription_args=()
 if [[ -n "${ORBIT_AZURE_SUBSCRIPTION:-}" ]]; then

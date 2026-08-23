@@ -16,6 +16,53 @@ const outputDirectory = resolve(packageRoot, "dist");
 await rm(outputDirectory, { force: true, recursive: true });
 await mkdir(outputDirectory, { recursive: true });
 
+function parseLocalEnvValue(source, name) {
+  for (const line of source.split(/\r?\n/u)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/u);
+    if (match?.[1] !== name) {
+      continue;
+    }
+    const value = match[2] ?? "";
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      return value.slice(1, -1).trim();
+    }
+    return value.trim();
+  }
+  return undefined;
+}
+
+let localEnv = "";
+try {
+  localEnv = await readFile(resolve(packageRoot, ".env.local"), "utf8");
+} catch {
+  // Local OAuth configuration is optional for CI and fixture builds.
+}
+
+// Agent auth uses a Web application client because launchWebAuthFlow sends an
+// explicit chromiumapp.org redirect URI. Calendar's getAuthToken flow keeps a
+// separate Chrome Extension client in manifest.oauth2.
+const agentOAuthClientId =
+  process.env.ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID?.trim() ||
+  parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID");
+const legacyOAuthClientId =
+  process.env.ORBIT_GOOGLE_OAUTH_CLIENT_ID?.trim() ||
+  parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_OAUTH_CLIENT_ID");
+const extensionOAuthClientId =
+  process.env.ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID?.trim() ||
+  parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID") ||
+  legacyOAuthClientId;
+
+if (legacyOAuthClientId && !agentOAuthClientId) {
+  console.warn(
+    "Using legacy ORBIT_GOOGLE_OAUTH_CLIENT_ID only for the Calendar " +
+      "manifest client; set ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID for Agent auth.",
+  );
+}
+
 const bundleOptions = {
   bundle: true,
   format: "iife",
@@ -23,6 +70,11 @@ const bundleOptions = {
   platform: "browser",
   target: "chrome114",
   legalComments: "none",
+  define: {
+    __ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__: JSON.stringify(
+      agentOAuthClientId ?? "",
+    ),
+  },
 };
 
 await Promise.all([
@@ -76,38 +128,9 @@ const manifest = JSON.parse(
   await readFile(resolve(outputDirectory, "manifest.json"), "utf8"),
 );
 
-function parseLocalEnvValue(source, name) {
-  for (const line of source.split(/\r?\n/u)) {
-    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/u);
-    if (match?.[1] !== name) {
-      continue;
-    }
-    const value = match[2] ?? "";
-    if (
-      value.length >= 2 &&
-      ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'")))
-    ) {
-      return value.slice(1, -1).trim();
-    }
-    return value.trim();
-  }
-  return undefined;
-}
-
-let localEnv = "";
-try {
-  localEnv = await readFile(resolve(packageRoot, ".env.local"), "utf8");
-} catch {
-  // Local OAuth configuration is optional for CI and fixture builds.
-}
-
-const oauthClientId =
-  process.env.ORBIT_GOOGLE_OAUTH_CLIENT_ID?.trim() ||
-  parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_OAUTH_CLIENT_ID");
-if (oauthClientId) {
+if (extensionOAuthClientId) {
   manifest.oauth2 = {
-    client_id: oauthClientId,
+    client_id: extensionOAuthClientId,
     scopes: [
       "openid",
       "email",

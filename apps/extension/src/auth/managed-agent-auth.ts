@@ -7,6 +7,7 @@ import {
 const SESSION_STORAGE_KEY = "orbit-managed-agent-session-v1";
 const GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_SCOPES = ["openid", "email"];
+export const GOOGLE_AGENT_REDIRECT_PATH = "agent-auth";
 const REFRESH_MARGIN_MS = 30_000;
 
 interface StoredSession {
@@ -21,14 +22,24 @@ export class ManagedAgentAuthenticationError extends Error {
   }
 }
 
-function manifestClientId(): string {
+function agentClientId(): string {
+  // The production bundle always defines this symbol, including as an empty
+  // string. A missing symbol only occurs in source-level fixture tests, where
+  // the manifest fallback keeps the authentication provider easy to mount.
+  const compiledClientId =
+    typeof __ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__ === "undefined"
+      ? null
+      : typeof __ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__ === "string"
+        ? __ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__.trim()
+        : "";
   const manifest = chrome.runtime.getManifest?.() as
     | { oauth2?: { client_id?: string } }
     | undefined;
-  const clientId = manifest?.oauth2?.client_id?.trim();
+  const clientId =
+    compiledClientId ?? manifest?.oauth2?.client_id?.trim() ?? "";
   if (!clientId) {
     throw new ManagedAgentAuthenticationError(
-      "Agent認証が設定されていません。拡張機能の管理設定を確認してください。",
+      "Agent認証が設定されていません。管理者のOAuth設定を確認してください。",
     );
   }
   return clientId;
@@ -82,13 +93,18 @@ function parseIdToken(responseUrl: string, expectedState: string): string {
 }
 
 async function requestGoogleIdToken(): Promise<string> {
-  if (typeof chrome.identity?.launchWebAuthFlow !== "function") {
+  if (
+    typeof chrome.identity?.launchWebAuthFlow !== "function" ||
+    typeof chrome.identity?.getRedirectURL !== "function"
+  ) {
     throw new ManagedAgentAuthenticationError();
   }
   const state = crypto.randomUUID();
-  const redirectUri = chrome.identity.getRedirectURL("agent-auth");
+  const redirectUri = chrome.identity.getRedirectURL(
+    GOOGLE_AGENT_REDIRECT_PATH,
+  );
   const params = new URLSearchParams({
-    client_id: manifestClientId(),
+    client_id: agentClientId(),
     redirect_uri: redirectUri,
     response_type: "id_token",
     scope: GOOGLE_SCOPES.join(" "),
