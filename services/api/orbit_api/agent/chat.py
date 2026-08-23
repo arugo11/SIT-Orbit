@@ -506,6 +506,15 @@ class FixtureChatBackend:
                         lines.append(f"- 著者: {', '.join(tool_result.item.authors)}")
                     if tool_result.item.publication_year:
                         lines.append(f"- 出版年: {tool_result.item.publication_year}")
+                    for holding in tool_result.item.holdings:
+                        status = {
+                            "available": "貸出可",
+                            "unavailable": "貸出中・利用不可",
+                            "unknown": "状態不明",
+                        }[holding.status]
+                        location = holding.location or "所在不明"
+                        call_number = holding.call_number or "請求記号不明"
+                        lines.append(f"- 所蔵: {status} / {location} / 請求記号: {call_number}")
                 else:
                     lines.append("- 公開レコードの詳細は取得できませんでした。")
             elif deferred.tool_name == LIBRARY_DISCOVERY_SEARCH_TOOL_NAME:
@@ -530,6 +539,15 @@ class FixtureChatBackend:
                 lines = [heading]
                 for item in items:
                     lines.append(f"- {item.title}")
+                    for holding in item.holdings:
+                        status = {
+                            "available": "貸出可",
+                            "unavailable": "貸出中・利用不可",
+                            "unknown": "状態不明",
+                        }[holding.status]
+                        location = holding.location or "所在不明"
+                        call_number = holding.call_number or "請求記号不明"
+                        lines.append(f"  - 所蔵: {status} / {location} / 請求記号: {call_number}")
                 if not items:
                     lines.append("- 表示された公開レコードはありませんでした。")
             return ChatAgentExecution(

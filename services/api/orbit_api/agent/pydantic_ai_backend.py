@@ -1152,6 +1152,10 @@ class PydanticAIAgentBackend(AgentBackend):
                 "the returned sources. Do not call the library catalog merely to make a "
                 "recommendation; use catalog tools only when the student asks about "
                 "library holdings, availability, location, or borrowing operations. "
+                "For a specific book where the student asks where it is held or "
+                "whether it can be borrowed, search the catalog first and then use "
+                "library_item_read on the matching opaque resource_ref before "
+                "answering so that all official holdings are checked. "
                 "If public search is unavailable, say so instead of inventing books or "
                 "sources."
             ),

@@ -16,6 +16,7 @@ import {
   isMyLibraryReadResult,
   isSitrusGradeResult,
   isSyllabusSearchResult,
+  type LibraryCatalogSearchResult,
   type SyllabusSearchResult,
 } from "../api/client";
 import {
@@ -249,6 +250,12 @@ export function ChatPanel({
   >({});
   const [localCastAlumniDetails, setLocalCastAlumniDetails] = useState<
     Record<string, CastAlumniLocalSnapshot>
+  >({});
+  type LocalLibraryRecord = NonNullable<
+    LibraryCatalogSearchResult["items"]
+  >[number];
+  const [localLibraryDetails, setLocalLibraryDetails] = useState<
+    Record<string, LocalLibraryRecord[]>
   >({});
   const [libraryPreviews, setLibraryPreviews] = useState<
     Record<string, Extract<LibraryActionPreviewResponse, { status: "ready" }>>
@@ -682,6 +689,10 @@ export function ChatPanel({
       } else if (!isLibraryCatalogSearchResult(library.projection)) {
         throw new Error("OPAC検索結果を検証できませんでした。");
       } else {
+        setLocalLibraryDetails((items) => ({
+          ...items,
+          [activity.id]: library.projection.items ?? [],
+        }));
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -710,6 +721,12 @@ export function ChatPanel({
       } else if (!isLibraryItemReadResult(library.projection)) {
         throw new Error("OPAC書誌詳細を検証できませんでした。");
       } else {
+        setLocalLibraryDetails((items) => ({
+          ...items,
+          [activity.id]: library.projection.item
+            ? [library.projection.item]
+            : [],
+        }));
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -1605,6 +1622,50 @@ export function ChatPanel({
                       ) : null,
                     )}
                   </ul>
+                </details>
+              ) : null}
+              {message.role === "tool" && localLibraryDetails[message.id] ? (
+                <details className="chat-local-detail" open>
+                  <summary>確認した所蔵情報</summary>
+                  {localLibraryDetails[message.id]?.length === 0 ? (
+                    <p>該当する書誌はありません。</p>
+                  ) : (
+                    <ul>
+                      {localLibraryDetails[message.id]?.map((item) => (
+                        <li key={item.resource_ref}>
+                          <strong>{item.title}</strong>
+                          {(item.authors ?? []).length > 0 ? (
+                            <span> / {(item.authors ?? []).join("、")}</span>
+                          ) : null}
+                          <ul>
+                            {(item.holdings ?? []).map((holding) => (
+                              <li
+                                key={`${holding.campus}-${holding.location ?? "unknown"}-${holding.call_number ?? "unknown"}`}
+                              >
+                                {holding.status === "available"
+                                  ? "貸出可"
+                                  : holding.status === "unavailable"
+                                    ? "貸出中・利用不可"
+                                    : "状態不明"}
+                                {holding.location
+                                  ? ` / 所在: ${holding.location}`
+                                  : " / 所在: 不明"}
+                                {holding.call_number
+                                  ? ` / 請求記号: ${holding.call_number}`
+                                  : " / 請求記号: 不明"}
+                                {holding.due_date
+                                  ? ` / 返却予定: ${holding.due_date}`
+                                  : ""}
+                                {holding.reservation_count !== null
+                                  ? ` / 予約: ${holding.reservation_count}件`
+                                  : ""}
+                              </li>
+                            ))}
+                          </ul>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </details>
               ) : null}
               {message.role === "tool" && localCastDetails[message.id] ? (

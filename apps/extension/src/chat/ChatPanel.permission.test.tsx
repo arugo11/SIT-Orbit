@@ -93,6 +93,7 @@ async function sendMessage(
 function installReadOnlyRuntime(
   mounted: MountedSidePanel,
   kind: "library" | "browser",
+  libraryItems: Array<Record<string, unknown>> = [],
 ): ReturnType<typeof vi.fn> {
   const permissionsRequest = vi.fn(async () => true);
   Object.assign(chrome, {
@@ -112,7 +113,7 @@ function installReadOnlyRuntime(
             schema_version: "v1",
             status: "known",
             query: "図書館で本を検索して",
-            items: [],
+            items: libraryItems,
             reason_code: null,
           },
         });
@@ -177,6 +178,55 @@ describe("ChatPanel read-only execution boundary", () => {
       mounted.document.querySelector(".chat-permission-prompt"),
     ).toBeNull();
     expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
+  it("renders public OPAC holding location and loan status in the tool timeline", async () => {
+    const apiClient = createApiClient(
+      toolRequired("library_catalog_search", { query: "ロボット" }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    installReadOnlyRuntime(mounted, "library", [
+      {
+        resource_ref: "orbit-library://record/0123456789abcdef",
+        title: "ロボットテクノロジー",
+        authors: ["日本ロボット学会編"],
+        subjects: ["ロボット"],
+        isbn: null,
+        publisher: "公開出版社",
+        publication_year: 2024,
+        format: "book",
+        campus: "any",
+        url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB06629896",
+        holdings: [
+          {
+            campus: "toyosu",
+            location: "豊洲図書館 豊洲図書館",
+            call_number: "548.3/N77",
+            status: "available",
+            due_date: null,
+            reservation_count: 0,
+          },
+        ],
+        related_records: [],
+      },
+    ]);
+
+    await sendMessage(mounted, "図書館でロボットの本を探して");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+
+    expect(mounted.document.body.textContent).toContain("ロボットテクノロジー");
+    expect(mounted.document.body.textContent).toContain(
+      "豊洲図書館 豊洲図書館",
+    );
+    expect(mounted.document.body.textContent).toContain("548.3/N77");
+    expect(mounted.document.body.textContent).toContain("貸出可");
   });
 
   it("sends an ordinary greeting directly to the Agent without permission checks", async () => {

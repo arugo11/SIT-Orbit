@@ -1280,6 +1280,154 @@ describe("service worker side panel contract", () => {
     ]);
   });
 
+  it("extracts live OPAC search holdings with location and loan status", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-live-holdings-search",
+        query: "ロボットテクノロジー",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <table>
+          <tr class="result-row row-1">
+            <td><a title="Cover image of ロボットテクノロジー" href="/opc/recordID/catalog.bib/BB06629896"><img alt="Cover image"></a></td>
+            <td>
+              <div class="xc-title"><strong><a href="/opc/recordID/catalog.bib/BB06629896?hit=1&caller=xc-search">ロボットテクノロジー</a></strong></div>
+              <div class="xc-creator">日本ロボット学会編</div>
+            </td>
+          </tr>
+          <tr class="xc-availability">
+            <td class="snippet-label">所蔵情報:</td>
+            <td class="xc-availability"><span class="available"><span class="normal">貸出可</span>, 豊洲図書館　豊洲図書館, 548.3/N77</span></td>
+          </tr>
+        </table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/xc/search",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        title: string;
+        authors: string[];
+        holdings: Array<{
+          campus: string;
+          location: string | null;
+          call_number: string | null;
+          status: string;
+        }>;
+      }>;
+    };
+    expect(projection).toEqual({
+      status: "known",
+      records: [
+        expect.objectContaining({
+          title: "ロボットテクノロジー",
+          authors: ["日本ロボット学会編"],
+          holdings: [
+            expect.objectContaining({
+              campus: "toyosu",
+              location: "豊洲図書館 豊洲図書館",
+              call_number: "548.3/N77",
+              status: "available",
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
+  it("extracts every holding from the live OPAC detail table", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-live-holdings-detail",
+        query: "ロボットテクノロジー",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <div id="xc-search-full-right"><h3>ロボットテクノロジー</h3></div>
+        <dl class="mainTable">
+          <dt>責任表示</dt><dd>日本ロボット学会編</dd>
+          <dt>出版情報</dt><dd>東京 : 出版社, 2024</dd>
+        </dl>
+        <table id="detail_table"><tbody>
+          <tr class="even"><td class="locBox"><div class="loBook01">
+            <div class="bkAva"><dl><dt>状態</dt><dd>貸出可</dd></dl></div>
+            <div class="bkLoc"><dl><dt>所在</dt><dd><a href="/opc/location/toyosu">豊洲図書館　豊洲図書館</a></dd></dl></div>
+            <div class="bkCnu"><dl><dt>請求記号</dt><dd><span class="spDisInl">548.3/N77</span><span class="spDisNon"><ul><li>548.3</li><li>N77</li></ul></span></dd></dl></div>
+            <div class="bkDue"><dl><dt>返却予定日(予約数)</dt><dd>&nbsp;</dd></dl></div>
+          </div></td></tr>
+          <tr class="even"><td class="locBox"><div class="loBook01">
+            <div class="bkAva"><dl><dt>状態</dt><dd>貸出可</dd></dl></div>
+            <div class="bkLoc"><dl><dt>所在</dt><dd>大宮図書館　3階書架(C)機械・電気</dd></dl></div>
+            <div class="bkCnu"><dl><dt>請求記号</dt><dd><span class="spDisInl">548.3/N77</span></dd></dl></div>
+            <div class="bkDue"><dl><dt>返却予定日(予約数)</dt><dd>&nbsp;</dd></dl></div>
+          </div></td></tr>
+        </tbody></table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB06629896",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        holdings: Array<{
+          campus: string;
+          location: string | null;
+          call_number: string | null;
+          status: string;
+        }>;
+      }>;
+    };
+    expect(projection).toEqual({
+      status: "known",
+      records: [
+        expect.objectContaining({
+          holdings: [
+            expect.objectContaining({
+              campus: "toyosu",
+              location: "豊洲図書館 豊洲図書館",
+              call_number: "548.3/N77",
+              status: "available",
+            }),
+            expect.objectContaining({
+              campus: "omiya",
+              location: "大宮図書館 3階書架(C)機械・電気",
+              call_number: "548.3/N77",
+              status: "available",
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
   it("uses the live OPAC title and creator instead of the cover anchor", async () => {
     permissionsContains.mockResolvedValue(true);
     executeScript
