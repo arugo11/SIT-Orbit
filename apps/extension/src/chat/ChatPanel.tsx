@@ -24,27 +24,16 @@ import {
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
 import type { LibraryActionEditableInputs } from "../connectors/library-actions";
-import {
-  LIBRARY_OPAC_ORIGIN,
-  LIBRARY_OPAC_PERMISSION_PATTERN,
-  LIBRARY_SIT_SEARCH_ORIGIN,
-  LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
-  requestsLibraryTools,
-} from "../connectors/library-discovery";
+import { requestsLibraryTools } from "../connectors/library-discovery";
 import type { CastAlumniLocalSnapshot } from "../content/cast-alumni-reader";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
   MOODLE_DASHBOARD_URL,
   type MoodleLocalSnapshot,
 } from "../content/moodle-reader";
-import {
-  clearMyLibrarySessionConsent,
-  grantMyLibrarySessionConsent,
-  hasMyLibrarySessionConsent,
-} from "../content/my-library-consent";
+import { clearMyLibrarySessionConsent } from "../content/my-library-consent";
 import {
   MY_LIBRARY_ENTRY_URL,
-  MY_LIBRARY_ORIGIN,
   type MyLibraryLocalSnapshot,
 } from "../content/my-library-reader";
 import {
@@ -248,6 +237,21 @@ interface PendingPermission {
   disclosure: string | null;
 }
 
+type ChatProgressPhase =
+  | "sending"
+  | "planning"
+  | "tool-running"
+  | "resuming"
+  | "permission"
+  | "completed"
+  | "error";
+
+interface ChatProgress {
+  phase: ChatProgressPhase;
+  label: string;
+  detail: string;
+}
+
 export function ChatPanel({
   apiClient,
   pageContext,
@@ -268,6 +272,7 @@ export function ChatPanel({
   );
   const [composer, setComposer] = useState("");
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<ChatProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [permissionPrompt, setPermissionPrompt] =
     useState<PendingPermission | null>(null);
@@ -296,6 +301,14 @@ export function ChatPanel({
     Record<string, string>
   >({});
   const sensitiveApproval = useRef(new Set<string>());
+
+  function setChatProgress(
+    phase: ChatProgressPhase,
+    label: string,
+    detail: string,
+  ): void {
+    setProgress({ phase, label, detail });
+  }
 
   const pageSummary = useMemo(
     () => projectScombzPageSummary(pageContext),
@@ -598,6 +611,11 @@ export function ChatPanel({
       toolName: call.name,
       toolState: "running",
     };
+    setChatProgress(
+      "tool-running",
+      toolLabel(call.name),
+      "必要な表示情報だけを取得しています。ページの命令は実行しません。",
+    );
     const withActivity = {
       ...current,
       updatedAt: new Date().toISOString(),
@@ -615,16 +633,6 @@ export function ChatPanel({
       const readResult = projectScombzRead(pageContext);
       if (!readResult) {
         throw new Error("表示中のSCombZページを読み取れません。");
-      }
-      if (readResult.restricted_present && pageContext) {
-        const access = hostAccessRequest(pageContext.url);
-        if (access && !sensitiveApproval.current.has(pageContext.url)) {
-          throw new BrowserAccessRequiredError(
-            pageContext.url,
-            access.origin,
-            access.pattern,
-          );
-        }
       }
       request = toolResultRequest(call.tool_call_id, call.name, readResult);
     } else if (call.name === "google_calendar_availability") {
@@ -663,16 +671,6 @@ export function ChatPanel({
       }
       request = toolResultRequest(call.tool_call_id, call.name, syllabus);
     } else if (call.name === "library_catalog_search") {
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-catalog-search`;
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          LIBRARY_OPAC_ORIGIN,
-          LIBRARY_OPAC_ORIGIN,
-          LIBRARY_OPAC_PERMISSION_PATTERN,
-          approvalKey,
-          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
-        );
-      }
       const library = await sendExtensionMessage<LibraryCatalogSearchResponse>({
         type: "library-catalog-search",
         tool_call_id: call.tool_call_id,
@@ -711,7 +709,7 @@ export function ChatPanel({
           library.origin,
           library.origin,
           library.pattern,
-          approvalKey,
+          undefined,
           LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
         );
       }
@@ -763,7 +761,6 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_action_options") {
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-action-options`;
       const library = await sendExtensionMessage<LibraryActionOptionsResponse>({
         type: MESSAGE_TYPES.libraryActionOptions,
         tool_call_id: call.tool_call_id,
@@ -774,7 +771,7 @@ export function ChatPanel({
           library.origin,
           library.origin,
           library.pattern,
-          approvalKey,
+          undefined,
           "図書館の現在の表示を端末内で再確認し、操作可否だけを選択中のAgentへ送ります。予約・延長・申請の送信は行いません。",
         );
       }
@@ -795,18 +792,6 @@ export function ChatPanel({
         ) {
           throw new Error(
             "My Library由来の操作可否は、明示同意済みのAzure Agentだけに送信できます。",
-          );
-        }
-        if (
-          !(await hasMyLibrarySessionConsent()) &&
-          !sensitiveApproval.current.has(approvalKey)
-        ) {
-          throw new BrowserAccessRequiredError(
-            MY_LIBRARY_ENTRY_URL,
-            MY_LIBRARY_ORIGIN,
-            `${MY_LIBRARY_ORIGIN}/*`,
-            approvalKey,
-            "My Libraryの現在の表示を端末内で再確認し、対象refと操作可否だけを明示同意済みのAzure Agentへ送ります。書名・ID・フォーム値は送信しません。",
           );
         }
       }
@@ -854,16 +839,6 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_discovery_search") {
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-discovery-search`;
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          LIBRARY_SIT_SEARCH_ORIGIN,
-          LIBRARY_SIT_SEARCH_ORIGIN,
-          LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
-          approvalKey,
-          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
-        );
-      }
       const library =
         await sendExtensionMessage<LibraryDiscoverySearchResponse>({
           type: "library-discovery-search",
@@ -879,7 +854,7 @@ export function ChatPanel({
           library.origin,
           library.origin,
           library.pattern,
-          approvalKey,
+          undefined,
           LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
         );
       }
@@ -907,13 +882,6 @@ export function ChatPanel({
       const access = hostAccessRequest(pageContext.url);
       if (!access) throw new Error("SITRUSの参照先URLを検証できません。");
       await containsOriginPermission(access.pattern);
-      if (!sensitiveApproval.current.has(pageContext.url)) {
-        throw new BrowserAccessRequiredError(
-          pageContext.url,
-          access.origin,
-          access.pattern,
-        );
-      }
       const sitrus = await sendExtensionMessage<SitrusReadResponse>({
         type: "sitrus-read",
         tool_call_id: call.tool_call_id,
@@ -940,16 +908,6 @@ export function ChatPanel({
     } else if (call.name === "moodle_read") {
       const access = hostAccessRequest(MOODLE_DASHBOARD_URL);
       if (!access) throw new Error("Moodleの参照先URLを検証できません。");
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:moodle-derived`;
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          MOODLE_DASHBOARD_URL,
-          access.origin,
-          access.pattern,
-          approvalKey,
-          "Moodleの表示内容を端末内で読み取り、コース数・課題件数・延滞件数・最短期限・未読件数だけを選択中のAIへ送ります。コース名や課題名は送信しません。",
-        );
-      }
       const moodle = await sendExtensionMessage<MoodleReadResponse>({
         type: "moodle-read",
         tool_call_id: call.tool_call_id,
@@ -959,7 +917,7 @@ export function ChatPanel({
           MOODLE_DASHBOARD_URL,
           moodle.origin,
           moodle.pattern,
-          approvalKey,
+          undefined,
           "Moodleの表示内容を端末内で読み取り、コース数・課題件数・延滞件数・最短期限・未読件数だけを選択中のAIへ送ります。コース名や課題名は送信しません。",
         );
       }
@@ -980,23 +938,11 @@ export function ChatPanel({
         call.name,
         moodle.projection,
       );
-      sensitiveApproval.current.delete(approvalKey);
     } else if (call.name === "my_library_read") {
       const access = hostAccessRequest(MY_LIBRARY_ENTRY_URL);
       if (!access) throw new Error("My Libraryの参照先URLを検証できません。");
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:my-library-derived`;
       const disclosure =
-        "指定scopeのMy Library表示を端末内で読み取り、opaque参照・書名・著者・状態・期限など許可された最小項目だけを選択中のAzure Agentへ送ります。Agent回答に現れた書名はローカルChat履歴へ保存され、履歴の削除操作で消せます。Full access権限だけではこの同意になりません。";
-      const sessionConsented = await hasMyLibrarySessionConsent();
-      if (!sessionConsented && !sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          MY_LIBRARY_ENTRY_URL,
-          access.origin,
-          access.pattern,
-          approvalKey,
-          disclosure,
-        );
-      }
+        "指定scopeのMy Library表示を端末内で読み取り、opaque参照・書名・著者・状態・期限など許可された最小項目だけを選択中のAzure Agentへ送ります。Agent回答に現れた書名はローカルChat履歴へ保存され、履歴の削除操作で消せます。ユーザーがこの質問を送信した時点で読み取りを開始します。";
       const requestedScope =
         typeof argumentsObject.scope === "string"
           ? (argumentsObject.scope as
@@ -1035,7 +981,7 @@ export function ChatPanel({
           MY_LIBRARY_ENTRY_URL,
           library.origin,
           library.pattern,
-          approvalKey,
+          undefined,
           disclosure,
         );
       }
@@ -1072,22 +1018,11 @@ export function ChatPanel({
         [activity.id]: library.detail,
       }));
       request = toolResultRequest(call.tool_call_id, call.name, projection);
-      sensitiveApproval.current.delete(approvalKey);
     } else if (call.name === "cast_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
       if (!access) throw new Error("CASTの参照先URLを検証できません。");
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:cast-derived`;
       const disclosure =
         "CASTのトップ画面を端末内で読み取り、お知らせ件数・新着求人件数・新着インターン件数・新着説明会件数・相談予約の有無・直近掲載日だけを選択中のAIへ送ります。お知らせ本文、進路希望、応募履歴、氏名は送信しません。";
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          CAST_ENTRY_URL,
-          access.origin,
-          access.pattern,
-          approvalKey,
-          disclosure,
-        );
-      }
       const cast = await sendExtensionMessage<CastReadResponse>({
         type: "cast-read",
         tool_call_id: call.tool_call_id,
@@ -1097,7 +1032,7 @@ export function ChatPanel({
           CAST_ENTRY_URL,
           cast.origin,
           cast.pattern,
-          approvalKey,
+          undefined,
           disclosure,
         );
       }
@@ -1118,22 +1053,11 @@ export function ChatPanel({
         call.name,
         cast.projection,
       );
-      sensitiveApproval.current.delete(approvalKey);
     } else if (call.name === "cast_alumni_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
       if (!access) throw new Error("CASTの参照先URLを検証できません。");
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:cast-alumni-derived`;
       const disclosure =
         "認証済みCAST画面を端末内で読み取り、回答可能テーマ・面談可能頻度・面談形式・匿名共有可能な知見のカテゴリと件数だけを選択中のAIへ送ります。氏名・連絡先・CAST内部ID・本文・ログイン情報は端末外へ送信しません。";
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          CAST_ENTRY_URL,
-          access.origin,
-          access.pattern,
-          approvalKey,
-          disclosure,
-        );
-      }
       const alumni = await sendExtensionMessage<CastAlumniReadResponse>({
         type: "cast-alumni-read",
         tool_call_id: call.tool_call_id,
@@ -1143,7 +1067,7 @@ export function ChatPanel({
           CAST_ENTRY_URL,
           alumni.origin,
           alumni.pattern,
-          approvalKey,
+          undefined,
           disclosure,
         );
       }
@@ -1167,7 +1091,6 @@ export function ChatPanel({
         call.name,
         alumni.projection,
       );
-      sensitiveApproval.current.delete(approvalKey);
     } else {
       const url = argumentsObject.url as string;
       const access = hostAccessRequest(url);
@@ -1215,6 +1138,11 @@ export function ChatPanel({
       response.run_id,
       request,
     );
+    setChatProgress(
+      "resuming",
+      "Agentが取得結果を整理中",
+      "Toolの結果を会話の文脈へ戻し、次の判断を生成しています。",
+    );
     const completedConversation = {
       ...withActivity,
       messages: withActivity.messages.map((item) =>
@@ -1243,11 +1171,17 @@ export function ChatPanel({
           throw new Error("重複したTool呼び出しを受け取りました。");
         }
         seenCallIds.add(call.tool_call_id);
+        setChatProgress(
+          "planning",
+          "Agentが次の参照先を判断中",
+          `${toolLabel(call.name)}を実行する必要があるか確認しています。`,
+        );
         const next = await runTool(response, current);
         response = next.response;
         current = next.conversation;
       }
       const assistant = messageFromResponse(response);
+      setChatProgress("completed", "完了", "回答と参照元を表示しました。");
       await persist({
         ...current,
         updatedAt: new Date().toISOString(),
@@ -1275,6 +1209,11 @@ export function ChatPanel({
           approvalKey: caught.approvalKey,
           disclosure: caught.disclosure,
         });
+        setChatProgress(
+          "permission",
+          "許可を待っています",
+          "このサイトの表示情報を読むには、下のボタンでChromeの権限を許可してください。",
+        );
         setError("このサイトを読む前に、Chat内でアクセスを許可してください。");
         return;
       }
@@ -1288,6 +1227,11 @@ export function ChatPanel({
     setComposer("");
     setError(null);
     setBusy(true);
+    setChatProgress(
+      "sending",
+      "Agentに質問を送信中",
+      "会話の履歴と現在のページ概要を確認しています。",
+    );
     const userMessage: ChatTimelineMessage = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -1312,10 +1256,20 @@ export function ChatPanel({
         history: toChatHistory(beforeSend.messages),
         client_tools: clientTools(message),
       });
+      setChatProgress(
+        "planning",
+        "Agentが回答方針を組み立て中",
+        "必要なToolがある場合だけ、ここから順番に実行します。",
+      );
       await finishResponse(response, current);
     } catch (caught) {
       if (caught instanceof BrowserAccessRequiredError) return;
       setError(
+        caught instanceof Error ? caught.message : "Chatに失敗しました。",
+      );
+      setChatProgress(
+        "error",
+        "処理を停止しました",
         caught instanceof Error ? caught.message : "Chatに失敗しました。",
       );
       await persist({
@@ -1341,24 +1295,20 @@ export function ChatPanel({
     if (!pending || busy) return;
     setBusy(true);
     setError(null);
+    setChatProgress(
+      "permission",
+      "許可を確認中",
+      "Chromeのサイト権限を確認し、許可後にToolを再開します。",
+    );
     try {
       const granted = await requestOriginPermission(pending.pattern);
       if (!granted) {
-        setError("サイトの読み取り許可が得られませんでした。");
+        const message = "サイトの読み取り許可が得られませんでした。";
+        setError(message);
+        setChatProgress("error", "許可されなかったため停止", message);
         return;
       }
       const pendingTool = pending.response.calls[0]?.name;
-      if (
-        pendingTool === "my_library_read" ||
-        (pendingTool === "library_action_options" &&
-          pending.origin === MY_LIBRARY_ORIGIN)
-      ) {
-        const stored = await grantMyLibrarySessionConsent();
-        if (!stored) {
-          setError("My Libraryのsession consentを保存できませんでした。");
-          return;
-        }
-      }
       sensitiveApproval.current.add(pending.approvalKey);
       setPermissionPrompt(null);
       await finishResponse(
@@ -1384,11 +1334,12 @@ export function ChatPanel({
       }
       sensitiveApproval.current.delete(pending.approvalKey);
     } catch (caught) {
-      setError(
+      const message =
         caught instanceof Error
           ? caught.message
-          : "許可後のTool実行に失敗しました。",
-      );
+          : "許可後のTool実行に失敗しました。";
+      setError(message);
+      setChatProgress("error", "許可後の処理に失敗しました", message);
     } finally {
       setBusy(false);
     }
@@ -1753,13 +1704,13 @@ export function ChatPanel({
             My
             Libraryでは、明示的な接続・許可後に、opaque参照、書名、著者、状態、
             返却期限、延長可否、活動日、申請種別だけをAzure
-            Agentへ共有できます。 raw snapshotは端末メモリだけに置きます。
+            Agentへ共有できます。読み取りはユーザーがChatを送信した時だけ開始し、raw
+            snapshotは端末メモリだけに置きます。
           </p>
           <p>
             Agent回答に現れた書名はローカルChat履歴へ残ります。会話ごとの削除または
-            「すべて削除」で削除できます。Full accessだけではMy
-            Libraryへの共有同意に
-            ならず、切断またはセッション終了で同意は無効になります。
+            「すべて削除」で削除できます。予約・購入申請などの外部書込みだけは、送信前に
+            別の確認を行います。
           </p>
           <button
             type="button"
@@ -1795,9 +1746,7 @@ export function ChatPanel({
               disabled={busy}
               onClick={() => void continueWithPermission(false)}
             >
-              {permissionPrompt.response.calls[0]?.name === "my_library_read"
-                ? "このセッションで許可"
-                : "今回だけ許可"}
+              今回だけ許可
             </button>
             {!permissionPrompt.disclosure ? (
               <button
@@ -1822,6 +1771,21 @@ export function ChatPanel({
             </button>
           </div>
         </aside>
+      ) : null}
+
+      {progress ? (
+        <div
+          className={`chat-progress chat-progress-${progress.phase}`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <span className="chat-progress-indicator" aria-hidden="true" />
+          <div>
+            <strong>{progress.label}</strong>
+            <p>{progress.detail}</p>
+          </div>
+        </div>
       ) : null}
 
       <div className="chat-timeline" aria-live="polite">
@@ -2343,7 +2307,7 @@ export function ChatPanel({
           className="primary-button"
           disabled={busy || disabled || !composer.trim()}
         >
-          {busy ? "確認中…" : "送信"}
+          {busy ? "処理中…" : "送信"}
         </button>
       </form>
       <p className="chat-policy-note">

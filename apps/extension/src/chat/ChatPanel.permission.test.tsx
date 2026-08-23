@@ -98,6 +98,7 @@ function installKnownLibraryRuntime(
 async function sendMessage(
   mounted: MountedSidePanel,
   message: string,
+  waitForState: "permission" | "settled" | "none" = "permission",
 ): Promise<void> {
   const textarea = mounted.document.querySelector<HTMLTextAreaElement>(
     'textarea[aria-label="Chatメッセージ"]',
@@ -141,9 +142,18 @@ async function sendMessage(
       new window.Event("submit", { bubbles: true, cancelable: true }),
     );
   });
-  await waitFor(
-    () => mounted.document.querySelector(".chat-permission-prompt") !== null,
-  );
+  if (waitForState === "permission") {
+    await waitFor(
+      () => mounted.document.querySelector(".chat-permission-prompt") !== null,
+    );
+  } else if (waitForState === "settled") {
+    await waitFor(
+      () =>
+        mounted.document.querySelector<HTMLTextAreaElement>(
+          'textarea[aria-label="Chatメッセージ"]',
+        )?.disabled === false,
+    );
+  }
 }
 
 describe("ChatPanel library permission disclosure", () => {
@@ -237,7 +247,7 @@ describe("ChatPanel library permission disclosure", () => {
       true,
     ],
   ] as const)(
-    "requires run-scoped library approval before runtime known result (%s)",
+    "does not add an in-chat approval for read-only library search (%s)",
     async (caseName, toolName, message, fullAccess) => {
       const runId = `known-${caseName}`;
       const toolCallId = `${runId}-call`;
@@ -268,18 +278,15 @@ describe("ChatPanel library permission disclosure", () => {
               "aria-pressed",
             ) === "true",
         );
+        permissions.request.mockClear();
       }
       expect(panel.chromeRuntime.sendMessage).not.toHaveBeenCalled();
 
-      await sendMessage(panel, message);
-      const prompt = panel.document.querySelector(".chat-permission-prompt");
-      expect(prompt?.textContent).toContain(LIBRARY_DISCLOSURE);
-      expect(panel.chromeRuntime.sendMessage).not.toHaveBeenCalled();
-
-      await click(buttonByName(panel.document, "今回だけ許可"));
-      await waitFor(
-        () => panel.chromeRuntime.sendMessage.mock.calls.length === 1,
-      );
+      await sendMessage(panel, message, "settled");
+      expect(
+        panel.document.querySelector(".chat-permission-prompt"),
+      ).toBeNull();
+      expect(panel.chromeRuntime.sendMessage).toHaveBeenCalledTimes(1);
       expect(panel.chromeRuntime.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: toolName.replaceAll("_", "-"),
@@ -287,13 +294,7 @@ describe("ChatPanel library permission disclosure", () => {
         }),
         expect.any(Function),
       );
-      expect(permissions.request).toHaveBeenLastCalledWith({
-        origins: [
-          toolName === "library_catalog_search"
-            ? "https://library.shibaura-it.ac.jp/*"
-            : "https://slib.shibaura-it.ac.jp/*",
-        ],
-      });
+      expect(permissions.request).not.toHaveBeenCalled();
       await waitFor(
         () => apiClient.submitChatToolResult.mock.calls.length === 1,
       );
@@ -325,5 +326,57 @@ describe("ChatPanel library permission disclosure", () => {
 
     await click(buttonByName(mounted.document, "拒否"));
     expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
+  });
+
+  it("shows a non-CoT progress status while the Agent request is pending", async () => {
+    let resolveStart: ((value: ChatRunResponse) => void) | undefined;
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "progress-completed",
+        content_markdown: "完了",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    apiClient.startChat.mockImplementation(
+      () =>
+        new Promise<ChatRunResponse>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "図書館で借りている本を確認して", "none");
+    await waitFor(() =>
+      (
+        mounted?.document.querySelector(".chat-progress")?.textContent ?? ""
+      ).includes("Agentに質問を送信中"),
+    );
+    expect(
+      mounted.document.querySelector(".chat-progress")?.textContent,
+    ).not.toContain("思考");
+
+    resolveStart?.({
+      status: "completed",
+      message: {
+        message_id: "progress-completed",
+        content_markdown: "完了",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    await waitFor(() =>
+      (
+        mounted?.document.querySelector(".chat-progress")?.textContent ?? ""
+      ).includes("完了"),
+    );
   });
 });

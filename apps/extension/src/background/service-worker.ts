@@ -4802,7 +4802,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void handleMyLibraryRead(message)
       .then(sendResponse)
       .catch(() =>
-        sendResponse({ status: "unavailable", reason_code: "my_library_read_failed" }),
+        sendResponse({
+          status: "unavailable",
+          reason_code: "my_library_read_failed",
+        }),
       );
     return true;
   }

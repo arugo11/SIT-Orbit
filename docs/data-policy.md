@@ -43,7 +43,7 @@ OpenAIへ送信できるのは`synthetic`と`public`だけである。
 
 Calendarの予定名、ID、参加者、場所、説明、元レスポンス、SCombZのHTML、Cookie、パスワード、ブラウザtokenは送信しない。Web本文はユーザーが明示したrunの間だけ使い、rawページはrun終了時に破棄する。個人データを広く許可するものではなく、これらの固定prefixとサーバー生成のEvidence IDをruntimeで検証する。
 
-My Libraryだけは、接続設定で利用者が明示的にsession consentを与えた場合に限り、上記の最小item（タイトル等）をAzure Agentへ送れる狭い例外とする。これは一般のpersonalデータ規則を解除せず、OpenAI/W&Bや別Providerへの送信、consentなしの送信を許可しない。session consentは`chrome.storage.session`にフラグだけを置き、OAuth/SSO詳細やraw snapshotは保持しない。
+My Libraryだけは、利用者が個人の貸出・予約などを尋ねるChatを明示的に送信した場合に限り、上記の最小item（タイトル等）をAzure Agentへ送れる狭い例外とする。これは一般のpersonalデータ規則を解除せず、OpenAI/W&Bや別Providerへの送信、Chat送信外の取得を許可しない。OAuth/SSO詳細やraw snapshotは保持しない。
 
 Chat中心化branchでは、明示的なChat送信とアクセス許可を条件に、SCombZの構造化表示情報（`orbit-scombz://read/<opaque>`）、公式シラバス検索の公開結果（`orbit-syllabus://search/<opaque>`）、許可済みURLから抽出した表示本文とリンク（`orbit-browser://read/<opaque>`）も扱う。成績、出欠、個人評価の値は、SITRUS専用のローカル読取Toolを除きSchemaに含めない。
 
@@ -88,7 +88,7 @@ ScombZへのログイン状態を、Google Drive、Google Calendar、Microsoft G
 
 ### Branch 1 公開図書館ディスカバリー
 
-`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`は、利用者が現在のChatターンで図書館利用を明示的に要求した場合だけ広告し、公開されたOPACまたは公式SIT Searchの表示DOMを読む。必要なoptional host permissionがなくても、この明示要求に限ってToolを広告する。AgentがToolを選んだ後、読み取り前にChat内でサイト単位の許可を求め、拒否された場合は実行しない。OPACの検索・レコード・新着図書・貸出ランキング、およびSIT Searchのフォームと結果リンクは、確認済みの公式origin/pathに限定する。フォーム・DOM・origin・pathの不一致、ログイン画面、エラー、availabilityの未解決は`unavailable`として扱う。
+`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`は、利用者が現在のChatターンで図書館利用を明示的に要求した場合だけ広告し、公開されたOPACまたは公式SIT Searchの表示DOMを読む。必要なoptional host permissionがなくても、この明示要求に限ってToolを広告する。未許可originの場合だけChromeのサイト権限を求め、権限取得後に追加のChat承認は挟まない。OPACの検索・レコード・新着図書・貸出ランキング、およびSIT Searchのフォームと結果リンクは、確認済みの公式origin/pathに限定する。フォーム・DOM・origin・pathの不一致、ログイン画面、エラー、availabilityの未解決は`unavailable`として扱う。
 
 `library_action_options(resource_ref)`は、短命Service Worker mapで解決できたopaque refだけを対象に、公式ページを非アクティブ一時タブで再読するread-only Toolである。結果は8つのaction type、`available`、構造化`reason_code`、`required_inputs`、および公開／個人の`data_classification`だけをAPIへ渡す。元のmaterial ID、cookie、token、CSRF、raw HTML、推測URLはruntime message、IndexedDB、ログ、FastAPIへ渡さない。個人由来のoptions evidenceはMy Libraryと同じくAzure Agentかつ`ORBIT_OBSERVABILITY=off`に限定する。
 
@@ -108,19 +108,19 @@ Chatは利用者が明示的に送信した一つの発言を起点にする。�
 
 Side Panelと全画面ワークスペースで共有するChat履歴は、拡張機能originのIndexedDBへ保存する。保存するのは発言、回答、引用メタデータ、ActionProposalと承認状態だけである。raw HTML、フォーム入力値、Cookie、OAuth token、Toolの生レスポンス、PydanticAIのmessage historyは保存しない。履歴はFastAPIやChrome Syncへ送信せず、利用者の操作で会話単位または全件を削除できる。
 
-Composerのアクセスモードは`Ask every time`を既定とし、未許可ホストの読み取り前に今回のみ許可・サイト許可・拒否へ接続する。Chrome optional host permissionはユーザー操作の中でだけ要求する。`Full access`もread-onlyの範囲に限り、提出・送信・更新・削除・ダウンロード・アップロードは常にActionProposal、公式preview、別UIの本人確認を要求する。成績、出欠、個人評価を含むページは、許可済みサイトであっても`Ask every time`では毎回確認する。blocklistはFull accessより優先する。
+Composerのアクセスモードは`Ask every time`を既定とし、未許可ホストの読み取り前に今回のみ許可・サイト許可・拒否へ接続する。Chrome optional host permissionはユーザー操作の中でだけ要求する。許可済みのread-only Connectorは、Chat送信そのものを実行意思として扱い、追加の確認を表示しない。`Full access`もread-onlyの範囲に限り、提出・送信・更新・削除・ダウンロード・アップロードは常にActionProposal、公式preview、別UIの本人確認を要求する。blocklistはFull accessより優先する。
 
 Chat APIへ送るTool結果は、Toolごとの厳密な最小Schemaだけにする。SCombZは表示項目の構造化値、Calendarは空き時間の区間と分数、シラバスは公式公開結果、Browser Readerは本文30,000文字とリンク50件までであり、予定名・ID・参加者・説明、SCombZのHTML、Cookie、パスワード、第三者のフォーム入力、OAuth tokenは表現できない。ページ中の命令文はTool命令として実行せず引用データとして扱う。Tool待ちのrunはAPIプロセス内に600秒だけ保持し、完了・失敗・期限切れで削除する。
 
 SITRUSの成績は保存・ダウンロードせず、利用者が実際に開いている画面を参照する。優先経路は、SITRUS画面から確認できた`/SITRUS/login/ShutokuTaniShukei.html`のHTML表である。Service Workerは表示中の表の「判定・評価・科目名」だけをメモリ上で抽出し、科目コードや単位数が表にない場合は`null`のまま扱い、値を推測しない。成績通知書の`/SITRUS/login/SeisekiTsutiSho.html`は、HTML表が利用できない場合のメモリ内PDF.jsテキスト層フォールバックであり、PDF本体やBase64を保存・返却しない。いずれも氏名、学籍番号、予定情報、Cookie、tokenは返さない。この個人データは現在のプロジェクト契約上、外部LLM、W&B、共有ログへ送信しない。`ORBIT_AGENT_BACKEND=fixture`のローカルChat/toolだけで表示し、外部Provider実行時はSITRUS Toolを広告しない。ページが閉じた、別URLへ遷移した、表やPDF.jsを利用できない場合は成功扱いにせず、利用者へ再表示を案内する。
 
-Moodleは、利用者が`moodle_read`を明示実行した場合だけ、確認済みの`/moodle/my/`を参照する。コース名と活動・課題名を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`MoodleReadResult`のコース数、直近項目数、延滞数、最短期限、未読通知数だけである。送信内容を確認画面へ列挙し、`Full access`でもrunごとの確認を省略しない。氏名、コースID、教材本文、提出内容、private file、SSO token、query、fragmentにはSchema上の表現を与えない。ライブMoodle Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
+Moodleは、利用者がChatを明示送信したときだけ、確認済みの`/moodle/my/`を参照する。コース名と活動・課題名を含む詳細Snapshotは拡張機能のメモリ内でタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`MoodleReadResult`の派生値だけであり、許可済みoriginのread-only取得に追加のChat確認は表示しない。Chromeの未許可originだけはユーザー操作によるサイト権限を求める。氏名、コースID、教材本文、提出内容、private file、SSO token、query、fragmentにはSchema上の表現を与えない。ライブMoodle Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
 
-My Libraryは、接続設定で利用者が明示的に接続・許可した後だけ、`my_library_read`の指定scope（`current_loans`=menu 5、`reservations`=6、`loan_history`=7、`purchase_requests`=3、`interlibrary_requests`=2）を正規status pathから参照する。貸出・予約は可視の`#lendList`・`#reservationList`、その他は表示tableの見出しを検証し、hidden要素やinputのvalueを読まない。origin、path、構造が不一致、または非空行を完全に解析できない場合は成功扱いにしない。書名、著者、返却期限、延長可否、状態、活動日、申請種別を含むraw snapshotはReactのメモリだけに保持し、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存しない。Agentへ送るのは利用者の最初の明示的接続で許可された場合だけで、opaqueな`resource_ref`、表示されたタイトル等の最小item（最大20件）、`total_count`、`next_offset`、および後方互換の集計に限る。scope外の未読集計は`null`とし、itemが空または集計だけの場合を含む全My Library結果の送信先をAzure Agentだけに限定する。元のmaterial/request ID、請求記号、氏名、学籍番号、メールアドレス、SSO URL/token/query/fragment、フォーム値、購入理由、連絡事項、整理番号は結果・API Schema・Chat historyへ含めない。表示セルから取得した元IDはService Workerの短命なメモリ対応表だけに保持し、IDが表示されない場合はactionを推測せず、opaque refをaction不能として扱う。opaque化の衝突や再起動後はfail closedとする。
+My Libraryは、接続設定で利用者が明示的に接続した後、Chat送信時に限り`my_library_read`の指定scope（`current_loans`=menu 5、`reservations`=6、`loan_history`=7、`purchase_requests`=3、`interlibrary_requests`=2）を正規status pathから参照する。貸出・予約は可視の`#lendList`・`#reservationList`、その他は表示tableの見出しを検証し、hidden要素やinputのvalueを読まない。origin、path、構造が不一致、または非空行を完全に解析できない場合は成功扱いにしない。書名、著者、返却期限、延長可否、状態、活動日、申請種別を含むraw snapshotはReactのメモリだけに保持し、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存しない。Azure Agentへ送るのは、明示した質問に必要なopaqueな`resource_ref`、最小item（最大20件）、`total_count`、`next_offset`、および後方互換の集計だけで、read-only取得に会話ごとの追加確認は表示しない。scope外の未読集計は`null`とする。元のmaterial/request ID、請求記号、氏名、学籍番号、メールアドレス、SSO URL/token/query/fragment、フォーム値、購入理由、連絡事項、整理番号は結果・API Schema・Chat historyへ含めない。表示セルから取得した元IDはService Workerの短命なメモリ対応表だけに保持し、IDが表示されない場合はactionを推測せず、opaque refをaction不能として扱う。opaque化の衝突や再起動後はfail closedとする。
 
-接続後は会話ごとの再確認を行わないが、`chrome.storage.session`にはAIへタイトル等を共有するsession consentフラグだけを保存する。Full access権限はこの同意の代替ではない。Agent回答に現れた書名等は通常のローカルChat履歴として保存され、接続設定Drawerに保存項目と会話単位・全件削除の方法を表示する。切断またはセッション終了でconsentを無効化し、ライブMy Library Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
+接続後は会話ごとの追加同意を要求しない。Agent回答に現れた書名等は通常のローカルChat履歴として保存され、接続設定Drawerに保存項目と会話単位・全件削除の方法を表示する。切断またはセッション終了で接続状態を無効化し、ライブMy Library Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。予約、購入希望、延長、取寄せなど外部状態を変更する操作だけは、ActionProposalと公式previewを経た明示確認を必須とする。
 
-CASTは、利用者が`cast_read`を明示実行した場合だけ、正規入口から`/career/top/student`を参照する。お知らせ件名・掲載日を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`CastReadResult`のお知らせ件数、新着求人・インターン・会社説明会件数、相談予約の有無、直近掲載日だけである。`Full access`でもrunごとに送信確認を行い、進路希望、自己PR、応募履歴、氏名、前回ログイン、個別企業への提出内容を結果へ含めない。ライブCAST Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
+CASTは、利用者がChatを明示送信したときだけ、正規入口から`/career/top/student`を参照する。お知らせ件名・掲載日を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`CastReadResult`の派生値だけであり、許可済みoriginのread-only取得に追加のChat確認は表示しない。Chromeの未許可originだけはユーザー操作によるサイト権限を求める。進路希望、自己PR、応募履歴、氏名、前回ログイン、個別企業への提出内容を結果へ含めない。ライブCAST Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
 
 求人・インターン検索は、実ログイン環境で確認した求人検索結果`/career/job_offer_search/search`とインターン検索`/career/internship_search`だけを対象にする。カードの詳細は端末内へ投影し、モデルへ送る値は`CastOpportunityAgentProjection`の件数、状態別件数、最短締切だけに限定する。企業名、仕事内容、企業コード、求人番号、応募方法、添付、raw HTML、フォーム値を外部payloadへ含めない。未確認path、query/fragment付きURL、404、未検索フォーム、ログイン画面、構造不一致は`unavailable`として扱い、空データの成功や推測URLへのfallbackを行わない。
 

@@ -259,15 +259,15 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 ### SIT Moodleダッシュボードの参照
 
-`moodle_read`は、確認済みの正規origin `moodle.sic.shibaura-it.ac.jp`と`/moodle/my/`だけを対象にする。利用者がChatまたは接続設定から明示的に実行した場合だけ、既に開かれているダッシュボードをIsolated Worldで読み取る。未認証時は`/moodle/login/index.php`を開くが、資格情報の入力や保存は行わない。未知のpath、404、ログイン画面、構造不一致を空データの成功として扱わない。
+`moodle_read`は、確認済みの正規origin `moodle.sic.shibaura-it.ac.jp`と`/moodle/my/`だけを対象にする。利用者がChatを明示送信した場合だけ、既に開かれているダッシュボードをIsolated Worldで読み取る。未認証時は`/moodle/login/index.php`を開くが、資格情報の入力や保存は行わない。未知のpath、404、ログイン画面、構造不一致を空データの成功として扱わない。
 
-コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。送信前には、Full accessでもrunごとに確認し、Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
+コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。許可済みoriginのread-only取得に会話ごとの追加確認は行わず、未許可originだけChromeのサイト権限を求める。Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
 
-`my_library_read`は、利用者が接続設定で明示的に接続・許可した後、確認済みの正規入口`library.shibaura-it.ac.jp/portal/portal/selectLogin/?lang=ja`から、指定された一つのscopeだけを読む。scopeは`current_loans`（menu ID 5）、`reservations`（6）、`loan_history`（7）、`purchase_requests`（3）、`interlibrary_requests`（2）であり、その他のmenu IDやURLを推測しない。status pathは確認済みの`/portal/admin/selectMenu/doSelectPublicUseMainMenu`だけとする。貸出・予約はそれぞれ可視の`#lendList`・`#reservationList`、履歴・購入・ILLは表示されたtable見出しを検証して読む。hidden要素やinputのvalueは読まず、origin・path・table構造・見出しが一致しない場合や、非空行を一件でも解析できない場合はfail closedで`unavailable`を返す。資格情報の入力、貸出延長、予約取消、購入・ILL申請は行わない。
+`my_library_read`は、利用者が接続設定で明示的に接続した後、Chat送信時に限り、確認済みの正規入口`library.shibaura-it.ac.jp/portal/portal/selectLogin/?lang=ja`から、指定された一つのscopeだけを読む。scopeは`current_loans`（menu ID 5）、`reservations`（6）、`loan_history`（7）、`purchase_requests`（3）、`interlibrary_requests`（2）であり、その他のmenu IDやURLを推測しない。status pathは確認済みの`/portal/admin/selectMenu/doSelectPublicUseMainMenu`だけとする。貸出・予約はそれぞれ可視の`#lendList`・`#reservationList`、履歴・購入・ILLは表示されたtable見出しを検証して読む。hidden要素やinputのvalueは読まず、origin・path・table構造・見出しが一致しない場合や、非空行を一件でも解析できない場合はfail closedで`unavailable`を返す。資格情報の入力、貸出延長、予約取消、購入・ILL申請は行わない。
 
 各要求は`scope`、任意の`query`（最大200文字）、`offset`（0〜1000）、`limit`（1〜20）を持ち、DOM全件を拡張機能内で検索・ページングしてから最大20件だけを返す。`MyLibraryReadResult`のitemはopaqueな`resource_ref`、表示された書名・著者・状態・返却期限・延長可否・活動日・申請種別だけで、`total_count`と`next_offset`を添える。scope外で読んでいない集計値は0ではなく`null`にする。従来の貸出・予約集計shapeは後方互換のため残す。資料ID、請求記号、氏名、学籍番号、メールアドレス、SSO URLのtoken/query/fragment、フォーム値、購入理由、連絡事項、整理番号にはAPI Schema上の表現を与えない。表示セルから取得した元のmaterial/request IDはService Workerの短命なメモリ対応表にだけ保持し、hidden/inputの値は読まない。`createLibraryResourceRef`相当のopaque化で衝突を検出した場合、またはIDが表示されない場合はactionを推測せずfail closedし、再起動後も解決しない。
 
-接続後は会話ごとの再確認を行わず、最初の明示的な接続・許可時だけ`chrome.storage.session`へAIへのタイトル等共有を許可するsession consentフラグを保存する。Full accessだけではこの同意を代用しない。タイトル等の回答に現れた項目は拡張機能originのローカルChat履歴へ保存され、利用者が会話単位または全件で削除できることを接続設定Drawerに表示する。raw snapshotはReactのメモリだけに置き、IndexedDB・`chrome.storage`・API・W&Bへ保存しない。切断またはChromeセッション終了時にconsentを無効化する。
+接続後は会話ごとの追加確認を行わない。タイトル等の回答に現れた項目は拡張機能originのローカルChat履歴へ保存され、利用者が会話単位または全件で削除できることを接続設定Drawerに表示する。raw snapshotはReactのメモリだけに置き、IndexedDB・`chrome.storage`・API・W&Bへ保存しない。切断またはChromeセッション終了時に接続状態を無効化する。予約、購入希望、延長、取寄せなど外部状態を変更する操作だけはActionProposal、公式preview、明示確認を経る。
 
 ### CASTトップ画面の参照
 

@@ -237,7 +237,7 @@ describe("ChatPanel My Library consent and history boundary", () => {
     });
   }
 
-  it("does not treat Full access as My Library sharing consent", async () => {
+  it("does not add a second consent prompt for a read-only My Library request", async () => {
     const apiClient = createApiClient();
     mounted = await mountSidePanel(() => (
       <ChatPanel
@@ -251,6 +251,24 @@ describe("ChatPanel My Library consent and history boundary", () => {
     const panel = mounted;
     if (!panel) throw new Error("ChatPanel did not mount.");
 
+    panel.chromeRuntime.sendMessage.mockImplementation(
+      (message: unknown, callback?: (response: unknown) => void) => {
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: string }).type === "my-library-read"
+        ) {
+          callback?.({
+            status: "known",
+            projection,
+            detail: localDetail,
+          });
+          return;
+        }
+        callback?.({ ok: true });
+      },
+    );
+
     await click(buttonByName(panel.document, "Full access"));
     await waitFor(
       () =>
@@ -261,17 +279,9 @@ describe("ChatPanel My Library consent and history boundary", () => {
     expect(sessionValues).toEqual({});
 
     await submitMessage(panel, "購入依頼の状況を確認して");
-    await waitFor(
-      () => panel.document.querySelector(".chat-permission-prompt") !== null,
-    );
-    expect(
-      panel.document.querySelector(".chat-permission-prompt")?.textContent,
-    ).toContain("Full access権限だけでは");
-    expect(buttonByName(panel.document, "このセッションで許可")).toBeTruthy();
-    expect(
-      panel.document.querySelector(".chat-permission-prompt")?.textContent,
-    ).not.toContain("今回だけ許可");
-    expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+    expect(panel.document.querySelector(".chat-permission-prompt")).toBeNull();
+    expect(apiClient.submitChatToolResult).toHaveBeenCalledTimes(1);
   });
 
   it("keeps page-only fields out of the Agent request, rendered Chat, and history storage", async () => {

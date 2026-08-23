@@ -778,6 +778,91 @@ textarea {
   background: #fff8e7;
 }
 
+.chat-progress {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 2px 0;
+  border: 1px solid #d6e0e8;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #f4f8fb;
+  color: #385366;
+  font-size: 12px;
+}
+
+.chat-progress strong {
+  display: block;
+  color: #28485c;
+  font-size: 12px;
+}
+
+.chat-progress p {
+  margin: 3px 0 0;
+  color: #6a7b87;
+  font-size: 11px;
+}
+
+.chat-progress-indicator {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  margin-top: 4px;
+  border-radius: 50%;
+  background: #3d7aa7;
+  box-shadow: 0 0 0 4px rgb(61 122 167 / 12%);
+}
+
+.chat-progress-sending .chat-progress-indicator,
+.chat-progress-planning .chat-progress-indicator,
+.chat-progress-tool-running .chat-progress-indicator,
+.chat-progress-resuming .chat-progress-indicator {
+  animation: chat-progress-pulse 1.3s ease-in-out infinite;
+}
+
+.chat-progress-completed {
+  border-color: #c9dfd2;
+  background: #f2faf5;
+}
+
+.chat-progress-completed .chat-progress-indicator {
+  background: #2b8a55;
+  box-shadow: 0 0 0 4px rgb(43 138 85 / 12%);
+}
+
+.chat-progress-permission {
+  border-color: #e4ad47;
+  background: #fff8e7;
+}
+
+.chat-progress-permission .chat-progress-indicator {
+  background: #c27c13;
+  box-shadow: 0 0 0 4px rgb(194 124 19 / 12%);
+}
+
+.chat-progress-error {
+  border-color: #e4b3b3;
+  background: #fff5f5;
+}
+
+.chat-progress-error .chat-progress-indicator {
+  background: #b34646;
+  box-shadow: 0 0 0 4px rgb(179 70 70 / 12%);
+}
+
+@keyframes chat-progress-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 .chat-access-row legend {
   padding: 0;
   color: #53616d;
