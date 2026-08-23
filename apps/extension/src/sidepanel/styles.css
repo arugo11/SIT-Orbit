@@ -1017,6 +1017,41 @@ textarea {
   padding-left: 18px;
 }
 
+.library-holding-list {
+  display: grid;
+  gap: 6px;
+}
+
+.library-floor-map-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.library-floor-map {
+  display: grid;
+  gap: 4px;
+  max-width: 220px;
+}
+
+.library-floor-map img {
+  display: block;
+  width: 220px;
+  max-height: 150px;
+  border: 1px solid #dce5eb;
+  border-radius: 6px;
+  object-fit: contain;
+  background: #fff;
+}
+
+.library-floor-map a {
+  color: #315f88;
+  font-size: 11px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .chat-proposal {
   display: grid;
   gap: 6px;

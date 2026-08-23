@@ -225,8 +225,20 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(mounted.document.body.textContent).toContain(
       "豊洲図書館 豊洲図書館",
     );
+    expect(mounted.document.body.textContent).toContain("配架場所:");
     expect(mounted.document.body.textContent).toContain("548.3/N77");
     expect(mounted.document.body.textContent).toContain("貸出可");
+
+    const mapImage = mounted.document.querySelector<HTMLImageElement>(
+      'img[alt="豊洲図書館フロアマップ"]',
+    );
+    expect(mapImage?.getAttribute("src")).toBe(
+      "https://lib.shibaura-it.ac.jp/files/images/toyosu_room_map_2607.png",
+    );
+    expect(mapImage).not.toBeNull();
+    expect(mapImage?.closest("a")?.getAttribute("aria-label")).toBe(
+      "豊洲図書館フロアマップの画像を原寸で開く",
+    );
   });
 
   it("sends an ordinary greeting directly to the Agent without permission checks", async () => {

@@ -26,6 +26,10 @@ import {
 } from "../connectors/google-calendar";
 import type { LibraryActionEditableInputs } from "../connectors/library-actions";
 import { requestsLibraryTools } from "../connectors/library-discovery";
+import {
+  type LibraryFloorMap,
+  uniqueLibraryFloorMaps,
+} from "../connectors/library-floor-maps";
 import type { CastAlumniLocalSnapshot } from "../content/cast-alumni-reader";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
@@ -124,6 +128,45 @@ function toolLabel(name: string): string {
     default:
       return "情報を確認中";
   }
+}
+
+function libraryCampusLabel(campus: string): string {
+  if (campus === "toyosu") return "豊洲図書館";
+  if (campus === "omiya") return "大宮図書館";
+  return "所蔵館不明";
+}
+
+function LibraryFloorMapPreview({ map }: { map: LibraryFloorMap }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  return (
+    <div className="library-floor-map">
+      {map.image_url && !imageFailed ? (
+        <a
+          href={map.image_url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`${map.label}の画像を原寸で開く`}
+        >
+          <img
+            src={map.image_url}
+            alt={map.label}
+            loading="lazy"
+            decoding="async"
+            referrerPolicy="no-referrer"
+            onError={() => setImageFailed(true)}
+          />
+        </a>
+      ) : null}
+      <a
+        href={map.page_url}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`${map.label}を公式サイトで開く`}
+      >
+        {imageFailed ? "公式フロアマップを開く" : `${map.label}を開く`}
+      </a>
+    </div>
+  );
 }
 
 function evidenceText(proposal: ActionProposal | null | undefined): string[] {
@@ -1631,39 +1674,56 @@ export function ChatPanel({
                     <p>該当する書誌はありません。</p>
                   ) : (
                     <ul>
-                      {localLibraryDetails[message.id]?.map((item) => (
-                        <li key={item.resource_ref}>
-                          <strong>{item.title}</strong>
-                          {(item.authors ?? []).length > 0 ? (
-                            <span> / {(item.authors ?? []).join("、")}</span>
-                          ) : null}
-                          <ul>
-                            {(item.holdings ?? []).map((holding) => (
-                              <li
-                                key={`${holding.campus}-${holding.location ?? "unknown"}-${holding.call_number ?? "unknown"}`}
-                              >
-                                {holding.status === "available"
-                                  ? "貸出可"
-                                  : holding.status === "unavailable"
-                                    ? "貸出中・利用不可"
-                                    : "状態不明"}
-                                {holding.location
-                                  ? ` / 所在: ${holding.location}`
-                                  : " / 所在: 不明"}
-                                {holding.call_number
-                                  ? ` / 請求記号: ${holding.call_number}`
-                                  : " / 請求記号: 不明"}
-                                {holding.due_date
-                                  ? ` / 返却予定: ${holding.due_date}`
-                                  : ""}
-                                {holding.reservation_count !== null
-                                  ? ` / 予約: ${holding.reservation_count}件`
-                                  : ""}
-                              </li>
-                            ))}
-                          </ul>
-                        </li>
-                      ))}
+                      {localLibraryDetails[message.id]?.map((item) => {
+                        const holdings = item.holdings ?? [];
+                        const floorMaps = uniqueLibraryFloorMaps(holdings);
+                        return (
+                          <li key={item.resource_ref}>
+                            <strong>{item.title}</strong>
+                            {(item.authors ?? []).length > 0 ? (
+                              <span> / {(item.authors ?? []).join("、")}</span>
+                            ) : null}
+                            <ul className="library-holding-list">
+                              {holdings.map((holding) => (
+                                <li
+                                  key={`${holding.campus}-${holding.location ?? "unknown"}-${holding.call_number ?? "unknown"}`}
+                                >
+                                  <strong>
+                                    {libraryCampusLabel(holding.campus)}
+                                  </strong>
+                                  {holding.status === "available"
+                                    ? " / 貸出可"
+                                    : holding.status === "unavailable"
+                                      ? " / 貸出中・利用不可"
+                                      : " / 状態不明"}
+                                  {holding.location
+                                    ? ` / 配架場所: ${holding.location}`
+                                    : " / 配架場所: 不明"}
+                                  {holding.call_number
+                                    ? ` / 請求記号: ${holding.call_number}`
+                                    : " / 請求記号: 不明"}
+                                  {holding.due_date
+                                    ? ` / 返却予定: ${holding.due_date}`
+                                    : ""}
+                                  {holding.reservation_count !== null
+                                    ? ` / 予約: ${holding.reservation_count}件`
+                                    : ""}
+                                </li>
+                              ))}
+                            </ul>
+                            {floorMaps.length > 0 ? (
+                              <div className="library-floor-map-list">
+                                {floorMaps.map((map) => (
+                                  <LibraryFloorMapPreview
+                                    key={`${map.page_url}#${map.image_url ?? "page"}`}
+                                    map={map}
+                                  />
+                                ))}
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      })}
                     </ul>
                   )}
                 </details>
