@@ -196,8 +196,16 @@ function toolResultRequest(
 function sendExtensionMessage<T>(message: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response: T | undefined) => {
-      if (chrome.runtime.lastError || response === undefined) {
-        reject(new Error("拡張機能のToolを利用できません。"));
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError || response === undefined) {
+        const detail = runtimeError?.message?.trim();
+        reject(
+          new Error(
+            detail
+              ? `拡張機能のToolを利用できません: ${detail}`
+              : "拡張機能のToolを利用できません。",
+          ),
+        );
         return;
       }
       resolve(response);

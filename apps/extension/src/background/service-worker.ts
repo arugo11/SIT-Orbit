@@ -3822,10 +3822,15 @@ async function waitForMyLibraryStatusPage(
 async function readMyLibrarySection(
   scope: MyLibraryScope,
 ): Promise<MyLibraryPageRead> {
-  const tab = await chrome.tabs.create({
-    url: MY_LIBRARY_ENTRY_URL,
-    active: false,
-  });
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.create({
+      url: MY_LIBRARY_ENTRY_URL,
+      active: false,
+    });
+  } catch {
+    return { status: "unavailable", reason_code: "entry_tab_create_failed" };
+  }
   if (tab.id === undefined) {
     return { status: "unavailable", reason_code: "entry_tab_missing" };
   }
@@ -4794,7 +4799,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
       return true;
     }
-    void handleMyLibraryRead(message).then(sendResponse);
+    void handleMyLibraryRead(message)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse({ status: "unavailable", reason_code: "my_library_read_failed" }),
+      );
     return true;
   }
 

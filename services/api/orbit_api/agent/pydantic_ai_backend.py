@@ -79,6 +79,10 @@ LIBRARY_DISCOVERY_SEARCH_TOOL_NAME = "library_discovery_search"
 LIBRARY_ACTION_OPTIONS_TOOL_NAME = "library_action_options"
 LIBRARY_LOCATOR_PREFIX = "orbit-library://public/"
 LIBRARY_RESOURCE_REF_PREFIX = "orbit-library://record/"
+_PUBLIC_BOOK_RECOMMENDATION_RE = re.compile(
+    r"(?:おすすめ|面白そう|関連(?:する|した)|次に読む|読んでみたい|推薦)",
+    re.IGNORECASE,
+)
 _LIBRARY_EVIDENCE_ID_RE = re.compile(
     r"^library-(?:catalog-search|item-read|catalog-browse|discovery-search)-v1-[A-Za-z0-9_-]{16,200}$"
 )
@@ -208,6 +212,11 @@ class DeferredChatRun:
     arguments: dict[str, Any] = field(default_factory=dict)
     tool_version: Literal[1] = 1
     tool_call_count: int = 1
+    # A recommendation request is an explicit user instruction to use the
+    # titles already present in this conversation as public-search context.
+    # This flag is carried across deferred client-tool checkpoints without
+    # exposing it in the public API or storing raw personal snapshots.
+    allow_personal_web_search: bool = False
 
 
 @dataclass(frozen=True)
@@ -1136,7 +1145,15 @@ class PydanticAIAgentBackend(AgentBackend):
                 "external action, set action.requires_confirmation=true. Return exact "
                 "evidence IDs only; never invent citations. Use general_web_search only "
                 "for public information. Its result contains exact evidence IDs that may "
-                "be cited, and its query must not contain private campus information."
+                "be cited, and its query must not contain private campus information. "
+                "When the student asks for book recommendations or related books, "
+                "use the book titles already present in the conversation only to form "
+                "a public-web query, call general_web_search before answering, and cite "
+                "the returned sources. Do not call the library catalog merely to make a "
+                "recommendation; use catalog tools only when the student asks about "
+                "library holdings, availability, location, or borrowing operations. "
+                "If public search is unavailable, say so instead of inventing books or "
+                "sources."
             ),
             tools=tools,
             model_settings=model_settings,
@@ -1181,6 +1198,7 @@ class PydanticAIAgentBackend(AgentBackend):
         tool_call_count: int = 0,
         expected_conversation_id: str | None = None,
         generated_evidence: list[EvidenceLink] | None = None,
+        allow_personal_web_search: bool = False,
     ) -> ChatAgentExecution:
         if (
             expected_conversation_id is not None
@@ -1261,6 +1279,7 @@ class PydanticAIAgentBackend(AgentBackend):
                 tool_version=1,
                 arguments=arguments,
                 tool_call_count=tool_call_count + 1,
+                allow_personal_web_search=allow_personal_web_search,
             ),
             generated_evidence=list(generated_evidence or []),
         )
@@ -1324,6 +1343,9 @@ class PydanticAIAgentBackend(AgentBackend):
             advertised_tools=advertised,
             tool_call_count=web_search_state.tool_call_count if web_search_state else 0,
             generated_evidence=web_search_state.evidence if web_search_state else [],
+            allow_personal_web_search=bool(
+                _PUBLIC_BOOK_RECOMMENDATION_RE.search(message)
+            ),
         )
 
     async def resume_chat(
@@ -1557,7 +1579,10 @@ class PydanticAIAgentBackend(AgentBackend):
                 tool_call_count=deferred.tool_call_count,
             )
             if self.web_search_executor is not None
-            and all(item.data_classification in SAFE_CLASSIFICATIONS for item in context)
+            and (
+                deferred.allow_personal_web_search
+                or all(item.data_classification in SAFE_CLASSIFICATIONS for item in context)
+            )
             else None
         )
         chat_agent = (
@@ -1588,6 +1613,7 @@ class PydanticAIAgentBackend(AgentBackend):
             ),
             expected_conversation_id=deferred.conversation_id,
             generated_evidence=web_search_state.evidence if web_search_state else [],
+            allow_personal_web_search=deferred.allow_personal_web_search,
         )
 
 

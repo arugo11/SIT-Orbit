@@ -249,7 +249,7 @@ Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命�
 
 `ORBIT_WEB_SEARCH=azure`かつ`ORBIT_AGENT_BACKEND=azure_openai`の場合だけ、Chat Agentへサーバー内部の`general_web_search`を追加する。検索専用のPydanticAI runはAzure Responsesの`NativeTool(WebSearchTool)`を使用し、Grounding with Bingへ渡す入力を検証済みの検索語だけに限定する。親Chatの履歴、SCombZ、成績、学内Tool結果は検索runへ渡さない。
 
-検索結果は要約と最大10件の公開URLへ正規化し、`web-search-v1-*` Evidenceとして元のChatへ戻す。URL本文がさらに必要な場合だけ既存`browser_read_url`を使用する。検索も既存の1ターン最大8 Toolに含め、Azure側で利用できない場合は別Providerや検索画面スクレイピングへfallbackしない。
+検索結果は要約と最大10件の公開URLへ正規化し、`web-search-v1-*` Evidenceとして元のChatへ戻す。URL本文がさらに必要な場合だけ既存`browser_read_url`を使用する。検索も既存の1ターン最大8 Toolに含め、Azure側で利用できない場合は別Providerや検索画面スクレイピングへfallbackしない。利用者が「関連する本」「おすすめの本」などの公開推薦を明示したターンだけは、直前に同意済みMy Libraryから取得した書名・著者を公開検索語の材料として使える。この例外は推薦のための最小文脈に限り、検索語と送信先をChat上で表示し、蔵書の貸出状態・返却期限・利用者識別子などは検索語へ含めない。図書館の所蔵確認を求めるターンでは、一般Web検索ではなく公式OPACを優先する。
 
 ### SITRUS成績通知書の参照
 
