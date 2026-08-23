@@ -588,14 +588,29 @@ async def library_catalog_search(
     format: Literal["book", "journal", "ebook", "any"] = "any",
     limit: int = 10,
 ) -> LibraryCatalogSearchResult:
-    """Deferred search of the public official OPAC catalog."""
+    """Deferred discovery search of the public official OPAC catalog.
+
+    This finds candidate bibliographic records and the shallow holdings shown
+    in a search result. It is not authoritative for a selected book's shelf,
+    floor, call number, due date, or current circulation state. When the
+    conversation concerns a specific record, use ``library_item_read`` with
+    its opaque ``resource_ref`` before making a concrete location or status
+    claim.
+    """
 
     del query, author, subject, isbn, pub_year, campus, format, limit
     raise CallDeferred()
 
 
 async def library_item_read(resource_ref: str) -> LibraryItemReadResult:
-    """Deferred read of one public OPAC record resolved by opaque reference."""
+    """Deferred authoritative read of one public OPAC record.
+
+    Use this after discovery identifies a record whenever the student asks
+    where a particular book is kept, which shelf or floor it is on, its call
+    number, or whether its copy is currently borrowable. The returned
+    holdings are the official detail view and are the only basis for those
+    concrete claims.
+    """
 
     del resource_ref
     raise CallDeferred()
@@ -1153,11 +1168,16 @@ class PydanticAIAgentBackend(AgentBackend):
                 "library, verify promising candidates with library_catalog_search and "
                 "keep each holding's available, unavailable, or unknown status as "
                 "metadata unless the student explicitly asks to filter by availability. "
-                "For a specific book where the student asks where it is held or whether "
-                "it can be borrowed, use the conversation to identify the title, call "
-                "library_catalog_search when an opaque reference is not already present, "
-                "then use library_item_read on the matching opaque resource_ref before "
-                "answering so that all official holdings are checked. "
+                "Treat catalog search as discovery, not verification. For a specific "
+                "book where the student asks where it is held, its shelf or floor, its "
+                "call number, or whether it can be borrowed, use the whole conversation "
+                "to identify the title, call library_catalog_search when a matching opaque "
+                "reference is not already present, then call library_item_read on the "
+                "matching opaque resource_ref before answering. A catalog result alone "
+                "must never support a concrete location or circulation claim. This rule "
+                "also applies to elliptical follow-ups after a book was discussed. Do not "
+                "repeat an unchanged catalog search after it has returned candidates; use "
+                "the candidate's resource_ref for the authoritative detail read. "
                 "If public search is unavailable, say so instead of inventing books or "
                 "sources."
             ),
@@ -1484,8 +1504,12 @@ class PydanticAIAgentBackend(AgentBackend):
                 raise ValueError(
                     "Library catalog calls require a LibraryCatalogSearchResult."
                 )
+            # The context is append-only across a deferred tool loop.  Select
+            # the evidence generated for this call, rather than an earlier
+            # catalog/item read, so the model can bind the returned projection
+            # to the current step in the trace.
             evidence = next(
-                (item for item in context if is_derived_library_evidence(item)),
+                (item for item in reversed(context) if is_derived_library_evidence(item)),
                 None,
             )
             result_content = {
@@ -1496,7 +1520,7 @@ class PydanticAIAgentBackend(AgentBackend):
             if not isinstance(tool_result, LibraryItemReadResult):
                 raise ValueError("Library item calls require a LibraryItemReadResult.")
             evidence = next(
-                (item for item in context if is_derived_library_evidence(item)),
+                (item for item in reversed(context) if is_derived_library_evidence(item)),
                 None,
             )
             result_content = {
@@ -1509,7 +1533,7 @@ class PydanticAIAgentBackend(AgentBackend):
                     "Library browse calls require a LibraryCatalogBrowseResult."
                 )
             evidence = next(
-                (item for item in context if is_derived_library_evidence(item)),
+                (item for item in reversed(context) if is_derived_library_evidence(item)),
                 None,
             )
             result_content = {
@@ -1522,7 +1546,7 @@ class PydanticAIAgentBackend(AgentBackend):
                     "Library discovery calls require a LibraryDiscoverySearchResult."
                 )
             evidence = next(
-                (item for item in context if is_derived_library_evidence(item)),
+                (item for item in reversed(context) if is_derived_library_evidence(item)),
                 None,
             )
             result_content = {

@@ -936,14 +936,27 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     ) {
       return { status: "unavailable", reason_code: "unexpected_opac_result" };
     }
-    const loadingElement = document.querySelector(
-      '[aria-busy="true"], .loading, .spinner',
-    );
-    if (
-      (loadingElement && isVisible(loadingElement)) ||
-      (document.body &&
-        /読み込み中|loading/i.test(visibleText(document.body, 100_000)))
-    ) {
+    // OPAC loads availability through an AJAX fragment after the document
+    // itself is ready.  Do not use a page-wide `loading` text/selector here:
+    // the live page contains unrelated loading labels in hidden widgets and
+    // that made a valid detail page look perpetually pending.  Only an
+    // explicitly busy page or a visible availability cell with its loader
+    // placeholder keeps the bounded poll alive.
+    const loadingElement = document.querySelector('[aria-busy="true"]');
+    const pendingAvailability = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'td.xc-availability, td[id^="xc-availability-"], [data-availability]',
+      ),
+    )
+      .filter(isVisible)
+      .some((cell) => {
+        const text = visibleText(cell, 200).toLowerCase();
+        return (
+          cell.querySelector('img[alt*="loading" i], .ajax-loader') !== null ||
+          /^(?:loading[.…]*|読み込み中)$/iu.test(text)
+        );
+      });
+    if ((loadingElement && isVisible(loadingElement)) || pendingAvailability) {
       return { status: "loading" };
     }
     const resultRows = Array.from(

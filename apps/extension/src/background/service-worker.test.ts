@@ -1224,6 +1224,41 @@ describe("service worker side panel contract", () => {
     expect(JSON.stringify(projection)).not.toContain("HIDDEN");
   });
 
+  it("waits only for the official OPAC availability AJAX cell", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-detail-loading",
+        query: "ロボット解体新書",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <h1 class="page-title">ロボット解体新書</h1>
+        <dl class="mainTable"><dt>著者名</dt><dd>神崎洋治編著</dd></dl>
+        <table class="xc-full"><tr class="xc-availability">
+          <td id="xc-availability-92593">
+            <img alt="Loading availability information" src="/ajax-loader.gif">
+          </td>
+        </tr></table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB23092122",
+    );
+
+    expect(readCatalogPage()).toEqual({ status: "loading" });
+  });
+
   it("extracts availability and call number from the OPAC search result markup", async () => {
     permissionsContains.mockResolvedValue(true);
     executeScript
