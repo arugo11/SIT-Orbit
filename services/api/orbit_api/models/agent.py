@@ -37,6 +37,19 @@ class AgentCapabilities(StrictApiModel):
     my_library_personal_context: StrictBool
 
 
+class AgentSessionRequest(StrictApiModel):
+    """A Google identity assertion used only to create an Agent session."""
+
+    id_token: StrictStr = Field(min_length=1, max_length=8192)
+
+
+class AgentSessionResponse(StrictApiModel):
+    """An opaque, short-lived bearer token for Agent API requests."""
+
+    access_token: StrictStr = Field(min_length=1, max_length=512)
+    expires_at: datetime
+
+
 class CalendarAvailabilityInterval(StrictApiModel):
     """One derived free-time interval, without calendar event details."""
 

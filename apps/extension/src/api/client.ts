@@ -7,6 +7,9 @@ export type ProposeActionRequest =
 export type VerifyActionRequest = components["schemas"]["VerifyActionRequest"];
 export type AgentRunRequest = components["schemas"]["AgentRunRequest"];
 export type AgentCapabilities = components["schemas"]["AgentCapabilities"];
+export type AgentSessionRequest = components["schemas"]["AgentSessionRequest"];
+export type AgentSessionResponse =
+  components["schemas"]["AgentSessionResponse"];
 export type AgentRunResponse =
   | components["schemas"]["AgentRunCompleted"]
   | components["schemas"]["AgentRunToolRequired"];
@@ -57,9 +60,9 @@ export type LibraryActionOptionsResult =
   components["schemas"]["LibraryActionOptionsResult"];
 export type LibraryActionOption = components["schemas"]["LibraryActionOption"];
 
-export const DEFAULT_AGENT_API_BASE = "http://localhost:8000";
 export const AZURE_DEMO_AGENT_API_BASE =
   "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io";
+export const DEFAULT_AGENT_API_BASE = AZURE_DEMO_AGENT_API_BASE;
 
 export type Fetcher = (
   input: RequestInfo | URL,
@@ -81,8 +84,13 @@ export class AgentApiError extends Error {
 export interface AgentApiClientOptions {
   baseUrl?: string;
   accessToken?: string;
+  sessionProvider?: SessionProvider;
   fetcher?: Fetcher;
 }
+
+export type SessionProvider = (
+  forceRefresh?: boolean,
+) => Promise<string | null>;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -129,6 +137,15 @@ function isAgentCapabilities(value: unknown): value is AgentCapabilities {
     hasExactlyKeys(value, ["agent_backend", "my_library_personal_context"]) &&
     isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) &&
     typeof value.my_library_personal_context === "boolean"
+  );
+}
+
+function isAgentSessionResponse(value: unknown): value is AgentSessionResponse {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, ["access_token", "expires_at"]) &&
+    isNonEmptyString(value.access_token) &&
+    isNonEmptyString(value.expires_at)
   );
 }
 
@@ -1334,12 +1351,47 @@ async function readJson(response: Response): Promise<unknown> {
 export class AgentApiClient {
   private readonly baseUrl: string;
   private readonly accessToken: string | null;
+  private readonly sessionProvider: SessionProvider | null;
   private readonly fetcher: Fetcher;
 
   constructor(options: AgentApiClientOptions = {}) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_AGENT_API_BASE);
     this.accessToken = options.accessToken?.trim() || null;
+    this.sessionProvider = options.sessionProvider ?? null;
     this.fetcher = options.fetcher ?? defaultFetcher;
+  }
+
+  async createSession(idToken: string): Promise<AgentSessionResponse> {
+    if (!idToken.trim())
+      throw new TypeError("Google ID token must not be empty.");
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/v1/auth/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id_token: idToken,
+        } satisfies AgentSessionRequest),
+      });
+    } catch (error) {
+      throw this.networkError(error);
+    }
+    const payload = await readJson(response);
+    if (!responseIsOk(response)) {
+      throw new AgentApiError(
+        `Agent API returned HTTP ${response.status}.`,
+        response.status,
+        payload,
+      );
+    }
+    if (!isAgentSessionResponse(payload)) {
+      throw new AgentApiError(
+        "Agent API returned an invalid session.",
+        response.status,
+        payload,
+      );
+    }
+    return payload;
   }
 
   async health(): Promise<boolean> {
@@ -1352,24 +1404,22 @@ export class AgentApiClient {
         headers: {},
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "The request failed.";
-      throw new AgentApiError(`Agent API request failed: ${message}`, 0, error);
+      throw this.networkError(error);
     }
     return responseIsOk(response);
   }
 
   async capabilities(): Promise<AgentCapabilities> {
-    let response: Response;
-    try {
-      response = await this.fetcher(`${this.baseUrl}/v1/capabilities`, {
-        method: "GET",
-        headers: this.headers(false),
-      });
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "The request failed.";
-      throw new AgentApiError(`Agent API request failed: ${message}`, 0, error);
+    const requestInit = {
+      method: "GET",
+    } satisfies RequestInit;
+    let response = await this.authorizedFetch("/v1/capabilities", requestInit);
+    if (response.status === 401 && this.sessionProvider) {
+      response = await this.authorizedFetch(
+        "/v1/capabilities",
+        requestInit,
+        true,
+      );
     }
     const payload = await readJson(response);
     if (!responseIsOk(response)) {
@@ -1463,17 +1513,13 @@ export class AgentApiClient {
     validate: (value: unknown) => value is T,
     responseName: string,
   ): Promise<T> {
-    let response: Response;
-    try {
-      response = await this.fetcher(`${this.baseUrl}${path}`, {
-        method: "POST",
-        headers: this.headers(true),
-        body: JSON.stringify(body),
-      });
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "The request failed.";
-      throw new AgentApiError(`Agent API request failed: ${message}`, 0, error);
+    const requestInit = {
+      method: "POST",
+      body: JSON.stringify(body),
+    } satisfies RequestInit;
+    let response = await this.authorizedFetch(path, requestInit);
+    if (response.status === 401 && this.sessionProvider) {
+      response = await this.authorizedFetch(path, requestInit, true);
     }
 
     const payload = await readJson(response);
@@ -1504,12 +1550,40 @@ export class AgentApiClient {
     return payload;
   }
 
-  private headers(json: boolean): Record<string, string> {
+  private async authorizedFetch(
+    path: string,
+    init: RequestInit,
+    forceRefresh = false,
+  ): Promise<Response> {
+    try {
+      return await this.fetcher(`${this.baseUrl}${path}`, {
+        ...init,
+        headers: {
+          ...(init.body !== undefined
+            ? { "Content-Type": "application/json" }
+            : {}),
+          ...(await this.headers(forceRefresh)),
+        },
+      });
+    } catch (error) {
+      throw this.networkError(error);
+    }
+  }
+
+  private async headers(forceRefresh = false): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
-    if (json) headers["Content-Type"] = "application/json";
-    if (this.accessToken) {
-      headers.Authorization = `Bearer ${this.accessToken}`;
+    const token =
+      this.accessToken ??
+      (this.sessionProvider ? await this.sessionProvider(forceRefresh) : null);
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
     }
     return headers;
+  }
+
+  private networkError(_error: unknown): AgentApiError {
+    return new AgentApiError("Agent API request failed: network", 0, {
+      category: "network",
+    });
   }
 }

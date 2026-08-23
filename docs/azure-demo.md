@@ -140,21 +140,23 @@ scripts/azure/health.sh
 
 ### Chrome拡張機能から接続する
 
-外部公開したAgent APIは、`ORBIT_API_TOKEN`が設定されている場合だけ`/v1/*`へBearer認証を要求する。ランダムなデモ用tokenをContainer Apps Secretへ登録する。
+外部公開したAgent APIは、`ORBIT_API_TOKEN`（既存の管理用Bearer）と、Chrome Identityで交換する短命なmanaged Agent session tokenの両方を受け付ける。拡張機能へAPI endpointや固定tokenを入力しない。
 
 ```bash
 export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
 export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
 export ORBIT_AZURE_API_TOKEN="$(openssl rand -hex 32)"
+export ORBIT_GOOGLE_OAUTH_CLIENT_ID="<chrome-extension-oauth-client-id>"
 export ORBIT_EXTENSION_ORIGIN="chrome-extension://<extension-id>"
 scripts/azure/configure-api-auth.sh
 ```
 
-拡張機能の「接続設定 → Agent API」で「Azureデモを選択」を押し、同じtokenを入力して「保存して接続確認」を押す。endpointとtokenは`chrome.storage.session`だけに保持され、Chrome終了後には復元しない。TokenをChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。
+`ORBIT_GOOGLE_OAUTH_CLIENT_ID`は秘密ではないChrome OAuth client IDであり、拡張機能build時にも同じ値をmanifestへ注入する。利用者がChatを送信すると、Chrome IdentityのGoogle ID tokenを`POST /v1/auth/session`へ一度だけ送り、返された短命session tokenで既存の`/v1/*`へアクセスする。ID token、OAuth token、managed session tokenはChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。session tokenはメモリと`chrome.storage.session`だけに保持し、期限切れまたは401時に一度だけ再認証する。
 
 `ORBIT_EXTENSION_ORIGIN`を指定した場合だけ、その拡張機能originからの`GET`、`POST`、CORS preflightと`Authorization`、`Content-Type` headerを許可する。ワイルドカードoriginは設定せず、`chrome://extensions`に表示された実際のIDを使う。
 
 `/health`は監視用に認証なしで応答する。Bearer tokenの正否は実際のChat送信時に検証され、無効なtokenでは`401`となる。ローカル開発とCIは`ORBIT_API_TOKEN`を設定しないため、従来どおり認証なしでfixture APIを利用できる。
+`POST /v1/auth/session`はGoogle issuer、audience、メール確認状態、許可ドメイン、期限を検証し、失敗時は401を返す。既存の管理用Bearerは運用・監視用に残し、拡張機能の通常Chatには渡さない。
 
 ## 2026年8月22日のProvider Acceptance
 

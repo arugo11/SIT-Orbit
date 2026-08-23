@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hostAccessRequest, requiresHostConfirmation } from "./access-policy";
+import { hostAccessRequest } from "./access-policy";
 
 describe("Chat access policy", () => {
   it("rejects non-http URLs and marks sensitive academic paths", () => {
@@ -12,17 +12,17 @@ describe("Chat access policy", () => {
     });
   });
 
-  it("keeps Ask mode host-scoped and Full mode read-only", () => {
+  it("returns only the validated origin needed by a read-only tool", () => {
     const request = hostAccessRequest("https://example.com/course");
     if (!request) throw new Error("Expected a valid host access request.");
-    expect(requiresHostConfirmation("ask", request, new Set())).toBe(true);
-    expect(
-      requiresHostConfirmation("ask", request, new Set([request.origin])),
-    ).toBe(false);
-    expect(requiresHostConfirmation("full", request, new Set())).toBe(false);
+    expect(request).toEqual({
+      origin: "https://example.com",
+      pattern: "https://example.com/*",
+      sensitive: false,
+    });
     const sensitive = hostAccessRequest("https://example.com/attendance");
     if (!sensitive)
       throw new Error("Expected a valid sensitive access request.");
-    expect(requiresHostConfirmation("full", sensitive, new Set())).toBe(true);
+    expect(sensitive.sensitive).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ActionProposal } from "../api/client";
+import { type ActionProposal, AZURE_DEMO_AGENT_API_BASE } from "../api/client";
 import type {
   CalendarConnector,
   CalendarConnectorResult,
@@ -17,7 +17,7 @@ import {
   waitFor,
 } from "./ui-test-helpers";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = AZURE_DEMO_AGENT_API_BASE;
 const PRIVATE_TITLE = "私的なScombZ課題タイトル";
 const PRIVATE_URL = "https://scombz.shibaura-it.ac.jp/lms/task/private-1";
 

@@ -1,5 +1,3 @@
-export type AccessMode = "ask" | "full";
-
 export interface HostAccessRequest {
   origin: string;
   pattern: string;
@@ -27,47 +25,5 @@ export function hostAccessRequest(value: string): HostAccessRequest | null {
     };
   } catch {
     return null;
-  }
-}
-
-export function requiresHostConfirmation(
-  mode: AccessMode,
-  request: HostAccessRequest,
-  allowedOrigins: ReadonlySet<string>,
-): boolean {
-  if (request.sensitive) return true;
-  if (mode === "full") return false;
-  return !allowedOrigins.has(request.origin);
-}
-
-export async function containsOriginPermission(
-  pattern: string,
-): Promise<boolean> {
-  if (
-    typeof chrome === "undefined" ||
-    typeof chrome.permissions?.contains !== "function"
-  ) {
-    return false;
-  }
-  try {
-    return await chrome.permissions.contains({ origins: [pattern] });
-  } catch {
-    return false;
-  }
-}
-
-export async function requestOriginPermission(
-  pattern: string,
-): Promise<boolean> {
-  if (
-    typeof chrome === "undefined" ||
-    typeof chrome.permissions?.request !== "function"
-  ) {
-    return false;
-  }
-  try {
-    return await chrome.permissions.request({ origins: [pattern] });
-  } catch {
-    return false;
   }
 }

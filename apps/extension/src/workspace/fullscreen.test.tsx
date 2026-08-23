@@ -3,6 +3,7 @@ import type { WorkspaceSession } from "../shared/workspace-session";
 import { App } from "../sidepanel/App";
 import {
   buttonByName,
+  click,
   type MountedSidePanel,
   mountSidePanel,
   unmountSidePanel,
@@ -49,15 +50,32 @@ describe("full-page workspace", () => {
       mounted.document.querySelector('[data-display-mode="workspace"]'),
     ).not.toBeNull();
     expect(mounted.document.body.textContent).toContain("ScombZ Home");
-    expect(mounted.document.body.textContent).toContain("次の一歩を提案");
+    expect(mounted.document.body.textContent).toContain(
+      "今日は何を進めますか？",
+    );
     expect(
       mounted.document.querySelector(
         'textarea[placeholder="SIT ORBITに相談する"]',
       ),
     ).not.toBeNull();
     expect(
-      mounted.document.querySelector('input[type="password"]'),
-    ).not.toBeNull();
+      mounted.document
+        .querySelector(".settings-backdrop")
+        ?.hasAttribute("hidden"),
+    ).toBe(true);
+    const settingsButton = mounted.document.querySelector(
+      'button[aria-label="設定"]',
+    );
+    if (!(settingsButton instanceof HTMLElement)) {
+      throw new Error("Settings button was not rendered.");
+    }
+    await click(settingsButton);
+    expect(
+      mounted.document
+        .querySelector(".settings-backdrop")
+        ?.hasAttribute("hidden"),
+    ).toBe(false);
+    expect(mounted.document.body.textContent).not.toContain("Access token");
     expect(
       mounted.document.querySelector('[aria-label="全画面で開く"]'),
     ).toBeNull();

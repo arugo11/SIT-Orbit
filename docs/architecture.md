@@ -229,9 +229,9 @@ Tool結果を同じrunへ返してAgentを再開
 Markdown回答、引用、必要ならActionProposalを表示
 ```
 
-### ChatのアクセスモードとBrowser Reader
+### Chatのアクセス境界とBrowser Reader
 
-Composerでは`Ask every time`を既定にし、未許可ホストの読み取り前に今回のみ許可・サイトを常に許可・拒否を表示する。`Full access`はユーザーがChromeのoptional host permissionを明示的に付与した場合だけ有効になるが、読み取り専用であり、提出・送信・更新・削除・ダウンロード・アップロードは常に確認対象である。成績、出欠、個人評価のURLは、サイト許可済みでもAskでは毎回確認する。
+Composerにアクセスモードやサイト単位の承認状態は持たせない。`https://*/*`と`http://*/*`は必須host permissionとしてインストール・更新時に確認し、Chat中に`chrome.permissions.request`を呼ばない。Web検索、公開ページ読取、SCombZ、Moodle、CAST、図書館などread-only ToolはChat送信を起点に追加確認なしで実行する。認証画面が必要なサービスではサービス固有の認証だけを扱い、提出・送信・更新・削除・ダウンロード・アップロードはActionProposal、公式preview、毎回の明示確認を要求する。
 
 `browser_read_url`はService Workerが許可済みURLを非アクティブタブへ開き、`scripting.executeScript`で`browser-reader.js`をIsolated Worldへ注入する。抽出結果は表示本文、最大50リンク、opaqueな引用情報だけをAgentへ渡し、結果取得後にタブを閉じる。一般Webの検索やGoogle検索画面のスクレイピングへはfallbackしない。公式シラバス検索は`syllabus.sic.shibaura-it.ac.jp/namazu/`だけを対象とする。
 
@@ -241,7 +241,7 @@ Branch 1では、公開ページの検索・閲覧だけを4つのChat client to
 
 Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命なopaque対応表から解決できた公開OPACまたは同意済みMy Libraryの参照だけを、現在の公式ページから再読して8操作の可否として返す。`ActionProposal.operation`はこのoptions evidenceの同じ`resource_ref`に結び付き、write操作は`external_action=library_write`かつ常に明示確認を要求する。提案承認は送信ではなく、Chrome内の短命previewを開始するだけである。previewでは公式origin/path、対象、現在状態、フォームとCSRFの形を再検証し、別UI操作の`この内容で送信`を経なければsubmitしない。読み取り専用の棚・公式viewer操作は再読込後に公式ページを開く。live providerのフォーム挙動を検証できないwrite操作は、previewも送信ボタンも出さず`write_form_not_verified`で停止する。fixtureのwrite state machine以外は、実送信・擬似成功・完了イベントを生成しない。
 
-現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。optional host permissionが未付与でもTool要求までは進め、読み取り直前にChat内でサイト単位の許可を求める。許可後、Service Workerは公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
+現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。必須host permissionの範囲内でService Workerは公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
 
 書誌レコードの`resource_ref`は安定した公開レコードIDから導出したopaque値であり、元IDはService Workerの短命なメモリ対応表にだけ保持する。対応表が失われた再起動後や衝突検出時は解決せず、推測で読み替えない。Holdingは表示されたcampus、location、call number、status、due date、reservation countだけを返し、未表示の値は`unknown`または`null`とする。通常の公開Evidenceは`source_type=library`、`classification=public`、`orbit-library://public/` locatorに限定し、Branch 3 action-options Evidenceは専用IDとopaque `resource_ref` locatorへ分離する。
 
@@ -255,13 +255,13 @@ Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命�
 
 SITRUSの成績は、実在する画面を利用者が開いている場合だけ、専用の`sitrus_read` Toolで参照する。Service Workerは接続元タブが同じorigin・pathnameであることを確認する。優先する`/SITRUS/login/ShutokuTaniShukei.html`では、`MAIN` worldから可視のHTML表を読み、判定・評価・科目名だけをメモリ上で投影する。表にない科目コードや単位数は`null`とし、推測しない。`/SITRUS/login/SeisekiTsutiSho.html`では、表が使えない場合に限り認証済みPDF.jsのテキスト層をメモリ上で処理する。PDFファイル、Base64、学籍番号、認証情報を保存・ダウンロード・APIログへ渡さず、取得できた科目名、科目コード、成績、単位、年度・期・ターム、再履修フラグ、累積GPAだけへ投影する。
 
-成績値は個人情報のため、都度の利用者確認を必須とする。現行のAgent契約ではこの結果を外部LLMやW&Bへ送らず、`fixture` BackendのローカルChatでのみ回答に使う。ページが閉じた、別URLへ遷移した、またはPDF.jsを利用できない場合は成功扱いにしない。
+成績値は一般Agentへ渡さず、専用のローカルToolで表示するかfail closedとする。確認カードで外部送信の同意を取る経路は作らない。現行のAgent契約ではこの結果を外部LLMやW&Bへ送らず、`fixture` BackendのローカルChatでのみ回答に使う。ページが閉じた、別URLへ遷移した、またはPDF.jsを利用できない場合は成功扱いにしない。
 
 ### SIT Moodleダッシュボードの参照
 
 `moodle_read`は、確認済みの正規origin `moodle.sic.shibaura-it.ac.jp`と`/moodle/my/`だけを対象にする。利用者がChatを明示送信した場合だけ、既に開かれているダッシュボードをIsolated Worldで読み取る。未認証時は`/moodle/login/index.php`を開くが、資格情報の入力や保存は行わない。未知のpath、404、ログイン画面、構造不一致を空データの成功として扱わない。
 
-コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。許可済みoriginのread-only取得に会話ごとの追加確認は行わず、未許可originだけChromeのサイト権限を求める。Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
+コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。read-only取得に会話ごとの追加確認は行わない。Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
 
 `my_library_read`は、利用者が接続設定で明示的に接続した後、Chat送信時に限り、確認済みの正規入口`library.shibaura-it.ac.jp/portal/portal/selectLogin/?lang=ja`から、指定された一つのscopeだけを読む。scopeは`current_loans`（menu ID 5）、`reservations`（6）、`loan_history`（7）、`purchase_requests`（3）、`interlibrary_requests`（2）であり、その他のmenu IDやURLを推測しない。status pathは確認済みの`/portal/admin/selectMenu/doSelectPublicUseMainMenu`だけとする。貸出・予約はそれぞれ可視の`#lendList`・`#reservationList`、履歴・購入・ILLは表示されたtable見出しを検証して読む。hidden要素やinputのvalueは読まず、origin・path・table構造・見出しが一致しない場合や、非空行を一件でも解析できない場合はfail closedで`unavailable`を返す。資格情報の入力、貸出延長、予約取消、購入・ILL申請は行わない。
 
@@ -456,7 +456,7 @@ Static Web Apps Freeは、静的ホスティング、GitHub連携、SSL、管理
 
 Container Apps Consumptionは、利用量に応じた課金とscale-to-zeroを利用できるため、常時稼働の仮想マシンよりデモ向きである。[Container Appsの環境](https://learn.microsoft.com/en-us/azure/container-apps/environment)
 
-外部公開したAgent APIは、`ORBIT_API_TOKEN`をContainer Apps Secretから設定し、`/v1/*`だけにBearer認証を要求する。`/health`はscale-to-zeroからの起動と監視に使うため公開のままにする。API側のCORSは`ORBIT_CORS_ORIGINS`へ明示した拡張機能originだけを許可し、ワイルドカードを使わない。拡張機能は明示的に許可したContainer Apps originだけへ接続し、endpointとtokenを`chrome.storage.session`で共有する。通常のローカル開発とCIでは`ORBIT_API_TOKEN`と`ORBIT_CORS_ORIGINS`を設定しない。
+外部公開したAgent APIは、`ORBIT_API_TOKEN`をContainer Apps Secretから設定し、`/v1/*`へ既存の管理用Bearer認証を要求する。Chrome拡張機能はChrome IdentityでSITアカウントを認証し、`POST /v1/auth/session`で短命なopaque session tokenへ交換して同じBearer境界を使う。Google ID token、OAuth token、session tokenはログやChat履歴へ保存せず、session tokenはメモリと`chrome.storage.session`だけに保持する。`/health`はscale-to-zeroからの起動と監視に使うため公開のままにする。API側のCORSは`ORBIT_CORS_ORIGINS`へ明示した拡張機能originだけを許可し、ワイルドカードを使わない。通常のローカル開発とCIでは`ORBIT_API_TOKEN`と`ORBIT_CORS_ORIGINS`を設定しない。
 
 Azure Functions Timerは、短時間でステートレスな定期処理に使う。
 

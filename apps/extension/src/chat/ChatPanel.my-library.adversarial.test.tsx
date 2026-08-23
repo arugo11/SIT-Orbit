@@ -7,7 +7,6 @@ import {
 } from "../content/my-library-consent";
 import {
   buttonByName,
-  click,
   type MountedSidePanel,
   mountSidePanel,
   unmountSidePanel,
@@ -269,13 +268,6 @@ describe("ChatPanel My Library consent and history boundary", () => {
       },
     );
 
-    await click(buttonByName(panel.document, "Full access"));
-    await waitFor(
-      () =>
-        buttonByName(panel.document, "Full access").getAttribute(
-          "aria-pressed",
-        ) === "true",
-    );
     expect(sessionValues).toEqual({});
 
     await submitMessage(panel, "購入依頼の状況を確認して");
@@ -372,14 +364,14 @@ describe("ChatPanel My Library consent and history boundary", () => {
     await submitMessage(mounted, "購入依頼の状況を確認して");
     await waitFor(
       () =>
-        apiClient.submitChatToolResult.mock.calls.length === 1 ||
-        mounted?.document.querySelector('[role="alert"]')?.textContent ===
-          "My Libraryの利用状況を読み取れませんでした。",
+        mounted?.document.body.textContent?.includes(
+          "今は応答できませんでした。もう一度お試しください。",
+        ) ?? false,
     );
     expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
-    expect(mounted?.document.querySelector('[role="alert"]')?.textContent).toBe(
-      "My Libraryの利用状況を読み取れませんでした。",
-    );
+    expect(
+      mounted?.document.querySelector(".chat-permission-prompt"),
+    ).toBeNull();
   });
 
   it("does not read or send personal library data to a non-Azure backend", async () => {
@@ -401,8 +393,9 @@ describe("ChatPanel My Library consent and history boundary", () => {
     await submitMessage(mounted, "購入依頼の状況を確認して");
     await waitFor(
       () =>
-        mounted?.document.querySelector('[role="alert"]')?.textContent ===
-        "My Libraryの個人情報はAzure OpenAI Agentに接続している場合だけ送信できます。",
+        mounted?.document.body.textContent?.includes(
+          "今は応答できませんでした。もう一度お試しください。",
+        ) ?? false,
     );
 
     expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();

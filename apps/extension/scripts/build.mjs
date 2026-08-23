@@ -108,7 +108,11 @@ const oauthClientId =
 if (oauthClientId) {
   manifest.oauth2 = {
     client_id: oauthClientId,
-    scopes: ["https://www.googleapis.com/auth/calendar.events.owned.readonly"],
+    scopes: [
+      "openid",
+      "email",
+      "https://www.googleapis.com/auth/calendar.events.owned.readonly",
+    ],
   };
   await writeFile(
     resolve(outputDirectory, "manifest.json"),
@@ -142,15 +146,15 @@ if (
   JSON.stringify(manifest.host_permissions) !==
     JSON.stringify([
       "https://scombz.shibaura-it.ac.jp/*",
-      "http://localhost:8000/*",
       "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io/*",
       "https://www.googleapis.com/*",
       "https://oauth2.googleapis.com/*",
       "https://syllabus.sic.shibaura-it.ac.jp/*",
       "https://sitrus.sic.shibaura-it.ac.jp/*",
+      "https://*/*",
+      "http://*/*",
     ]) ||
-  JSON.stringify(manifest.optional_host_permissions) !==
-    JSON.stringify(["https://*/*", "http://*/*"]) ||
+  manifest.optional_host_permissions !== undefined ||
   manifest.side_panel !== undefined ||
   manifest.background?.service_worker !== "service-worker.js"
 ) {

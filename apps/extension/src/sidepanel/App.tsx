@@ -4,17 +4,10 @@ import {
   AgentApiClient,
   type AgentRunResponse,
   type AgentToolResultRequest,
+  AZURE_DEMO_AGENT_API_BASE,
   type OrbitEvent,
 } from "../api/client";
-import {
-  type AgentApiConnection,
-  AZURE_DEMO_AGENT_API_BASE,
-  DEFAULT_AGENT_API_CONNECTION,
-  isAgentApiConnectionChange,
-  loadAgentApiConnection,
-  saveAgentApiConnection,
-} from "../api/settings";
-import { requestOriginPermission } from "../chat/access-policy";
+import { createManagedAgentSessionProvider } from "../auth/managed-agent-auth";
 import { ChatPanel } from "../chat/ChatPanel";
 import {
   type CalendarConnector,
@@ -32,9 +25,9 @@ import {
   createFixtureDriveConnector,
   type DriveSelectionCandidate,
 } from "../connectors/google-drive";
+import { clearMyLibrarySessionConsent } from "../content/my-library-consent";
 import {
   type PageContext,
-  type PageKind,
   projectScombzPageSummary,
 } from "../content/page-context";
 import {
@@ -66,18 +59,6 @@ import {
   initialAgentLoopState,
   toStableAgentLoopSnapshot,
 } from "./loop-state";
-
-const PAGE_KIND_LABEL: Record<PageKind, string> = {
-  scombz: "ScombZページ",
-  other: "その他",
-};
-
-const LOCAL_FIXTURE = {
-  campus: "B1 大宮",
-  event: "campus_entered",
-  evidence: "微分積分学の課題は明日締切",
-  available: "次の授業まで18分",
-};
 
 const DRIVE_FIXTURE_CANDIDATE: DriveSelectionCandidate = {
   fileId: "fixture-drive-note",
@@ -304,6 +285,23 @@ function proposalEvidence(proposal: ActionProposal) {
   ));
 }
 
+function proposalContextLabel(proposal: ActionProposal): string {
+  const hasCalendar = proposal.evidence.some(
+    (evidence) =>
+      evidence.source_type === "calendar" &&
+      evidence.data_classification === "personal",
+  );
+  const hasScombz = proposal.evidence.some(
+    (evidence) =>
+      evidence.source_type === "scombz" &&
+      evidence.data_classification === "personal",
+  );
+  if (hasCalendar && hasScombz) return "合成＋ScombZ概要＋Calendar空き時間";
+  if (hasCalendar) return "合成＋Calendar空き時間";
+  if (hasScombz) return "合成＋ScombZ概要";
+  return "合成データ";
+}
+
 function toolDisplayName(
   toolName: "scombz_page_summary" | "google_calendar_availability" | null,
 ): string {
@@ -498,6 +496,9 @@ function CalendarCard({
         <>
           <p className="connector-description">
             {snapshot.timeZone} · 今日から7日間（終了時刻は含みません）
+          </p>
+          <p className="connector-description">
+            予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。
           </p>
           <div className="calendar-availability">
             <strong>ローカルの空き時間</strong>
@@ -797,24 +798,24 @@ export function App({
   mode = "sidepanel",
   workspaceSession,
 }: AppProps) {
-  const [apiConnection, setApiConnection] = useState<AgentApiConnection>(
-    DEFAULT_AGENT_API_CONNECTION,
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsCloseButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsDrawerRef = useRef<HTMLElement>(null);
+  const agentSessionProvider = useMemo(
+    () =>
+      createManagedAgentSessionProvider({
+        baseUrl: AZURE_DEMO_AGENT_API_BASE,
+      }),
+    [],
   );
-  const [apiBaseDraft, setApiBaseDraft] = useState(
-    DEFAULT_AGENT_API_CONNECTION.baseUrl,
-  );
-  const [apiTokenDraft, setApiTokenDraft] = useState("");
-  const [apiConnectionStatus, setApiConnectionStatus] = useState<string | null>(
-    null,
-  );
-  const [apiConnectionBusy, setApiConnectionBusy] = useState(false);
   const agentApiClient = useMemo(
     () =>
       new AgentApiClient({
-        baseUrl: apiConnection.baseUrl,
-        accessToken: apiConnection.accessToken,
+        baseUrl: AZURE_DEMO_AGENT_API_BASE,
+        sessionProvider: agentSessionProvider,
       }),
-    [apiConnection],
+    [agentSessionProvider],
   );
   const [pageContext, setPageContext] = useState<PageContext | null>(
     workspaceSession?.pageContext ?? null,
@@ -871,57 +872,36 @@ export function App({
   const [driveFixtureBusy, setDriveFixtureBusy] = useState(false);
 
   useEffect(() => {
-    let mounted = true;
-    void loadAgentApiConnection().then((connection) => {
-      if (!mounted) return;
-      setApiConnection(connection);
-      setApiBaseDraft(connection.baseUrl);
-      setApiTokenDraft(connection.accessToken);
-    });
-    const onChanged = (
-      changes: Record<string, chrome.storage.StorageChange>,
-      areaName: string,
-    ) => {
-      if (areaName !== "session") return;
-      const connection = isAgentApiConnectionChange(changes);
-      if (!connection) return;
-      setApiConnection(connection);
-      setApiBaseDraft(connection.baseUrl);
-      setApiTokenDraft(connection.accessToken);
+    if (!settingsOpen) return;
+    settingsCloseButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSettingsOpen(false);
+        settingsButtonRef.current?.focus();
+        return;
+      }
+      if (event.key === "Tab" && settingsDrawerRef.current) {
+        const focusable = Array.from(
+          settingsDrawerRef.current.querySelectorAll<HTMLElement>(
+            "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, a[href]",
+          ),
+        );
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        if (!first || !last) return;
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
     };
-    chrome.storage?.onChanged?.addListener(onChanged);
-    return () => {
-      mounted = false;
-      chrome.storage?.onChanged?.removeListener(onChanged);
-    };
-  }, []);
-
-  async function applyApiConnection(): Promise<void> {
-    setApiConnectionBusy(true);
-    setApiConnectionStatus(null);
-    try {
-      const saved = await saveAgentApiConnection({
-        baseUrl: apiBaseDraft,
-        accessToken: apiTokenDraft,
-      });
-      setApiConnection(saved);
-      const reachable = await new AgentApiClient({
-        baseUrl: saved.baseUrl,
-        accessToken: saved.accessToken,
-      }).health();
-      setApiConnectionStatus(
-        reachable
-          ? "Agent APIへ接続できました。認証はChat送信時に確認します。"
-          : "Agent APIの応答を確認できませんでした。",
-      );
-    } catch (error) {
-      setApiConnectionStatus(
-        error instanceof Error ? error.message : "接続設定を保存できません。",
-      );
-    } finally {
-      setApiConnectionBusy(false);
-    }
-  }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [settingsOpen]);
 
   const runCalendarAction = async (
     action: "connect" | "refresh" | "reauthenticate" | "disconnect",
@@ -1009,14 +989,6 @@ export function App({
     setMoodleBusy(true);
     setMoodleMessage(null);
     try {
-      const granted = await requestOriginPermission(
-        "https://moodle.sic.shibaura-it.ac.jp/*",
-      );
-      if (!granted) {
-        setMoodleStatus("not_connected");
-        setMoodleMessage("Moodleの読み取り許可が得られませんでした。");
-        return;
-      }
       if (action === "open") {
         await new Promise<void>((resolve, reject) => {
           chrome.runtime.sendMessage(
@@ -1079,14 +1051,6 @@ export function App({
     setMyLibraryBusy(true);
     setMyLibraryMessage(null);
     try {
-      const granted = await requestOriginPermission(
-        "https://library.shibaura-it.ac.jp/*",
-      );
-      if (!granted) {
-        setMyLibraryStatus("not_connected");
-        setMyLibraryMessage("My Libraryの読み取り許可が得られませんでした。");
-        return;
-      }
       if (action === "open") {
         await new Promise<void>((resolve, reject) => {
           chrome.runtime.sendMessage(
@@ -1147,14 +1111,6 @@ export function App({
     setCastBusy(true);
     setCastMessage(null);
     try {
-      const granted = await requestOriginPermission(
-        "https://shibaura.pita.services/*",
-      );
-      if (!granted) {
-        setCastStatus("not_connected");
-        setCastMessage("CASTの読み取り許可が得られませんでした。");
-        return;
-      }
       if (action === "open") {
         await new Promise<void>((resolve, reject) => {
           chrome.runtime.sendMessage(
@@ -1334,6 +1290,25 @@ export function App({
     (mode === "sidepanel" && workspaceActive) ||
     (mode === "workspace" && !workspaceSourceAvailable);
 
+  const closeSettings = (): void => {
+    setSettingsOpen(false);
+    settingsButtonRef.current?.focus();
+  };
+
+  const disconnectMyLibrary = async (): Promise<void> => {
+    await clearMyLibrarySessionConsent();
+    await new Promise<void>((resolve) => {
+      chrome.runtime.sendMessage(
+        { type: MESSAGE_TYPES.myLibraryDisconnect },
+        () => resolve(),
+      );
+    });
+    setMyLibraryStatus("not_connected");
+    setMyLibraryMessage(
+      "共有同意を解除しました。次回の読み取り時に再確認します。",
+    );
+  };
+
   const requestProposal = async (): Promise<void> => {
     dispatch({ type: "propose-started" });
     try {
@@ -1493,32 +1468,6 @@ export function App({
       className={`panel-shell ${mode === "workspace" ? "workspace-shell" : "sidepanel-shell"}`}
       data-display-mode={mode}
     >
-      <header className="panel-header">
-        <div>
-          <p className="eyebrow">SIT ORBIT</p>
-          <h1>次の一歩を、軽く。</h1>
-        </div>
-        <div className="header-actions">
-          <span className="status-badge">
-            {mode === "workspace" ? "全画面表示" : "ローカル表示"}
-          </span>
-          {mode === "sidepanel" ? (
-            <button
-              type="button"
-              className="icon-button"
-              aria-label="全画面で開く"
-              title="全画面で開く"
-              onClick={() => void handleOpenWorkspace()}
-              disabled={toStableAgentLoopSnapshot(loopState) === null}
-            >
-              <svg aria-hidden="true" viewBox="0 0 24 24">
-                <path d="M8 3H3v5h2V5h3V3Zm8 0v2h3v3h2V3h-5ZM5 16H3v5h5v-2H5v-3Zm16 0h-2v3h-3v2h5v-5Z" />
-              </svg>
-            </button>
-          ) : null}
-        </div>
-      </header>
-
       {mode === "sidepanel" && workspaceActive ? (
         <p className="workspace-notice" role="status">
           全画面ワークスペースで操作中です。このSide Panelは読み取り専用です。
@@ -1526,8 +1475,7 @@ export function App({
       ) : null}
       {mode === "workspace" && !workspaceSourceAvailable ? (
         <p className="error-message" role="alert">
-          接続元のScombZタブが閉じられたか、別ページへ移動しました。ScombZを開き直してSide
-          Panelから再接続してください。
+          接続元のScombZタブを確認できません。ScombZを開き直して再接続してください。
         </p>
       ) : null}
       {workspaceError ? (
@@ -1536,163 +1484,275 @@ export function App({
         </p>
       ) : null}
 
-      <div className="orbit-body">
-        <aside className="orbit-sidebar" aria-label="接続情報">
-          <section
-            className="context-card"
-            aria-labelledby="page-context-title"
-          >
-            <div className="section-heading">
-              <h2 id="page-context-title">現在のScombZページ</h2>
-              <span className="section-note">読み取りは最小限</span>
+      <section className="orbit-conversation" aria-label="Agentとの対話">
+        <ChatPanel
+          apiClient={agentApiClient}
+          pageContext={pageContext}
+          calendarState={calendarState}
+          calendarConnector={calendarConnector}
+          calendarRequest={(command) => calendarRequest(command)}
+          mode={mode}
+          settingsOpen={settingsOpen}
+          settingsButtonRef={settingsButtonRef}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onOpenWorkspace={
+            mode === "sidepanel" ? () => void handleOpenWorkspace() : undefined
+          }
+          workspaceDisabled={toStableAgentLoopSnapshot(loopState) === null}
+          disabled={interactionLocked}
+        />
+      </section>
+
+      <div className="settings-backdrop" hidden={!settingsOpen}>
+        <button
+          type="button"
+          className="settings-scrim"
+          aria-label="設定を閉じる"
+          onClick={closeSettings}
+        />
+        <aside
+          ref={settingsDrawerRef}
+          className="settings-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="settings-title"
+        >
+          <header className="settings-header">
+            <div>
+              <p className="eyebrow">SIT ORBIT</p>
+              <h2 id="settings-title">設定</h2>
             </div>
-            {pageContext ? (
-              <dl className="context-list">
-                <div>
-                  <dt>ページ種別</dt>
-                  <dd>{PAGE_KIND_LABEL[pageContext.kind]}</dd>
-                </div>
-                <div>
-                  <dt>タイトル</dt>
-                  <dd>{pageContext.title}</dd>
-                </div>
-                <div>
-                  <dt>URL</dt>
-                  <dd className="url-value">{pageContext.url}</dd>
-                </div>
-                {pageContext.scombz ? (
-                  <>
-                    <div>
-                      <dt>ルート</dt>
-                      <dd>{pageContext.scombz.route}</dd>
-                    </div>
-                    <div>
-                      <dt>課題</dt>
-                      <dd>{pageContext.scombz.tasks.length}件</dd>
-                    </div>
-                    <div>
-                      <dt>お知らせ</dt>
-                      <dd>{pageContext.scombz.announcements.length}件</dd>
-                    </div>
-                    <div>
-                      <dt>関連リンク</dt>
-                      <dd>{pageContext.scombz.relatedLinks.length}件</dd>
-                    </div>
-                  </>
-                ) : null}
-              </dl>
-            ) : (
-              <p className="empty-state">ScombZページの情報を待っています。</p>
-            )}
+            <button
+              ref={settingsCloseButtonRef}
+              type="button"
+              className="icon-button"
+              aria-label="設定を閉じる"
+              onClick={closeSettings}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m6.7 5.3 5.3 5.3 5.3-5.3 1.4 1.4-5.3 5.3 5.3 5.3-1.4 1.4-5.3-5.3-5.3 5.3-1.4-1.4 5.3-5.3-5.3-5.3 1.4-1.4Z" />
+              </svg>
+            </button>
+          </header>
+
+          <section
+            className="settings-section"
+            aria-labelledby="service-settings-title"
+          >
+            <h3 id="service-settings-title">学内・外部サービス</h3>
+            <div className="service-settings-list">
+              <CalendarCard
+                state={calendarState}
+                busy={calendarBusy || interactionLocked}
+                onConnect={() => void runCalendarAction("connect")}
+                onRefresh={() => void runCalendarAction("refresh")}
+                onReauthenticate={() =>
+                  void runCalendarAction("reauthenticate")
+                }
+                onDisconnect={() => void runCalendarAction("disconnect")}
+              />
+              <DriveCard
+                state={driveState}
+                busy={driveBusy || interactionLocked}
+                onSelect={() => void runDriveAction("select")}
+                onRead={(selectionId) =>
+                  void runDriveAction("read", selectionId)
+                }
+                onDeselect={(selectionId) =>
+                  void runDriveAction("deselect", selectionId)
+                }
+              />
+              <CampusServiceCard
+                id="moodle-title"
+                title="SIT Moodle"
+                description="必要なときだけ表示中の情報を読み取ります。"
+                status={moodleStatus}
+                busy={moodleBusy || interactionLocked}
+                message={moodleMessage}
+                onOpen={() => void runMoodleAction("open")}
+                onRefresh={() => void runMoodleAction("refresh")}
+              />
+              <CampusServiceCard
+                id="my-library-title"
+                title="My Library"
+                description="必要なときだけ貸出・予約状況を読み取ります。"
+                status={myLibraryStatus}
+                busy={myLibraryBusy || interactionLocked}
+                message={myLibraryMessage}
+                onOpen={() => void runMyLibraryAction("open")}
+                onRefresh={() => void runMyLibraryAction("refresh")}
+              />
+              <CampusServiceCard
+                id="cast-title"
+                title="CAST"
+                description="必要なときだけキャリア情報を読み取ります。"
+                status={castStatus}
+                busy={castBusy || interactionLocked}
+                message={castMessage}
+                onOpen={() => void runCastAction("open")}
+                onRefresh={() => void runCastAction("refresh")}
+              />
+            </div>
           </section>
 
-          <details className="connector-settings">
-            <summary>接続設定</summary>
-            <section className="connector-card agent-api-settings">
-              <div className="section-heading">
-                <h2>Agent API</h2>
-                <span className="section-note">ブラウザセッション内のみ</span>
-              </div>
-              <label>
-                Endpoint
-                <input
-                  type="url"
-                  value={apiBaseDraft}
-                  onChange={(event) => setApiBaseDraft(event.target.value)}
-                  disabled={apiConnectionBusy || interactionLocked}
-                  spellCheck={false}
-                />
-              </label>
-              <label>
-                Access token
-                <input
-                  type="password"
-                  value={apiTokenDraft}
-                  onChange={(event) => setApiTokenDraft(event.target.value)}
-                  disabled={apiConnectionBusy || interactionLocked}
-                  autoComplete="off"
-                />
-              </label>
-              <div className="button-row">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => setApiBaseDraft(AZURE_DEMO_AGENT_API_BASE)}
-                  disabled={apiConnectionBusy || interactionLocked}
-                >
-                  Azureデモを選択
-                </button>
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void applyApiConnection()}
-                  disabled={apiConnectionBusy || interactionLocked}
-                >
-                  保存して接続確認
-                </button>
-              </div>
-              <p className="connector-description">
-                TokenはChromeのsession
-                storageだけに保持し、ブラウザ終了後は復元しません。
+          <section
+            className="settings-section"
+            aria-labelledby="privacy-settings-title"
+          >
+            <h3 id="privacy-settings-title">読み取り権限と同意</h3>
+            <p className="settings-message">
+              読み取りは必要なToolが選ばれたときだけ行い、Chromeのサイト権限は拡張機能のインストール時に確認します。
+              外部サービスの変更・送信だけは実行前に確認します。
+            </p>
+            <button
+              type="button"
+              className="text-button settings-text-action"
+              onClick={() => void disconnectMyLibrary()}
+            >
+              My Libraryの共有同意を解除
+            </button>
+          </section>
+
+          <details className="settings-section developer-demo-menu">
+            <summary>開発・デモ</summary>
+            <p className="settings-message">
+              B1大宮の合成データです。大学の公式記録には接続しません。
+            </p>
+            <div className="button-row">
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => void requestProposal()}
+                disabled={
+                  interactionLocked ||
+                  loopState.status === "proposing" ||
+                  loopState.status === "tool-running" ||
+                  loopState.status === "resuming" ||
+                  loopState.status === "verifying"
+                }
+              >
+                {loopState.status === "proposing"
+                  ? "提案を取得中…"
+                  : loopState.proposal
+                    ? "B1 大宮の提案を再取得"
+                    : "B1 大宮の提案を作成"}
+              </button>
+            </div>
+            {loopState.status === "tool-running" ||
+            loopState.status === "resuming" ? (
+              <p className="state-message" data-agent-status={loopState.status}>
+                {toolDisplayName(loopState.pendingToolName)}を処理しています。
               </p>
-              {apiConnectionStatus ? (
-                <p className="connector-description" role="status">
-                  {apiConnectionStatus}
+            ) : null}
+            {loopState.status === "reauth_required" ? (
+              <p className="state-message" data-agent-status="reauth-required">
+                Calendarの再認証が必要です。
+              </p>
+            ) : null}
+            {loopState.error ? (
+              <p className="error-message">{loopState.error}</p>
+            ) : null}
+            {loopState.proposal ? (
+              <section className="demo-result" aria-labelledby="proposal-title">
+                <h3 id="proposal-title">Agent APIからの提案</h3>
+                <span className="connection-label">
+                  {proposalContextLabel(loopState.proposal)}
+                </span>
+                <strong>{loopState.proposal.title}</strong>
+                <p>
+                  {loopState.proposal.reason}（
+                  {loopState.proposal.duration_minutes}分）
                 </p>
-              ) : null}
-            </section>
-            <CalendarCard
-              state={calendarState}
-              busy={calendarBusy || interactionLocked}
-              onConnect={() => void runCalendarAction("connect")}
-              onRefresh={() => void runCalendarAction("refresh")}
-              onReauthenticate={() => void runCalendarAction("reauthenticate")}
-              onDisconnect={() => void runCalendarAction("disconnect")}
-            />
-
-            <DriveCard
-              state={driveState}
-              busy={driveBusy || interactionLocked}
-              onSelect={() => void runDriveAction("select")}
-              onRead={(selectionId) => void runDriveAction("read", selectionId)}
-              onDeselect={(selectionId) =>
-                void runDriveAction("deselect", selectionId)
-              }
-            />
-
-            <CampusServiceCard
-              id="moodle-title"
-              title="SIT Moodle"
-              description="ダッシュボードは明示的に確認したときだけ読み取ります。詳細は端末内に留めます。"
-              status={moodleStatus}
-              busy={moodleBusy || interactionLocked}
-              message={moodleMessage}
-              onOpen={() => void runMoodleAction("open")}
-              onRefresh={() => void runMoodleAction("refresh")}
-            />
-
-            <CampusServiceCard
-              id="my-library-title"
-              title="My Library"
-              description="貸出・予約状況は明示的に確認したときだけ読み取ります。書名などの詳細は端末内に留めます。"
-              status={myLibraryStatus}
-              busy={myLibraryBusy || interactionLocked}
-              message={myLibraryMessage}
-              onOpen={() => void runMyLibraryAction("open")}
-              onRefresh={() => void runMyLibraryAction("refresh")}
-            />
-
-            <CampusServiceCard
-              id="cast-title"
-              title="CAST"
-              description="キャリア支援のお知らせと新着件数は、明示的に確認したときだけ読み取ります。詳細は端末内に留めます。"
-              status={castStatus}
-              busy={castBusy || interactionLocked}
-              message={castMessage}
-              onOpen={() => void runCastAction("open")}
-              onRefresh={() => void runCastAction("refresh")}
-            />
-
+                <details>
+                  <summary>根拠 {loopState.proposal.evidence.length}件</summary>
+                  <ul className="evidence-list">
+                    {proposalEvidence(loopState.proposal)}
+                  </ul>
+                </details>
+                {loopState.status === "proposed" ? (
+                  <div className="approval-controls">
+                    <label htmlFor="change-note">
+                      完了時に添えるメモ（任意）
+                      <textarea
+                        id="change-note"
+                        value={loopState.changeNote}
+                        maxLength={500}
+                        disabled={interactionLocked}
+                        onChange={(event) =>
+                          dispatch({
+                            type: "note-changed",
+                            note: event.target.value,
+                          })
+                        }
+                        rows={2}
+                      />
+                    </label>
+                    <div className="button-row">
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={approveProposal}
+                        disabled={interactionLocked}
+                      >
+                        提案を承認する
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={rejectProposal}
+                        disabled={interactionLocked}
+                      >
+                        却下（APIに送信しない）
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+                {loopState.status === "approved" ||
+                loopState.status === "verifying" ? (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void verifyCompletion()}
+                    disabled={
+                      interactionLocked || loopState.status === "verifying"
+                    }
+                  >
+                    {loopState.status === "verifying"
+                      ? "完了を記録中…"
+                      : "完了を確認して記録する"}
+                  </button>
+                ) : null}
+                {loopState.status === "rejected" ? (
+                  <p className="state-message">提案を却下しました。</p>
+                ) : null}
+              </section>
+            ) : null}
+            {loopState.completionEvent ? (
+              <section
+                className="demo-result"
+                aria-labelledby="completion-title"
+              >
+                <h3 id="completion-title">完了イベント</h3>
+                <p>完了を記録しました。</p>
+                <dl className="context-list">
+                  <div>
+                    <dt>イベント種別</dt>
+                    <dd>{loopState.completionEvent.event_type}</dd>
+                  </div>
+                  <div>
+                    <dt>シナリオ</dt>
+                    <dd>{loopState.completionEvent.scenario_id}</dd>
+                  </div>
+                  <div>
+                    <dt>キャンパス</dt>
+                    <dd>{loopState.completionEvent.campus}</dd>
+                  </div>
+                </dl>
+                <code className="event-payload">
+                  {formatPayload(loopState.completionEvent.payload)}
+                </code>
+              </section>
+            ) : null}
             <DriveFixtureCard
               state={driveFixtureState}
               busy={driveFixtureBusy || interactionLocked}
@@ -1706,349 +1766,6 @@ export function App({
             />
           </details>
         </aside>
-        <section className="orbit-conversation" aria-label="Agentとの対話">
-          <ChatPanel
-            apiClient={agentApiClient}
-            pageContext={pageContext}
-            calendarState={calendarState}
-            calendarConnector={calendarConnector}
-            calendarRequest={(command) => calendarRequest(command)}
-            disabled={interactionLocked}
-          />
-          <details className="developer-demo-menu">
-            <summary>開発・デモメニュー</summary>
-            <section className="fixture-card" aria-labelledby="fixture-title">
-              <div className="section-heading">
-                <h2 id="fixture-title">B1 大宮のデモfixture</h2>
-                <span className="fixture-label">合成データ</span>
-              </div>
-              <p className="fixture-disclaimer">
-                これはローカルの静的表示です。Agent
-                APIや大学の公式記録には接続していません。
-              </p>
-              <dl className="fixture-list">
-                <div>
-                  <dt>場所</dt>
-                  <dd>{LOCAL_FIXTURE.campus}</dd>
-                </div>
-                <div>
-                  <dt>イベント</dt>
-                  <dd>{LOCAL_FIXTURE.event}</dd>
-                </div>
-                <div>
-                  <dt>根拠の例</dt>
-                  <dd>{LOCAL_FIXTURE.evidence}</dd>
-                </div>
-                <div>
-                  <dt>利用可能時間</dt>
-                  <dd>{LOCAL_FIXTURE.available}</dd>
-                </div>
-              </dl>
-              <div className="agent-controls">
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => void requestProposal()}
-                  disabled={
-                    interactionLocked ||
-                    loopState.status === "proposing" ||
-                    loopState.status === "tool-running" ||
-                    loopState.status === "resuming" ||
-                    loopState.status === "verifying"
-                  }
-                >
-                  {loopState.status === "proposing"
-                    ? "提案を取得中…"
-                    : loopState.status === "tool-running"
-                      ? `${toolDisplayName(loopState.pendingToolName)}を処理中…`
-                      : loopState.status === "resuming"
-                        ? "提案を再開中…"
-                        : loopState.proposal
-                          ? "B1 大宮の提案を再取得"
-                          : "B1 大宮の提案を作成"}
-                </button>
-                <p className="action-note">
-                  {projectScombzPageSummary(pageContext) !== null ||
-                  (calendarState.status === "connected" &&
-                    calendarState.snapshot)
-                    ? "ボタンを押したときだけ、合成データと必要な最小化済みのページ概要・空き時間をローカル Agent API に送ります。予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。"
-                    : "ボタンを押したときだけ、合成データをローカル Agent API に送ります。"}
-                </p>
-                {loopState.status === "tool-running" ? (
-                  <p className="state-message" data-agent-status="tool-running">
-                    {toolDisplayName(loopState.pendingToolName)}
-                    を準備しています。
-                    {loopState.pendingToolName ===
-                    "google_calendar_availability"
-                      ? "認証画面は自動では開きません。"
-                      : "表示中のページから件数だけをまとめています。"}
-                  </p>
-                ) : null}
-                {loopState.status === "resuming" ? (
-                  <p className="state-message" data-agent-status="resuming">
-                    {toolDisplayName(loopState.pendingToolName)}
-                    の導出結果をAgentへ渡して提案を再開しています。
-                  </p>
-                ) : null}
-                {loopState.status === "reauth_required" ? (
-                  <p
-                    className="state-message"
-                    data-agent-status="reauth-required"
-                  >
-                    Calendarの再認証が必要です。明示的に再認証してから、提案ボタンを押してください。
-                  </p>
-                ) : null}
-              </div>
-            </section>
-          </details>
-
-          {loopState.error ? (
-            <p className="error-message" role="alert">
-              {loopState.error}
-            </p>
-          ) : null}
-
-          {loopState.proposal ? (
-            <section className="proposal-card" aria-labelledby="proposal-title">
-              <div className="section-heading">
-                <h2 id="proposal-title">Agent APIからの提案</h2>
-                <span className="fixture-label">
-                  {loopState.proposal.evidence.some(
-                    (evidence) =>
-                      evidence.source_type === "calendar" &&
-                      evidence.data_classification === "personal",
-                  )
-                    ? loopState.proposal.evidence.some(
-                        (evidence) =>
-                          evidence.source_type === "scombz" &&
-                          evidence.data_classification === "personal",
-                      )
-                      ? "合成＋ScombZ概要＋Calendar空き時間"
-                      : "合成＋Calendar空き時間"
-                    : loopState.proposal.evidence.some(
-                          (evidence) =>
-                            evidence.source_type === "scombz" &&
-                            evidence.data_classification === "personal",
-                        )
-                      ? "合成＋ScombZ概要"
-                      : "合成データ"}
-                </span>
-              </div>
-              <dl className="proposal-list">
-                <div>
-                  <dt>タイトル</dt>
-                  <dd>{loopState.proposal.title}</dd>
-                </div>
-                <div>
-                  <dt>理由</dt>
-                  <dd>{loopState.proposal.reason}</dd>
-                </div>
-                <div>
-                  <dt>所要時間</dt>
-                  <dd>{loopState.proposal.duration_minutes}分</dd>
-                </div>
-              </dl>
-              <div className="evidence-block">
-                <h3>根拠</h3>
-                <ul className="evidence-list">
-                  {proposalEvidence(loopState.proposal)}
-                </ul>
-              </div>
-
-              {loopState.status === "proposed" ? (
-                <div className="approval-controls">
-                  <label htmlFor="change-note">
-                    完了時に添えるメモ（任意）
-                    <textarea
-                      id="change-note"
-                      value={loopState.changeNote}
-                      maxLength={500}
-                      disabled={interactionLocked}
-                      onChange={(event) =>
-                        dispatch({
-                          type: "note-changed",
-                          note: event.target.value,
-                        })
-                      }
-                      rows={3}
-                    />
-                    <small>
-                      提案内容は変更せず、完了イベントのnotesにだけ添付します。
-                    </small>
-                  </label>
-                  <div className="button-row">
-                    <button
-                      type="button"
-                      className="primary-button"
-                      onClick={approveProposal}
-                      disabled={interactionLocked}
-                    >
-                      提案を承認する
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={rejectProposal}
-                      disabled={interactionLocked}
-                    >
-                      却下（APIに送信しない）
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-
-              {loopState.status === "rejected" ? (
-                <p className="state-message">
-                  提案を却下しました。却下のための Agent API
-                  呼び出しは行っていません。
-                </p>
-              ) : null}
-
-              {loopState.status === "approved" ||
-              loopState.status === "verifying" ? (
-                <div className="completion-controls">
-                  <p className="state-message">
-                    承認済みです。行動が完了したら、明示的に記録してください。
-                  </p>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => void verifyCompletion()}
-                    disabled={
-                      interactionLocked || loopState.status === "verifying"
-                    }
-                  >
-                    {loopState.status === "verifying"
-                      ? "完了を記録中…"
-                      : "完了を確認して記録する"}
-                  </button>
-                </div>
-              ) : null}
-
-              {loopState.status === "completed" ? (
-                <p className="state-message success-message">
-                  完了を記録しました。下の action_completed
-                  イベントを確認できます。
-                </p>
-              ) : null}
-            </section>
-          ) : null}
-
-          {loopState.completionEvent ? (
-            <section className="event-card" aria-labelledby="completion-title">
-              <div className="section-heading">
-                <h2 id="completion-title">完了イベント</h2>
-                <span className="status-badge">記録済み</span>
-              </div>
-              <dl className="context-list">
-                <div>
-                  <dt>イベント種別</dt>
-                  <dd>{loopState.completionEvent.event_type}</dd>
-                </div>
-                <div>
-                  <dt>シナリオ</dt>
-                  <dd>{loopState.completionEvent.scenario_id}</dd>
-                </div>
-                <div>
-                  <dt>キャンパス</dt>
-                  <dd>{loopState.completionEvent.campus}</dd>
-                </div>
-                <div>
-                  <dt>詳細</dt>
-                  <dd>
-                    <code className="event-payload">
-                      {formatPayload(loopState.completionEvent.payload)}
-                    </code>
-                  </dd>
-                </div>
-              </dl>
-            </section>
-          ) : null}
-
-          {mode === "workspace" ? (
-            <section
-              className="workspace-action-bar"
-              aria-labelledby="workspace-action-title"
-            >
-              <div>
-                <strong id="workspace-action-title">
-                  {loopState.status === "proposed"
-                    ? "提案を確認してください"
-                    : loopState.status === "approved"
-                      ? "行動後に完了を記録できます"
-                      : loopState.status === "tool-running" ||
-                          loopState.status === "resuming"
-                        ? "Agent Toolを実行しています"
-                        : "次の一歩をAgentに提案させます"}
-                </strong>
-                <small>対応している操作だけを表示しています。</small>
-              </div>
-              <div className="button-row">
-                {loopState.status === "proposed" ? (
-                  <>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      onClick={approveProposal}
-                      disabled={interactionLocked}
-                    >
-                      提案を承認する
-                    </button>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={rejectProposal}
-                      disabled={interactionLocked}
-                    >
-                      却下する
-                    </button>
-                  </>
-                ) : loopState.status === "approved" ||
-                  loopState.status === "verifying" ? (
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => void verifyCompletion()}
-                    disabled={
-                      interactionLocked || loopState.status === "verifying"
-                    }
-                  >
-                    {loopState.status === "verifying"
-                      ? "完了を記録中…"
-                      : "完了を確認して記録する"}
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="primary-button"
-                    onClick={() => void requestProposal()}
-                    disabled={
-                      interactionLocked ||
-                      loopState.status === "proposing" ||
-                      loopState.status === "tool-running" ||
-                      loopState.status === "resuming"
-                    }
-                  >
-                    {loopState.status === "proposing"
-                      ? "提案を取得中…"
-                      : loopState.status === "tool-running"
-                        ? `${toolDisplayName(loopState.pendingToolName)}を処理中…`
-                        : loopState.status === "resuming"
-                          ? "提案を再開中…"
-                          : loopState.proposal
-                            ? "次の提案を作成"
-                            : "次の一歩を提案"}
-                  </button>
-                )}
-              </div>
-            </section>
-          ) : null}
-
-          <p className="footer-note">
-            この静的fixture自体は提案の作成や外部サービスへの書き込みは行いません。
-            Agent APIへの接続は、提案作成と完了記録を押したときだけです。
-          </p>
-        </section>
       </div>
     </main>
   );

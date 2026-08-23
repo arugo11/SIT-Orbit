@@ -4,6 +4,7 @@ set -euo pipefail
 : "${ORBIT_AZURE_RESOURCE_GROUP:?Set ORBIT_AZURE_RESOURCE_GROUP to the demo resource group.}"
 : "${ORBIT_AZURE_CONTAINER_APP:?Set ORBIT_AZURE_CONTAINER_APP to the Container App name.}"
 : "${ORBIT_AZURE_API_TOKEN:?Set ORBIT_AZURE_API_TOKEN to a random demo access token.}"
+: "${ORBIT_GOOGLE_OAUTH_CLIENT_ID:?Set ORBIT_GOOGLE_OAUTH_CLIENT_ID to the public Chrome OAuth client ID.}"
 
 subscription_args=()
 if [[ -n "${ORBIT_AZURE_SUBSCRIPTION:-}" ]]; then
@@ -11,7 +12,10 @@ if [[ -n "${ORBIT_AZURE_SUBSCRIPTION:-}" ]]; then
 fi
 
 secret_name="${ORBIT_AZURE_API_TOKEN_SECRET_NAME:-orbit-api-token}"
-env_vars=("ORBIT_API_TOKEN=secretref:${secret_name}")
+env_vars=(
+  "ORBIT_API_TOKEN=secretref:${secret_name}"
+  "ORBIT_GOOGLE_OAUTH_CLIENT_ID=${ORBIT_GOOGLE_OAUTH_CLIENT_ID}"
+)
 if [[ -n "${ORBIT_EXTENSION_ORIGIN:-}" ]]; then
   env_vars+=("ORBIT_CORS_ORIGINS=${ORBIT_EXTENSION_ORIGIN%/}")
 fi
@@ -55,4 +59,14 @@ if [[ -n "${ORBIT_EXTENSION_ORIGIN:-}" ]]; then
   fi
 fi
 
-printf 'Enabled Bearer authentication for %s.\n' "${ORBIT_AZURE_CONTAINER_APP}"
+google_client_readback="$(az containerapp show \
+  --name "${ORBIT_AZURE_CONTAINER_APP}" \
+  --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
+  --query "properties.template.containers[0].env[?name=='ORBIT_GOOGLE_OAUTH_CLIENT_ID'].value | [0]" \
+  --output tsv)"
+if [[ "${google_client_readback}" != "${ORBIT_GOOGLE_OAUTH_CLIENT_ID}" ]]; then
+  printf 'Google OAuth client ID verification failed.\n' >&2
+  exit 1
+fi
+
+printf 'Enabled managed Agent authentication for %s.\n' "${ORBIT_AZURE_CONTAINER_APP}"

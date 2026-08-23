@@ -28,6 +28,44 @@
         }
       }
     },
+    "/v1/auth/session": {
+      "post": {
+        "summary": "Create Agent Session",
+        "operationId": "create_agent_session_v1_auth_session_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSessionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/capabilities": {
       "get": {
         "summary": "Capabilities",
@@ -591,6 +629,46 @@
           "calls"
         ],
         "title": "AgentRunToolRequired"
+      },
+      "AgentSessionRequest": {
+        "properties": {
+          "id_token": {
+            "type": "string",
+            "maxLength": 8192,
+            "minLength": 1,
+            "title": "Id Token"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id_token"
+        ],
+        "title": "AgentSessionRequest",
+        "description": "A Google identity assertion used only to create an Agent session."
+      },
+      "AgentSessionResponse": {
+        "properties": {
+          "access_token": {
+            "type": "string",
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Access Token"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "access_token",
+          "expires_at"
+        ],
+        "title": "AgentSessionResponse",
+        "description": "An opaque, short-lived bearer token for Agent API requests."
       },
       "AgentToolCall": {
         "properties": {
