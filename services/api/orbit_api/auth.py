@@ -11,12 +11,20 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import id_token as google_id_token
 
 
 class AgentAuthenticationError(ValueError):
     """Raised when a browser identity cannot be trusted for an Agent session."""
+
+
+class AgentAuthenticationUnavailable(RuntimeError):
+    """Raised when managed authentication is unavailable or misconfigured."""
 
 
 @dataclass(frozen=True)
@@ -32,20 +40,54 @@ def _configured_domains() -> set[str]:
     return {value.strip().lower() for value in values.split(",") if value.strip()}
 
 
-def _fetch_google_token_info(id_token: str) -> dict[str, Any]:
-    query = urlencode({"id_token": id_token})
+def _oauth_configuration() -> tuple[str, str, str]:
+    client_id = os.getenv("ORBIT_GOOGLE_OAUTH_CLIENT_ID", "").strip()
+    client_secret = os.getenv("ORBIT_GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
+    redirect_uri = os.getenv("ORBIT_GOOGLE_OAUTH_REDIRECT_URI", "").strip()
+    if not client_id or not client_secret or not redirect_uri:
+        raise AgentAuthenticationUnavailable("Managed Agent authentication is not configured.")
+    return client_id, client_secret, redirect_uri
+
+
+def _exchange_google_authorization_code(
+    authorization_code: str,
+    code_verifier: str,
+) -> str:
+    client_id, client_secret, redirect_uri = _oauth_configuration()
+    body = urlencode(
+        {
+            "code": authorization_code,
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+            "code_verifier": code_verifier,
+        }
+    ).encode("utf-8")
     request = Request(
-        f"https://oauth2.googleapis.com/tokeninfo?{query}",
-        headers={"Accept": "application/json"},
+        "https://oauth2.googleapis.com/token",
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
     )
     try:
         with urlopen(request, timeout=8) as response:  # noqa: S310 - fixed Google URL
             payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as error:
+        if error.code in {400, 401}:
+            raise AgentAuthenticationError("Google authorization code was rejected.") from error
+        raise AgentAuthenticationUnavailable("Google token exchange is unavailable.") from error
     except Exception as error:  # pragma: no cover - network failures are mocked in tests
-        raise AgentAuthenticationError("Google identity verification failed.") from error
+        raise AgentAuthenticationUnavailable("Google token exchange is unavailable.") from error
     if not isinstance(payload, dict):
-        raise AgentAuthenticationError("Google identity verification failed.")
-    return payload
+        raise AgentAuthenticationUnavailable("Google token exchange returned an invalid response.")
+    returned_id_token = payload.get("id_token")
+    if not isinstance(returned_id_token, str) or not returned_id_token:
+        raise AgentAuthenticationError("Google identity token was not returned.")
+    return returned_id_token
 
 
 def _validate_google_payload(payload: dict[str, Any], now: float | None = None) -> GoogleIdentity:
@@ -58,6 +100,8 @@ def _validate_google_payload(payload: dict[str, Any], now: float | None = None) 
         raise AgentAuthenticationError("Google identity verification failed.")
     if payload.get("aud") != client_id:
         raise AgentAuthenticationError("Google identity verification failed.")
+    if not str(payload.get("sub", "")).strip():
+        raise AgentAuthenticationError("Google identity verification failed.")
     if str(payload.get("email_verified", "")).lower() != "true":
         raise AgentAuthenticationError("Google identity verification failed.")
 
@@ -66,6 +110,9 @@ def _validate_google_payload(payload: dict[str, Any], now: float | None = None) 
         raise AgentAuthenticationError("Google identity verification failed.")
     domain = email.rsplit("@", 1)[1]
     if domain not in _configured_domains():
+        raise AgentAuthenticationError("Google identity verification failed.")
+    hosted_domain = str(payload.get("hd", "")).strip().lower()
+    if hosted_domain not in _configured_domains():
         raise AgentAuthenticationError("Google identity verification failed.")
 
     try:
@@ -77,10 +124,37 @@ def _validate_google_payload(payload: dict[str, Any], now: float | None = None) 
     return GoogleIdentity(email=email)
 
 
-async def verify_google_id_token(id_token: str) -> GoogleIdentity:
-    """Verify through Google's tokeninfo endpoint without retaining the token."""
+def _verify_google_id_token(id_token: str, client_id: str) -> dict[str, Any]:
+    try:
+        payload = google_id_token.verify_oauth2_token(
+            id_token,
+            GoogleAuthRequest(),
+            client_id,
+        )
+    except ValueError as error:
+        raise AgentAuthenticationError("Google identity verification failed.") from error
+    except Exception as error:  # pragma: no cover - transport failures are mocked in tests
+        raise AgentAuthenticationUnavailable(
+            "Google identity verification is unavailable."
+        ) from error
+    if not isinstance(payload, dict):
+        raise AgentAuthenticationError("Google identity verification failed.")
+    return payload
 
-    payload = await asyncio.to_thread(_fetch_google_token_info, id_token)
+
+async def exchange_google_authorization_code(
+    authorization_code: str,
+    code_verifier: str,
+) -> GoogleIdentity:
+    """Exchange one-time code material and verify the returned Google identity."""
+
+    client_id, _, _ = _oauth_configuration()
+    returned_id_token = await asyncio.to_thread(
+        _exchange_google_authorization_code,
+        authorization_code,
+        code_verifier,
+    )
+    payload = await asyncio.to_thread(_verify_google_id_token, returned_id_token, client_id)
     return _validate_google_payload(payload)
 
 

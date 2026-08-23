@@ -9,6 +9,7 @@ const GOOGLE_AUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_SCOPES = ["openid", "email"];
 export const GOOGLE_AGENT_REDIRECT_PATH = "agent-auth";
 const REFRESH_MARGIN_MS = 30_000;
+const PKCE_RANDOM_BYTES = 64;
 
 interface StoredSession {
   accessToken: string;
@@ -74,25 +75,62 @@ async function writeStoredSession(session: StoredSession): Promise<void> {
   await chrome.storage?.session?.set({ [SESSION_STORAGE_KEY]: session });
 }
 
-function parseIdToken(responseUrl: string, expectedState: string): string {
+interface GoogleAuthorizationCode {
+  authorizationCode: string;
+  codeVerifier: string;
+}
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary)
+    .replace(/\+/gu, "-")
+    .replace(/\//gu, "_")
+    .replace(/=+$/gu, "");
+}
+
+function createCodeVerifier(): string {
+  return base64Url(crypto.getRandomValues(new Uint8Array(PKCE_RANDOM_BYTES)));
+}
+
+async function createCodeChallenge(codeVerifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(codeVerifier),
+  );
+  return base64Url(new Uint8Array(digest));
+}
+
+function parseAuthorizationCode(
+  responseUrl: string,
+  expectedRedirectUri: string,
+  expectedState: string,
+): string {
   let url: URL;
   try {
     url = new URL(responseUrl);
   } catch {
     throw new ManagedAgentAuthenticationError();
   }
-  const values = new URLSearchParams(url.hash.replace(/^#/u, ""));
-  if (values.get("state") !== expectedState) {
+  const redirect = new URL(expectedRedirectUri);
+  if (url.origin !== redirect.origin || url.pathname !== redirect.pathname) {
     throw new ManagedAgentAuthenticationError();
   }
-  const idToken = values.get("id_token");
-  if (!idToken) {
+  if (
+    url.searchParams.get("state") !== expectedState ||
+    url.searchParams.get("iss") !== "https://accounts.google.com" ||
+    url.searchParams.has("error")
+  ) {
     throw new ManagedAgentAuthenticationError();
   }
-  return idToken;
+  const authorizationCode = url.searchParams.get("code");
+  if (!authorizationCode) throw new ManagedAgentAuthenticationError();
+  return authorizationCode;
 }
 
-async function requestGoogleIdToken(): Promise<string> {
+async function requestGoogleAuthorizationCode(
+  selectAccount: boolean,
+): Promise<GoogleAuthorizationCode> {
   if (
     typeof chrome.identity?.launchWebAuthFlow !== "function" ||
     typeof chrome.identity?.getRedirectURL !== "function"
@@ -100,18 +138,23 @@ async function requestGoogleIdToken(): Promise<string> {
     throw new ManagedAgentAuthenticationError();
   }
   const state = crypto.randomUUID();
+  const codeVerifier = createCodeVerifier();
+  const codeChallenge = await createCodeChallenge(codeVerifier);
   const redirectUri = chrome.identity.getRedirectURL(
     GOOGLE_AGENT_REDIRECT_PATH,
   );
   const params = new URLSearchParams({
     client_id: agentClientId(),
     redirect_uri: redirectUri,
-    response_type: "id_token",
+    response_type: "code",
+    response_mode: "query",
     scope: GOOGLE_SCOPES.join(" "),
-    nonce: crypto.randomUUID(),
     state,
-    prompt: "select_account",
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
+    access_type: "online",
   });
+  if (selectAccount) params.set("prompt", "select_account");
   try {
     const responseUrl = await chrome.identity.launchWebAuthFlow({
       url: `${GOOGLE_AUTH_ENDPOINT}?${params.toString()}`,
@@ -120,7 +163,14 @@ async function requestGoogleIdToken(): Promise<string> {
     if (typeof responseUrl !== "string") {
       throw new ManagedAgentAuthenticationError();
     }
-    return parseIdToken(responseUrl, state);
+    return {
+      authorizationCode: parseAuthorizationCode(
+        responseUrl,
+        redirectUri,
+        state,
+      ),
+      codeVerifier,
+    };
   } catch (error) {
     if (error instanceof ManagedAgentAuthenticationError) throw error;
     throw new ManagedAgentAuthenticationError();
@@ -142,9 +192,11 @@ export function createManagedAgentSessionProvider({
   let memorySession: StoredSession | null = null;
 
   return async (forceRefresh = false): Promise<string | null> => {
+    let hadPreviousSession = forceRefresh || memorySession !== null;
     if (!forceRefresh) {
       if (sessionIsUsable(memorySession)) return memorySession.accessToken;
       const stored = await readStoredSession();
+      hadPreviousSession ||= stored !== null;
       if (sessionIsUsable(stored)) {
         memorySession = stored;
         return stored.accessToken;
@@ -155,9 +207,13 @@ export function createManagedAgentSessionProvider({
     // same managed endpoint with no bearer header; production builds inject the
     // OAuth client ID and therefore take the authenticated path above.
     if (typeof chrome.identity?.launchWebAuthFlow !== "function") return null;
-    const idToken = await requestGoogleIdToken();
-    const session: AgentSessionResponse =
-      await exchangeClient.createSession(idToken);
+    const authorization = await requestGoogleAuthorizationCode(
+      !hadPreviousSession,
+    );
+    const session: AgentSessionResponse = await exchangeClient.createSession({
+      authorization_code: authorization.authorizationCode,
+      code_verifier: authorization.codeVerifier,
+    });
     const next: StoredSession = {
       accessToken: session.access_token,
       expiresAt: session.expires_at,

@@ -497,7 +497,7 @@ describe("AgentApiClient", () => {
     );
   });
 
-  it("exchanges an ID token without forwarding a bearer credential", async () => {
+  it("exchanges one-time PKCE material without forwarding a bearer credential", async () => {
     const fetcher = createFetcher(
       jsonResponse({
         access_token: "opaque-session",
@@ -510,7 +510,12 @@ describe("AgentApiClient", () => {
       fetcher,
     });
 
-    await expect(client.createSession("google-id-token")).resolves.toEqual({
+    await expect(
+      client.createSession({
+        authorization_code: "one-time-code",
+        code_verifier: "v".repeat(43),
+      }),
+    ).resolves.toEqual({
       access_token: "opaque-session",
       expires_at: "2026-08-23T04:30:00Z",
     });
@@ -519,7 +524,10 @@ describe("AgentApiClient", () => {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id_token: "google-id-token" }),
+        body: JSON.stringify({
+          authorization_code: "one-time-code",
+          code_verifier: "v".repeat(43),
+        }),
       },
     );
   });

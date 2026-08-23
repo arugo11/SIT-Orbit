@@ -1361,17 +1361,19 @@ export class AgentApiClient {
     this.fetcher = options.fetcher ?? defaultFetcher;
   }
 
-  async createSession(idToken: string): Promise<AgentSessionResponse> {
-    if (!idToken.trim())
-      throw new TypeError("Google ID token must not be empty.");
+  async createSession(
+    request: AgentSessionRequest,
+  ): Promise<AgentSessionResponse> {
+    if (!request.authorization_code.trim())
+      throw new TypeError("Google authorization code must not be empty.");
+    if (!request.code_verifier.trim())
+      throw new TypeError("Google PKCE verifier must not be empty.");
     let response: Response;
     try {
       response = await this.fetcher(`${this.baseUrl}/v1/auth/session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id_token: idToken,
-        } satisfies AgentSessionRequest),
+        body: JSON.stringify(request),
       });
     } catch (error) {
       throw this.networkError(error);

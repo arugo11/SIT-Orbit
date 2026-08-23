@@ -38,9 +38,14 @@ class AgentCapabilities(StrictApiModel):
 
 
 class AgentSessionRequest(StrictApiModel):
-    """A Google identity assertion used only to create an Agent session."""
+    """One-time Google authorization material used to create an Agent session."""
 
-    id_token: StrictStr = Field(min_length=1, max_length=8192)
+    authorization_code: StrictStr = Field(min_length=1, max_length=4096)
+    code_verifier: StrictStr = Field(
+        min_length=43,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._~-]+$",
+    )
 
 
 class AgentSessionResponse(StrictApiModel):

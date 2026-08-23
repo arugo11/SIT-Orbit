@@ -60,6 +60,9 @@ describe("production extension contract", () => {
     );
     expect(buildSource).toContain("ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID");
     expect(buildSource).toContain("ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID");
+    expect(buildSource).not.toContain("legacyOAuthClientId");
+    expect(buildSource).not.toContain("ORBIT_GOOGLE_OAUTH_CLIENT_ID");
+    expect(buildSource).not.toContain("ORBIT_GOOGLE_OAUTH_CLIENT_SECRET");
     for (const source of [manifestSource, buildSource]) {
       expect(source).not.toMatch(/googleapis\.com\/auth\/drive/i);
       expect(source).not.toMatch(/googleapis\.com\/auth\/drive\.readonly/i);

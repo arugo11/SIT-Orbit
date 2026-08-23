@@ -80,7 +80,7 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
 
 ### Chrome権限と管理認証
 
-通常のAgent会話は設定なしで実行できる。Productionでは固定Azure Agent APIを使用し、Chrome Identityの`launchWebAuthFlow`でSITアカウントのGoogle ID tokenを取得して`POST /v1/auth/session`へ交換する。Agent用Google OAuth clientはWeb application型とし、`https://<extension-id>.chromiumapp.org/agent-auth`をAuthorized redirect URIへ完全一致で登録する。Google ID tokenとOAuth tokenは認証交換以外へ渡さず、交換後の短命なsession tokenだけをメモリと`chrome.storage.session`に保持する。ローカルのAgent APIは開発時に明示的な環境変数を設定した場合だけ利用する。
+通常のAgent会話は設定なしで実行できる。Productionでは固定Azure Agent APIを使用し、Chrome Identityの`launchWebAuthFlow`でSITアカウントを選択できる認可コードフローを開始する。Agent用Google OAuth clientはWeb application型とし、`https://<extension-id>.chromiumapp.org/agent-auth`をAuthorized redirect URIへ完全一致で登録する。拡張機能はS256 PKCE、`state`、`response_type=code`を使い、one-time codeとverifierだけを`POST /v1/auth/session`へ渡す。APIはAzure Secretのclient secretでcodeを交換し、Google ID tokenを検証後に破棄する。拡張機能が保持する認証情報は、交換後の短命なsession tokenと期限だけに限定し、メモリと`chrome.storage.session`へ保存する。ローカルのAgent APIは開発時に明示的な環境変数を設定した場合だけ利用する。
 
 拡張機能の権限は、ScombZ、Connector、公開Web読取、Agent API、認証交換を含む。全サイトhost permissionはインストールまたは更新時のChrome権限確認で一度だけ扱い、Chat中に読み取り許可を表示しない。
 
@@ -430,7 +430,7 @@ ExtensionのSide Panelから、利用者が明示的に接続、更新、再認�
 トークンをFastAPI、DOM、Extension storage、ログへ渡さず、予定の書き込みも行わない。OAuth失効以外の外部エンドポイントへトークンを送信しない。
 
 通常のfixture CIにはGoogle OAuth client IDを含めない。
-登録済みAgent Web application OAuth client IDは`ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID`のbuild-time設定として後から注入できる。Calendar用のChrome Extension OAuth client IDは`ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID`へ分ける。Calendar API有効化、同意設定、demo accountを含むProvider acceptanceが成立するまでは、実Google連携を成功済みとは扱わない。
+登録済みAgent Web application OAuth client IDは`ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID`のbuild-time設定として注入する。APIは同じIDを`ORBIT_GOOGLE_OAUTH_CLIENT_ID`、client secretを`ORBIT_GOOGLE_OAUTH_CLIENT_SECRET`のAzure Secret参照、完全一致のredirect URIを`ORBIT_GOOGLE_OAUTH_REDIRECT_URI`として受け取る。Calendar用のChrome Extension OAuth client IDは`ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID`へ分ける。Calendar API有効化、同意設定、demo accountを含むProvider acceptanceが成立するまでは、実Google連携を成功済みとは扱わない。
 
 ### Branch 5 Google Drive選択ファイルの実装境界
 
@@ -463,7 +463,7 @@ Static Web Apps Freeは、静的ホスティング、GitHub連携、SSL、管理
 
 Container Apps Consumptionは、利用量に応じた課金とscale-to-zeroを利用できるため、常時稼働の仮想マシンよりデモ向きである。[Container Appsの環境](https://learn.microsoft.com/en-us/azure/container-apps/environment)
 
-外部公開したAgent APIは、`ORBIT_API_TOKEN`をContainer Apps Secretから設定し、`/v1/*`へ既存の管理用Bearer認証を要求する。Chrome拡張機能はChrome IdentityでSITアカウントを認証し、`POST /v1/auth/session`で短命なopaque session tokenへ交換して同じBearer境界を使う。Google ID token、OAuth token、session tokenはログやChat履歴へ保存せず、session tokenはメモリと`chrome.storage.session`だけに保持する。`/health`はscale-to-zeroからの起動と監視に使うため公開のままにする。API側のCORSは`ORBIT_CORS_ORIGINS`へ明示した拡張機能originだけを許可し、ワイルドカードを使わない。通常のローカル開発とCIでは`ORBIT_API_TOKEN`と`ORBIT_CORS_ORIGINS`を設定しない。
+外部公開したAgent APIは、`ORBIT_API_TOKEN`をContainer Apps Secretから設定し、`/v1/*`へ既存の管理用Bearer認証を要求する。Chrome拡張機能はChrome Identityの認可コード＋PKCEでSITアカウントを認証し、`POST /v1/auth/session`で短命なopaque session tokenへ交換して同じBearer境界を使う。authorization code、PKCE verifier、Google ID/access/refresh token、client secret、session tokenはログやChat履歴へ保存せず、拡張機能はsession tokenと期限だけをメモリと`chrome.storage.session`に保持する。`/health`はscale-to-zeroからの起動と監視に使うため公開のままにする。API側のCORSは`ORBIT_CORS_ORIGINS`へ明示した拡張機能originだけを許可し、ワイルドカードを使わない。通常のローカル開発とCIではGoogle OAuth secret、`ORBIT_API_TOKEN`、`ORBIT_CORS_ORIGINS`を設定せず、認証交換はmockする。
 
 Azure Functions Timerは、短時間でステートレスな定期処理に使う。
 

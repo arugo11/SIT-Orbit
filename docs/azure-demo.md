@@ -147,9 +147,14 @@ export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
 export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
 export ORBIT_AZURE_API_TOKEN="$(openssl rand -hex 32)"
 export ORBIT_GOOGLE_OAUTH_CLIENT_ID="<agent-web-application-oauth-client-id>"
+read -r -s -p "Google OAuth client secret: " ORBIT_GOOGLE_OAUTH_CLIENT_SECRET
+export ORBIT_GOOGLE_OAUTH_CLIENT_SECRET
+export ORBIT_GOOGLE_OAUTH_REDIRECT_URI="https://<extension-id>.chromiumapp.org/agent-auth"
 export ORBIT_EXTENSION_ORIGIN="chrome-extension://<extension-id>"
 scripts/azure/configure-api-auth.sh
 ```
+
+`ORBIT_GOOGLE_OAUTH_CLIENT_SECRET`はGoogle Cloudから安全な一時入力で受け取り、shell履歴、`.env`、ログ、Chatへ残さない。スクリプトは値を表示せず、Container Apps Secret `orbit-google-oauth-client-secret`へ保存し、APIにはSecret参照だけを設定する。
 
 拡張機能をbuildするシェルでは、同じAgent client IDを次の変数へ渡す。
 
@@ -159,7 +164,7 @@ export ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID="<chrome-extension-oauth-client-id
 pnpm --filter @sit-orbit/extension build
 ```
 
-Agent認証は`chrome.identity.launchWebAuthFlow`を使ってGoogleのID tokenを取得するため、`ORBIT_GOOGLE_OAUTH_CLIENT_ID`にはGoogle Cloudの**Web application** OAuth client IDを指定する。Chrome Extension client IDをここへ指定してはいけない。Web clientのAuthorized redirect URIには、拡張機能IDを実際に`chrome://extensions`で確認したうえで、次のURIを完全一致で1件登録する。
+Agent認証は`chrome.identity.launchWebAuthFlow`でS256 PKCE付きの認可コードを取得し、APIがGoogleのtoken endpointでcodeを交換する。`ORBIT_GOOGLE_OAUTH_CLIENT_ID`にはGoogle Cloudの**Web application** OAuth client IDを指定し、Chrome Extension client IDを指定してはいけない。Web clientのAuthorized redirect URIには、拡張機能IDを実際に`chrome://extensions`で確認したうえで、次のURIを完全一致で1件登録する。
 
 ```text
 https://<extension-id>.chromiumapp.org/agent-auth
@@ -167,14 +172,14 @@ https://<extension-id>.chromiumapp.org/agent-auth
 
 `https`、拡張機能ID、`/agent-auth`、末尾スラッシュの有無まで一致させる。ワイルドカードや`chrome-extension://`のoriginでは代用できない。拡張機能を別の場所から読み込んでIDが変わった場合は、URIも登録し直す。
 
-Agentのbuild時はAPIと同じWeb client IDを`ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID`へ設定する。Google Calendarの`chrome.identity.getAuthToken`用にChrome Extension clientを使う場合だけ、別のIDを`ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID`へ設定する。後者はmanifestの`oauth2.client_id`へ入り、AgentのID token交換には使わない。Calendarを使わない場合は後者を空欄にできる。
+Agentのbuild時はAPIと同じWeb client IDを`ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID`へ設定する。Google Calendarの`chrome.identity.getAuthToken`用にChrome Extension clientを使う場合だけ、別のIDを`ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID`へ設定する。後者はmanifestの`oauth2.client_id`へ入り、Agentのcode交換には使わない。Calendarを使わない場合は後者を空欄にできる。
 
-利用者がChatを送信すると、Chrome IdentityのGoogle ID tokenを`POST /v1/auth/session`へ一度だけ送り、返された短命session tokenで既存の`/v1/*`へアクセスする。ID token、OAuth token、managed session tokenはChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。session tokenはメモリと`chrome.storage.session`だけに保持し、期限切れまたは401時に一度だけ再認証する。
+利用者がChatを送信すると、Chrome Identityが返したone-time authorization codeとPKCE verifierを`POST /v1/auth/session`へ一度だけ送り、返された短命session tokenで既存の`/v1/*`へアクセスする。APIはcode交換で受け取ったGoogle ID tokenを検証後に破棄し、refresh tokenは要求しない。code、verifier、Google token、managed session tokenはChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。session tokenはメモリと`chrome.storage.session`だけに保持し、期限切れまたは401時に一度だけ再認証する。
 
 `ORBIT_EXTENSION_ORIGIN`を指定した場合だけ、その拡張機能originからの`GET`、`POST`、CORS preflightと`Authorization`、`Content-Type` headerを許可する。ワイルドカードoriginは設定せず、`chrome://extensions`に表示された実際のIDを使う。
 
 `/health`は監視用に認証なしで応答する。Bearer tokenの正否は実際のChat送信時に検証され、無効なtokenでは`401`となる。ローカル開発とCIは`ORBIT_API_TOKEN`を設定しないため、従来どおり認証なしでfixture APIを利用できる。
-`POST /v1/auth/session`はGoogle issuer、audience、メール確認状態、許可ドメイン、期限を検証し、失敗時は401を返す。既存の管理用Bearerは運用・監視用に残し、拡張機能の通常Chatには渡さない。
+`POST /v1/auth/session`はGoogle ID tokenの署名、issuer、audience、期限、メール確認状態、hosted domain、メールドメインを検証し、拒否されたcodeやidentityは401、Google障害または設定不足は503を返す。既存の管理用Bearerは運用・監視用に残し、拡張機能の通常Chatには渡さない。
 既定の許可ドメインは`@sic.shibaura-it.ac.jp`と`@shibaura-it.ac.jp`である。個人Gmailなどはredirect URIを直した後もAgent session交換で401となるため、SITアカウントを選択する。
 
 ## 2026年8月22日のProvider Acceptance

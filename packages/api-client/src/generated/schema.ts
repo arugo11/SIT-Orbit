@@ -243,11 +243,13 @@ export interface components {
         };
         /**
          * AgentSessionRequest
-         * @description A Google identity assertion used only to create an Agent session.
+         * @description One-time Google authorization material used to create an Agent session.
          */
         AgentSessionRequest: {
-            /** Id Token */
-            id_token: string;
+            /** Authorization Code */
+            authorization_code: string;
+            /** Code Verifier */
+            code_verifier: string;
         };
         /**
          * AgentSessionResponse

@@ -23,8 +23,9 @@ from orbit_api.agent.chat import (
 from orbit_api.agent.runs import ConsumedRunError, ExpiredRunError, UnknownRunError
 from orbit_api.auth import (
     AgentAuthenticationError,
+    AgentAuthenticationUnavailable,
     SessionTokenStore,
-    verify_google_id_token,
+    exchange_google_authorization_code,
 )
 from orbit_api.models import (
     ActionProposal,
@@ -150,9 +151,17 @@ async def health() -> dict[str, str]:
 @app.post("/v1/auth/session", response_model=AgentSessionResponse)
 async def create_agent_session(request: AgentSessionRequest) -> AgentSessionResponse:
     try:
-        await verify_google_id_token(request.id_token)
+        await exchange_google_authorization_code(
+            request.authorization_code,
+            request.code_verifier,
+        )
     except AgentAuthenticationError as error:
         raise HTTPException(status_code=401, detail="Agent authentication failed.") from error
+    except AgentAuthenticationUnavailable as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent authentication is unavailable.",
+        ) from error
     access_token, expires_at = agent_sessions.issue()
     return AgentSessionResponse(access_token=access_token, expires_at=expires_at)
 

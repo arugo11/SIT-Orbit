@@ -632,20 +632,28 @@
       },
       "AgentSessionRequest": {
         "properties": {
-          "id_token": {
+          "authorization_code": {
             "type": "string",
-            "maxLength": 8192,
+            "maxLength": 4096,
             "minLength": 1,
-            "title": "Id Token"
+            "title": "Authorization Code"
+          },
+          "code_verifier": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 43,
+            "pattern": "^[A-Za-z0-9._~-]+$",
+            "title": "Code Verifier"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "id_token"
+          "authorization_code",
+          "code_verifier"
         ],
         "title": "AgentSessionRequest",
-        "description": "A Google identity assertion used only to create an Agent session."
+        "description": "One-time Google authorization material used to create an Agent session."
       },
       "AgentSessionResponse": {
         "properties": {

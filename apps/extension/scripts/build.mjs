@@ -42,26 +42,14 @@ try {
   // Local OAuth configuration is optional for CI and fixture builds.
 }
 
-// Agent auth uses a Web application client because launchWebAuthFlow sends an
-// explicit chromiumapp.org redirect URI. Calendar's getAuthToken flow keeps a
-// separate Chrome Extension client in manifest.oauth2.
+// Agent auth uses a Web application client for an authorization-code + PKCE
+// exchange. Calendar keeps a separate Chrome Extension client in manifest.oauth2.
 const agentOAuthClientId =
   process.env.ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID?.trim() ||
   parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID");
-const legacyOAuthClientId =
-  process.env.ORBIT_GOOGLE_OAUTH_CLIENT_ID?.trim() ||
-  parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_OAUTH_CLIENT_ID");
 const extensionOAuthClientId =
   process.env.ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID?.trim() ||
-  parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID") ||
-  legacyOAuthClientId;
-
-if (legacyOAuthClientId && !agentOAuthClientId) {
-  console.warn(
-    "Using legacy ORBIT_GOOGLE_OAUTH_CLIENT_ID only for the Calendar " +
-      "manifest client; set ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID for Agent auth.",
-  );
-}
+  parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID");
 
 const bundleOptions = {
   bundle: true,
