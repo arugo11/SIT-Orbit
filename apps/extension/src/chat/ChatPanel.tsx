@@ -752,10 +752,16 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_item_read") {
+      const libraryResourceRef = argumentsObject.resource_ref as string;
+      const manifestRecord =
+        conversationAfterTool.contextManifest.library_records.find(
+          (item) => item.resource_ref === libraryResourceRef,
+        );
       const library = await sendExtensionMessage<LibraryItemReadResponse>({
         type: "library-item-read",
         tool_call_id: call.tool_call_id,
-        resource_ref: argumentsObject.resource_ref as string,
+        resource_ref: libraryResourceRef,
+        ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
       });
       if (library.status === "permission_required") {
         throw new Error(
@@ -766,7 +772,7 @@ export function ChatPanel({
         request = toolResultRequest(call.tool_call_id, call.name, {
           schema_version: "v1",
           status: "unavailable",
-          resource_ref: argumentsObject.resource_ref as string,
+          resource_ref: libraryResourceRef,
           item: null,
           reason_code: library.reason_code,
         });

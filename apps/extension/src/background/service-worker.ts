@@ -2226,7 +2226,43 @@ async function handleLibraryItemRead(
       pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
     };
   }
-  const recordId = libraryRecordRefs.get(message.resource_ref);
+  const mappedRecordId = libraryRecordRefs.get(message.resource_ref);
+  let manifestRecordId: string | null = null;
+  if (message.record_url !== undefined) {
+    try {
+      const url = new URL(message.record_url);
+      if (
+        url.origin !== LIBRARY_OPAC_ORIGIN ||
+        url.protocol !== "https:" ||
+        !url.pathname.startsWith(LIBRARY_RECORD_PATH_PREFIX) ||
+        url.search !== "" ||
+        url.hash !== ""
+      ) {
+        return libraryUnavailable("invalid_record_url");
+      }
+      const candidate = decodeURIComponent(
+        url.pathname.slice(LIBRARY_RECORD_PATH_PREFIX.length),
+      );
+      if (
+        !candidate ||
+        !/^[^/?#\s]{1,200}$/u.test(candidate) ||
+        createLibraryResourceRef(candidate) !== message.resource_ref
+      ) {
+        return libraryUnavailable("resource_ref_mismatch");
+      }
+      manifestRecordId = candidate;
+    } catch {
+      return libraryUnavailable("invalid_record_url");
+    }
+  }
+  if (
+    mappedRecordId &&
+    manifestRecordId &&
+    mappedRecordId !== manifestRecordId
+  ) {
+    return libraryUnavailable("resource_ref_mismatch");
+  }
+  const recordId = mappedRecordId ?? manifestRecordId;
   if (!recordId) return libraryUnavailable("unknown_resource_ref");
   let tabId: number | null = null;
   try {

@@ -8,6 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { createLibraryResourceRef } from "../connectors/library-discovery";
 import { MESSAGE_TYPES } from "../shared/messages";
 
 type EventCallback = (...args: never[]) => void;
@@ -1641,6 +1642,70 @@ describe("service worker side panel contract", () => {
         reason_code: "unexpected_opac_result",
       });
     }
+  });
+
+  it("re-resolves a manifest record URL after the worker map is empty", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript.mockResolvedValueOnce([
+      {
+        result: {
+          status: "known",
+          records: [
+            {
+              record_id: "RELOAD-1",
+              title: "再読込後も読める公開書誌",
+              authors: ["著者"],
+              subjects: [],
+              isbn: null,
+              publisher: null,
+              publication_year: 2026,
+              format: "book",
+              campus: "omiya",
+              url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1",
+              holdings: [
+                {
+                  campus: "omiya",
+                  location: "大宮図書館 3階",
+                  call_number: "548.3/R1",
+                  status: "available",
+                  due_date: null,
+                  reservation_count: 0,
+                },
+              ],
+              related_records: [],
+            },
+          ],
+        },
+      },
+    ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryItemRead,
+        tool_call_id: "manifest-library-read",
+        resource_ref: createLibraryResourceRef("RELOAD-1"),
+        record_url:
+          "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1",
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "known",
+        projection: expect.objectContaining({
+          item: expect.objectContaining({
+            title: "再読込後も読める公開書誌",
+          }),
+        }),
+      }),
+    );
+    expect(createTab).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1",
+      }),
+    );
   });
 
   it("strips SIT Search session state without collapsing distinct titles", async () => {
