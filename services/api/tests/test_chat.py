@@ -135,6 +135,8 @@ def test_fixture_chat_route_returns_completed_message(monkeypatch) -> None:
     assert payload["status"] == "completed"
     assert payload["message"]["evidence"] == []
     assert "今日の学習を相談したい" in payload["message"]["content_markdown"]
+    assert "接続設定" not in payload["message"]["content_markdown"]
+    assert "許可を確認" not in payload["message"]["content_markdown"]
 
 
 @pytest.mark.asyncio

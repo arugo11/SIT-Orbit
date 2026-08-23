@@ -422,8 +422,7 @@ class FixtureChatBackend:
             draft=ChatDraft(
                 content_markdown=(
                     "これはローカルの合成Agentです。\n\n"
-                    f"受け取った内容: {message}\n\n"
-                    "実データを取得する場合は、接続設定と許可を確認してから実行します。"
+                    f"受け取った内容: {message}"
                 )
             )
         )
