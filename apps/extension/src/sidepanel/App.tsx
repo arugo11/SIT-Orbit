@@ -1537,6 +1537,16 @@ export function App({
 
           <section
             className="settings-section"
+            aria-labelledby="agent-settings-title"
+          >
+            <h3 id="agent-settings-title">Agent接続</h3>
+            <p className="settings-message">
+              SITアカウントで管理されたAgentを利用します。
+            </p>
+          </section>
+
+          <section
+            className="settings-section"
             aria-labelledby="service-settings-title"
           >
             <h3 id="service-settings-title">学内・外部サービス</h3>
