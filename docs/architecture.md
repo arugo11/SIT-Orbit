@@ -80,7 +80,7 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
 
 ### Chrome権限と管理認証
 
-通常のAgent会話は設定なしで実行できる。Productionでは固定Azure Agent APIを使用し、Chrome Identityの`launchWebAuthFlow`でSITアカウントを選択できる認可コードフローを開始する。Agent用Google OAuth clientはWeb application型とし、`https://<extension-id>.chromiumapp.org/agent-auth`をAuthorized redirect URIへ完全一致で登録する。拡張機能はS256 PKCE、`state`、`response_type=code`を使い、one-time codeとverifierだけを`POST /v1/auth/session`へ渡す。APIはAzure Secretのclient secretでcodeを交換し、Google ID tokenを検証後に破棄する。拡張機能が保持する認証情報は、交換後の短命なsession tokenと期限だけに限定し、メモリと`chrome.storage.session`へ保存する。ローカルのAgent APIは開発時に明示的な環境変数を設定した場合だけ利用する。
+通常のAgent会話は、初回セットアップ完了後は追加設定なしで実行できる。初めて拡張機能を使うときにセットアップ画面を表示し、Chat送信より先にChrome Identityの`launchWebAuthFlow`でSITアカウントを選択できる認可コードフローを開始する。Agent用Google OAuth clientはWeb application型とし、`https://<extension-id>.chromiumapp.org/agent-auth`をAuthorized redirect URIへ完全一致で登録する。拡張機能はS256 PKCE、`state`、`response_type=code`を使い、one-time codeとverifierだけを`POST /v1/auth/session`へ渡す。APIはAzure Secretのclient secretでcodeを交換し、Google ID tokenを検証後に破棄する。認証後、公式のScombZ、SITRUS、Moodle、My Library、CASTログイン画面を開き、利用者が必要なパスワード・2段階認証をブラウザで完了してからChatを解放する。拡張機能が保持する認証情報は、交換後の短命なsession tokenと期限だけに限定し、メモリと`chrome.storage.session`へ保存する。初回セットアップの開始・完了時刻以外にログイン状態や資格情報を保存しない。ローカルのAgent APIは開発時に明示的な環境変数を設定した場合だけ利用する。
 
 拡張機能の権限は、ScombZ、Connector、公開Web読取、Agent API、認証交換を含む。全サイトhost permissionはインストールまたは更新時のChrome権限確認で一度だけ扱い、Chat中に読み取り許可を表示しない。
 

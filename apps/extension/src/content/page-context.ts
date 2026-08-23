@@ -1,5 +1,6 @@
 export const SCOMBZ_ORIGIN = "https://scombz.shibaura-it.ac.jp";
 export const SITRUS_ORIGIN = "https://sitrus.sic.shibaura-it.ac.jp";
+export const SITRUS_LOGIN_URL = `${SITRUS_ORIGIN}/SITRUS/login/SeisekiTsutiSho.html`;
 export const SITRUS_GRADE_PATHS = new Set([
   "/SITRUS/login/SeisekiTsutiSho.html",
   "/SITRUS/login/ShutokuTaniShukei.html",

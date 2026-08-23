@@ -174,7 +174,7 @@ https://<extension-id>.chromiumapp.org/agent-auth
 
 Agentのbuild時はAPIと同じWeb client IDを`ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID`へ設定する。Google Calendarの`chrome.identity.getAuthToken`用にChrome Extension clientを使う場合だけ、別のIDを`ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID`へ設定する。後者はmanifestの`oauth2.client_id`へ入り、Agentのcode交換には使わない。Calendarを使わない場合は後者を空欄にできる。
 
-利用者がChatを送信すると、Chrome Identityが返したone-time authorization codeとPKCE verifierを`POST /v1/auth/session`へ一度だけ送り、返された短命session tokenで既存の`/v1/*`へアクセスする。APIはcode交換で受け取ったGoogle ID tokenを検証後に破棄し、refresh tokenは要求しない。code、verifier、Google token、managed session tokenはChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。session tokenはメモリと`chrome.storage.session`だけに保持し、期限切れまたは401時に一度だけ再認証する。
+拡張機能を初めて使うときにセットアップ画面を表示し、Chat送信より前にChrome IdentityのSITアカウント認証を行う。Chrome Identityが返したone-time authorization codeとPKCE verifierは`POST /v1/auth/session`へ一度だけ送り、返された短命session tokenで既存の`/v1/*`へアクセスする。認証後はScombZ、SITRUS、Moodle、My Library、CASTの公式ログイン画面を重複なく開くため、利用者は各タブでパスワードや2段階認証を完了してからChatを開始する。APIはcode交換で受け取ったGoogle ID tokenを検証後に破棄し、refresh tokenは要求しない。code、verifier、Google token、managed session tokenはChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。session tokenはメモリと`chrome.storage.session`だけに保持し、初回セットアップの開始・完了時刻だけを`chrome.storage.local`へ保存する。期限切れまたは401時は一度だけ再認証する。
 
 `ORBIT_EXTENSION_ORIGIN`を指定した場合だけ、その拡張機能originからの`GET`、`POST`、CORS preflightと`Authorization`、`Content-Type` headerを許可する。ワイルドカードoriginは設定せず、`chrome://extensions`に表示された実際のIDを使う。
 

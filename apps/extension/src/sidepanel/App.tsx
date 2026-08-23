@@ -7,6 +7,16 @@ import {
   AZURE_DEMO_AGENT_API_BASE,
   type OrbitEvent,
 } from "../api/client";
+import {
+  CAMPUS_LOGIN_TARGETS,
+  type CampusLoginOpenResult,
+  clearFirstUseSetup,
+  managedIdentityAvailable,
+  markFirstUseSetupCompleted,
+  markFirstUseSetupStarted,
+  openCampusLoginTabs,
+  readFirstUseSetup,
+} from "../auth/first-use-setup";
 import { createManagedAgentSessionProvider } from "../auth/managed-agent-auth";
 import { ChatPanel } from "../chat/ChatPanel";
 import {
@@ -326,6 +336,132 @@ export interface AppProps {
   ) => Promise<DriveConnectorResult>;
   mode?: "sidepanel" | "workspace";
   workspaceSession?: WorkspaceSession;
+}
+
+type FirstUseSetupState =
+  | "checking"
+  | "needs_start"
+  | "awaiting_user"
+  | "error"
+  | "ready";
+
+const FIRST_USE_SETUP_RETRY_MESSAGE =
+  "初回ログインを準備できませんでした。もう一度お試しください。";
+
+function FirstUseSetupScreen({
+  state,
+  busy,
+  error,
+  result,
+  onStart,
+  onReopen,
+  onComplete,
+}: {
+  state: Exclude<FirstUseSetupState, "ready">;
+  busy: boolean;
+  error: string | null;
+  result: CampusLoginOpenResult | null;
+  onStart: () => void;
+  onReopen: () => void;
+  onComplete: () => void;
+}) {
+  if (state === "checking") {
+    return (
+      <main className="panel-shell first-use-shell" aria-busy="true">
+        <section className="first-use-card" aria-labelledby="first-use-title">
+          <p className="eyebrow">SIT ORBIT</p>
+          <h1 id="first-use-title">初回セットアップを確認しています…</h1>
+          <p className="first-use-message">
+            Agent認証と、学内サービスの公式ログイン画面を準備しています。
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  if (state === "needs_start" || state === "error") {
+    return (
+      <main className="panel-shell first-use-shell">
+        <section className="first-use-card" aria-labelledby="first-use-title">
+          <p className="eyebrow">SIT ORBIT</p>
+          <h1 id="first-use-title">初回ログインを済ませましょう</h1>
+          <p className="first-use-message">
+            Chatを使う前に、SITアカウントの認証と学内サービスのログイン画面をまとめて準備します。
+            2段階認証やパスワード入力は、開いた公式ページで行ってください。
+          </p>
+          {error ? (
+            <p className="error-message" role="alert">
+              {error}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            className="primary-button first-use-action"
+            onClick={onStart}
+            disabled={busy}
+          >
+            {busy ? "認証を準備中…" : "初回セットアップを開始"}
+          </button>
+          <p className="first-use-note">
+            認証情報・パスワード・2段階認証コードはSIT
+            ORBITへ送信・保存しません。
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="panel-shell first-use-shell">
+      <section className="first-use-card" aria-labelledby="first-use-title">
+        <p className="eyebrow">SIT ORBIT</p>
+        <h1 id="first-use-title">学内ログインを完了してください</h1>
+        <p className="first-use-message">
+          公式ページを開きました。各タブでログインと2段階認証を済ませてから、Chatを開始できます。
+        </p>
+        <ul className="first-use-target-list">
+          {CAMPUS_LOGIN_TARGETS.map((target) => (
+            <li key={target.id}>
+              <span>{target.label}</span>
+              <span className="first-use-target-status">
+                {result?.failed.includes(target.id)
+                  ? "再表示が必要"
+                  : result?.opened.includes(target.id)
+                    ? "ログイン画面を準備済み"
+                    : "確認対象"}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {result?.failed.length ? (
+          <p className="first-use-note" role="status">
+            一部のログイン画面を開けませんでした。再表示を試してから続行してください。
+          </p>
+        ) : null}
+        <div className="button-row first-use-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={onReopen}
+            disabled={busy}
+          >
+            ログイン画面を再表示
+          </button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={onComplete}
+            disabled={busy}
+          >
+            ログインを完了して開始
+          </button>
+        </div>
+        <p className="first-use-note">
+          ログイン後も、外部サービスへの送信・変更操作は会話内で毎回確認します。
+        </p>
+      </section>
+    </main>
+  );
 }
 
 function openWorkspace(
@@ -817,6 +953,109 @@ export function App({
       }),
     [agentSessionProvider],
   );
+  const requiresFirstUseSetup = managedIdentityAvailable();
+  const [firstUseSetupState, setFirstUseSetupState] =
+    useState<FirstUseSetupState>(requiresFirstUseSetup ? "checking" : "ready");
+  const [firstUseSetupBusy, setFirstUseSetupBusy] = useState(false);
+  const [firstUseSetupError, setFirstUseSetupError] = useState<string | null>(
+    null,
+  );
+  const [campusLoginOpenResult, setCampusLoginOpenResult] =
+    useState<CampusLoginOpenResult | null>(null);
+
+  useEffect(() => {
+    if (!requiresFirstUseSetup) return;
+    let mounted = true;
+    void readFirstUseSetup().then((record) => {
+      if (!mounted) return;
+      if (record?.completedAt) {
+        setFirstUseSetupState("ready");
+      } else if (record?.startedAt) {
+        setFirstUseSetupState("awaiting_user");
+      } else {
+        setFirstUseSetupState("needs_start");
+      }
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [requiresFirstUseSetup]);
+
+  const startFirstUseSetup = async (): Promise<void> => {
+    setFirstUseSetupBusy(true);
+    setFirstUseSetupError(null);
+    try {
+      await markFirstUseSetupStarted();
+      const sessionToken = await agentSessionProvider();
+      if (!sessionToken) {
+        throw new Error("SITアカウントのAgent認証を完了できませんでした。");
+      }
+      const result = await openCampusLoginTabs();
+      if (result.opened.length === 0) {
+        throw new Error(
+          "学内サービスのログイン画面を開けませんでした。もう一度お試しください。",
+        );
+      }
+      setCampusLoginOpenResult(result);
+      setFirstUseSetupState("awaiting_user");
+    } catch (error) {
+      setFirstUseSetupError(
+        error instanceof Error &&
+          error.message.includes("学内サービスのログイン画面")
+          ? error.message
+          : FIRST_USE_SETUP_RETRY_MESSAGE,
+      );
+      setFirstUseSetupState("error");
+    } finally {
+      setFirstUseSetupBusy(false);
+    }
+  };
+
+  const reopenCampusLoginTabs = async (): Promise<void> => {
+    setFirstUseSetupBusy(true);
+    setFirstUseSetupError(null);
+    try {
+      const result = await openCampusLoginTabs();
+      setCampusLoginOpenResult(result);
+      if (result.opened.length === 0) {
+        setFirstUseSetupError("学内サービスのログイン画面を開けませんでした。");
+      }
+    } catch {
+      setFirstUseSetupError("ログイン画面を再表示できませんでした。");
+    } finally {
+      setFirstUseSetupBusy(false);
+    }
+  };
+
+  const completeFirstUseSetup = async (): Promise<void> => {
+    setFirstUseSetupBusy(true);
+    setFirstUseSetupError(null);
+    try {
+      const sessionToken = await agentSessionProvider();
+      if (!sessionToken) {
+        throw new Error("SITアカウントのAgent認証を完了できませんでした。");
+      }
+      await markFirstUseSetupCompleted();
+      setFirstUseSetupState("ready");
+    } catch (error) {
+      setFirstUseSetupError(
+        error instanceof Error &&
+          error.message.includes("学内サービスのログイン画面")
+          ? error.message
+          : FIRST_USE_SETUP_RETRY_MESSAGE,
+      );
+      setFirstUseSetupState("error");
+    } finally {
+      setFirstUseSetupBusy(false);
+    }
+  };
+
+  const restartFirstUseSetup = async (): Promise<void> => {
+    await clearFirstUseSetup();
+    setCampusLoginOpenResult(null);
+    setFirstUseSetupError(null);
+    setFirstUseSetupState("needs_start");
+  };
   const [pageContext, setPageContext] = useState<PageContext | null>(
     workspaceSession?.pageContext ?? null,
   );
@@ -1463,6 +1702,20 @@ export function App({
     }
   };
 
+  if (firstUseSetupState !== "ready") {
+    return (
+      <FirstUseSetupScreen
+        state={firstUseSetupState}
+        busy={firstUseSetupBusy}
+        error={firstUseSetupError}
+        result={campusLoginOpenResult}
+        onStart={() => void startFirstUseSetup()}
+        onReopen={() => void reopenCampusLoginTabs()}
+        onComplete={() => void completeFirstUseSetup()}
+      />
+    );
+  }
+
   return (
     <main
       className={`panel-shell ${mode === "workspace" ? "workspace-shell" : "sidepanel-shell"}`}
@@ -1543,6 +1796,15 @@ export function App({
             <p className="settings-message">
               SITアカウントで管理されたAgentを利用します。
             </p>
+            {requiresFirstUseSetup ? (
+              <button
+                type="button"
+                className="secondary-button settings-text-action"
+                onClick={() => void restartFirstUseSetup()}
+              >
+                学内ログインをやり直す
+              </button>
+            ) : null}
           </section>
 
           <section

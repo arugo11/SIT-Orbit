@@ -1708,6 +1708,78 @@ body {
   background: #fafafa;
 }
 
+.first-use-shell {
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px 16px;
+  background: #fff;
+}
+
+.first-use-card {
+  display: grid;
+  width: min(520px, 100%);
+  gap: 14px;
+  border: 1px solid #e2e2e5;
+  border-radius: 16px;
+  padding: 24px;
+  background: #fff;
+  box-shadow: 0 12px 36px rgb(31 31 35 / 8%);
+}
+
+.first-use-card h1 {
+  margin: 0;
+  color: #202124;
+  font-size: 21px;
+  line-height: 1.35;
+}
+
+.first-use-message,
+.first-use-note {
+  margin: 0;
+  color: #68686e;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.first-use-note {
+  color: #8b8b90;
+  font-size: 11px;
+}
+
+.first-use-action {
+  justify-self: start;
+}
+
+.first-use-target-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  border-top: 1px solid #eeeeef;
+  padding: 0;
+  list-style: none;
+}
+
+.first-use-target-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #eeeeef;
+  padding: 10px 0;
+  color: #303035;
+  font-size: 12px;
+}
+
+.first-use-target-status {
+  color: #85858b;
+  font-size: 11px;
+  text-align: right;
+}
+
+.first-use-actions {
+  flex-wrap: wrap;
+}
+
 @media (max-width: 600px) {
   .chat-toolbar,
   .chat-composer {
