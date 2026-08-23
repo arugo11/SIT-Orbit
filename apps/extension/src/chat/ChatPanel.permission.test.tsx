@@ -179,6 +179,40 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(permissionsRequest).not.toHaveBeenCalled();
   });
 
+  it("sends an ordinary greeting directly to the Agent without permission checks", async () => {
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "greeting-completed",
+        content_markdown: "こんにちは。今日は何を進めますか？",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    const permissionsRequest = vi.fn(async () => true);
+    Object.assign(chrome, { permissions: { request: permissionsRequest } });
+
+    await sendMessage(mounted, "こんにちは");
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes(
+        "こんにちは。今日は何を進めますか？",
+      ),
+    );
+
+    expect(apiClient.startChat).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "こんにちは" }),
+    );
+    expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
   it("reads a public URL without an in-chat permission card", async () => {
     const apiClient = createApiClient(
       toolRequired("browser_read_url", { url: "https://example.com/course" }),
