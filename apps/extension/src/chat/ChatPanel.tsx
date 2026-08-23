@@ -69,8 +69,11 @@ import {
   deleteConversation,
   listConversations,
   loadConversation,
+  mergeConversationEvidence,
+  mergeLibraryContext,
   newConversation,
   saveConversation,
+  toChatContextManifest,
   toChatHistory,
 } from "./chat-history";
 
@@ -635,6 +638,7 @@ export function ChatPanel({
       messages: [...current.messages, activity],
     };
     await persist(withActivity);
+    let conversationAfterTool = withActivity;
 
     let request: ChatToolResultRequest;
     if (call.name === "scombz_page_summary") {
@@ -737,6 +741,10 @@ export function ChatPanel({
           ...items,
           [activity.id]: library.projection.items ?? [],
         }));
+        conversationAfterTool = mergeLibraryContext(
+          conversationAfterTool,
+          library.projection.items ?? [],
+        );
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -771,6 +779,10 @@ export function ChatPanel({
             ? [library.projection.item]
             : [],
         }));
+        conversationAfterTool = mergeLibraryContext(
+          conversationAfterTool,
+          library.projection.item ? [library.projection.item] : [],
+        );
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -843,6 +855,10 @@ export function ChatPanel({
       } else if (!isLibraryCatalogBrowseResult(library.projection)) {
         throw new Error("OPAC一覧結果を検証できませんでした。");
       } else {
+        conversationAfterTool = mergeLibraryContext(
+          conversationAfterTool,
+          library.projection.items ?? [],
+        );
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -1109,7 +1125,7 @@ export function ChatPanel({
       "Toolの結果を会話の文脈へ戻し、次の判断を生成しています。",
     );
     const completedConversation = {
-      ...withActivity,
+      ...conversationAfterTool,
       messages: withActivity.messages.map((item) =>
         item.id === activity.id
           ? { ...item, toolState: "completed" as const }
@@ -1146,8 +1162,12 @@ export function ChatPanel({
     }
     const assistant = messageFromResponse(response);
     setChatProgress("completed", "完了", "回答と参照元を表示しました。");
+    const withEvidence = mergeConversationEvidence(
+      current,
+      assistant.evidence ?? [],
+    );
     await persist({
-      ...current,
+      ...withEvidence,
       updatedAt: new Date().toISOString(),
       messages: [...current.messages, assistant],
     });
@@ -1187,6 +1207,7 @@ export function ChatPanel({
         message,
         history: toChatHistory(beforeSend.messages),
         client_tools: clientTools(),
+        context_manifest: toChatContextManifest(beforeSend.contextManifest),
       });
       setChatProgress(
         "planning",

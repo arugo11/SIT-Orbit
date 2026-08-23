@@ -505,6 +505,22 @@ export interface components {
              */
             version: 1;
         };
+        /**
+         * ChatContextManifest
+         * @description Typed, short-lived public context supplied by the extension.
+         */
+        ChatContextManifest: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /** Evidence */
+            evidence?: components["schemas"]["EvidenceLink"][];
+            /** Library Records */
+            library_records?: components["schemas"]["ChatLibraryContextRecord"][];
+        };
         /** ChatHistoryMessage */
         ChatHistoryMessage: {
             /**
@@ -514,6 +530,23 @@ export interface components {
             role: "user" | "assistant";
             /** Content */
             content: string;
+        };
+        /**
+         * ChatLibraryContextRecord
+         * @description A bounded public OPAC record carried between Chat turns.
+         *
+         *     This is deliberately separate from the transcript.  It contains only
+         *     the structured, public projection that the next model turn may use to
+         *     resolve elliptical follow-ups such as ``"どこにある？"``.
+         */
+        ChatLibraryContextRecord: {
+            /** Resource Ref */
+            resource_ref: string;
+            record: components["schemas"]["LibraryBibliographicRecord"];
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /** Observed At */
+            observed_at: string;
         };
         /** ChatRunCompleted */
         ChatRunCompleted: {
@@ -535,6 +568,7 @@ export interface components {
             history?: components["schemas"]["ChatHistoryMessage"][];
             /** Client Tools */
             client_tools?: components["schemas"]["ChatClientTool"][];
+            context_manifest?: components["schemas"]["ChatContextManifest"] | null;
         };
         /** ChatRunToolRequired */
         ChatRunToolRequired: {

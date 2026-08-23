@@ -1230,6 +1230,36 @@
         ],
         "title": "ChatClientTool"
       },
+      "ChatContextManifest": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceLink"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Evidence"
+          },
+          "library_records": {
+            "items": {
+              "$ref": "#/components/schemas/ChatLibraryContextRecord"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Library Records"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ChatContextManifest",
+        "description": "Typed, short-lived public context supplied by the extension."
+      },
       "ChatHistoryMessage": {
         "properties": {
           "role": {
@@ -1254,6 +1284,43 @@
           "content"
         ],
         "title": "ChatHistoryMessage"
+      },
+      "ChatLibraryContextRecord": {
+        "properties": {
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "record": {
+            "$ref": "#/components/schemas/LibraryBibliographicRecord"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "title": "Evidence Ids"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_ref",
+          "record",
+          "observed_at"
+        ],
+        "title": "ChatLibraryContextRecord",
+        "description": "A bounded public OPAC record carried between Chat turns.\n\nThis is deliberately separate from the transcript.  It contains only\nthe structured, public projection that the next model turn may use to\nresolve elliptical follow-ups such as ``\"どこにある？\"``."
       },
       "ChatRunCompleted": {
         "properties": {
@@ -1313,6 +1380,16 @@
             "type": "array",
             "maxItems": 12,
             "title": "Client Tools"
+          },
+          "context_manifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatContextManifest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,

@@ -23,6 +23,10 @@ export type ChatToolResultRequest =
   components["schemas"]["ChatToolResultRequest"];
 export type ChatHistoryMessage = components["schemas"]["ChatHistoryMessage"];
 export type ChatClientTool = components["schemas"]["ChatClientTool"];
+export type ChatContextManifest = components["schemas"]["ChatContextManifest"];
+export type ChatLibraryContextRecord =
+  components["schemas"]["ChatLibraryContextRecord"];
+export type EvidenceLink = components["schemas"]["EvidenceLink"];
 export type CalendarAvailabilityResult =
   components["schemas"]["CalendarAvailabilityResult"];
 export type ScombzPageSummaryResult =
