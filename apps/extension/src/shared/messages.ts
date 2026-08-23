@@ -106,7 +106,6 @@ export interface BrowserReadMessage {
   type: typeof MESSAGE_TYPES.browserRead;
   tool_call_id: string;
   url: string;
-  access_mode: "ask" | "full";
 }
 
 export type BrowserReadResponse =
@@ -395,8 +394,7 @@ export function isBrowserReadMessage(
     message.type === MESSAGE_TYPES.browserRead &&
     typeof message.tool_call_id === "string" &&
     message.tool_call_id.length > 0 &&
-    typeof message.url === "string" &&
-    (message.access_mode === "ask" || message.access_mode === "full")
+    typeof message.url === "string"
   );
 }
 

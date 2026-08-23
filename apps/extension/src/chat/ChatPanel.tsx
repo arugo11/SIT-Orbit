@@ -1020,7 +1020,6 @@ export function ChatPanel({
         type: "browser-read",
         tool_call_id: call.tool_call_id,
         url,
-        access_mode: "full",
       });
       if (browser.status === "permission_required") {
         throw new Error(

@@ -78,9 +78,11 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
 
 拡張機能ページを`chrome.tabs.create()`で開くための`tabs`権限は追加しない。既存のScombZ host permissionと`storage`権限の範囲で実装する。[Chrome Tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs)、[Chrome Storage API](https://developer.chrome.com/docs/extensions/reference/api/storage)
 
-### 最小権限
+### Chrome権限と管理認証
 
-初期版の権限は、ScombZの読み取り、パネル表示、利用者が開始した読み取りToolに限定する。
+通常のAgent会話は設定なしで実行できる。Productionでは固定Azure Agent APIを使用し、Chrome IdentityでSITアカウントのGoogle ID tokenを取得して`POST /v1/auth/session`へ交換する。Google ID tokenとOAuth tokenは認証交換以外へ渡さず、交換後の短命なsession tokenだけをメモリと`chrome.storage.session`に保持する。ローカルのAgent APIは開発時に明示的な環境変数を設定した場合だけ利用する。
+
+拡張機能の権限は、ScombZ、Connector、公開Web読取、Agent API、認証交換を含む。全サイトhost permissionはインストールまたは更新時のChrome権限確認で一度だけ扱い、Chat中に読み取り許可を表示しない。
 
 ```json
 {
@@ -94,17 +96,22 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
   ],
   "host_permissions": [
     "https://scombz.shibaura-it.ac.jp/*",
-    "https://syllabus.sic.shibaura-it.ac.jp/*"
-  ],
-  "optional_host_permissions": ["https://*/*", "http://*/*"]
+    "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io/*",
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*",
+    "https://syllabus.sic.shibaura-it.ac.jp/*",
+    "https://sitrus.sic.shibaura-it.ac.jp/*",
+    "https://*/*",
+    "http://*/*"
+  ]
 }
 ```
 
 Side Panelのパスは、ScombZのタブを検出したService Workerが`sidePanel.setOptions()`へ渡す。全サイト共通の`default_path`は宣言しない。
 
-`identity`はGoogle Calendarの読み取りに使用し、`storage`はGoogle Driveの選択メタデータをブラウザのセッション中だけ保持するために使用する。
+`identity`はSITアカウントの認証交換とConnector固有のOAuthに使用し、`storage`はsession tokenとGoogle Driveの選択メタデータをブラウザのセッション中だけ保持するために使用する。
 
-`debugger`、`cookies`、`history`、`webRequest`、`browsingData`は使用しない。任意ホスト権限は、ユーザーがChat内の許可操作を押した場合だけ要求する。
+`debugger`、`cookies`、`history`、`webRequest`、`browsingData`は使用しない。`chrome.permissions.request`は使用せず、host permissionの追加要求をChatへ持ち込まない。
 
 Chromeの権限は、処理に必要な範囲だけを宣言する。[Declare permissions](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions)
 
