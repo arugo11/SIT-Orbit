@@ -144,15 +144,37 @@ function visibleText(value: Element | null | undefined): string {
 
 export function isMyLibraryStatusUrl(
   value: string | null | undefined,
+  scope?: MyLibraryScope,
 ): boolean {
   if (!value) return false;
   try {
     const url = new URL(value);
+    if (
+      url.origin !== MY_LIBRARY_ORIGIN ||
+      url.pathname !== MY_LIBRARY_STATUS_PATH ||
+      url.hash !== ""
+    ) {
+      return false;
+    }
+    // The live NALIS menu appends these two observed navigation parameters.
+    // Keep the query-free form for older deployments and fixtures, but reject
+    // every other parameter so SSO tokens or user identifiers can never be
+    // accepted as part of a status-page URL.
+    if (url.search === "") return true;
+    if (
+      url.searchParams.size !== 2 ||
+      url.searchParams.getAll("selectedMenuId").length !== 1 ||
+      url.searchParams.getAll("selectMenu").length !== 1 ||
+      url.searchParams.get("selectMenu") !== "1"
+    ) {
+      return false;
+    }
+    const menuId = Number(url.searchParams.get("selectedMenuId"));
+    const allowedMenuIds = new Set<number>(Object.values(MY_LIBRARY_MENU_IDS));
     return (
-      url.origin === MY_LIBRARY_ORIGIN &&
-      url.pathname === MY_LIBRARY_STATUS_PATH &&
-      url.search === "" &&
-      url.hash === ""
+      Number.isInteger(menuId) &&
+      allowedMenuIds.has(menuId) &&
+      (scope === undefined || menuId === MY_LIBRARY_MENU_IDS[scope])
     );
   } catch {
     return false;
@@ -403,7 +425,7 @@ export function extractMyLibraryScopePage(
   today = new Date(),
 ): MyLibraryScopedItem[] | null {
   if (
-    !isMyLibraryStatusUrl(pageUrl) ||
+    !isMyLibraryStatusUrl(pageUrl, scope) ||
     document.querySelector('input[type="password"]')
   ) {
     return null;
@@ -466,7 +488,7 @@ export function extractMyLibraryLoanPage(
   today = new Date(),
 ): MyLibraryLoan[] | null {
   if (
-    !isMyLibraryStatusUrl(pageUrl) ||
+    !isMyLibraryStatusUrl(pageUrl, "current_loans") ||
     document.querySelector('input[type="password"]')
   ) {
     return null;
@@ -512,7 +534,7 @@ export function extractMyLibraryReservationPage(
   pageUrl: string,
 ): MyLibraryReservation[] | null {
   if (
-    !isMyLibraryStatusUrl(pageUrl) ||
+    !isMyLibraryStatusUrl(pageUrl, "reservations") ||
     document.querySelector('input[type="password"]')
   ) {
     return null;

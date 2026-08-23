@@ -1306,10 +1306,18 @@ function readMyLibraryActionOptionsInPage(
   targetRawId: string,
 ): MyLibraryActionPageProjection {
   try {
+    const expectedMenuId = MY_LIBRARY_MENU_IDS[scope].toString();
+    const query = new URLSearchParams(location.search);
+    const isObservedMenuQuery =
+      query.size === 2 &&
+      query.getAll("selectedMenuId").length === 1 &&
+      query.getAll("selectMenu").length === 1 &&
+      query.get("selectedMenuId") === expectedMenuId &&
+      query.get("selectMenu") === "1";
     if (
       location.origin !== MY_LIBRARY_ORIGIN ||
       location.pathname !== MY_LIBRARY_STATUS_PATH ||
-      location.search !== "" ||
+      (location.search !== "" && !isObservedMenuQuery) ||
       location.hash !== ""
     ) {
       return { status: "unavailable", reason_code: "unexpected_page" };
@@ -1482,10 +1490,18 @@ function validateMyLibraryWriteSurfaceInPage(
   targetRawId: string,
 ): LibraryWriteSurfaceProjection {
   try {
+    const expectedMenuId = MY_LIBRARY_MENU_IDS[scope].toString();
+    const query = new URLSearchParams(location.search);
+    const isObservedMenuQuery =
+      query.size === 2 &&
+      query.getAll("selectedMenuId").length === 1 &&
+      query.getAll("selectMenu").length === 1 &&
+      query.get("selectedMenuId") === expectedMenuId &&
+      query.get("selectMenu") === "1";
     if (
       location.origin !== MY_LIBRARY_ORIGIN ||
       location.pathname !== MY_LIBRARY_STATUS_PATH ||
-      location.search !== "" ||
+      (location.search !== "" && !isObservedMenuQuery) ||
       location.hash !== ""
     ) {
       return { status: "unavailable", reason_code: "unexpected_page" };
@@ -2134,7 +2150,7 @@ async function readMyLibraryWriteSurface(
     if (clicked?.result?.status !== "clicked") {
       return { status: "unavailable", reason_code: "menu_result_missing" };
     }
-    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+    if (!(await waitForMyLibraryStatusPage(tab.id, target.scope))) {
       return { status: "unavailable", reason_code: "status_page_timeout" };
     }
     const [validated] = await chrome.scripting.executeScript({
@@ -2600,7 +2616,7 @@ async function handleLibraryActionOptions(
         ),
       };
     }
-    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+    if (!(await waitForMyLibraryStatusPage(tab.id, personalTarget.scope))) {
       return {
         status: "known",
         projection: unavailableLibraryActionOptions(
@@ -3442,11 +3458,27 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
   };
 
   try {
+    const expectedMenuId = (
+      {
+        current_loans: 5,
+        reservations: 6,
+        loan_history: 7,
+        purchase_requests: 3,
+        interlibrary_requests: 2,
+      } as const
+    )[scope].toString();
+    const query = new URLSearchParams(location.search);
+    const isObservedMenuQuery =
+      query.size === 2 &&
+      query.getAll("selectedMenuId").length === 1 &&
+      query.getAll("selectMenu").length === 1 &&
+      query.get("selectedMenuId") === expectedMenuId &&
+      query.get("selectMenu") === "1";
     if (
       location.origin !== "https://library.shibaura-it.ac.jp" ||
       location.pathname !==
         "/portal/admin/selectMenu/doSelectPublicUseMainMenu" ||
-      location.search !== "" ||
+      (location.search !== "" && !isObservedMenuQuery) ||
       location.hash !== ""
     ) {
       return { status: "unavailable", reason_code: "unexpected_page" };
@@ -3756,16 +3788,24 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
 
 async function waitForMyLibraryStatusPage(
   tabId: number,
+  scope: MyLibraryScope,
 ): Promise<chrome.tabs.Tab | null> {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
       const tab = await chrome.tabs.get(tabId);
       if (tab.status === "complete" && tab.url) {
         const url = new URL(tab.url);
+        const expectedMenuId = MY_LIBRARY_MENU_IDS[scope].toString();
+        const isObservedMenuQuery =
+          url.searchParams.size === 2 &&
+          url.searchParams.getAll("selectedMenuId").length === 1 &&
+          url.searchParams.getAll("selectMenu").length === 1 &&
+          url.searchParams.get("selectedMenuId") === expectedMenuId &&
+          url.searchParams.get("selectMenu") === "1";
         if (
           url.origin === MY_LIBRARY_ORIGIN &&
           url.pathname === MY_LIBRARY_STATUS_PATH &&
-          url.search === "" &&
+          (url.search === "" || isObservedMenuQuery) &&
           url.hash === ""
         ) {
           return tab;
@@ -3818,7 +3858,7 @@ async function readMyLibrarySection(
         reason_code: clicked?.result?.reason_code ?? "menu_result_missing",
       };
     }
-    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+    if (!(await waitForMyLibraryStatusPage(tab.id, scope))) {
       return { status: "unavailable", reason_code: "status_page_timeout" };
     }
     const [read] = await chrome.scripting.executeScript({

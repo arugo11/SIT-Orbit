@@ -392,12 +392,22 @@ async function runInlineMyLibraryReader(
   html: string,
   workerResult: Record<string, unknown>,
 ): Promise<unknown> {
+  const menuId = {
+    current_loans: 5,
+    reservations: 6,
+    loan_history: 7,
+    purchase_requests: 3,
+    interlibrary_requests: 2,
+  }[scope];
+  const liveStatusUrl =
+    "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu" +
+    `?selectedMenuId=${menuId}&selectMenu=1`;
   permissionsContains.mockResolvedValue(true);
   getTab.mockResolvedValue({
     id: 91,
     windowId: 1,
     status: "complete",
-    url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+    url: liveStatusUrl,
   } as chrome.tabs.Tab);
   executeScript
     .mockResolvedValueOnce([{ result: { status: "clicked" } }])
@@ -417,10 +427,7 @@ async function runInlineMyLibraryReader(
   );
   await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
 
-  stubPage(
-    html,
-    "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
-  );
+  stubPage(html, liveStatusUrl);
   const readStatusPage = capturedScript(1) as unknown as (
     requestedScope: InlineMyLibraryScope,
   ) => unknown;

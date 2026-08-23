@@ -18,6 +18,9 @@ describe("library discovery boundary", () => {
     expect(requestsLibraryTools("論文を書き直して")).toBe(false);
     expect(requestsLibraryTools("参考文献を探して")).toBe(true);
     expect(requestsLibraryTools("電子ジャーナルを検索して")).toBe(true);
+    expect(requestsLibraryTools("この本に関連して面白そうな本はある?")).toBe(
+      true,
+    );
   });
 
   it("rejects SIT Search links carrying query or fragment state", () => {
