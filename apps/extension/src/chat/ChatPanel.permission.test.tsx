@@ -119,6 +119,24 @@ function installReadOnlyRuntime(
         });
         return;
       }
+      if (
+        kind === "library" &&
+        typeof request === "object" &&
+        request !== null &&
+        (request as { type?: string }).type === "library-item-read"
+      ) {
+        callback?.({
+          status: "known",
+          projection: {
+            schema_version: "v1",
+            status: "known",
+            resource_ref: libraryItems[0]?.resource_ref,
+            item: libraryItems[0] ?? null,
+            reason_code: null,
+          },
+        });
+        return;
+      }
       if (kind === "browser") {
         callback?.({
           status: "known",
@@ -232,10 +250,57 @@ describe("ChatPanel read-only execution boundary", () => {
     const mapImage = mounted.document.querySelector<HTMLImageElement>(
       'img[alt="豊洲図書館フロアマップ"]',
     );
+    expect(mapImage).toBeNull();
+  });
+
+  it("renders a floor map only for a single-book detail read", async () => {
+    const item = {
+      resource_ref: "orbit-library://record/0123456789abcdef",
+      title: "ロボットテクノロジー",
+      authors: ["日本ロボット学会編"],
+      subjects: ["ロボット"],
+      isbn: null,
+      publisher: "公開出版社",
+      publication_year: 2024,
+      format: "book",
+      campus: "toyosu",
+      url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB06629896",
+      holdings: [
+        {
+          campus: "toyosu",
+          location: "豊洲図書館 豊洲図書館",
+          call_number: "548.3/N77",
+          status: "available",
+          due_date: null,
+          reservation_count: 0,
+        },
+      ],
+      related_records: [],
+    };
+    const apiClient = createApiClient(
+      toolRequired("library_item_read", {
+        resource_ref: item.resource_ref,
+      }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    installReadOnlyRuntime(mounted, "library", [item]);
+
+    await sendMessage(mounted, "どこに配架されていますか？");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+
+    const mapImage = mounted.document.querySelector<HTMLImageElement>(
+      'img[alt="豊洲図書館フロアマップ"]',
+    );
     expect(mapImage?.getAttribute("src")).toBe(
       "https://lib.shibaura-it.ac.jp/files/images/toyosu_room_map_2607.png",
     );
-    expect(mapImage).not.toBeNull();
     expect(mapImage?.closest("a")?.getAttribute("aria-label")).toBe(
       "豊洲図書館フロアマップの画像を原寸で開く",
     );
@@ -271,6 +336,17 @@ describe("ChatPanel read-only execution boundary", () => {
 
     expect(apiClient.startChat).toHaveBeenCalledWith(
       expect.objectContaining({ message: "こんにちは" }),
+    );
+    const request = apiClient.startChat.mock.calls[0]?.[0] as {
+      client_tools?: Array<{ name: string }>;
+    };
+    expect(request.client_tools?.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "library_catalog_search",
+        "library_item_read",
+        "library_catalog_browse",
+        "library_discovery_search",
+      ]),
     );
     expect(permissionsRequest).not.toHaveBeenCalled();
   });

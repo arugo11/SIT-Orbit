@@ -25,7 +25,6 @@ import {
   projectCalendarAvailability,
 } from "../connectors/google-calendar";
 import type { LibraryActionEditableInputs } from "../connectors/library-actions";
-import { requestsLibraryTools } from "../connectors/library-discovery";
 import {
   type LibraryFloorMap,
   uniqueLibraryFloorMaps,
@@ -352,7 +351,7 @@ export function ChatPanel({
     await saveConversation(next);
   }
 
-  function clientTools(message: string) {
+  function clientTools() {
     const tools: Array<{
       name:
         | "scombz_page_summary"
@@ -387,13 +386,15 @@ export function ChatPanel({
     tools.push({ name: "my_library_read", version: 1 });
     tools.push({ name: "cast_read", version: 1 });
     tools.push({ name: "cast_alumni_read", version: 1 });
-    if (requestsLibraryTools(message)) {
-      tools.push({ name: "library_catalog_search", version: 1 });
-      tools.push({ name: "library_item_read", version: 1 });
-      tools.push({ name: "library_catalog_browse", version: 1 });
-      tools.push({ name: "library_discovery_search", version: 1 });
-      tools.push({ name: "library_action_options", version: 1 });
-    }
+    // OPAC/SIT Search reads are public and read-only. Advertise them on every
+    // turn so the Agent can resolve elliptical follow-ups such as
+    // 「どこに配架されてる？」 from the conversation context instead of
+    // relying on a brittle latest-message keyword gate.
+    tools.push({ name: "library_catalog_search", version: 1 });
+    tools.push({ name: "library_item_read", version: 1 });
+    tools.push({ name: "library_catalog_browse", version: 1 });
+    tools.push({ name: "library_discovery_search", version: 1 });
+    tools.push({ name: "library_action_options", version: 1 });
     return tools;
   }
 
@@ -1185,7 +1186,7 @@ export function ChatPanel({
         conversation_id: withUser.conversationId,
         message,
         history: toChatHistory(beforeSend.messages),
-        client_tools: clientTools(message),
+        client_tools: clientTools(),
       });
       setChatProgress(
         "planning",
@@ -1668,8 +1669,15 @@ export function ChatPanel({
                 </details>
               ) : null}
               {message.role === "tool" && localLibraryDetails[message.id] ? (
-                <details className="chat-local-detail" open>
-                  <summary>確認した所蔵情報</summary>
+                <details
+                  className="chat-local-detail"
+                  open={message.toolName === "library_item_read"}
+                >
+                  <summary>
+                    {message.toolName === "library_item_read"
+                      ? "確認した書誌・所蔵詳細"
+                      : `確認した書誌候補（${localLibraryDetails[message.id]?.length ?? 0}件）`}
+                  </summary>
                   {localLibraryDetails[message.id]?.length === 0 ? (
                     <p>該当する書誌はありません。</p>
                   ) : (
@@ -1711,7 +1719,8 @@ export function ChatPanel({
                                 </li>
                               ))}
                             </ul>
-                            {floorMaps.length > 0 ? (
+                            {message.toolName === "library_item_read" &&
+                            floorMaps.length > 0 ? (
                               <div className="library-floor-map-list">
                                 {floorMaps.map((map) => (
                                   <LibraryFloorMapPreview

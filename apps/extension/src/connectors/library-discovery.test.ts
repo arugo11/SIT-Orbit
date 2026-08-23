@@ -5,22 +5,13 @@ import {
 } from "./library-discovery";
 
 describe("library discovery boundary", () => {
-  it("advertises library tools only for the current explicit user turn", () => {
+  it("keeps public library tools available independent of wording", () => {
     expect(requestsLibraryTools("図書館で本を探して")).toBe(true);
-    expect(requestsLibraryTools("図書館でロボット工学の本を探して")).toBe(true);
-    expect(
-      requestsLibraryTools("orbit-library://record/0123456789abcdef の詳細"),
-    ).toBe(true);
+    expect(requestsLibraryTools("どこに配架されてる？")).toBe(true);
     expect(
       requestsLibraryTools("ありがとう。今日はここまでで大丈夫です。"),
-    ).toBe(false);
-    expect(requestsLibraryTools("本当にありがとう")).toBe(false);
-    expect(requestsLibraryTools("論文を書き直して")).toBe(false);
-    expect(requestsLibraryTools("参考文献を探して")).toBe(true);
-    expect(requestsLibraryTools("電子ジャーナルを検索して")).toBe(true);
-    expect(requestsLibraryTools("この本に関連して面白そうな本はある?")).toBe(
-      true,
-    );
+    ).toBe(true);
+    expect(requestsLibraryTools("本当にありがとう")).toBe(true);
   });
 
   it("rejects SIT Search links carrying query or fragment state", () => {

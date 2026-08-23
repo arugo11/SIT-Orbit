@@ -212,10 +212,9 @@ class DeferredChatRun:
     arguments: dict[str, Any] = field(default_factory=dict)
     tool_version: Literal[1] = 1
     tool_call_count: int = 1
-    # A recommendation request is an explicit user instruction to use the
-    # titles already present in this conversation as public-search context.
-    # This flag is carried across deferred client-tool checkpoints without
-    # exposing it in the public API or storing raw personal snapshots.
+    # This flag is carried across deferred client-tool checkpoints when a
+    # recommendation turn is allowed to derive a public query from the
+    # conversation. It never exposes raw personal snapshots.
     allow_personal_web_search: bool = False
 
 
@@ -1146,15 +1145,18 @@ class PydanticAIAgentBackend(AgentBackend):
                 "evidence IDs only; never invent citations. Use general_web_search only "
                 "for public information. Its result contains exact evidence IDs that may "
                 "be cited, and its query must not contain private campus information. "
-                "When the student asks for book recommendations or related books, "
-                "use the book titles already present in the conversation only to form "
-                "a public-web query, call general_web_search before answering, and cite "
-                "the returned sources. Do not call the library catalog merely to make a "
-                "recommendation; use catalog tools only when the student asks about "
-                "library holdings, availability, location, or borrowing operations. "
-                "For a specific book where the student asks where it is held or "
-                "whether it can be borrowed, search the catalog first and then use "
-                "library_item_read on the matching opaque resource_ref before "
+                "For book recommendations or related-book questions, first assess "
+                "whether the current conversation evidence is sufficient. If it is not, "
+                "research the user's actual topic with general_web_search and cite the "
+                "returned public sources; do not restrict the query to titles already "
+                "mentioned. If the student's goal includes finding books in the SIT "
+                "library, verify promising candidates with library_catalog_search and "
+                "keep each holding's available, unavailable, or unknown status as "
+                "metadata unless the student explicitly asks to filter by availability. "
+                "For a specific book where the student asks where it is held or whether "
+                "it can be borrowed, use the conversation to identify the title, call "
+                "library_catalog_search when an opaque reference is not already present, "
+                "then use library_item_read on the matching opaque resource_ref before "
                 "answering so that all official holdings are checked. "
                 "If public search is unavailable, say so instead of inventing books or "
                 "sources."

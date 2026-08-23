@@ -480,6 +480,7 @@ function submitLibraryCatalogSearchInPage(filters: {
     if (!setValue("keys", filters.query)) {
       return { status: "unavailable", reason_code: "query_field_not_found" };
     }
+    let ebookLocation: { index: number; value: string } | null = null;
     const optionalFields: Array<[string, string | null | undefined]> = [
       ["title", null],
       ["fullTitle", null],
@@ -506,22 +507,34 @@ function submitLibraryCatalogSearchInPage(filters: {
     }
     if (filters.format && filters.format !== "any") {
       if (filters.format === "ebook") {
-        const ebookLocation = Array.from(
-          form.querySelectorAll<HTMLInputElement>('input[name^="location["]'),
+        const ebookOption = Array.from(
+          form.querySelectorAll<HTMLOptionElement>(
+            'select[name="localCollectionName"] option',
+          ),
         ).find(
-          (field) =>
-            isVisible(field) &&
-            /eBook|電子図書/iu.test(
-              field.closest("label")?.textContent ?? field.value,
-            ),
+          (option) =>
+            isVisible(option) &&
+            /eBook|電子図書/iu.test(option.textContent ?? ""),
         );
-        if (!ebookLocation) {
+        if (!ebookOption) {
           return {
             status: "unavailable",
             reason_code: "format_filter_unavailable",
           };
         }
-        ebookLocation.checked = true;
+        const ebookSelect = ebookOption.closest<HTMLSelectElement>(
+          'select[name="localCollectionName"]',
+        );
+        const ebookIndex = ebookSelect
+          ? Array.from(ebookSelect.options).indexOf(ebookOption)
+          : -1;
+        if (ebookIndex < 0) {
+          return {
+            status: "unavailable",
+            reason_code: "format_filter_unavailable",
+          };
+        }
+        ebookLocation = { index: ebookIndex, value: ebookOption.value };
       } else {
         const fieldName = `format[${filters.format === "book" ? "Book" : "Journal"}]`;
         const formatField = form.querySelector<HTMLInputElement>(
@@ -549,8 +562,50 @@ function submitLibraryCatalogSearchInPage(filters: {
       }
       campusField.checked = true;
     }
-    if (typeof form.requestSubmit === "function") form.requestSubmit();
-    else form.submit();
+    // The live OPAC POST expands every empty advanced-search field into the
+    // redirect query string.  The resulting Location header is larger than
+    // Apache's request-target limit and the browser receives HTTP 414.  Use
+    // the official short search route instead, preserving only the values the
+    // caller actually requested.
+    const searchUrl = new URL(
+      `/opc/xc/search/${encodeURIComponent(filters.query)}`,
+      location.origin,
+    );
+    const params = searchUrl.searchParams;
+    params.set("os[keys]", filters.query);
+    const setOptional = (name: string, value: string | null | undefined) => {
+      if (value !== null && value !== undefined && value.length > 0) {
+        params.set(`os[${name}]`, value);
+      }
+    };
+    setOptional("auth", filters.author);
+    setOptional("subject", filters.subject);
+    setOptional("isbn", filters.isbn);
+    if (filters.pub_year !== null && filters.pub_year !== undefined) {
+      const year = String(filters.pub_year);
+      params.set("os[pubYearFrom]", year);
+      params.set("os[pubYearTo]", year);
+    }
+    if (filters.campus && filters.campus !== "any") {
+      params.set(
+        "os[location]",
+        filters.campus === "toyosu" ? "Toyosu" : "Omiya",
+      );
+    }
+    if (filters.format && filters.format !== "any") {
+      if (filters.format === "ebook" && ebookLocation) {
+        params.set(
+          `os[localCollectionName][${ebookLocation.index}]`,
+          ebookLocation.value,
+        );
+      } else if (filters.format !== "ebook") {
+        params.set(
+          "os[format]",
+          filters.format === "book" ? "Book" : "Journal",
+        );
+      }
+    }
+    location.href = searchUrl.toString();
     return { status: "submitted" };
   } catch {
     return { status: "unavailable", reason_code: "search_submit_failed" };
@@ -808,10 +863,13 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
         .slice(0, 20),
     );
   };
-  const parseRecord = (link: HTMLAnchorElement): LibraryRawRecord | null => {
+  const parseRecord = (
+    link: HTMLAnchorElement,
+    resultRow?: Element,
+  ): LibraryRawRecord | null => {
     const recordId = recordIdFromUrl(link.href);
     if (!recordId) return null;
-    const row = rowFor(link);
+    const row = resultRow ?? rowFor(link);
     if (!isVisible(link) || !isVisible(row)) return null;
     const titleElement = Array.from(row.querySelectorAll(".xc-title")).find(
       isVisible,
@@ -834,19 +892,10 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
         .filter((value, index, values) => values.indexOf(value) === index)
         .slice(0, 20);
     const yearMatch = text.match(/(?:19|20)\d{2}/u);
-    const holdingRoots: Element[] = [row];
-    let sibling = row.nextElementSibling;
-    while (
-      sibling &&
-      (sibling.matches("tr.xc-availability") ||
-        sibling.querySelector(".xc-availability, [data-availability]") !== null)
-    ) {
-      holdingRoots.push(sibling);
-      sibling = sibling.nextElementSibling;
-    }
-    const holdings = deduplicateHoldings(
-      holdingRoots.flatMap((root) => parseSearchHoldings(root)),
-    ).slice(0, 20);
+    // The live OPAC nests each availability row inside the result row's
+    // snippet table.  Restrict extraction to this row so a later result-row
+    // cannot leak its holdings into the current record.
+    const holdings = parseSearchHoldings(row).slice(0, 20);
     return {
       record_id: recordId,
       title,
@@ -897,11 +946,30 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     ) {
       return { status: "loading" };
     }
-    const linkedRecords = Array.from(
-      document.querySelectorAll<HTMLAnchorElement>("a[href]"),
-    )
-      .map(parseRecord)
-      .filter((item): item is LibraryRawRecord => item !== null)
+    const resultRows = Array.from(
+      document.querySelectorAll<Element>(".result-row"),
+    ).filter(isVisible);
+    const searchRecords = resultRows
+      .map((row) => {
+        const canonicalLink = Array.from(
+          row.querySelectorAll<HTMLAnchorElement>(
+            '.xc-title a[href], a[href*="/opc/recordID/catalog.bib/"]',
+          ),
+        ).find(
+          (link) =>
+            recordIdFromUrl(link.href) !== null &&
+            !/cover\s+image|表紙/iu.test(link.getAttribute("title") ?? ""),
+        );
+        return canonicalLink ? parseRecord(canonicalLink, row) : null;
+      })
+      .filter((item): item is LibraryRawRecord => item !== null);
+    const fallbackRecords =
+      resultRows.length > 0
+        ? []
+        : Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))
+            .map((link) => parseRecord(link))
+            .filter((item): item is LibraryRawRecord => item !== null);
+    const linkedRecords = [...searchRecords, ...fallbackRecords]
       .filter(
         (item, index, all) =>
           all.findIndex(

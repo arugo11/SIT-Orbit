@@ -1083,7 +1083,7 @@ describe("service worker side panel contract", () => {
     expect(createTab).not.toHaveBeenCalled();
   });
 
-  it("submits only the visible OPAC search form", async () => {
+  it("navigates the visible OPAC search form to the short official route", async () => {
     permissionsContains.mockResolvedValue(true);
     executeScript
       .mockResolvedValueOnce([{ result: { status: "submitted" } }])
@@ -1112,15 +1112,11 @@ describe("service worker side panel contract", () => {
     );
     vi.stubGlobal("CSS", { escape: (value: string) => value });
     const forms = Array.from(document.querySelectorAll("form"));
-    const hiddenSubmit = vi.fn();
-    const visibleSubmit = vi.fn();
     for (const form of forms) {
       Object.defineProperty(form, "action", {
         value: "https://library.shibaura-it.ac.jp/opc/xc/search",
       });
     }
-    Object.defineProperty(forms[0], "requestSubmit", { value: hiddenSubmit });
-    Object.defineProperty(forms[1], "requestSubmit", { value: visibleSubmit });
 
     expect(submitCatalog({ query: "可視フォーム" })).toEqual({
       status: "submitted",
@@ -1131,8 +1127,9 @@ describe("service worker side panel contract", () => {
     expect(
       forms[1]?.querySelector<HTMLInputElement>('[name="keys"]')?.value,
     ).toBe("可視フォーム");
-    expect(hiddenSubmit).not.toHaveBeenCalled();
-    expect(visibleSubmit).toHaveBeenCalledTimes(1);
+    expect(location.href).toBe(
+      "https://library.shibaura-it.ac.jp/opc/xc/search/%E5%8F%AF%E8%A6%96%E3%83%95%E3%82%A9%E3%83%BC%E3%83%A0?os%5Bkeys%5D=%E5%8F%AF%E8%A6%96%E3%83%95%E3%82%A9%E3%83%BC%E3%83%A0",
+    );
   });
 
   it("reads the current OPAC detail record without requiring a self-link", async () => {
@@ -1308,10 +1305,12 @@ describe("service worker side panel contract", () => {
               <div class="xc-title"><strong><a href="/opc/recordID/catalog.bib/BB06629896?hit=1&caller=xc-search">ロボットテクノロジー</a></strong></div>
               <div class="xc-creator">日本ロボット学会編</div>
             </td>
-          </tr>
-          <tr class="xc-availability">
-            <td class="snippet-label">所蔵情報:</td>
-            <td class="xc-availability"><span class="available"><span class="normal">貸出可</span>, 豊洲図書館　豊洲図書館, 548.3/N77</span></td>
+            <td>
+              <table class="xc-snippet"><tr class="xc-availability">
+                <td class="snippet-label">所蔵情報:</td>
+                <td class="xc-availability"><span class="available"><span class="normal">貸出可</span>, 豊洲図書館　豊洲図書館, 548.3/N77</span></td>
+              </tr></table>
+            </td>
           </tr>
         </table>
       `,
@@ -1348,6 +1347,86 @@ describe("service worker side panel contract", () => {
         }),
       ],
     });
+  });
+
+  it("keeps nested holdings inside their own OPAC result row", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-record-boundary",
+        query: "ロボット",
+        limit: 10,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <table>
+          <tr class="result-row row-1">
+            <td>
+              <div class="xc-title"><a href="/opc/recordID/catalog.bib/ROBOT-1?hit=1">ロボット基礎</a></div>
+              <div class="xc-creator">著者A</div>
+              <a class="related" href="/opc/recordID/catalog.bib/SERIES-1">シリーズ名</a>
+              <table class="xc-snippet"><tr class="xc-availability">
+                <td class="xc-availability">貸出可, 豊洲図書館 豊洲図書館, 548.3/A1</td>
+              </tr></table>
+            </td>
+          </tr>
+          <tr class="result-row row-2">
+            <td>
+              <div class="xc-title"><a href="/opc/recordID/catalog.bib/ROBOT-2?hit=2">ロボット応用</a></div>
+              <div class="xc-creator">著者B</div>
+              <table class="xc-snippet"><tr class="xc-availability">
+                <td class="xc-availability">貸出中, 大宮図書館 3階書架(C)機械・電気, 548.3/B2</td>
+              </tr></table>
+            </td>
+          </tr>
+        </table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/xc/search",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        record_id: string;
+        title: string;
+        holdings: Array<{
+          location: string | null;
+          status: string;
+          call_number: string | null;
+        }>;
+      }>;
+    };
+    expect(projection.status).toBe("known");
+    expect(projection.records).toHaveLength(2);
+    expect(projection.records?.map((record) => record.title)).toEqual([
+      "ロボット基礎",
+      "ロボット応用",
+    ]);
+    expect(projection.records?.[0]?.holdings).toEqual([
+      expect.objectContaining({
+        location: "豊洲図書館 豊洲図書館",
+        status: "available",
+        call_number: "548.3/A1",
+      }),
+    ]);
+    expect(projection.records?.[1]?.holdings).toEqual([
+      expect.objectContaining({
+        location: "大宮図書館 3階書架(C)機械・電気",
+        status: "unavailable",
+        call_number: "548.3/B2",
+      }),
+    ]);
   });
 
   it("extracts every holding from the live OPAC detail table", async () => {
