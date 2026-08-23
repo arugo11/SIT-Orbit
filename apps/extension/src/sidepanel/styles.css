@@ -1320,6 +1320,7 @@ body {
   color: #29292d;
   background: transparent;
   line-height: 1.65;
+  overflow-wrap: anywhere;
 }
 
 .chat-message-user .chat-message-content {
