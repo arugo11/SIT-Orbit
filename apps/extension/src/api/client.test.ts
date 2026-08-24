@@ -7,6 +7,7 @@ import {
   isActionProposal,
   isCastAlumniReadResult,
   isCastReadResult,
+  isChatRunResponse,
   isLibraryCatalogBrowseResult,
   isLibraryCatalogSearchResult,
   isLibraryDiscoverySearchResult,
@@ -56,6 +57,46 @@ function createFetcher(response: Response): Fetcher & ReturnType<typeof vi.fn> {
 }
 
 describe("AgentApiClient", () => {
+  it("validates grounded related-book cards in completed Chat responses", () => {
+    expect(
+      isChatRunResponse({
+        status: "completed",
+        message: {
+          message_id: "msg-related-books",
+          content_markdown: "候補です。",
+          evidence: [
+            {
+              evidence_id: "web-search-v1-books-1",
+              title: "公開書誌",
+              source_type: "web",
+              locator: "https://books.example/item",
+              data_classification: "public",
+            },
+          ],
+          related_books: [
+            {
+              candidate_ref: "orbit-book://candidate/1234567890abcdef",
+              title: "Robot Learning",
+              authors: ["Jane Doe"],
+              isbn: "9780000000001",
+              publication_year: 2024,
+              relation_axes: [{ label: "強化学習", source: "metadata" }],
+              why_related: "関連する。",
+              evidence_ids: ["web-search-v1-books-1"],
+              catalog_verification: {
+                status: "unverified",
+                resource_ref: null,
+                observed_at: null,
+              },
+              observed_at: "2026-08-24T00:00:00Z",
+            },
+          ],
+        },
+        proposal: null,
+      }),
+    ).toBe(true);
+  });
+
   it("accepts public library records with conservative holdings", () => {
     const item = {
       resource_ref: "orbit-library://record/0123456789abcdef",

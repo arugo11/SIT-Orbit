@@ -22,6 +22,10 @@ class OpenAIAgent(PydanticAIAgentBackend):
         action_id_prefix: str = "act-openai",
         usage_callback: Callable[[RunUsage], None] | None = None,
     ) -> None:
+        if os.getenv("ORBIT_BOOK_DISCOVERY", "off") != "off":
+            raise RuntimeError(
+                "ORBIT_BOOK_DISCOVERY is available only with azure_openai."
+            )
         provider = OpenAIProvider(base_url=base_url, api_key=api_key)
         super().__init__(
             model_name=model,

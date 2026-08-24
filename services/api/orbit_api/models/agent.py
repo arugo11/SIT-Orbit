@@ -600,9 +600,7 @@ class MyLibraryItem(StrictApiModel):
             try:
                 _validate_my_library_date(value)
             except ValueError as error:
-                raise ValueError(
-                    f"My Library {field_name} values must use YYYY-MM-DD."
-                ) from error
+                raise ValueError(f"My Library {field_name} values must use YYYY-MM-DD.") from error
         return self
 
 
@@ -617,9 +615,7 @@ def _validate_my_library_date(value: str | None) -> None:
         raise ValueError("My Library dates must use YYYY-MM-DD.") from error
 
 
-def _validate_my_library_scope_items(
-    scope: MyLibraryScope, items: list[MyLibraryItem]
-) -> None:
+def _validate_my_library_scope_items(scope: MyLibraryScope, items: list[MyLibraryItem]) -> None:
     required_fields: dict[MyLibraryScope, tuple[str, ...]] = {
         "current_loans": ("due_date",),
         "reservations": ("due_date", "status"),
@@ -631,9 +627,7 @@ def _validate_my_library_scope_items(
         for field in required_fields[scope]:
             value = getattr(item, field)
             if value is None or (
-                field in {"status", "request_type"}
-                and isinstance(value, str)
-                and not value.strip()
+                field in {"status", "request_type"} and isinstance(value, str) and not value.strip()
             ):
                 raise ValueError(f"My Library {scope} items have incomplete fields.")
 
@@ -717,9 +711,7 @@ class ScopedMyLibraryReadResult(StrictApiModel):
             if self.status == "known" and self.reservation_count is None:
                 raise ValueError("Known reservation results require reservation_count.")
             if self.status == "known" and self.reservation_count != self.total_count:
-                raise ValueError(
-                    "My Library reservation_count must equal the scope total_count."
-                )
+                raise ValueError("My Library reservation_count must equal the scope total_count.")
         elif any(
             value is not None
             for value in (
@@ -813,15 +805,13 @@ class CastAlumniReadResult(StrictApiModel):
     data_classification: Literal["personal"] = "personal"
     profile_count: StrictInt = Field(ge=0, le=64)
     topic_categories: list[StrictStr] = Field(default_factory=list, max_length=32)
-    availability_frequencies: list[
-        Literal["weekly", "monthly", "occasional", "unknown"]
-    ] = Field(default_factory=list, max_length=4)
+    availability_frequencies: list[Literal["weekly", "monthly", "occasional", "unknown"]] = Field(
+        default_factory=list, max_length=4
+    )
     meeting_modes: list[Literal["online", "in_person", "unknown"]] = Field(
         default_factory=list, max_length=3
     )
-    shareable_insight_categories: list[StrictStr] = Field(
-        default_factory=list, max_length=32
-    )
+    shareable_insight_categories: list[StrictStr] = Field(default_factory=list, max_length=32)
     contact_present: StrictBool = False
     discovered_link_count: StrictInt = Field(ge=0, le=32)
     reason_code: StrictStr | None = Field(default=None, max_length=100)
@@ -837,14 +827,10 @@ class CastAlumniReadResult(StrictApiModel):
             or self.contact_present
             or self.discovered_link_count
         ):
-            raise ValueError(
-                "Unavailable CAST alumni results cannot include derived data."
-            )
+            raise ValueError("Unavailable CAST alumni results cannot include derived data.")
         if len(set(self.topic_categories)) != len(self.topic_categories):
             raise ValueError("CAST alumni topic categories must be unique.")
-        if len(set(self.shareable_insight_categories)) != len(
-            self.shareable_insight_categories
-        ):
+        if len(set(self.shareable_insight_categories)) != len(self.shareable_insight_categories):
             raise ValueError("CAST alumni insight categories must be unique.")
         return self
 
@@ -986,6 +972,102 @@ class ChatLibraryContextRecord(StrictApiModel):
         return self
 
 
+RelatedBookAxisSource = Literal["explicit", "metadata", "inferred"]
+RelatedBookVerificationStatus = Literal["unverified", "verified", "recheck_failed"]
+
+
+class RelatedBookRelationAxis(StrictApiModel):
+    """One bounded explanation axis used to diversify book discovery."""
+
+    label: StrictStr = Field(min_length=1, max_length=100)
+    source: RelatedBookAxisSource
+
+
+class RelatedBookCatalogVerification(StrictApiModel):
+    """Latest SIT OPAC verification state for one public candidate."""
+
+    status: RelatedBookVerificationStatus = "unverified"
+    resource_ref: StrictStr | None = Field(
+        default=None,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    observed_at: StrictStr | None = Field(default=None, max_length=40)
+
+    @model_validator(mode="after")
+    def validates_verification(self) -> "RelatedBookCatalogVerification":
+        if self.status == "verified" and self.resource_ref is None:
+            raise ValueError("Verified related books require an opaque resource_ref.")
+        if self.status != "verified" and self.resource_ref is not None:
+            raise ValueError("Only verified related books may include a resource_ref.")
+        if self.status != "unverified" and self.observed_at is None:
+            raise ValueError("Verified or failed rechecks require an observation time.")
+        if self.observed_at is not None:
+            try:
+                observed = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
+            except ValueError as error:
+                raise ValueError("Related-book timestamps must use RFC3339.") from error
+            if observed.tzinfo is None:
+                raise ValueError("Related-book timestamps must include a timezone.")
+        return self
+
+
+class RelatedBookCandidate(StrictApiModel):
+    """Public, evidence-grounded candidate produced by bounded discovery."""
+
+    candidate_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-book://candidate/[A-Za-z0-9_-]{16,128}$",
+    )
+    title: StrictStr = Field(min_length=1, max_length=300)
+    authors: list[StrictStr] = Field(default_factory=list, max_length=20)
+    isbn: StrictStr | None = Field(default=None, max_length=32)
+    publication_year: StrictInt | None = Field(default=None, ge=1000, le=2100)
+    relation_axes: list[RelatedBookRelationAxis] = Field(
+        default_factory=list,
+        min_length=1,
+        max_length=5,
+    )
+    why_related: StrictStr = Field(min_length=1, max_length=500)
+    evidence_ids: list[StrictStr] = Field(min_length=1, max_length=10)
+    catalog_verification: RelatedBookCatalogVerification = Field(
+        default_factory=RelatedBookCatalogVerification
+    )
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def validates_public_candidate(self) -> "RelatedBookCandidate":
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("Related-book evidence IDs must be unique.")
+        try:
+            observed = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("Related-book timestamps must use RFC3339.") from error
+        if observed.tzinfo is None:
+            raise ValueError("Related-book timestamps must include a timezone.")
+        public_text = "\n".join(
+            [
+                self.title,
+                *self.authors,
+                self.isbn or "",
+                self.why_related,
+                *(axis.label for axis in self.relation_axes),
+            ]
+        ).lower()
+        for marker in (
+            "<script",
+            "<input",
+            "cookie=",
+            "access_token",
+            "oauth_token",
+            "orbit-",
+        ):
+            if marker in public_text:
+                raise ValueError("Related-book context contains a prohibited raw marker.")
+        return self
+
+
 class ChatContextManifest(StrictApiModel):
     """Typed, short-lived public context supplied by the extension."""
 
@@ -995,6 +1077,7 @@ class ChatContextManifest(StrictApiModel):
         default_factory=list,
         max_length=20,
     )
+    related_books: list[RelatedBookCandidate] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def validates_manifest(self) -> "ChatContextManifest":
@@ -1006,10 +1089,7 @@ class ChatContextManifest(StrictApiModel):
                 raise ValueError("Personal evidence cannot be included in a context manifest.")
             locator = urlparse(item.locator)
             if locator.scheme in {"http", "https"} and (
-                locator.username
-                or locator.password
-                or locator.query
-                or locator.fragment
+                locator.username or locator.password or locator.query or locator.fragment
             ):
                 raise ValueError(
                     "Manifest evidence locators must not contain credentials or query data."
@@ -1017,6 +1097,16 @@ class ChatContextManifest(StrictApiModel):
         for record in self.library_records:
             if any(evidence_id not in evidence_ids for evidence_id in record.evidence_ids):
                 raise ValueError("Library context references an unknown evidence ID.")
+        candidate_refs = {item.candidate_ref for item in self.related_books}
+        if len(candidate_refs) != len(self.related_books):
+            raise ValueError("Related-book candidate refs must be unique.")
+        library_refs = {item.resource_ref for item in self.library_records}
+        for candidate in self.related_books:
+            if any(evidence_id not in evidence_ids for evidence_id in candidate.evidence_ids):
+                raise ValueError("Related-book context references an unknown evidence ID.")
+            verified_ref = candidate.catalog_verification.resource_ref
+            if verified_ref is not None and verified_ref not in library_refs:
+                raise ValueError("Verified related-book refs must exist in the library context.")
         if len(self.model_dump_json()) > 64_000:
             raise ValueError("Context manifest must not exceed 64000 characters.")
         return self
@@ -1097,9 +1187,7 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("My Library results must use MyLibraryReadResult.")
         if self.name == "cast_read" and not isinstance(self.result, CastReadResult):
             raise ValueError("CAST results must use CastReadResult.")
-        if self.name == "cast_alumni_read" and not isinstance(
-            self.result, CastAlumniReadResult
-        ):
+        if self.name == "cast_alumni_read" and not isinstance(self.result, CastAlumniReadResult):
             raise ValueError("CAST alumni results must use CastAlumniReadResult.")
         if self.name == "library_catalog_search" and not isinstance(
             self.result, LibraryCatalogSearchResult
@@ -1126,6 +1214,18 @@ class ChatAssistantMessage(StrictApiModel):
     message_id: StrictStr = Field(min_length=1, max_length=200)
     content_markdown: StrictStr = Field(min_length=1, max_length=12000)
     evidence: list[EvidenceLink] = Field(default_factory=list, max_length=100)
+    related_books: list[RelatedBookCandidate] = Field(default_factory=list, max_length=5)
+
+    @model_validator(mode="after")
+    def validates_related_book_evidence(self) -> "ChatAssistantMessage":
+        evidence_ids = {item.evidence_id for item in self.evidence}
+        candidate_refs = {item.candidate_ref for item in self.related_books}
+        if len(candidate_refs) != len(self.related_books):
+            raise ValueError("Assistant related-book refs must be unique.")
+        for candidate in self.related_books:
+            if any(item not in evidence_ids for item in candidate.evidence_ids):
+                raise ValueError("Assistant related books reference unknown evidence.")
+        return self
 
 
 class ChatRunCompleted(StrictApiModel):
@@ -1190,6 +1290,9 @@ __all__ = [
     "LibraryCatalogItem",
     "LibraryCatalogSearchResult",
     "LibraryItemReadResult",
+    "RelatedBookCatalogVerification",
+    "RelatedBookCandidate",
+    "RelatedBookRelationAxis",
     "LibraryCatalogBrowseResult",
     "LibraryDiscoveryItem",
     "LibraryDiscoverySearchResult",

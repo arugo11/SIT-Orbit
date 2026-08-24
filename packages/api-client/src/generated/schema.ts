@@ -491,6 +491,8 @@ export interface components {
             content_markdown: string;
             /** Evidence */
             evidence?: components["schemas"]["EvidenceLink"][];
+            /** Related Books */
+            related_books?: components["schemas"]["RelatedBookCandidate"][];
         };
         /** ChatClientTool */
         ChatClientTool: {
@@ -520,6 +522,8 @@ export interface components {
             evidence?: components["schemas"]["EvidenceLink"][];
             /** Library Records */
             library_records?: components["schemas"]["ChatLibraryContextRecord"][];
+            /** Related Books */
+            related_books?: components["schemas"]["RelatedBookCandidate"][];
         };
         /** ChatHistoryMessage */
         ChatHistoryMessage: {
@@ -1086,6 +1090,60 @@ export interface components {
             action_type: "purchase_request";
             /** Resource Ref */
             resource_ref: string;
+        };
+        /**
+         * RelatedBookCandidate
+         * @description Public, evidence-grounded candidate produced by bounded discovery.
+         */
+        RelatedBookCandidate: {
+            /** Candidate Ref */
+            candidate_ref: string;
+            /** Title */
+            title: string;
+            /** Authors */
+            authors?: string[];
+            /** Isbn */
+            isbn?: string | null;
+            /** Publication Year */
+            publication_year?: number | null;
+            /** Relation Axes */
+            relation_axes?: components["schemas"]["RelatedBookRelationAxis"][];
+            /** Why Related */
+            why_related: string;
+            /** Evidence Ids */
+            evidence_ids: string[];
+            catalog_verification?: components["schemas"]["RelatedBookCatalogVerification"];
+            /** Observed At */
+            observed_at: string;
+        };
+        /**
+         * RelatedBookCatalogVerification
+         * @description Latest SIT OPAC verification state for one public candidate.
+         */
+        RelatedBookCatalogVerification: {
+            /**
+             * Status
+             * @default unverified
+             * @enum {string}
+             */
+            status: "unverified" | "verified" | "recheck_failed";
+            /** Resource Ref */
+            resource_ref?: string | null;
+            /** Observed At */
+            observed_at?: string | null;
+        };
+        /**
+         * RelatedBookRelationAxis
+         * @description One bounded explanation axis used to diversify book discovery.
+         */
+        RelatedBookRelationAxis: {
+            /** Label */
+            label: string;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "explicit" | "metadata" | "inferred";
         };
         /** RenewOperation */
         RenewOperation: {

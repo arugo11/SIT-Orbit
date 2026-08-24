@@ -258,6 +258,12 @@ Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命�
 
 検索結果は要約と最大10件の公開URLへ正規化し、`web-search-v1-*` Evidenceとして元のChatへ戻す。URL本文がさらに必要な場合だけ既存`browser_read_url`を使用する。検索も既存の1ターン最大8 Toolに含め、Azure側で利用できない場合は別Providerや検索画面スクレイピングへfallbackしない。利用者が「関連する本」「おすすめの本」などの公開推薦を明示したターンだけは、直前に同意済みMy Libraryから取得した書名・著者を公開検索語の材料として使える。この例外は推薦のための最小文脈に限り、検索語と送信先をChat上で表示し、蔵書の貸出状態・返却期限・利用者識別子などは検索語へ含めない。図書館の所蔵確認を求めるターンでは、一般Web検索ではなく公式OPACを優先する。
 
+### 関連書籍Discovery
+
+`ORBIT_BOOK_DISCOVERY=multi_query|semantic`は、Azure Chat内だけに`related_book_discovery`を追加する。公開書誌と利用者が明示した目的から、異なる関連軸の検索語を2件生成し、候補不足・軸不足・出典偏りがある場合だけ3件目を使う。検索結果に実在する書名・著者・ISBNだけを候補集合へ入れ、ISBN、または正規化した書名と主要著者で重複排除する。OPAC全体のベクトル索引、利用者横断の協調フィルタリング、検索結果本文の永続保存は行わない。
+
+`multi_query`は複数検索のRRFと決定的な多様性調整まで、`semantic`はその候補IDだけをbounded rerankerで並べ替え、両順位を1対1のRRFで統合する。未知candidate、未知Evidence、検索結果にない書誌はサーバーで拒否する。意味比較に失敗した場合は`partial`として区別し、keyword結果を完全成功へ読み替えない。公開候補をSIT所蔵として表示する前に既存OPAC ToolでISBN、次に書名と著者を確認し、一度の再確認失敗は`recheck_failed`であって「所蔵なし」ではない。一般検索、OPAC、詳細読取は同じ8回上限を共有する。
+
 ### SITRUS成績通知書の参照
 
 SITRUSの成績は、実在する画面を利用者が開いている場合だけ、専用の`sitrus_read` Toolで参照する。Service Workerは接続元タブが同じorigin・pathnameであることを確認する。優先する`/SITRUS/login/ShutokuTaniShukei.html`では、`MAIN` worldから可視のHTML表を読み、判定・評価・科目名だけをメモリ上で投影する。表にない科目コードや単位数は`null`とし、推測しない。`/SITRUS/login/SeisekiTsutiSho.html`では、表が使えない場合に限り認証済みPDF.jsのテキスト層をメモリ上で処理する。PDFファイル、Base64、学籍番号、認証情報を保存・ダウンロード・APIログへ渡さず、取得できた科目名、科目コード、成績、単位、年度・期・ターム、再履修フラグ、累積GPAだけへ投影する。

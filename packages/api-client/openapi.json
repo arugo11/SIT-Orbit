@@ -1183,6 +1183,14 @@
             "type": "array",
             "maxItems": 100,
             "title": "Evidence"
+          },
+          "related_books": {
+            "items": {
+              "$ref": "#/components/schemas/RelatedBookCandidate"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Related Books"
           }
         },
         "additionalProperties": false,
@@ -1253,6 +1261,14 @@
             "type": "array",
             "maxItems": 20,
             "title": "Library Records"
+          },
+          "related_books": {
+            "items": {
+              "$ref": "#/components/schemas/RelatedBookCandidate"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Related Books"
           }
         },
         "additionalProperties": false,
@@ -2766,6 +2782,170 @@
           "resource_ref"
         ],
         "title": "PurchaseRequestOperation"
+      },
+      "RelatedBookCandidate": {
+        "properties": {
+          "candidate_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-book://candidate/[A-Za-z0-9_-]{16,128}$",
+            "title": "Candidate Ref"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "authors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Authors"
+          },
+          "isbn": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isbn"
+          },
+          "publication_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 1000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Year"
+          },
+          "relation_axes": {
+            "items": {
+              "$ref": "#/components/schemas/RelatedBookRelationAxis"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "minItems": 1,
+            "title": "Relation Axes"
+          },
+          "why_related": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Why Related"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 10,
+            "minItems": 1,
+            "title": "Evidence Ids"
+          },
+          "catalog_verification": {
+            "$ref": "#/components/schemas/RelatedBookCatalogVerification"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "candidate_ref",
+          "title",
+          "why_related",
+          "evidence_ids",
+          "observed_at"
+        ],
+        "title": "RelatedBookCandidate",
+        "description": "Public, evidence-grounded candidate produced by bounded discovery."
+      },
+      "RelatedBookCatalogVerification": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "unverified",
+              "verified",
+              "recheck_failed"
+            ],
+            "title": "Status",
+            "default": "unverified"
+          },
+          "resource_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160,
+                "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Ref"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RelatedBookCatalogVerification",
+        "description": "Latest SIT OPAC verification state for one public candidate."
+      },
+      "RelatedBookRelationAxis": {
+        "properties": {
+          "label": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Label"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "explicit",
+              "metadata",
+              "inferred"
+            ],
+            "title": "Source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "label",
+          "source"
+        ],
+        "title": "RelatedBookRelationAxis",
+        "description": "One bounded explanation axis used to diversify book discovery."
       },
       "RenewOperation": {
         "properties": {

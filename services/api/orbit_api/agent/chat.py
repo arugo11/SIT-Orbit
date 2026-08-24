@@ -36,6 +36,7 @@ from orbit_api.models import (
     MoodleReadResult,
     MyLibraryReadResult,
     MyLibraryScope,
+    RelatedBookCandidate,
     ScombzPageSummaryResult,
     ScombzReadResult,
     ScopedMyLibraryReadResult,
@@ -99,7 +100,11 @@ _FIXTURE_CAST_ALUMNI_QUERY = re.compile(
     re.IGNORECASE,
 )
 _FIXTURE_LIBRARY_CATALOG_QUERY = re.compile(
-    r"(?:opac|蔵書|図書館|書籍|本を?検索|資料を?検索|catalog|isbn)", re.IGNORECASE
+    r"(?:opac|蔵書|図書館の所蔵|書籍|"
+    r"本[^。!?\n]{0,24}(?:探|検索|見つけ|おすすめ|どんな|ある)|"
+    r"資料[^。!?\n]{0,24}(?:探|検索|見つけ|おすすめ|どんな|ある)|"
+    r"本を?検索|資料を?検索|catalog|isbn)",
+    re.IGNORECASE,
 )
 _FIXTURE_LIBRARY_BROWSE_QUERY = re.compile(
     r"(?:新着図書|新着本|貸出ランキング|ランキング|loan\s*ranking)", re.IGNORECASE
@@ -306,9 +311,10 @@ class FixtureChatBackend:
         history: list[ChatHistoryMessage],
         context: list[EvidenceLink] | None = None,
         library_context: list[ChatLibraryContextRecord] | None = None,
+        related_book_context: list[RelatedBookCandidate] | None = None,
         advertised_tools: set[str] | None = None,
     ) -> ChatAgentExecution:
-        del context
+        del context, related_book_context
         advertised = set(advertised_tools or set())
         if self._requests_library_action_options(message, history, advertised):
             match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
@@ -330,9 +336,7 @@ class FixtureChatBackend:
         ):
             match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
             if match is None and library_context:
-                conversation_text = "\n".join(
-                    [item.content for item in history[-20:]] + [message]
-                )
+                conversation_text = "\n".join([item.content for item in history[-20:]] + [message])
                 selected = next(
                     (
                         item
@@ -449,10 +453,7 @@ class FixtureChatBackend:
             )
         return ChatAgentExecution(
             draft=ChatDraft(
-                content_markdown=(
-                    "これはローカルの合成Agentです。\n\n"
-                    f"受け取った内容: {message}"
-                )
+                content_markdown=(f"これはローカルの合成Agentです。\n\n受け取った内容: {message}")
             )
         )
 
@@ -624,16 +625,12 @@ class FixtureChatBackend:
             if tool_result.topic_categories:
                 lines.append(f"- 回答可能テーマ: {', '.join(tool_result.topic_categories)}")
             if tool_result.availability_frequencies:
-                lines.append(
-                    "- 面談可能頻度: "
-                    + ", ".join(tool_result.availability_frequencies)
-                )
+                lines.append("- 面談可能頻度: " + ", ".join(tool_result.availability_frequencies))
             if tool_result.meeting_modes:
                 lines.append(f"- 面談形式: {', '.join(tool_result.meeting_modes)}")
             if tool_result.shareable_insight_categories:
                 lines.append(
-                    "- 匿名共有可能な知見: "
-                    + ", ".join(tool_result.shareable_insight_categories)
+                    "- 匿名共有可能な知見: " + ", ".join(tool_result.shareable_insight_categories)
                 )
             lines.append(
                 "- 連絡先の有無: 端末内でのみ確認しました。"
@@ -824,6 +821,7 @@ class StoredChatRun:
     generation: int
     expires_at: float
     library_context: list[ChatLibraryContextRecord] = field(default_factory=list)
+    related_books: list[RelatedBookCandidate] = field(default_factory=list)
     state: ChatRunState = "pending"
 
 
@@ -886,6 +884,7 @@ class ChatRunStore:
         context: list[EvidenceLink],
         advertised_tools: Sequence[ChatClientTool],
         library_context: Sequence[ChatLibraryContextRecord] = (),
+        related_books: Sequence[RelatedBookCandidate] = (),
     ) -> str:
         now = self._clock()
         run_id = f"chat-run-{uuid4()}"
@@ -901,6 +900,7 @@ class ChatRunStore:
             generation=0,
             expires_at=now + self.ttl_seconds,
             library_context=list(library_context),
+            related_books=list(related_books),
         )
         with self._lock:
             self._cleanup_locked()
@@ -949,6 +949,7 @@ class ChatRunStore:
         claimed_call_id: str,
         library_action_options: Mapping[str, LibraryActionOptionsResult] | None = None,
         library_context: Sequence[ChatLibraryContextRecord] | None = None,
+        related_books: Sequence[RelatedBookCandidate] | None = None,
     ) -> None:
         with self._lock:
             self._cleanup_locked()
@@ -971,9 +972,10 @@ class ChatRunStore:
                 deferred=deferred,
                 context=list(context),
                 library_context=list(
-                    library_context
-                    if library_context is not None
-                    else run.library_context
+                    library_context if library_context is not None else run.library_context
+                ),
+                related_books=list(
+                    related_books if related_books is not None else run.related_books
                 ),
                 library_action_options=dict(
                     library_action_options
@@ -1133,6 +1135,7 @@ def _canonical_response(
     *,
     action_id_prefix: str,
     library_action_options: Mapping[str, LibraryActionOptionsResult] | None = None,
+    related_books: Sequence[RelatedBookCandidate] = (),
 ) -> ChatRunCompleted:
     evidence_by_id = {item.evidence_id: item for item in context}
     if len(set(draft.evidence_ids)) != len(draft.evidence_ids):
@@ -1141,6 +1144,21 @@ def _canonical_response(
     if unknown:
         raise ValueError("ChatDraft contains unknown evidence IDs.")
     selected = [evidence_by_id[item] for item in draft.evidence_ids]
+    related_by_ref = {item.candidate_ref: item for item in related_books}
+    if any(
+        candidate_ref not in related_by_ref for candidate_ref in draft.related_book_candidate_refs
+    ):
+        raise ValueError("ChatDraft contains an unknown related-book candidate ref.")
+    selected_related_books = [
+        related_by_ref[candidate_ref] for candidate_ref in draft.related_book_candidate_refs
+    ]
+    for candidate in selected_related_books:
+        for evidence_id in candidate.evidence_ids:
+            evidence = evidence_by_id.get(evidence_id)
+            if evidence is None:
+                raise ValueError("Related-book candidate contains unknown evidence.")
+            if evidence not in selected:
+                selected.append(evidence)
     proposal: ActionProposal | None = None
     if draft.action is not None:
         unknown_action = [item for item in draft.action.evidence_ids if item not in evidence_by_id]
@@ -1153,9 +1171,7 @@ def _canonical_response(
                 draft.action.operation.resource_ref
             )
             if current_options is None or current_options.status != "known":
-                raise ValueError(
-                    "Library operations require current known action options."
-                )
+                raise ValueError("Library operations require current known action options.")
             matching_option = next(
                 (
                     option
@@ -1186,6 +1202,7 @@ def _canonical_response(
             message_id=f"msg-{uuid4()}",
             content_markdown=draft.content_markdown,
             evidence=selected,
+            related_books=selected_related_books,
         ),
         proposal=proposal,
     )
@@ -1230,13 +1247,14 @@ class ChatRunService:
         advertised = set(tool.name for tool in request.client_tools)
         backend = self.backend_factory()
         manifest = request.context_manifest
-        if manifest is not None and manifest.library_records:
+        if manifest is not None and (manifest.library_records or manifest.related_books):
             execution = await cast(Any, backend).start_chat(
                 conversation_id=request.conversation_id,
                 message=request.message,
                 history=list(request.history),
                 context=list(manifest.evidence),
                 library_context=list(manifest.library_records),
+                related_book_context=list(manifest.related_books),
                 advertised_tools=advertised,
             )
         else:
@@ -1256,6 +1274,7 @@ class ChatRunService:
                 execution.draft,
                 context,
                 action_id_prefix="act-chat",
+                related_books=execution.generated_related_books,
             )
         if execution.deferred is None:
             raise RuntimeError("The chat agent returned neither a response nor a tool request.")
@@ -1266,6 +1285,7 @@ class ChatRunService:
             context=context,
             advertised_tools=request.client_tools,
             library_context=(manifest.library_records if manifest is not None else ()),
+            related_books=execution.generated_related_books,
         )
         return self._tool_required(run_id, execution.deferred)
 
@@ -1320,9 +1340,8 @@ class ChatRunService:
                 )
             context = _merge_evidence(claimed.context, [_tool_evidence(request, run_id)])
             library_action_options = dict(claimed.library_action_options)
-            if (
-                request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME
-                and isinstance(request.result, LibraryActionOptionsResult)
+            if request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME and isinstance(
+                request.result, LibraryActionOptionsResult
             ):
                 library_action_options[request.result.resource_ref] = request.result
             if backend_name != claimed.backend_name:
@@ -1341,6 +1360,7 @@ class ChatRunService:
                     context,
                     action_id_prefix="act-chat",
                     library_action_options=library_action_options,
+                    related_books=execution.generated_related_books,
                 )
                 self.store.complete(run_id, generation=claimed.generation)
                 return response
@@ -1354,6 +1374,7 @@ class ChatRunService:
                 claimed_call_id=claimed.deferred.tool_call_id,
                 library_action_options=library_action_options,
                 library_context=claimed.library_context,
+                related_books=execution.generated_related_books,
             )
             return self._tool_required(run_id, execution.deferred)
         except BaseException:
