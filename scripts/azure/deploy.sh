@@ -136,7 +136,10 @@ if current_environment_id="$(az containerapp show \
     --name "${ORBIT_AZURE_CONTAINER_APP}" \
     --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
     --image "${image}" \
-    --set-env-vars ORBIT_AGENT_BACKEND=fixture ORBIT_OBSERVABILITY=off \
+    --set-env-vars \
+      ORBIT_AGENT_BACKEND=fixture \
+      ORBIT_BOOK_DISCOVERY=off \
+      ORBIT_OBSERVABILITY=off \
     --min-replicas 0 \
     --max-replicas 1 \
     "${subscription_args[@]}" \
@@ -152,21 +155,24 @@ else
     --user-assigned "${identity_id}" \
     --registry-identity "${identity_id}" \
     --registry-server "${registry_server}" \
-    --env-vars ORBIT_AGENT_BACKEND=fixture ORBIT_OBSERVABILITY=off \
+    --env-vars \
+      ORBIT_AGENT_BACKEND=fixture \
+      ORBIT_BOOK_DISCOVERY=off \
+      ORBIT_OBSERVABILITY=off \
     --min-replicas 0 \
     --max-replicas 1 \
     "${subscription_args[@]}" \
     --output none
 fi
 
-IFS='|' read -r deployed_image min_replicas max_replicas fqdn <<< "$(az containerapp show \
+IFS='|' read -r deployed_image min_replicas max_replicas fqdn deployed_backend deployed_book_discovery <<< "$(az containerapp show \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   "${subscription_args[@]}" \
-  --query "join('|',[properties.template.containers[0].image,to_string(properties.template.scale.minReplicas),to_string(properties.template.scale.maxReplicas),properties.configuration.ingress.fqdn])" \
+  --query "join('|',[properties.template.containers[0].image,to_string(properties.template.scale.minReplicas),to_string(properties.template.scale.maxReplicas),properties.configuration.ingress.fqdn,properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0]])" \
   --output tsv)"
 
-if [[ "${deployed_image}" != "${image}" || "${min_replicas}" != "0" || "${max_replicas}" != "1" ]]; then
+if [[ "${deployed_image}" != "${image}" || "${min_replicas}" != "0" || "${max_replicas}" != "1" || "${deployed_backend}" != "fixture" || "${deployed_book_discovery}" != "off" ]]; then
   printf 'Container App deployment verification failed.\n' >&2
   exit 1
 fi

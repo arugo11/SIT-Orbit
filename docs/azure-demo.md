@@ -89,13 +89,13 @@ Azure OpenAIの設定は、次の3つがすべて揃った場合だけ有効で�
 ```text
 ORBIT_AGENT_BACKEND=azure_openai
 ORBIT_WEB_SEARCH=azure
-ORBIT_BOOK_DISCOVERY=off
+ORBIT_BOOK_DISCOVERY=multi_query
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
 AZURE_OPENAI_MODEL=<deployment-name>
 AZURE_OPENAI_API_KEY=<secret>
 ```
 
-関連書籍Discoveryを有効にする場合は、`ORBIT_BOOK_DISCOVERY=multi_query`または`semantic`を追加します。どちらも`ORBIT_WEB_SEARCH=azure`が必須で、条件不足時にOPAC単独や別検索Providerへfallbackしません。まず`multi_query`で実検索payloadと候補精度を確認し、semantic rerankerのshadow評価後に`semantic`へ切り替えます。
+関連書籍Discoveryを有効にする場合は、`ORBIT_BOOK_DISCOVERY=multi_query`または`semantic`を設定します。`configure-openai.sh`では、同じ値を`ORBIT_AZURE_BOOK_DISCOVERY_MODE`へ必ず指定してください。値が未設定または不正な場合、Azureの更新を開始せず停止します。どちらも`ORBIT_WEB_SEARCH=azure`が必須で、条件不足時にOPAC単独や別検索Providerへfallbackしません。初回のProvider受入は`multi_query`で行い、実検索payload、候補精度、OPAC再確認を確認した後に、別変更として`semantic`へ切り替えます。
 
 `AZURE_OPENAI_MODEL`はモデルの表示名ではなく、Azure側のデプロイ名です。API versionをアプリケーションへ固定せず、v1のベースURLを利用します。
 
@@ -131,6 +131,7 @@ export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
 export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
 export ORBIT_AZURE_OPENAI_ACCOUNT="<azure-openai-account-name>"
 export ORBIT_AZURE_OPENAI_DEPLOYMENT="<deployment-name>"
+export ORBIT_AZURE_BOOK_DISCOVERY_MODE="multi_query"
 # 必要な場合だけ指定
 export ORBIT_AZURE_SUBSCRIPTION="<subscription-name-or-id>"
 
@@ -139,7 +140,7 @@ scripts/azure/health.sh
 ```
 
 `configure-openai.sh`はAzure OpenAI accountとdeploymentが`Succeeded`であることを確認し、API keyをContainer Apps Secretへ登録する。
-その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。
+その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_BOOK_DISCOVERY`、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。`deploy.sh`で配置したイメージのSHAと、公開OpenAPIの`ChatContextManifest.related_books`も確認してから、拡張機能でChatを送信する。
 
 ### Chrome拡張機能から接続する
 
