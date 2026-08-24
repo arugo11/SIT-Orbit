@@ -303,6 +303,7 @@ export function isCastSearchRequest(
       return false;
     const sort = candidate.sort as Record<string, unknown>;
     if (
+      Object.keys(sort).some((key) => !["key", "direction"].includes(key)) ||
       !["company_name", "hiring_count", "graduation_year", "deadline"].includes(
         sort.key as string,
       ) ||
@@ -333,6 +334,22 @@ export function isCastSearchRequest(
     "faculty",
   ]);
   if (Object.keys(filters).some((key) => !allowed.has(key))) return false;
+  const listFilterKeys = new Set([
+    "graduation_years",
+    "academic_programs",
+    "industries",
+    "occupations",
+    "locations",
+    "target_grades",
+    "duration",
+  ]);
+  if (
+    Object.entries(filters).some(
+      ([key, value]) => listFilterKeys.has(key) && !Array.isArray(value),
+    )
+  ) {
+    return false;
+  }
   if (
     filters.company_name !== undefined &&
     !isSafeString(filters.company_name, 200)
@@ -352,6 +369,7 @@ export function isCastSearchRequest(
   if (
     filters.graduation_years !== undefined &&
     (!Array.isArray(filters.graduation_years) ||
+      filters.graduation_years.length === 0 ||
       filters.graduation_years.length > 20 ||
       !filters.graduation_years.every(
         (year) =>
@@ -390,7 +408,8 @@ export function isCastSearchRequest(
   for (const key of ["deadline_before", "event_start", "event_end"]) {
     if (
       filters[key] !== undefined &&
-      asSafeDate(filters[key] as string) === undefined
+      (typeof filters[key] !== "string" ||
+        asSafeDate(filters[key]) === undefined)
     )
       return false;
   }
@@ -658,10 +677,20 @@ function appendText(
   catalog: FormCatalog,
   pattern: RegExp,
   value: string | undefined,
-): void {
-  if (!value) return;
+): boolean {
+  if (!value) return true;
   const control = firstControl(catalog, pattern);
-  if (control) data.set(control.name, compact(value, 200));
+  if (!control) return false;
+  if (control.optionLabels.length > 0) {
+    const label = matchingOption(control, value);
+    if (!label) return false;
+    const option = optionValue(catalog.form, control, label);
+    if (option === null) return false;
+    data.set(control.name, option);
+    return true;
+  }
+  data.set(control.name, compact(value, 200));
+  return true;
 }
 
 function appendOptions(
@@ -673,15 +702,42 @@ function appendOptions(
   if (!values || values.length === 0) return true;
   const controls = filterControls(catalog, pattern);
   if (controls.length === 0) return false;
-  const control = controls[0];
-  if (!control) return false;
-  const labels = values.map((value) => matchingOption(control, value));
-  if (labels.some((label) => label === null)) return false;
-  data.delete(control.name);
-  labels.forEach((label) => {
-    const value = label ? optionValue(catalog.form, control, label) : null;
-    if (value === null) throw new Error("form_option_missing");
-    data.append(control.name, value);
+  const selectControl = controls.find(
+    (control) => control.optionLabels.length > 0,
+  );
+  if (selectControl) {
+    const labels = values.map((value) => matchingOption(selectControl, value));
+    if (labels.some((label) => label === null)) return false;
+    data.delete(selectControl.name);
+    for (const label of labels) {
+      const option = label
+        ? optionValue(catalog.form, selectControl, label)
+        : null;
+      if (option === null) return false;
+      data.append(selectControl.name, option);
+    }
+    return true;
+  }
+
+  // CAST has also used groups of labelled checkboxes/radios. In that shape
+  // each control is its own option and its value can be copied only after the
+  // label has been matched; arbitrary field names are never accepted.
+  const matchingControls = values.map((value) => {
+    const needle = normal(value);
+    return controls.find((control) => {
+      const label = normal(control.label);
+      return (
+        label === needle || label.includes(needle) || needle.includes(label)
+      );
+    });
+  });
+  if (matchingControls.some((control) => control === undefined)) return false;
+  const names = new Set(matchingControls.map((control) => control?.name));
+  names.forEach((name) => {
+    if (name) data.delete(name);
+  });
+  matchingControls.forEach((control) => {
+    if (control) data.append(control.name, control.value);
   });
   return true;
 }
@@ -703,11 +759,29 @@ function applySemanticFilters(
       ? [2026, 2025, 2024, 2023, 2022]
       : filters.graduation_years,
   };
-  appendText(data, catalog, /企業名|会社名|キーワード/u, filters.company_name);
-  appendText(data, catalog, /指導教員|教員/u, filters.advisor);
-  appendText(data, catalog, /学部|学科|学問系統/u, filters.faculty);
-  if (filters.year !== undefined) {
-    appendText(data, catalog, /年度|卒業年|対象年/u, String(filters.year));
+  const applied = {
+    kind: request.kind,
+    filters: normalizedFilters,
+    sort: request.sort ?? null,
+    graduation_years_defaulted: graduationYearsDefaulted,
+  } satisfies CastSearchAppliedFilters;
+  if (
+    !appendText(
+      data,
+      catalog,
+      /企業名|会社名|キーワード/u,
+      filters.company_name,
+    ) ||
+    !appendText(data, catalog, /指導教員|教員/u, filters.advisor) ||
+    !appendText(data, catalog, /学部|学科|学問系統/u, filters.faculty) ||
+    !appendText(
+      data,
+      catalog,
+      /年度|卒業年|対象年/u,
+      filters.year === undefined ? undefined : String(filters.year),
+    )
+  ) {
+    return { applied, ok: false };
   }
   if (normalizedFilters.graduation_years) {
     if (
@@ -720,10 +794,7 @@ function applySemanticFilters(
     ) {
       return {
         applied: {
-          kind: request.kind,
-          filters: normalizedFilters,
-          sort: request.sort ?? null,
-          graduation_years_defaulted: graduationYearsDefaulted,
+          ...applied,
         },
         ok: false,
       };
@@ -738,22 +809,12 @@ function applySemanticFilters(
     )
   )
     return {
-      applied: {
-        kind: request.kind,
-        filters: normalizedFilters,
-        sort: request.sort ?? null,
-        graduation_years_defaulted: graduationYearsDefaulted,
-      },
+      applied,
       ok: false,
     };
   if (!appendOptions(data, catalog, /業種|業界/u, normalizedFilters.industries))
     return {
-      applied: {
-        kind: request.kind,
-        filters: normalizedFilters,
-        sort: request.sort ?? null,
-        graduation_years_defaulted: graduationYearsDefaulted,
-      },
+      applied,
       ok: false,
     };
   if (
@@ -765,12 +826,7 @@ function applySemanticFilters(
     )
   )
     return {
-      applied: {
-        kind: request.kind,
-        filters: normalizedFilters,
-        sort: request.sort ?? null,
-        graduation_years_defaulted: graduationYearsDefaulted,
-      },
+      applied,
       ok: false,
     };
   if (
@@ -782,12 +838,7 @@ function applySemanticFilters(
     )
   )
     return {
-      applied: {
-        kind: request.kind,
-        filters: normalizedFilters,
-        sort: request.sort ?? null,
-        graduation_years_defaulted: graduationYearsDefaulted,
-      },
+      applied,
       ok: false,
     };
   if (
@@ -799,12 +850,7 @@ function applySemanticFilters(
     )
   )
     return {
-      applied: {
-        kind: request.kind,
-        filters: normalizedFilters,
-        sort: request.sort ?? null,
-        graduation_years_defaulted: graduationYearsDefaulted,
-      },
+      applied,
       ok: false,
     };
   if (
@@ -816,12 +862,7 @@ function applySemanticFilters(
     )
   )
     return {
-      applied: {
-        kind: request.kind,
-        filters: normalizedFilters,
-        sort: request.sort ?? null,
-        graduation_years_defaulted: graduationYearsDefaulted,
-      },
+      applied,
       ok: false,
     };
   if (filters.relation) {
@@ -839,12 +880,7 @@ function applySemanticFilters(
       ])
     )
       return {
-        applied: {
-          kind: request.kind,
-          filters: normalizedFilters,
-          sort: request.sort ?? null,
-          graduation_years_defaulted: graduationYearsDefaulted,
-        },
+        applied,
         ok: false,
       };
   }
@@ -852,46 +888,49 @@ function applySemanticFilters(
     const label = filters.application_method === "free" ? "自由応募" : "推薦";
     if (!appendOptions(data, catalog, /応募方法|応募区分/u, [label]))
       return {
-        applied: {
-          kind: request.kind,
-          filters: normalizedFilters,
-          sort: request.sort ?? null,
-          graduation_years_defaulted: graduationYearsDefaulted,
-        },
+        applied,
         ok: false,
       };
   }
-  appendText(
-    data,
-    catalog,
-    /締切|応募締切|期限/u,
-    asSafeDate(filters.deadline_before),
-  );
-  appendText(
-    data,
-    catalog,
-    /開催.*(開始|from)|開催日.*開始/u,
-    asSafeDate(filters.event_start),
-  );
-  appendText(
-    data,
-    catalog,
-    /開催.*(終了|to)|開催日.*終了/u,
-    asSafeDate(filters.event_end),
-  );
+  if (
+    !appendText(
+      data,
+      catalog,
+      /締切|応募締切|期限/u,
+      asSafeDate(filters.deadline_before),
+    ) ||
+    !appendText(
+      data,
+      catalog,
+      /開催.*(開始|from)|開催日.*開始/u,
+      asSafeDate(filters.event_start),
+    ) ||
+    !appendText(
+      data,
+      catalog,
+      /開催.*(終了|to)|開催日.*終了/u,
+      asSafeDate(filters.event_end),
+    )
+  ) {
+    return { applied, ok: false };
+  }
   if (filters.new_only) {
     const control = firstControl(catalog, /新着|新着のみ/u);
-    if (control) data.set(control.name, control.value || "1");
+    if (!control) return { applied, ok: false };
+    data.set(control.name, control.value || "1");
   }
   if (filters.include_closed === false) {
     const control = firstControl(catalog, /受付状態|掲載状態|終了求人|終了/u);
-    if (control && control.type === "checkbox")
-      data.set(control.name, control.value || "0");
+    if (control?.type !== "checkbox") {
+      return { applied, ok: false };
+    }
+    data.set(control.name, control.value || "0");
   }
   const pageControl = firstControl(
     catalog,
     /^ページ|currentPageNumber|ページ番号/u,
   );
+  if (page > 1 && !pageControl) return { applied, ok: false };
   if (pageControl) data.set(pageControl.name, String(page));
   if (request.sort) {
     const sortControl = catalog.controls.find(
@@ -900,21 +939,15 @@ function applySemanticFilters(
     const directionControl = catalog.controls.find(
       (control) => control.name === "displaySortDirection",
     );
-    if (sortControl && directionControl) {
-      data.set(sortControl.name, SORT_FIELD_VALUES[request.sort.key]);
-      data.set(
-        directionControl.name,
-        request.sort.direction === "asc" ? "1" : "2",
-      );
-    }
+    if (!sortControl || !directionControl) return { applied, ok: false };
+    data.set(sortControl.name, SORT_FIELD_VALUES[request.sort.key]);
+    data.set(
+      directionControl.name,
+      request.sort.direction === "asc" ? "1" : "2",
+    );
   }
   return {
-    applied: {
-      kind: request.kind,
-      filters: normalizedFilters,
-      sort: request.sort ?? null,
-      graduation_years_defaulted: graduationYearsDefaulted,
-    },
+    applied,
     ok: true,
   };
 }

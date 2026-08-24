@@ -124,7 +124,7 @@ My Libraryは、接続設定で利用者が明示的に接続した後、Chat送
 
 CASTは、利用者がChatを明示送信したときだけ、正規入口から`/career/top/student`を参照する。お知らせ件名・掲載日を含む詳細Snapshotは拡張機能のメモリ内で同じタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`CastReadResult`の派生値だけであり、read-only取得に追加のChat確認は表示しない。進路希望、自己PR、応募履歴、氏名、前回ログイン、個別企業への提出内容を結果へ含めない。ライブCAST Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
 
-求人・インターン検索は、実ログイン環境で確認した求人検索結果`/career/job_offer_search/search`とインターン検索`/career/internship_search`だけを対象にする。カードの詳細は端末内へ投影し、モデルへ送る値は`CastOpportunityAgentProjection`の件数、状態別件数、最短締切だけに限定する。企業名、仕事内容、企業コード、求人番号、応募方法、添付、raw HTML、フォーム値を外部payloadへ含めない。未確認path、query/fragment付きURL、404、未検索フォーム、ログイン画面、構造不一致は`unavailable`として扱い、空データの成功や推測URLへのfallbackを行わない。
+CAST検索は、実画面で確認した5種類の正規フォーム（求人、インターン、会社説明会、企業、採用実績）をcontent scriptからsame-originでGET／POSTする。Service WorkerとChatは検索種別、意味フィルター、並び順、opaque cursorだけを渡し、URL、form action、field名、hidden値、Cookieを受け取らない。content scriptは毎回entry formを読み、hidden stateを同一originのPOSTにだけ含める。企業名などの検索結果詳細は端末内の短命なlocal snapshotに保持し、外部モデルへ送る`CastSearchAgentProjection`は件数、取得範囲、5件以上の匿名集計、server-issued Evidence IDだけに限定する。未確認path、query/fragment付きURL、404、未検索フォーム、ログイン画面、構造不一致、意味フィルターをフォームへ解決できない場合は`unavailable`または`form_changed`として扱い、空データの成功や推測URLへのfallbackを行わない。1ページ10件を既定とし、全件取得は明示された場合だけ直列に実行する。
 
 採用実績・選考記録は確認済み企業詳細`/career/company_detail_view`の`#employment`、`#company_exam_entry`、`#company_obog`だけをread-onlyで扱う。氏名・指導教員などの人物値は端末内SnapshotからPseudonymization Gatewayへ送り、外部へはmission固有の別名だけを残す。Prompt projectionには元の氏名、企業コード、内部local_id、report href、raw HTML、フォーム値、名簿本文、連絡先を含めない。PDF、添付、OB・OG名簿の要求、応募・予約・送信は実行しない。未知path、query/fragment、ログイン画面、構造不一致は`unavailable`として扱い、推測URLへのfallbackを行わない。
 

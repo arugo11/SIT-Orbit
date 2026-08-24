@@ -835,6 +835,180 @@ class CastAlumniReadResult(StrictApiModel):
         return self
 
 
+class CastSearchSort(StrictApiModel):
+    key: Literal["company_name", "hiring_count", "graduation_year", "deadline"]
+    direction: Literal["asc", "desc"]
+
+
+class CastSearchAppliedFilters(StrictApiModel):
+    kind: Literal["job", "internship", "company_session", "company", "hiring_record"]
+    filters: dict[StrictStr, Any] = Field(default_factory=dict, max_length=24)
+    sort: CastSearchSort | None = None
+    graduation_years_defaulted: StrictBool = False
+
+    @model_validator(mode="after")
+    def semantic_filter_keys_are_allowlisted(self) -> "CastSearchAppliedFilters":
+        allowed = {
+            "company_name",
+            "new_only",
+            "year",
+            "graduation_years",
+            "academic_programs",
+            "industries",
+            "relation",
+            "occupations",
+            "locations",
+            "deadline_before",
+            "include_closed",
+            "application_method",
+            "target_grades",
+            "duration",
+            "event_start",
+            "event_end",
+            "advisor",
+            "faculty",
+        }
+        string_keys = {
+            "company_name",
+            "deadline_before",
+            "event_start",
+            "event_end",
+            "relation",
+            "application_method",
+            "advisor",
+            "faculty",
+        }
+        boolean_keys = {"new_only", "include_closed"}
+        list_string_keys = {
+            "academic_programs",
+            "industries",
+            "occupations",
+            "locations",
+            "target_grades",
+            "duration",
+        }
+        relation_values = {
+            "hiring_record",
+            "obog",
+            "career_supporter",
+            "company_session",
+            "internship",
+            "entrance_exam",
+        }
+        if set(self.filters) - allowed:
+            raise ValueError("CAST search filters contain an unsupported key.")
+        for key, value in self.filters.items():
+            if key in boolean_keys:
+                if not isinstance(value, bool):
+                    raise ValueError(f"CAST search filter {key} contains invalid values.")
+                continue
+            if key == "year":
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, int)
+                    or not 1995 <= value <= 2100
+                ):
+                    raise ValueError(f"CAST search filter {key} contains invalid values.")
+                continue
+            if key == "graduation_years":
+                if not isinstance(value, list):
+                    raise ValueError(f"CAST search filter {key} contains invalid values.")
+                if not value or len(value) > 20 or not all(
+                    isinstance(item, int)
+                    and not isinstance(item, bool)
+                    and 1995 <= item <= 2100
+                    for item in value
+                ):
+                    raise ValueError(f"CAST search filter {key} contains invalid values.")
+                continue
+            if key in string_keys and isinstance(value, str):
+                if not value.strip() or len(value) > 200:
+                    raise ValueError(f"CAST search filter {key} is invalid.")
+                if key == "relation" and value not in relation_values:
+                    raise ValueError(f"CAST search filter {key} is invalid.")
+                if key == "application_method" and value not in {"free", "recommendation"}:
+                    raise ValueError(f"CAST search filter {key} is invalid.")
+                continue
+            if key in list_string_keys and isinstance(value, list):
+                if not value or len(value) > 20:
+                    raise ValueError(f"CAST search filter {key} contains invalid values.")
+                valid = all(
+                    isinstance(item, str) and item.strip() and len(item) <= 200
+                    for item in value
+                )
+                if not valid:
+                    raise ValueError(f"CAST search filter {key} contains invalid values.")
+                continue
+            raise ValueError(f"CAST search filter {key} contains invalid values.")
+        return self
+
+
+class CastSearchCoverage(StrictApiModel):
+    mode: Literal["page", "complete", "partial"]
+    page_size: StrictInt = Field(ge=1, le=50)
+    fetched_pages: StrictInt = Field(ge=0, le=100)
+    total_pages: StrictInt | None = Field(default=None, ge=0, le=100)
+
+
+class CastSearchAggregate(StrictApiModel):
+    dimension: Literal["industry", "location", "graduation_year"]
+    value: StrictStr = Field(min_length=1, max_length=200)
+    count: StrictInt = Field(ge=5, le=100_000)
+
+
+class CastSearchResult(StrictApiModel):
+    """Aggregate-only projection returned by the authenticated CAST search tool.
+
+    Company/person detail remains in the extension's local result card.  This
+    schema intentionally has no company code, person identifier, HTML, or
+    source URL field.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    status: Literal[
+        "known",
+        "reauth_required",
+        "form_changed",
+        "rate_limited",
+        "unavailable",
+    ]
+    applied_filters: CastSearchAppliedFilters | None = None
+    total_count: StrictInt = Field(ge=0, le=100_000)
+    returned_count: StrictInt = Field(ge=0, le=1_000)
+    coverage: CastSearchCoverage | None = None
+    anonymous_aggregates: list[CastSearchAggregate] = Field(default_factory=list, max_length=100)
+    evidence_ids: list[StrictStr] = Field(default_factory=list, max_length=32)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "CastSearchResult":
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("CAST search evidence IDs must be unique.")
+        if any(
+            not re.fullmatch(r"cast-search-v1-[A-Za-z0-9_-]{16,200}", evidence_id)
+            for evidence_id in self.evidence_ids
+        ):
+            raise ValueError("CAST search evidence IDs must be opaque v1 IDs.")
+        aggregate_keys = [(item.dimension, item.value) for item in self.anonymous_aggregates]
+        if len(set(aggregate_keys)) != len(aggregate_keys):
+            raise ValueError("CAST search aggregates must be unique.")
+        if self.returned_count > self.total_count:
+            raise ValueError("CAST search returned_count cannot exceed total_count.")
+        if self.status == "known":
+            if self.applied_filters is None or self.coverage is None:
+                raise ValueError("Known CAST search results require filters and coverage.")
+        elif (
+            self.applied_filters is not None
+            or self.total_count
+            or self.returned_count
+            or self.coverage is not None
+            or self.anonymous_aggregates
+            or self.evidence_ids
+        ):
+            raise ValueError("Unavailable CAST search results cannot include derived data.")
+        return self
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
@@ -923,6 +1097,7 @@ ChatToolName = Literal[
     "my_library_read",
     "cast_read",
     "cast_alumni_read",
+    "cast_search",
     "library_catalog_search",
     "library_item_read",
     "library_catalog_browse",
@@ -1156,6 +1331,7 @@ class ChatToolResultRequest(StrictApiModel):
         | MyLibraryReadResult
         | CastReadResult
         | CastAlumniReadResult
+        | CastSearchResult
         | LibraryCatalogSearchResult
         | LibraryItemReadResult
         | LibraryCatalogBrowseResult
@@ -1189,6 +1365,8 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("CAST results must use CastReadResult.")
         if self.name == "cast_alumni_read" and not isinstance(self.result, CastAlumniReadResult):
             raise ValueError("CAST alumni results must use CastAlumniReadResult.")
+        if self.name == "cast_search" and not isinstance(self.result, CastSearchResult):
+            raise ValueError("CAST search results must use CastSearchResult.")
         if self.name == "library_catalog_search" and not isinstance(
             self.result, LibraryCatalogSearchResult
         ):
@@ -1276,6 +1454,11 @@ __all__ = [
     "BrowserReadResult",
     "CastReadResult",
     "CastAlumniReadResult",
+    "CastSearchAggregate",
+    "CastSearchAppliedFilters",
+    "CastSearchCoverage",
+    "CastSearchResult",
+    "CastSearchSort",
     "SitrusGradeItem",
     "SitrusGradeResult",
     "MoodleReadResult",
