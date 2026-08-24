@@ -3,6 +3,7 @@ import {
   isCastAlumniReadMessage,
   isCastOpenMessage,
   isCastReadMessage,
+  isCastSearchMessage,
   isLibraryCatalogBrowseMessage,
   isLibraryCatalogSearchMessage,
   isLibraryDiscoverySearchMessage,
@@ -156,6 +157,23 @@ describe("page context message validation", () => {
       isCastAlumniReadMessage({
         type: "cast-alumni-read",
         tool_call_id: "",
+      }),
+    ).toBe(false);
+    expect(
+      isCastSearchMessage({
+        type: "cast-search",
+        tool_call_id: "cast-search-1",
+        kind: "hiring_record",
+        filters: { graduation_years: [2024, 2023] },
+      }),
+    ).toBe(true);
+    expect(
+      isCastSearchMessage({
+        type: "cast-search",
+        tool_call_id: "cast-search-2",
+        kind: "job",
+        filters: {},
+        form_action: "/career/evil",
       }),
     ).toBe(false);
   });

@@ -1,8 +1,13 @@
-import { isRequestPageContextMessage, MESSAGE_TYPES } from "../shared/messages";
+import {
+  isCastSearchMessage,
+  isRequestPageContextMessage,
+  MESSAGE_TYPES,
+} from "../shared/messages";
 import {
   CAST_ALUMNI_INTERNAL_MESSAGE,
   extractCastAlumniPage,
 } from "./cast-alumni-reader";
+import { runCastSearch } from "./cast-search-api";
 import { parseScombzPageContext } from "./page-context";
 
 function readPageContext() {
@@ -37,6 +42,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   ) {
     sendResponse(extractCastAlumniPage(document, window.location.href));
     return;
+  }
+  if (isCastSearchMessage(message)) {
+    const { type: _type, tool_call_id: _toolCallId, ...request } = message;
+    void runCastSearch(request).then(sendResponse);
+    return true;
   }
   if (!isRequestPageContextMessage(message)) {
     return;
