@@ -7,7 +7,6 @@ import {
 } from "../content/my-library-consent";
 import {
   buttonByName,
-  click,
   type MountedSidePanel,
   mountSidePanel,
   unmountSidePanel,
@@ -237,7 +236,7 @@ describe("ChatPanel My Library consent and history boundary", () => {
     });
   }
 
-  it("does not treat Full access as My Library sharing consent", async () => {
+  it("does not add a second consent prompt for a read-only My Library request", async () => {
     const apiClient = createApiClient();
     mounted = await mountSidePanel(() => (
       <ChatPanel
@@ -251,27 +250,30 @@ describe("ChatPanel My Library consent and history boundary", () => {
     const panel = mounted;
     if (!panel) throw new Error("ChatPanel did not mount.");
 
-    await click(buttonByName(panel.document, "Full access"));
-    await waitFor(
-      () =>
-        buttonByName(panel.document, "Full access").getAttribute(
-          "aria-pressed",
-        ) === "true",
+    panel.chromeRuntime.sendMessage.mockImplementation(
+      (message: unknown, callback?: (response: unknown) => void) => {
+        if (
+          typeof message === "object" &&
+          message !== null &&
+          (message as { type?: string }).type === "my-library-read"
+        ) {
+          callback?.({
+            status: "known",
+            projection,
+            detail: localDetail,
+          });
+          return;
+        }
+        callback?.({ ok: true });
+      },
     );
+
     expect(sessionValues).toEqual({});
 
     await submitMessage(panel, "購入依頼の状況を確認して");
-    await waitFor(
-      () => panel.document.querySelector(".chat-permission-prompt") !== null,
-    );
-    expect(
-      panel.document.querySelector(".chat-permission-prompt")?.textContent,
-    ).toContain("Full access権限だけでは");
-    expect(buttonByName(panel.document, "このセッションで許可")).toBeTruthy();
-    expect(
-      panel.document.querySelector(".chat-permission-prompt")?.textContent,
-    ).not.toContain("今回だけ許可");
-    expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+    expect(panel.document.querySelector(".chat-permission-prompt")).toBeNull();
+    expect(apiClient.submitChatToolResult).toHaveBeenCalledTimes(1);
   });
 
   it("keeps page-only fields out of the Agent request, rendered Chat, and history storage", async () => {
@@ -362,14 +364,14 @@ describe("ChatPanel My Library consent and history boundary", () => {
     await submitMessage(mounted, "購入依頼の状況を確認して");
     await waitFor(
       () =>
-        apiClient.submitChatToolResult.mock.calls.length === 1 ||
-        mounted?.document.querySelector('[role="alert"]')?.textContent ===
-          "My Libraryの利用状況を読み取れませんでした。",
+        mounted?.document.body.textContent?.includes(
+          "今は応答できませんでした。もう一度お試しください。",
+        ) ?? false,
     );
     expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
-    expect(mounted?.document.querySelector('[role="alert"]')?.textContent).toBe(
-      "My Libraryの利用状況を読み取れませんでした。",
-    );
+    expect(
+      mounted?.document.querySelector(".chat-permission-prompt"),
+    ).toBeNull();
   });
 
   it("does not read or send personal library data to a non-Azure backend", async () => {
@@ -391,8 +393,9 @@ describe("ChatPanel My Library consent and history boundary", () => {
     await submitMessage(mounted, "購入依頼の状況を確認して");
     await waitFor(
       () =>
-        mounted?.document.querySelector('[role="alert"]')?.textContent ===
-        "My Libraryの個人情報はAzure OpenAI Agentに接続している場合だけ送信できます。",
+        mounted?.document.body.textContent?.includes(
+          "今は応答できませんでした。もう一度お試しください。",
+        ) ?? false,
     );
 
     expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();

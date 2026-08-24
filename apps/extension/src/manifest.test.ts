@@ -28,17 +28,15 @@ describe("production extension contract", () => {
     ]);
     expect(manifest.host_permissions).toEqual([
       "https://scombz.shibaura-it.ac.jp/*",
-      "http://localhost:8000/*",
       "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io/*",
       "https://www.googleapis.com/*",
       "https://oauth2.googleapis.com/*",
       "https://syllabus.sic.shibaura-it.ac.jp/*",
       "https://sitrus.sic.shibaura-it.ac.jp/*",
-    ]);
-    expect(manifest.optional_host_permissions).toEqual([
       "https://*/*",
       "http://*/*",
     ]);
+    expect(manifest.optional_host_permissions).toBeUndefined();
     expect(manifest.background.service_worker).toBe("service-worker.js");
     expect(manifest.side_panel).toBeUndefined();
     expect(manifest.oauth2).toBeUndefined();
@@ -60,6 +58,11 @@ describe("production extension contract", () => {
       new URL("../scripts/build.mjs", import.meta.url),
       "utf8",
     );
+    expect(buildSource).toContain("ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID");
+    expect(buildSource).toContain("ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID");
+    expect(buildSource).not.toContain("legacyOAuthClientId");
+    expect(buildSource).not.toContain("ORBIT_GOOGLE_OAUTH_CLIENT_ID");
+    expect(buildSource).not.toContain("ORBIT_GOOGLE_OAUTH_CLIENT_SECRET");
     for (const source of [manifestSource, buildSource]) {
       expect(source).not.toMatch(/googleapis\.com\/auth\/drive/i);
       expect(source).not.toMatch(/googleapis\.com\/auth\/drive\.readonly/i);

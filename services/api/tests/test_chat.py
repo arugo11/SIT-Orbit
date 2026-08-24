@@ -6,6 +6,8 @@ from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     CAST_ALUMNI_TOOL_NAME,
     CAST_TOOL_NAME,
+    LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+    LIBRARY_ITEM_READ_TOOL_NAME,
     MOODLE_TOOL_NAME,
     MY_LIBRARY_TOOL_NAME,
     SCOMBZ_READ_TOOL_NAME,
@@ -15,6 +17,8 @@ from orbit_api.agent.pydantic_ai_backend import (
     DeferredChatRun,
     cast_read,
     google_calendar_availability,
+    library_catalog_search,
+    library_item_read,
     moodle_read,
     my_library_read,
     scombz_page_summary,
@@ -31,6 +35,10 @@ from orbit_api.models import (
     ChatToolResultRequest,
     EvidenceLink,
     LegacyMyLibraryReadResult,
+    LibraryBibliographicRecord,
+    LibraryCatalogSearchResult,
+    LibraryHoldingSummary,
+    LibraryItemReadResult,
     MoodleReadResult,
     MyLibraryItem,
     ScombzPageSummaryResult,
@@ -135,6 +143,8 @@ def test_fixture_chat_route_returns_completed_message(monkeypatch) -> None:
     assert payload["status"] == "completed"
     assert payload["message"]["evidence"] == []
     assert "今日の学習を相談したい" in payload["message"]["content_markdown"]
+    assert "接続設定" not in payload["message"]["content_markdown"]
+    assert "許可を確認" not in payload["message"]["content_markdown"]
 
 
 @pytest.mark.asyncio
@@ -809,6 +819,164 @@ async def test_function_model_replays_scombz_calendar_then_answer(monkeypatch) -
         "scombz-page-summary-v1-run",
         "calendar-availability-v1-run",
     ]
+
+
+@pytest.mark.asyncio
+async def test_function_model_reads_authoritative_opac_detail_after_catalog_discovery(
+    monkeypatch,
+) -> None:
+    """A location follow-up must cross the discovery/detail boundary once."""
+
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    resource_ref = "orbit-library://record/0123456789abcdef"
+    calls = [0]
+    captured: list[str] = []
+
+    def model_function(messages, _info):
+        calls[0] += 1
+        captured.append(str(messages))
+        if calls[0] == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+                        {"query": "ロボット解体新書", "limit": 10},
+                        tool_call_id="catalog-location-1",
+                    )
+                ]
+            )
+        if calls[0] == 2:
+            # The opaque reference returned by discovery is the hand-off into
+            # the authoritative record read; no title-specific special case is
+            # involved in this transition.
+            assert resource_ref in captured[-1]
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        LIBRARY_ITEM_READ_TOOL_NAME,
+                        {"resource_ref": resource_ref},
+                        tool_call_id="item-location-1",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": (
+                            "豊洲図書館の配架場所と請求記号を確認しました。"
+                        ),
+                        "evidence_ids": [
+                            "library-item-read-v1-0123456789abcdef"
+                        ],
+                    },
+                    tool_call_id="final-location-1",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="library-location-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[library_catalog_search, library_item_read],
+    )
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    advertised = {
+        LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+        LIBRARY_ITEM_READ_TOOL_NAME,
+    }
+    catalog_evidence = EvidenceLink(
+        evidence_id="library-catalog-search-v1-1111111111111111",
+        title="芝浦工業大学公式OPACの公開カタログ検索",
+        source_type="library",
+        locator="orbit-library://public/catalog-location",
+        data_classification="public",
+    )
+    catalog_item = LibraryBibliographicRecord(
+        resource_ref=resource_ref,
+        title="ロボット解体新書",
+        authors=["神崎洋治"],
+        subjects=["ロボット"],
+        isbn=None,
+        publisher=None,
+        publication_year=2017,
+        format="book",
+        campus="toyosu",
+        url=(
+            "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB23092122"
+        ),
+        holdings=[
+            LibraryHoldingSummary(
+                campus="toyosu",
+                location="豊洲図書館 豊洲図書館",
+                call_number="548.3/Ko98",
+                status="available",
+                due_date=None,
+                reservation_count=0,
+            )
+        ],
+        related_records=[],
+    )
+
+    first = await backend.start_chat(
+        conversation_id="conversation-library-location",
+        message="この本はどこに配架されていますか？",
+        history=[
+            ChatHistoryMessage(role="user", content="ロボット解体新書は大学にありますか？")
+        ],
+        advertised_tools=advertised,
+    )
+    assert first.deferred is not None
+    assert first.deferred.tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME
+
+    second = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=LibraryCatalogSearchResult(
+            status="known",
+            query="ロボット解体新書",
+            items=[catalog_item],
+            reason_code=None,
+        ),
+        context=[catalog_evidence],
+        advertised_tools=advertised,
+    )
+    assert second.deferred is not None
+    assert second.deferred.tool_name == LIBRARY_ITEM_READ_TOOL_NAME
+    assert second.deferred.arguments == {"resource_ref": resource_ref}
+
+    detail_evidence = EvidenceLink(
+        evidence_id="library-item-read-v1-0123456789abcdef",
+        title="芝浦工業大学公式OPACの公開書誌レコード",
+        source_type="library",
+        locator="orbit-library://public/item-location-123",
+        data_classification="public",
+    )
+    completed = await backend.resume_chat(
+        deferred=second.deferred,
+        tool_result=LibraryItemReadResult(
+            status="known",
+            resource_ref=resource_ref,
+            item=catalog_item,
+            reason_code=None,
+        ),
+        context=[catalog_evidence, detail_evidence],
+        advertised_tools=advertised,
+        seen_tool_call_ids={first.deferred.tool_call_id},
+    )
+    assert completed.draft is not None
+    assert "library-item-read-v1-0123456789abcdef" in captured[-1]
+    assert completed.draft.evidence_ids == [
+        "library-item-read-v1-0123456789abcdef"
+    ]
+    assert "豊洲図書館" in completed.draft.content_markdown
+    assert "配架場所" in completed.draft.content_markdown
 
 
 @pytest.mark.asyncio

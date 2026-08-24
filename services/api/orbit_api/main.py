@@ -21,11 +21,19 @@ from orbit_api.agent.chat import (
     ChatRunUnknownError,
 )
 from orbit_api.agent.runs import ConsumedRunError, ExpiredRunError, UnknownRunError
+from orbit_api.auth import (
+    AgentAuthenticationError,
+    AgentAuthenticationUnavailable,
+    SessionTokenStore,
+    exchange_google_authorization_code,
+)
 from orbit_api.models import (
     ActionProposal,
     AgentCapabilities,
     AgentRunRequest,
     AgentRunResponse,
+    AgentSessionRequest,
+    AgentSessionResponse,
     AgentToolResultRequest,
     ChatRunRequest,
     ChatRunResponse,
@@ -41,12 +49,14 @@ from orbit_api.observability import init_observability
 async def lifespan(_: FastAPI):
     agent_run_service.store.clear()
     chat_run_service.store.clear()
+    agent_sessions.clear()
     init_observability()
     try:
         yield
     finally:
         agent_run_service.store.clear()
         chat_run_service.store.clear()
+        agent_sessions.clear()
 
 
 app = FastAPI(
@@ -54,6 +64,10 @@ app = FastAPI(
     version="0.1.0",
     description="Personal Campus Agent for Shibaura Institute of Technology",
     lifespan=lifespan,
+)
+
+agent_sessions = SessionTokenStore(
+    int(os.getenv("ORBIT_AGENT_SESSION_TTL_SECONDS", "900")),
 )
 
 
@@ -79,7 +93,9 @@ async def redact_request_validation_error(
 
 @app.middleware("http")
 async def require_api_token(request: Request, call_next):
-    """Protect remote Agent routes when ORBIT_API_TOKEN is configured."""
+    """Protect remote Agent routes with static or managed session credentials."""
+    if request.url.path == "/v1/auth/session":
+        return await call_next(request)
     expected = os.getenv("ORBIT_API_TOKEN", "").strip()
     if expected and request.url.path.startswith("/v1/"):
         authorization = request.headers.get("authorization", "")
@@ -88,7 +104,10 @@ async def require_api_token(request: Request, call_next):
             separator != " "
             or scheme.lower() != "bearer"
             or not provided
-            or not secrets.compare_digest(provided, expected)
+            or not (
+                secrets.compare_digest(provided, expected)
+                or agent_sessions.verify(provided)
+            )
         ):
             return JSONResponse(
                 status_code=401,
@@ -127,6 +146,24 @@ chat_run_service = ChatRunService(backend_factory=get_chat_backend)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.post("/v1/auth/session", response_model=AgentSessionResponse)
+async def create_agent_session(request: AgentSessionRequest) -> AgentSessionResponse:
+    try:
+        await exchange_google_authorization_code(
+            request.authorization_code,
+            request.code_verifier,
+        )
+    except AgentAuthenticationError as error:
+        raise HTTPException(status_code=401, detail="Agent authentication failed.") from error
+    except AgentAuthenticationUnavailable as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent authentication is unavailable.",
+        ) from error
+    access_token, expires_at = agent_sessions.issue()
+    return AgentSessionResponse(access_token=access_token, expires_at=expires_at)
 
 
 @app.get("/v1/capabilities", response_model=AgentCapabilities)

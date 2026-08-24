@@ -7,8 +7,8 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
-from typing import Protocol
+from dataclasses import dataclass, field, replace
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from orbit_api.models import (
@@ -20,6 +20,7 @@ from orbit_api.models import (
     ChatAssistantMessage,
     ChatClientTool,
     ChatHistoryMessage,
+    ChatLibraryContextRecord,
     ChatRunCompleted,
     ChatRunRequest,
     ChatRunResponse,
@@ -275,11 +276,16 @@ class FixtureChatBackend:
         message: str,
         history: Sequence[ChatHistoryMessage],
         advertised_tools: set[str],
+        library_context: Sequence[ChatLibraryContextRecord] = (),
     ) -> bool:
         if LIBRARY_ITEM_READ_TOOL_NAME not in advertised_tools:
             return False
         del history
-        return "orbit-library://record/" in message
+        if "orbit-library://record/" in message:
+            return True
+        return bool(library_context) and bool(
+            re.search(r"(?:どこ|配架|所在|請求記号|貸出状態|借りられ|場所)", message)
+        )
 
     @staticmethod
     def _requests_library_action_options(
@@ -299,6 +305,7 @@ class FixtureChatBackend:
         message: str,
         history: list[ChatHistoryMessage],
         context: list[EvidenceLink] | None = None,
+        library_context: list[ChatLibraryContextRecord] | None = None,
         advertised_tools: set[str] | None = None,
     ) -> ChatAgentExecution:
         del context
@@ -315,16 +322,38 @@ class FixtureChatBackend:
                         arguments={"resource_ref": match.group(0)},
                     )
                 )
-        if self._requests_library_item_read(message, history, advertised):
+        if self._requests_library_item_read(
+            message,
+            history,
+            advertised,
+            library_context or (),
+        ):
             match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
+            if match is None and library_context:
+                conversation_text = "\n".join(
+                    [item.content for item in history[-20:]] + [message]
+                )
+                selected = next(
+                    (
+                        item
+                        for item in library_context
+                        if item.record.title and item.record.title in conversation_text
+                    ),
+                    library_context[0],
+                )
+                match = re.search(
+                    r"orbit-library://record/[A-Za-z0-9_-]{16,128}",
+                    selected.resource_ref,
+                )
             if match is not None:
+                resource_ref = match.group(0)
                 return ChatAgentExecution(
                     deferred=DeferredChatRun(
                         messages=[],
                         tool_call_id=f"fixture-library-item-{uuid4().hex}",
                         conversation_id=conversation_id,
                         tool_name=LIBRARY_ITEM_READ_TOOL_NAME,
-                        arguments={"resource_ref": match.group(0)},
+                        arguments={"resource_ref": resource_ref},
                     )
                 )
         if self._requests_library_discovery_search(message, history, advertised):
@@ -422,8 +451,7 @@ class FixtureChatBackend:
             draft=ChatDraft(
                 content_markdown=(
                     "これはローカルの合成Agentです。\n\n"
-                    f"受け取った内容: {message}\n\n"
-                    "実データを取得する場合は、接続設定と許可を確認してから実行します。"
+                    f"受け取った内容: {message}"
                 )
             )
         )
@@ -507,6 +535,15 @@ class FixtureChatBackend:
                         lines.append(f"- 著者: {', '.join(tool_result.item.authors)}")
                     if tool_result.item.publication_year:
                         lines.append(f"- 出版年: {tool_result.item.publication_year}")
+                    for holding in tool_result.item.holdings:
+                        status = {
+                            "available": "貸出可",
+                            "unavailable": "貸出中・利用不可",
+                            "unknown": "状態不明",
+                        }[holding.status]
+                        location = holding.location or "所在不明"
+                        call_number = holding.call_number or "請求記号不明"
+                        lines.append(f"- 所蔵: {status} / {location} / 請求記号: {call_number}")
                 else:
                     lines.append("- 公開レコードの詳細は取得できませんでした。")
             elif deferred.tool_name == LIBRARY_DISCOVERY_SEARCH_TOOL_NAME:
@@ -531,6 +568,15 @@ class FixtureChatBackend:
                 lines = [heading]
                 for item in items:
                     lines.append(f"- {item.title}")
+                    for holding in item.holdings:
+                        status = {
+                            "available": "貸出可",
+                            "unavailable": "貸出中・利用不可",
+                            "unknown": "状態不明",
+                        }[holding.status]
+                        location = holding.location or "所在不明"
+                        call_number = holding.call_number or "請求記号不明"
+                        lines.append(f"  - 所蔵: {status} / {location} / 請求記号: {call_number}")
                 if not items:
                     lines.append("- 表示された公開レコードはありませんでした。")
             return ChatAgentExecution(
@@ -777,6 +823,7 @@ class StoredChatRun:
     seen_tool_call_ids: frozenset[str]
     generation: int
     expires_at: float
+    library_context: list[ChatLibraryContextRecord] = field(default_factory=list)
     state: ChatRunState = "pending"
 
 
@@ -838,6 +885,7 @@ class ChatRunStore:
         deferred: DeferredChatRun,
         context: list[EvidenceLink],
         advertised_tools: Sequence[ChatClientTool],
+        library_context: Sequence[ChatLibraryContextRecord] = (),
     ) -> str:
         now = self._clock()
         run_id = f"chat-run-{uuid4()}"
@@ -852,6 +900,7 @@ class ChatRunStore:
             seen_tool_call_ids=frozenset(),
             generation=0,
             expires_at=now + self.ttl_seconds,
+            library_context=list(library_context),
         )
         with self._lock:
             self._cleanup_locked()
@@ -899,6 +948,7 @@ class ChatRunStore:
         generation: int,
         claimed_call_id: str,
         library_action_options: Mapping[str, LibraryActionOptionsResult] | None = None,
+        library_context: Sequence[ChatLibraryContextRecord] | None = None,
     ) -> None:
         with self._lock:
             self._cleanup_locked()
@@ -920,6 +970,11 @@ class ChatRunStore:
                 run,
                 deferred=deferred,
                 context=list(context),
+                library_context=list(
+                    library_context
+                    if library_context is not None
+                    else run.library_context
+                ),
                 library_action_options=dict(
                     library_action_options
                     if library_action_options is not None
@@ -1042,7 +1097,10 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         LIBRARY_ACTION_OPTIONS_TOOL_NAME: "library-action-options-v1",
     }[request.name]
     return EvidenceLink(
-        evidence_id=f"{evidence_prefix}-{run_id}",
+        # Every client-tool invocation gets its own evidence ID.  A single
+        # deferred run may search several queries or read several records;
+        # reusing the run ID would collapse those distinct sources.
+        evidence_id=f"{evidence_prefix}-{uuid4().hex}",
         title=title,
         source_type=source_type,  # type: ignore[arg-type]
         locator=locator,
@@ -1133,6 +1191,16 @@ def _canonical_response(
     )
 
 
+def _merge_evidence(*groups: Sequence[EvidenceLink]) -> list[EvidenceLink]:
+    """Keep one metadata link per evidence ID while preserving encounter order."""
+
+    merged: dict[str, EvidenceLink] = {}
+    for group in groups:
+        for item in group:
+            merged.setdefault(item.evidence_id, item)
+    return list(merged.values())
+
+
 class ChatRunService:
     def __init__(
         self,
@@ -1161,14 +1229,28 @@ class ChatRunService:
     async def start(self, request: ChatRunRequest) -> ChatRunResponse:
         advertised = set(tool.name for tool in request.client_tools)
         backend = self.backend_factory()
-        execution = await backend.start_chat(
-            conversation_id=request.conversation_id,
-            message=request.message,
-            history=list(request.history),
-            context=[],
-            advertised_tools=advertised,
+        manifest = request.context_manifest
+        if manifest is not None and manifest.library_records:
+            execution = await cast(Any, backend).start_chat(
+                conversation_id=request.conversation_id,
+                message=request.message,
+                history=list(request.history),
+                context=list(manifest.evidence),
+                library_context=list(manifest.library_records),
+                advertised_tools=advertised,
+            )
+        else:
+            execution = await backend.start_chat(
+                conversation_id=request.conversation_id,
+                message=request.message,
+                history=list(request.history),
+                context=list(manifest.evidence) if manifest is not None else [],
+                advertised_tools=advertised,
+            )
+        context = _merge_evidence(
+            manifest.evidence if manifest is not None else [],
+            execution.generated_evidence,
         )
-        context = list(execution.generated_evidence)
         if execution.draft is not None:
             return _canonical_response(
                 execution.draft,
@@ -1183,6 +1265,7 @@ class ChatRunService:
             deferred=execution.deferred,
             context=context,
             advertised_tools=request.client_tools,
+            library_context=(manifest.library_records if manifest is not None else ()),
         )
         return self._tool_required(run_id, execution.deferred)
 
@@ -1235,7 +1318,7 @@ class ChatRunService:
                     "Personal library action capabilities require the explicitly "
                     "consented Azure Agent."
                 )
-            context = [*claimed.context, _tool_evidence(request, run_id)]
+            context = _merge_evidence(claimed.context, [_tool_evidence(request, run_id)])
             library_action_options = dict(claimed.library_action_options)
             if (
                 request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME
@@ -1251,7 +1334,7 @@ class ChatRunService:
                 advertised_tools={tool.name for tool in claimed.advertised_tools},
                 seen_tool_call_ids=claimed.seen_tool_call_ids,
             )
-            context.extend(execution.generated_evidence)
+            context = _merge_evidence(context, execution.generated_evidence)
             if execution.draft is not None:
                 response = _canonical_response(
                     execution.draft,
@@ -1270,6 +1353,7 @@ class ChatRunService:
                 generation=claimed.generation,
                 claimed_call_id=claimed.deferred.tool_call_id,
                 library_action_options=library_action_options,
+                library_context=claimed.library_context,
             )
             return self._tool_required(run_id, execution.deferred)
         except BaseException:

@@ -51,6 +51,8 @@ describe("page context message validation", () => {
         type: "library-item-read",
         tool_call_id: "library-read-1",
         resource_ref: "orbit-library://record/0123456789abcdef",
+        record_url:
+          "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1",
       }),
     ).toBe(true);
     expect(
@@ -76,6 +78,15 @@ describe("page context message validation", () => {
         type: "library-item-read",
         tool_call_id: "library-read-1",
         resource_ref: "orbit-library://record/OPAC-123",
+      }),
+    ).toBe(false);
+    expect(
+      isLibraryItemReadMessage({
+        type: "library-item-read",
+        tool_call_id: "library-read-1",
+        resource_ref: "orbit-library://record/0123456789abcdef",
+        record_url:
+          "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1?hit=1",
       }),
     ).toBe(false);
     expect(

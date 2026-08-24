@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   type ActionProposal,
   type AgentApiClient,
@@ -16,6 +16,7 @@ import {
   isMyLibraryReadResult,
   isSitrusGradeResult,
   isSyllabusSearchResult,
+  type LibraryCatalogSearchResult,
   type SyllabusSearchResult,
 } from "../api/client";
 import {
@@ -25,12 +26,9 @@ import {
 } from "../connectors/google-calendar";
 import type { LibraryActionEditableInputs } from "../connectors/library-actions";
 import {
-  LIBRARY_OPAC_ORIGIN,
-  LIBRARY_OPAC_PERMISSION_PATTERN,
-  LIBRARY_SIT_SEARCH_ORIGIN,
-  LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
-  requestsLibraryTools,
-} from "../connectors/library-discovery";
+  type LibraryFloorMap,
+  uniqueLibraryFloorMaps,
+} from "../connectors/library-floor-maps";
 import type { CastAlumniLocalSnapshot } from "../content/cast-alumni-reader";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
@@ -38,13 +36,7 @@ import {
   type MoodleLocalSnapshot,
 } from "../content/moodle-reader";
 import {
-  clearMyLibrarySessionConsent,
-  grantMyLibrarySessionConsent,
-  hasMyLibrarySessionConsent,
-} from "../content/my-library-consent";
-import {
   MY_LIBRARY_ENTRY_URL,
-  MY_LIBRARY_ORIGIN,
   type MyLibraryLocalSnapshot,
 } from "../content/my-library-reader";
 import {
@@ -69,13 +61,7 @@ import type {
   SitrusReadResponse,
 } from "../shared/messages";
 import { MESSAGE_TYPES } from "../shared/messages";
-import {
-  type AccessMode,
-  containsOriginPermission,
-  hostAccessRequest,
-  requestOriginPermission,
-  requiresHostConfirmation,
-} from "./access-policy";
+import { hostAccessRequest } from "./access-policy";
 import {
   type ChatConversation,
   type ChatTimelineMessage,
@@ -83,10 +69,16 @@ import {
   deleteConversation,
   listConversations,
   loadConversation,
+  mergeConversationEvidence,
+  mergeLibraryContext,
   newConversation,
   saveConversation,
+  toChatContextManifest,
   toChatHistory,
 } from "./chat-history";
+
+const CHAT_FAILURE_MESSAGE =
+  "今は応答できませんでした。もう一度お試しください。";
 
 export interface ChatPanelProps {
   apiClient: AgentApiClient;
@@ -94,6 +86,12 @@ export interface ChatPanelProps {
   calendarState: CalendarConnectorResult;
   calendarConnector?: CalendarConnector;
   calendarRequest: (command: "refresh") => Promise<CalendarConnectorResult>;
+  mode?: "sidepanel" | "workspace";
+  settingsOpen?: boolean;
+  settingsButtonRef?: RefObject<HTMLButtonElement | null>;
+  onOpenSettings?: () => void;
+  onOpenWorkspace?: () => void;
+  workspaceDisabled?: boolean;
   disabled?: boolean;
 }
 
@@ -134,8 +132,44 @@ function toolLabel(name: string): string {
   }
 }
 
-const LIBRARY_SEARCH_PERMISSION_DISCLOSURE =
-  "検索語をこのサイトへ送信し、表示された結果のみを読み取ります。予約等の変更はしません。";
+function libraryCampusLabel(campus: string): string {
+  if (campus === "toyosu") return "豊洲図書館";
+  if (campus === "omiya") return "大宮図書館";
+  return "所蔵館不明";
+}
+
+function LibraryFloorMapPreview({ map }: { map: LibraryFloorMap }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  return (
+    <div className="library-floor-map">
+      {map.image_url && !imageFailed ? (
+        <a
+          href={map.image_url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`${map.label}の画像を原寸で開く`}
+        >
+          <img
+            src={map.image_url}
+            alt={map.label}
+            loading="lazy"
+            decoding="async"
+            referrerPolicy="no-referrer"
+            onError={() => setImageFailed(true)}
+          />
+        </a>
+      ) : null}
+      <a
+        href={map.page_url}
+        target="_blank"
+        rel="noreferrer"
+        aria-label={`${map.label}を公式サイトで開く`}
+      >
+        {imageFailed ? "公式フロアマップを開く" : `${map.label}を開く`}
+      </a>
+    </div>
+  );
+}
 
 function evidenceText(proposal: ActionProposal | null | undefined): string[] {
   return proposal?.evidence.map((item) => item.title) ?? [];
@@ -196,8 +230,16 @@ function toolResultRequest(
 function sendExtensionMessage<T>(message: unknown): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response: T | undefined) => {
-      if (chrome.runtime.lastError || response === undefined) {
-        reject(new Error("拡張機能のToolを利用できません。"));
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError || response === undefined) {
+        const detail = runtimeError?.message?.trim();
+        reject(
+          new Error(
+            detail
+              ? `拡張機能のToolを利用できません: ${detail}`
+              : "拡張機能のToolを利用できません。",
+          ),
+        );
         return;
       }
       resolve(response);
@@ -205,39 +247,18 @@ function sendExtensionMessage<T>(message: unknown): Promise<T> {
   });
 }
 
-class BrowserAccessRequiredError extends Error {
-  readonly pattern: string;
-  readonly origin: string;
-  readonly url: string;
-  readonly approvalKey: string;
-  readonly disclosure: string | null;
+type ChatProgressPhase =
+  | "sending"
+  | "planning"
+  | "tool-running"
+  | "resuming"
+  | "completed"
+  | "error";
 
-  constructor(
-    url: string,
-    origin: string,
-    pattern: string,
-    approvalKey = url,
-    disclosure: string | null = null,
-  ) {
-    super("このサイトを読むには許可が必要です。");
-    this.name = "BrowserAccessRequiredError";
-    this.url = url;
-    this.origin = origin;
-    this.pattern = pattern;
-    this.approvalKey = approvalKey;
-    this.disclosure = disclosure;
-  }
-}
-
-interface PendingPermission {
-  url: string;
-  origin: string;
-  pattern: string;
-  response: Extract<ChatRunResponse, { status: "tool_required" }>;
-  conversation: ChatConversation;
-  seenCallIds: string[];
-  approvalKey: string;
-  disclosure: string | null;
+interface ChatProgress {
+  phase: ChatProgressPhase;
+  label: string;
+  detail: string;
 }
 
 export function ChatPanel({
@@ -246,6 +267,12 @@ export function ChatPanel({
   calendarState,
   calendarConnector,
   calendarRequest,
+  mode = "sidepanel",
+  settingsOpen = false,
+  settingsButtonRef,
+  onOpenSettings,
+  onOpenWorkspace,
+  workspaceDisabled = false,
   disabled = false,
 }: ChatPanelProps) {
   const [conversation, setConversation] = useState<ChatConversation>(() =>
@@ -253,16 +280,10 @@ export function ChatPanel({
   );
   const [conversations, setConversations] = useState<ChatConversation[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [accessMode, setAccessMode] = useState<AccessMode>(() =>
-    globalThis.localStorage?.getItem("sit-orbit-access-mode") === "full"
-      ? "full"
-      : "ask",
-  );
   const [composer, setComposer] = useState("");
+  const [retryText, setRetryText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [permissionPrompt, setPermissionPrompt] =
-    useState<PendingPermission | null>(null);
+  const [progress, setProgress] = useState<ChatProgress | null>(null);
   const [localMoodleDetails, setLocalMoodleDetails] = useState<
     Record<string, MoodleLocalSnapshot>
   >({});
@@ -274,6 +295,12 @@ export function ChatPanel({
   >({});
   const [localCastAlumniDetails, setLocalCastAlumniDetails] = useState<
     Record<string, CastAlumniLocalSnapshot>
+  >({});
+  type LocalLibraryRecord = NonNullable<
+    LibraryCatalogSearchResult["items"]
+  >[number];
+  const [localLibraryDetails, setLocalLibraryDetails] = useState<
+    Record<string, LocalLibraryRecord[]>
   >({});
   const [libraryPreviews, setLibraryPreviews] = useState<
     Record<string, Extract<LibraryActionPreviewResponse, { status: "ready" }>>
@@ -287,7 +314,15 @@ export function ChatPanel({
   const [libraryPreviewErrors, setLibraryPreviewErrors] = useState<
     Record<string, string>
   >({});
-  const sensitiveApproval = useRef(new Set<string>());
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  function setChatProgress(
+    phase: ChatProgressPhase,
+    label: string,
+    detail: string,
+  ): void {
+    setProgress({ phase, label, detail });
+  }
 
   const pageSummary = useMemo(
     () => projectScombzPageSummary(pageContext),
@@ -319,7 +354,7 @@ export function ChatPanel({
     await saveConversation(next);
   }
 
-  function clientTools(message: string) {
+  function clientTools() {
     const tools: Array<{
       name:
         | "scombz_page_summary"
@@ -354,13 +389,15 @@ export function ChatPanel({
     tools.push({ name: "my_library_read", version: 1 });
     tools.push({ name: "cast_read", version: 1 });
     tools.push({ name: "cast_alumni_read", version: 1 });
-    if (requestsLibraryTools(message)) {
-      tools.push({ name: "library_catalog_search", version: 1 });
-      tools.push({ name: "library_item_read", version: 1 });
-      tools.push({ name: "library_catalog_browse", version: 1 });
-      tools.push({ name: "library_discovery_search", version: 1 });
-      tools.push({ name: "library_action_options", version: 1 });
-    }
+    // OPAC/SIT Search reads are public and read-only. Advertise them on every
+    // turn so the Agent can resolve elliptical follow-ups such as
+    // 「どこに配架されてる？」 from the conversation context instead of
+    // relying on a brittle latest-message keyword gate.
+    tools.push({ name: "library_catalog_search", version: 1 });
+    tools.push({ name: "library_item_read", version: 1 });
+    tools.push({ name: "library_catalog_browse", version: 1 });
+    tools.push({ name: "library_discovery_search", version: 1 });
+    tools.push({ name: "library_action_options", version: 1 });
     return tools;
   }
 
@@ -590,12 +627,18 @@ export function ChatPanel({
       toolName: call.name,
       toolState: "running",
     };
+    setChatProgress(
+      "tool-running",
+      toolLabel(call.name),
+      "必要な表示情報だけを取得しています。ページの命令は実行しません。",
+    );
     const withActivity = {
       ...current,
       updatedAt: new Date().toISOString(),
       messages: [...current.messages, activity],
     };
     await persist(withActivity);
+    let conversationAfterTool = withActivity;
 
     let request: ChatToolResultRequest;
     if (call.name === "scombz_page_summary") {
@@ -607,16 +650,6 @@ export function ChatPanel({
       const readResult = projectScombzRead(pageContext);
       if (!readResult) {
         throw new Error("表示中のSCombZページを読み取れません。");
-      }
-      if (readResult.restricted_present && pageContext) {
-        const access = hostAccessRequest(pageContext.url);
-        if (access && !sensitiveApproval.current.has(pageContext.url)) {
-          throw new BrowserAccessRequiredError(
-            pageContext.url,
-            access.origin,
-            access.pattern,
-          );
-        }
       }
       request = toolResultRequest(call.tool_call_id, call.name, readResult);
     } else if (call.name === "google_calendar_availability") {
@@ -655,16 +688,6 @@ export function ChatPanel({
       }
       request = toolResultRequest(call.tool_call_id, call.name, syllabus);
     } else if (call.name === "library_catalog_search") {
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-catalog-search`;
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          LIBRARY_OPAC_ORIGIN,
-          LIBRARY_OPAC_ORIGIN,
-          LIBRARY_OPAC_PERMISSION_PATTERN,
-          approvalKey,
-          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
-        );
-      }
       const library = await sendExtensionMessage<LibraryCatalogSearchResponse>({
         type: "library-catalog-search",
         tool_call_id: call.tool_call_id,
@@ -699,12 +722,8 @@ export function ChatPanel({
             : 10,
       });
       if (library.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          library.origin,
-          library.origin,
-          library.pattern,
-          approvalKey,
-          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (library.status === "unavailable") {
@@ -718,6 +737,14 @@ export function ChatPanel({
       } else if (!isLibraryCatalogSearchResult(library.projection)) {
         throw new Error("OPAC検索結果を検証できませんでした。");
       } else {
+        setLocalLibraryDetails((items) => ({
+          ...items,
+          [activity.id]: library.projection.items ?? [],
+        }));
+        conversationAfterTool = mergeLibraryContext(
+          conversationAfterTool,
+          library.projection.items ?? [],
+        );
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -725,29 +752,43 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_item_read") {
+      const libraryResourceRef = argumentsObject.resource_ref as string;
+      const manifestRecord =
+        conversationAfterTool.contextManifest.library_records.find(
+          (item) => item.resource_ref === libraryResourceRef,
+        );
       const library = await sendExtensionMessage<LibraryItemReadResponse>({
         type: "library-item-read",
         tool_call_id: call.tool_call_id,
-        resource_ref: argumentsObject.resource_ref as string,
+        resource_ref: libraryResourceRef,
+        ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
       });
       if (library.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          library.origin,
-          library.origin,
-          library.pattern,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (library.status === "unavailable") {
         request = toolResultRequest(call.tool_call_id, call.name, {
           schema_version: "v1",
           status: "unavailable",
-          resource_ref: argumentsObject.resource_ref as string,
+          resource_ref: libraryResourceRef,
           item: null,
           reason_code: library.reason_code,
         });
       } else if (!isLibraryItemReadResult(library.projection)) {
         throw new Error("OPAC書誌詳細を検証できませんでした。");
       } else {
+        setLocalLibraryDetails((items) => ({
+          ...items,
+          [activity.id]: library.projection.item
+            ? [library.projection.item]
+            : [],
+        }));
+        conversationAfterTool = mergeLibraryContext(
+          conversationAfterTool,
+          library.projection.item ? [library.projection.item] : [],
+        );
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -755,19 +796,14 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_action_options") {
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-action-options`;
       const library = await sendExtensionMessage<LibraryActionOptionsResponse>({
         type: MESSAGE_TYPES.libraryActionOptions,
         tool_call_id: call.tool_call_id,
         resource_ref: argumentsObject.resource_ref as string,
       });
       if (library.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          library.origin,
-          library.origin,
-          library.pattern,
-          approvalKey,
-          "図書館の現在の表示を端末内で再確認し、操作可否だけを選択中のAgentへ送ります。予約・延長・申請の送信は行いません。",
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (library.status === "reauth_required") {
@@ -789,18 +825,6 @@ export function ChatPanel({
             "My Library由来の操作可否は、明示同意済みのAzure Agentだけに送信できます。",
           );
         }
-        if (
-          !(await hasMyLibrarySessionConsent()) &&
-          !sensitiveApproval.current.has(approvalKey)
-        ) {
-          throw new BrowserAccessRequiredError(
-            MY_LIBRARY_ENTRY_URL,
-            MY_LIBRARY_ORIGIN,
-            `${MY_LIBRARY_ORIGIN}/*`,
-            approvalKey,
-            "My Libraryの現在の表示を端末内で再確認し、対象refと操作可否だけを明示同意済みのAzure Agentへ送ります。書名・ID・フォーム値は送信しません。",
-          );
-        }
       }
       request = toolResultRequest(call.tool_call_id, call.name, projection);
     } else if (call.name === "library_catalog_browse") {
@@ -818,10 +842,8 @@ export function ChatPanel({
             : 10,
       });
       if (library.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          library.origin,
-          library.origin,
-          library.pattern,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (library.status === "unavailable") {
@@ -839,6 +861,10 @@ export function ChatPanel({
       } else if (!isLibraryCatalogBrowseResult(library.projection)) {
         throw new Error("OPAC一覧結果を検証できませんでした。");
       } else {
+        conversationAfterTool = mergeLibraryContext(
+          conversationAfterTool,
+          library.projection.items ?? [],
+        );
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -846,16 +872,6 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_discovery_search") {
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:library-discovery-search`;
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          LIBRARY_SIT_SEARCH_ORIGIN,
-          LIBRARY_SIT_SEARCH_ORIGIN,
-          LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
-          approvalKey,
-          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
-        );
-      }
       const library =
         await sendExtensionMessage<LibraryDiscoverySearchResponse>({
           type: "library-discovery-search",
@@ -867,12 +883,8 @@ export function ChatPanel({
               : 10,
         });
       if (library.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          library.origin,
-          library.origin,
-          library.pattern,
-          approvalKey,
-          LIBRARY_SEARCH_PERMISSION_DISCLOSURE,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (library.status === "unavailable") {
@@ -898,24 +910,14 @@ export function ChatPanel({
       }
       const access = hostAccessRequest(pageContext.url);
       if (!access) throw new Error("SITRUSの参照先URLを検証できません。");
-      await containsOriginPermission(access.pattern);
-      if (!sensitiveApproval.current.has(pageContext.url)) {
-        throw new BrowserAccessRequiredError(
-          pageContext.url,
-          access.origin,
-          access.pattern,
-        );
-      }
       const sitrus = await sendExtensionMessage<SitrusReadResponse>({
         type: "sitrus-read",
         tool_call_id: call.tool_call_id,
         page_url: pageContext.url,
       });
       if (sitrus.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          pageContext.url,
-          sitrus.origin,
-          sitrus.pattern,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (
@@ -932,27 +934,13 @@ export function ChatPanel({
     } else if (call.name === "moodle_read") {
       const access = hostAccessRequest(MOODLE_DASHBOARD_URL);
       if (!access) throw new Error("Moodleの参照先URLを検証できません。");
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:moodle-derived`;
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          MOODLE_DASHBOARD_URL,
-          access.origin,
-          access.pattern,
-          approvalKey,
-          "Moodleの表示内容を端末内で読み取り、コース数・課題件数・延滞件数・最短期限・未読件数だけを選択中のAIへ送ります。コース名や課題名は送信しません。",
-        );
-      }
       const moodle = await sendExtensionMessage<MoodleReadResponse>({
         type: "moodle-read",
         tool_call_id: call.tool_call_id,
       });
       if (moodle.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          MOODLE_DASHBOARD_URL,
-          moodle.origin,
-          moodle.pattern,
-          approvalKey,
-          "Moodleの表示内容を端末内で読み取り、コース数・課題件数・延滞件数・最短期限・未読件数だけを選択中のAIへ送ります。コース名や課題名は送信しません。",
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (moodle.status === "reauth_required") {
@@ -972,23 +960,9 @@ export function ChatPanel({
         call.name,
         moodle.projection,
       );
-      sensitiveApproval.current.delete(approvalKey);
     } else if (call.name === "my_library_read") {
       const access = hostAccessRequest(MY_LIBRARY_ENTRY_URL);
       if (!access) throw new Error("My Libraryの参照先URLを検証できません。");
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:my-library-derived`;
-      const disclosure =
-        "指定scopeのMy Library表示を端末内で読み取り、opaque参照・書名・著者・状態・期限など許可された最小項目だけを選択中のAzure Agentへ送ります。Agent回答に現れた書名はローカルChat履歴へ保存され、履歴の削除操作で消せます。Full access権限だけではこの同意になりません。";
-      const sessionConsented = await hasMyLibrarySessionConsent();
-      if (!sessionConsented && !sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          MY_LIBRARY_ENTRY_URL,
-          access.origin,
-          access.pattern,
-          approvalKey,
-          disclosure,
-        );
-      }
       const requestedScope =
         typeof argumentsObject.scope === "string"
           ? (argumentsObject.scope as
@@ -1023,12 +997,8 @@ export function ChatPanel({
         limit: requestedLimit,
       });
       if (library.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          MY_LIBRARY_ENTRY_URL,
-          library.origin,
-          library.pattern,
-          approvalKey,
-          disclosure,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (library.status === "reauth_required") {
@@ -1064,33 +1034,16 @@ export function ChatPanel({
         [activity.id]: library.detail,
       }));
       request = toolResultRequest(call.tool_call_id, call.name, projection);
-      sensitiveApproval.current.delete(approvalKey);
     } else if (call.name === "cast_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
       if (!access) throw new Error("CASTの参照先URLを検証できません。");
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:cast-derived`;
-      const disclosure =
-        "CASTのトップ画面を端末内で読み取り、お知らせ件数・新着求人件数・新着インターン件数・新着説明会件数・相談予約の有無・直近掲載日だけを選択中のAIへ送ります。お知らせ本文、進路希望、応募履歴、氏名は送信しません。";
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          CAST_ENTRY_URL,
-          access.origin,
-          access.pattern,
-          approvalKey,
-          disclosure,
-        );
-      }
       const cast = await sendExtensionMessage<CastReadResponse>({
         type: "cast-read",
         tool_call_id: call.tool_call_id,
       });
       if (cast.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          CAST_ENTRY_URL,
-          cast.origin,
-          cast.pattern,
-          approvalKey,
-          disclosure,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (cast.status === "reauth_required") {
@@ -1110,33 +1063,16 @@ export function ChatPanel({
         call.name,
         cast.projection,
       );
-      sensitiveApproval.current.delete(approvalKey);
     } else if (call.name === "cast_alumni_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
       if (!access) throw new Error("CASTの参照先URLを検証できません。");
-      const approvalKey = `${response.run_id}:${call.tool_call_id}:cast-alumni-derived`;
-      const disclosure =
-        "認証済みCAST画面を端末内で読み取り、回答可能テーマ・面談可能頻度・面談形式・匿名共有可能な知見のカテゴリと件数だけを選択中のAIへ送ります。氏名・連絡先・CAST内部ID・本文・ログイン情報は端末外へ送信しません。";
-      if (!sensitiveApproval.current.has(approvalKey)) {
-        throw new BrowserAccessRequiredError(
-          CAST_ENTRY_URL,
-          access.origin,
-          access.pattern,
-          approvalKey,
-          disclosure,
-        );
-      }
       const alumni = await sendExtensionMessage<CastAlumniReadResponse>({
         type: "cast-alumni-read",
         tool_call_id: call.tool_call_id,
       });
       if (alumni.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          CAST_ENTRY_URL,
-          alumni.origin,
-          alumni.pattern,
-          approvalKey,
-          disclosure,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (alumni.status === "reauth_required") {
@@ -1159,36 +1095,18 @@ export function ChatPanel({
         call.name,
         alumni.projection,
       );
-      sensitiveApproval.current.delete(approvalKey);
     } else {
       const url = argumentsObject.url as string;
       const access = hostAccessRequest(url);
       if (!access) throw new Error("参照先URLを検証できません。");
-      const hasPermission = await containsOriginPermission(access.pattern);
-      const allowedOrigins = hasPermission
-        ? new Set([access.origin])
-        : new Set<string>();
-      if (
-        requiresHostConfirmation(accessMode, access, allowedOrigins) &&
-        !sensitiveApproval.current.has(url)
-      ) {
-        throw new BrowserAccessRequiredError(
-          url,
-          access.origin,
-          access.pattern,
-        );
-      }
       const browser = await sendExtensionMessage<BrowserReadResponse>({
         type: "browser-read",
         tool_call_id: call.tool_call_id,
         url,
-        access_mode: accessMode,
       });
       if (browser.status === "permission_required") {
-        throw new BrowserAccessRequiredError(
-          url,
-          browser.origin,
-          browser.pattern,
+        throw new Error(
+          "Toolを実行できませんでした。拡張機能をReloadしてください。",
         );
       }
       if (
@@ -1207,8 +1125,13 @@ export function ChatPanel({
       response.run_id,
       request,
     );
+    setChatProgress(
+      "resuming",
+      "Agentが取得結果を整理中",
+      "Toolの結果を会話の文脈へ戻し、次の判断を生成しています。",
+    );
     const completedConversation = {
-      ...withActivity,
+      ...conversationAfterTool,
       messages: withActivity.messages.map((item) =>
         item.id === activity.id
           ? { ...item, toolState: "completed" as const }
@@ -1227,59 +1150,46 @@ export function ChatPanel({
     let response = initialResponse;
     let current = initialConversation;
     const seenCallIds = initialSeenCallIds;
-    try {
-      for (let index = 0; response.status === "tool_required"; index += 1) {
-        if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
-        const call = response.calls[0];
-        if (!call || seenCallIds.has(call.tool_call_id)) {
-          throw new Error("重複したTool呼び出しを受け取りました。");
-        }
-        seenCallIds.add(call.tool_call_id);
-        const next = await runTool(response, current);
-        response = next.response;
-        current = next.conversation;
+    for (let index = 0; response.status === "tool_required"; index += 1) {
+      if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
+      const call = response.calls[0];
+      if (!call || seenCallIds.has(call.tool_call_id)) {
+        throw new Error("重複したTool呼び出しを受け取りました。");
       }
-      const assistant = messageFromResponse(response);
-      await persist({
-        ...current,
-        updatedAt: new Date().toISOString(),
-        messages: [...current.messages, assistant],
-      });
-    } catch (caught) {
-      if (
-        caught instanceof BrowserAccessRequiredError &&
-        response.status === "tool_required"
-      ) {
-        // The call is marked as seen before runTool() so a successful tool
-        // response cannot be replayed accidentally. Permission checks throw
-        // before the tool is executed, however, so remove this pending call
-        // from the retry set and let the explicit permission action resume it.
-        const retrySeenCallIds = new Set(seenCallIds);
-        const pendingCall = response.calls[0];
-        if (pendingCall) retrySeenCallIds.delete(pendingCall.tool_call_id);
-        setPermissionPrompt({
-          url: caught.url,
-          origin: caught.origin,
-          pattern: caught.pattern,
-          response,
-          conversation: current,
-          seenCallIds: [...retrySeenCallIds],
-          approvalKey: caught.approvalKey,
-          disclosure: caught.disclosure,
-        });
-        setError("このサイトを読む前に、Chat内でアクセスを許可してください。");
-        return;
-      }
-      throw caught;
+      seenCallIds.add(call.tool_call_id);
+      setChatProgress(
+        "planning",
+        "Agentが次の参照先を判断中",
+        `${toolLabel(call.name)}を実行する必要があるか確認しています。`,
+      );
+      const next = await runTool(response, current);
+      response = next.response;
+      current = next.conversation;
     }
+    const assistant = messageFromResponse(response);
+    setChatProgress("completed", "完了", "回答と参照元を表示しました。");
+    const withEvidence = mergeConversationEvidence(
+      current,
+      assistant.evidence ?? [],
+    );
+    await persist({
+      ...withEvidence,
+      updatedAt: new Date().toISOString(),
+      messages: [...current.messages, assistant],
+    });
   }
 
   async function send(): Promise<void> {
     const message = composer.trim();
     if (!message || busy || disabled) return;
+    setRetryText(null);
     setComposer("");
-    setError(null);
     setBusy(true);
+    setChatProgress(
+      "sending",
+      "Agentに質問を送信中",
+      "会話の履歴と現在のページ概要を確認しています。",
+    );
     const userMessage: ChatTimelineMessage = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -1302,14 +1212,19 @@ export function ChatPanel({
         conversation_id: withUser.conversationId,
         message,
         history: toChatHistory(beforeSend.messages),
-        client_tools: clientTools(message),
+        client_tools: clientTools(),
+        context_manifest: toChatContextManifest(beforeSend.contextManifest),
       });
-      await finishResponse(response, current);
-    } catch (caught) {
-      if (caught instanceof BrowserAccessRequiredError) return;
-      setError(
-        caught instanceof Error ? caught.message : "Chatに失敗しました。",
+      setChatProgress(
+        "planning",
+        "Agentが回答方針を組み立て中",
+        "必要なToolがある場合だけ、ここから順番に実行します。",
       );
+      await finishResponse(response, current);
+    } catch {
+      const failureMessage = CHAT_FAILURE_MESSAGE;
+      setRetryText(message);
+      setProgress(null);
       await persist({
         ...current,
         updatedAt: new Date().toISOString(),
@@ -1318,8 +1233,7 @@ export function ChatPanel({
           {
             id: `error-${Date.now()}`,
             role: "assistant",
-            content:
-              "処理を完了できませんでした。接続状態と許可を確認してください。",
+            content: failureMessage,
           },
         ],
       });
@@ -1328,100 +1242,11 @@ export function ChatPanel({
     }
   }
 
-  async function continueWithPermission(remember: boolean): Promise<void> {
-    const pending = permissionPrompt;
-    if (!pending || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const granted = await requestOriginPermission(pending.pattern);
-      if (!granted) {
-        setError("サイトの読み取り許可が得られませんでした。");
-        return;
-      }
-      const pendingTool = pending.response.calls[0]?.name;
-      if (
-        pendingTool === "my_library_read" ||
-        (pendingTool === "library_action_options" &&
-          pending.origin === MY_LIBRARY_ORIGIN)
-      ) {
-        const stored = await grantMyLibrarySessionConsent();
-        if (!stored) {
-          setError("My Libraryのsession consentを保存できませんでした。");
-          return;
-        }
-      }
-      sensitiveApproval.current.add(pending.approvalKey);
-      setPermissionPrompt(null);
-      await finishResponse(
-        pending.response,
-        pending.conversation,
-        new Set(pending.seenCallIds),
-      );
-      // SCombZ is a required host permission so Chrome rejects removing it.
-      // The sensitive approval itself is still scoped to this URL and is
-      // cleared below, which keeps the next sensitive read confirmation-based.
-      if (
-        !remember &&
-        pendingTool !== "my_library_read" &&
-        (pendingTool === "browser_read_url" ||
-          pendingTool === "library_catalog_search" ||
-          pendingTool === "library_item_read" ||
-          pendingTool === "library_catalog_browse" ||
-          pendingTool === "library_discovery_search" ||
-          pending.disclosure !== null) &&
-        typeof chrome.permissions?.remove === "function"
-      ) {
-        await chrome.permissions.remove({ origins: [pending.pattern] });
-      }
-      sensitiveApproval.current.delete(pending.approvalKey);
-    } catch (caught) {
-      setError(
-        caught instanceof Error
-          ? caught.message
-          : "許可後のTool実行に失敗しました。",
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function enableFullAccess(): Promise<void> {
-    if (busy || disabled) return;
-    const granted = await Promise.all([
-      requestOriginPermission("https://*/*"),
-      requestOriginPermission("http://*/*"),
-    ]);
-    if (!granted.every(Boolean)) {
-      setError(
-        "Full accessの権限を付与できませんでした。都度確認を使用します。",
-      );
-      setAccessMode("ask");
-      globalThis.localStorage?.setItem("sit-orbit-access-mode", "ask");
-      return;
-    }
-    setAccessMode("full");
-    globalThis.localStorage?.setItem("sit-orbit-access-mode", "full");
-  }
-
-  function useAskMode(): void {
-    setAccessMode("ask");
-    globalThis.localStorage?.setItem("sit-orbit-access-mode", "ask");
-  }
-
-  async function disconnectMyLibrary(): Promise<void> {
-    await clearMyLibrarySessionConsent();
-    await sendExtensionMessage<{ ok: boolean }>({
-      type: MESSAGE_TYPES.myLibraryDisconnect,
-    });
-    sensitiveApproval.current.clear();
-    setError("My Libraryの共有同意を解除しました。次回は再確認が必要です。");
-  }
-
   async function selectConversation(id: string): Promise<void> {
     const selected = await loadConversation(id);
     if (selected) {
       setConversation(selected);
+      setRetryText(null);
       setHistoryOpen(false);
     }
   }
@@ -1429,6 +1254,7 @@ export function ChatPanel({
   async function createConversation(): Promise<void> {
     const next = newConversation();
     await persist(next);
+    setRetryText(null);
     setHistoryOpen(false);
   }
 
@@ -1654,26 +1480,69 @@ export function ChatPanel({
   return (
     <section className="chat-panel" aria-label="SIT ORBIT Chat">
       <header className="chat-toolbar">
-        <div>
-          <p className="eyebrow">SIT ORBIT</p>
-          <h2>Chat</h2>
+        <div className="chat-brand">
+          <strong>SIT ORBIT</strong>
+          {pageContext?.kind === "scombz" ? (
+            <span className="context-chip" title={pageContext.title}>
+              ScombZ · {pageContext.title}
+            </span>
+          ) : null}
         </div>
         <div className="chat-toolbar-actions">
           <button
             type="button"
-            className="secondary-button"
+            className="icon-button"
+            aria-label="新規Chat"
+            title="新規Chat"
             onClick={() => void createConversation()}
+            disabled={busy || disabled}
           >
-            新規Chat
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M11 4h2v7h7v2h-7v7h-2v-7H4v-2h7V4Z" />
+            </svg>
           </button>
           <button
             type="button"
-            className="secondary-button"
+            className="icon-button"
+            aria-label="履歴"
+            title="履歴"
             aria-expanded={historyOpen}
             onClick={() => setHistoryOpen((open) => !open)}
           >
-            履歴
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="M12 3a9 9 0 1 1-8.5 6H1l3.5-4L8 9H5.6A7 7 0 1 0 12 5v3l4 2.4-1 1.7-5-3V3h2Z" />
+            </svg>
           </button>
+          {onOpenSettings ? (
+            <button
+              ref={settingsButtonRef}
+              type="button"
+              className="icon-button"
+              aria-label="設定"
+              title="設定"
+              aria-expanded={settingsOpen}
+              onClick={onOpenSettings}
+              disabled={busy}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="m19.4 13 .1-1-.1-1 2-1.5-2-3.4-2.4 1a8 8 0 0 0-1.7-1L15 3.5h-4l-.3 2.6a8 8 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.5-.1 1 .1 1-2 1.5 2 3.4 2.4-1a8 8 0 0 0 1.7 1l.3 2.6h4l.3-2.6a8 8 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5ZM13 18.5h-2l-.2-2-.7-.3a6 6 0 0 1-1.4-.8l-.6-.5-1.8.8-1-1.8 1.6-1.2-.1-.8.1-.8-1.6-1.2 1-1.8 1.8.8.6-.5a6 6 0 0 1 1.4-.8l.7-.3.2-2h2l.2 2 .7.3a6 6 0 0 1 1.4.8l.6.5 1.8-.8 1 1.8-1.6 1.2.1.8-.1.8 1.6 1.2-1 1.8-1.8-.8-.6.5a6 6 0 0 1-1.4.8l-.7.3-.2 2ZM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm0 2a1 1 0 1 1 0 2 1 1 0 0 1 0-2Z" />
+              </svg>
+            </button>
+          ) : null}
+          {mode === "sidepanel" && onOpenWorkspace ? (
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="全画面で開く"
+              title="全画面で開く"
+              onClick={onOpenWorkspace}
+              disabled={workspaceDisabled || busy}
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24">
+                <path d="M8 3H3v5h2V5h3V3Zm8 0v2h3v3h2V3h-5ZM5 16H3v5h5v-2H5v-3Zm16 0h-2v3h-3v2h5v-5Z" />
+              </svg>
+            </button>
+          ) : null}
         </div>
       </header>
       {historyOpen ? (
@@ -1714,115 +1583,10 @@ export function ChatPanel({
         </aside>
       ) : null}
 
-      <fieldset className="chat-access-row">
-        <legend>アクセスモード</legend>
-        <div className="segmented-control">
-          <button
-            type="button"
-            aria-pressed={accessMode === "ask"}
-            onClick={useAskMode}
-          >
-            都度確認
-          </button>
-          <button
-            type="button"
-            aria-pressed={accessMode === "full"}
-            onClick={() => void enableFullAccess()}
-          >
-            Full access
-          </button>
-        </div>
-        <small>
-          {accessMode === "ask" ? "読み取り前に確認します" : "読み取り専用"}
-        </small>
-        <small>
-          一般Web検索を使う場合、公開情報の検索語はGrounding with
-          Bingへ送信され、Azureの通常の地理・DPA境界外で処理されます。
-        </small>
-        <details className="chat-connection-settings">
-          <summary>My Library接続設定</summary>
-          <p>
-            My
-            Libraryでは、明示的な接続・許可後に、opaque参照、書名、著者、状態、
-            返却期限、延長可否、活動日、申請種別だけをAzure
-            Agentへ共有できます。 raw snapshotは端末メモリだけに置きます。
-          </p>
-          <p>
-            Agent回答に現れた書名はローカルChat履歴へ残ります。会話ごとの削除または
-            「すべて削除」で削除できます。Full accessだけではMy
-            Libraryへの共有同意に
-            ならず、切断またはセッション終了で同意は無効になります。
-          </p>
-          <button
-            type="button"
-            className="text-button"
-            onClick={() => void disconnectMyLibrary()}
-          >
-            My Libraryの共有同意を解除
-          </button>
-        </details>
-      </fieldset>
-
-      {permissionPrompt ? (
-        <aside className="chat-permission-prompt" role="alert">
-          <strong>サイトの読み取り許可</strong>
-          {permissionPrompt.disclosure ? (
-            <p>
-              {permissionPrompt.origin}
-              {permissionPrompt.response.calls[0]?.name === "my_library_read"
-                ? "をこのブラウザセッション中、必要なTool実行で参照します。"
-                : "を今回のTool実行で参照します。"}
-              {permissionPrompt.disclosure}
-            </p>
-          ) : (
-            <p>
-              {permissionPrompt.origin}
-              を今回のTool実行で参照します。ページの表示情報だけを使い、送信・変更は行いません。
-            </p>
-          )}
-          <div className="button-row">
-            <button
-              type="button"
-              className="primary-button"
-              disabled={busy}
-              onClick={() => void continueWithPermission(false)}
-            >
-              {permissionPrompt.response.calls[0]?.name === "my_library_read"
-                ? "このセッションで許可"
-                : "今回だけ許可"}
-            </button>
-            {!permissionPrompt.disclosure ? (
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={busy}
-                onClick={() => void continueWithPermission(true)}
-              >
-                このサイトを常に許可
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="text-button"
-              disabled={busy}
-              onClick={() => {
-                setPermissionPrompt(null);
-                setError("サイトの読み取りを拒否しました。");
-              }}
-            >
-              拒否
-            </button>
-          </div>
-        </aside>
-      ) : null}
-
       <div className="chat-timeline" aria-live="polite">
         {conversation.messages.length === 0 ? (
           <div className="chat-empty">
-            <h3>何を手伝いましょうか？</h3>
-            <p>
-              SCombZの課題、予定、公開シラバスなどを、必要なときだけ確認できます。
-            </p>
+            <h3>今日は何を進めますか？</h3>
           </div>
         ) : null}
         {conversation.messages.map((message) => (
@@ -1841,8 +1605,8 @@ export function ChatPanel({
             <div className="chat-message-content">
               <p>{message.content}</p>
               {message.role === "tool" && localMoodleDetails[message.id] ? (
-                <div className="chat-local-detail">
-                  <strong>端末内のMoodle詳細</strong>
+                <details className="chat-local-detail">
+                  <summary>確認した内容</summary>
                   <p>
                     コース:{" "}
                     {localMoodleDetails[message.id]?.courses.join("、") ||
@@ -1857,11 +1621,11 @@ export function ChatPanel({
                       </li>
                     ))}
                   </ul>
-                </div>
+                </details>
               ) : null}
               {message.role === "tool" && localMyLibraryDetails[message.id] ? (
-                <div className="chat-local-detail">
-                  <strong>端末内のMy Library詳細</strong>
+                <details className="chat-local-detail">
+                  <summary>確認した内容</summary>
                   <ul>
                     {localMyLibraryDetails[message.id]?.loans.map((loan) => (
                       <li key={`${loan.title}-${loan.due_date ?? "none"}`}>
@@ -1929,11 +1693,80 @@ export function ChatPanel({
                       ) : null,
                     )}
                   </ul>
-                </div>
+                </details>
+              ) : null}
+              {message.role === "tool" && localLibraryDetails[message.id] ? (
+                <details
+                  className="chat-local-detail"
+                  open={message.toolName === "library_item_read"}
+                >
+                  <summary>
+                    {message.toolName === "library_item_read"
+                      ? "確認した書誌・所蔵詳細"
+                      : `確認した書誌候補（${localLibraryDetails[message.id]?.length ?? 0}件）`}
+                  </summary>
+                  {localLibraryDetails[message.id]?.length === 0 ? (
+                    <p>該当する書誌はありません。</p>
+                  ) : (
+                    <ul>
+                      {localLibraryDetails[message.id]?.map((item) => {
+                        const holdings = item.holdings ?? [];
+                        const floorMaps = uniqueLibraryFloorMaps(holdings);
+                        return (
+                          <li key={item.resource_ref}>
+                            <strong>{item.title}</strong>
+                            {(item.authors ?? []).length > 0 ? (
+                              <span> / {(item.authors ?? []).join("、")}</span>
+                            ) : null}
+                            <ul className="library-holding-list">
+                              {holdings.map((holding) => (
+                                <li
+                                  key={`${holding.campus}-${holding.location ?? "unknown"}-${holding.call_number ?? "unknown"}`}
+                                >
+                                  <strong>
+                                    {libraryCampusLabel(holding.campus)}
+                                  </strong>
+                                  {holding.status === "available"
+                                    ? " / 貸出可"
+                                    : holding.status === "unavailable"
+                                      ? " / 貸出中・利用不可"
+                                      : " / 状態不明"}
+                                  {holding.location
+                                    ? ` / 配架場所: ${holding.location}`
+                                    : " / 配架場所: 不明"}
+                                  {holding.call_number
+                                    ? ` / 請求記号: ${holding.call_number}`
+                                    : " / 請求記号: 不明"}
+                                  {holding.due_date
+                                    ? ` / 返却予定: ${holding.due_date}`
+                                    : ""}
+                                  {holding.reservation_count !== null
+                                    ? ` / 予約: ${holding.reservation_count}件`
+                                    : ""}
+                                </li>
+                              ))}
+                            </ul>
+                            {message.toolName === "library_item_read" &&
+                            floorMaps.length > 0 ? (
+                              <div className="library-floor-map-list">
+                                {floorMaps.map((map) => (
+                                  <LibraryFloorMapPreview
+                                    key={`${map.page_url}#${map.image_url ?? "page"}`}
+                                    map={map}
+                                  />
+                                ))}
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </details>
               ) : null}
               {message.role === "tool" && localCastDetails[message.id] ? (
-                <div className="chat-local-detail">
-                  <strong>端末内のCAST詳細</strong>
+                <details className="chat-local-detail">
+                  <summary>確認した内容</summary>
                   <ul>
                     {localCastDetails[message.id]?.notices.map((notice) => (
                       <li
@@ -1958,11 +1791,11 @@ export function ChatPanel({
                       ? "あり"
                       : "なし"}
                   </p>
-                </div>
+                </details>
               ) : null}
               {message.role === "tool" && localCastAlumniDetails[message.id] ? (
-                <div className="chat-local-detail">
-                  <strong>端末内のCAST就活サポーター詳細</strong>
+                <details className="chat-local-detail">
+                  <summary>確認した内容</summary>
                   <p>
                     参照ページ: {localCastAlumniDetails[message.id]?.page_path}
                   </p>
@@ -1996,11 +1829,11 @@ export function ChatPanel({
                       CAST上の関連リンクを検出しました。リンク先を開いてから、再度確認できます。
                     </p>
                   ) : null}
-                </div>
+                </details>
               ) : null}
               {message.evidence && message.evidence.length > 0 ? (
-                <div className="chat-citations">
-                  <strong>参照</strong>
+                <details className="chat-citations">
+                  <summary>参照 {message.evidence.length}件</summary>
                   <ul>
                     {message.evidence.map((item) => (
                       <li key={item.evidence_id}>
@@ -2019,7 +1852,21 @@ export function ChatPanel({
                       </li>
                     ))}
                   </ul>
-                </div>
+                </details>
+              ) : null}
+              {message.role === "assistant" &&
+              message.content === CHAT_FAILURE_MESSAGE &&
+              retryText ? (
+                <button
+                  type="button"
+                  className="chat-retry-button"
+                  onClick={() => {
+                    setComposer(retryText);
+                    composerRef.current?.focus();
+                  }}
+                >
+                  再試行
+                </button>
               ) : null}
               {message.proposal ? (
                 <div
@@ -2308,13 +2155,20 @@ export function ChatPanel({
             </div>
           </article>
         ))}
+        {progress ? (
+          <div
+            className={`chat-progress chat-progress-${progress.phase}`}
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <span className="chat-progress-indicator" aria-hidden="true" />
+            <strong>{progress.label}</strong>
+            <span className="chat-progress-detail">{progress.detail}</span>
+          </div>
+        ) : null}
       </div>
 
-      {error ? (
-        <p className="error-message" role="alert">
-          {error}
-        </p>
-      ) : null}
       <form
         className="chat-composer"
         onSubmit={(event) => {
@@ -2323,23 +2177,51 @@ export function ChatPanel({
         }}
       >
         <textarea
+          ref={composerRef}
           aria-label="Chatメッセージ"
           placeholder="SIT ORBITに相談する"
-          rows={2}
+          rows={1}
           value={composer}
           disabled={busy || disabled}
-          onChange={(event) => setComposer(event.target.value)}
+          onChange={(event) => {
+            setComposer(event.target.value);
+            const textarea = composerRef.current;
+            if (textarea) {
+              textarea.style.height = "auto";
+              textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 44), 144)}px`;
+            }
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              if (!busy && !disabled && composer.trim()) void send();
+            }
+          }}
         />
         <button
           type="submit"
-          className="primary-button"
+          className="composer-send-button"
+          aria-label={busy ? "処理中" : "送信"}
+          title={busy ? "処理中" : "送信"}
           disabled={busy || disabled || !composer.trim()}
         >
-          {busy ? "確認中…" : "送信"}
+          {busy ? (
+            <span className="composer-spinner" aria-hidden="true" />
+          ) : (
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="m4 12 15-8-4 16-4-6-7-2Zm4.7-.6 3.7 1.1 1.9 3.1 1.9-7.4-7.5 3.2Z" />
+            </svg>
+          )}
+          <span className="sr-only">{busy ? "処理中" : "送信"}</span>
         </button>
       </form>
       <p className="chat-policy-note">
-        明示的に送信したときだけ、必要なToolを実行します。外部への書き込みは別途確認します。
+        一般Web検索を使う場合、公開情報の検索語はGrounding with
+        Bingへ送信され、Azureの通常の地理・DPA境界外で処理されます。
       </p>
     </section>
   );

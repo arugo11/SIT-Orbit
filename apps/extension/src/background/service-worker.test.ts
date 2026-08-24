@@ -8,6 +8,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { createLibraryResourceRef } from "../connectors/library-discovery";
 import { MESSAGE_TYPES } from "../shared/messages";
 
 type EventCallback = (...args: never[]) => void;
@@ -392,12 +393,22 @@ async function runInlineMyLibraryReader(
   html: string,
   workerResult: Record<string, unknown>,
 ): Promise<unknown> {
+  const menuId = {
+    current_loans: 5,
+    reservations: 6,
+    loan_history: 7,
+    purchase_requests: 3,
+    interlibrary_requests: 2,
+  }[scope];
+  const liveStatusUrl =
+    "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu" +
+    `?selectedMenuId=${menuId}&selectMenu=1`;
   permissionsContains.mockResolvedValue(true);
   getTab.mockResolvedValue({
     id: 91,
     windowId: 1,
     status: "complete",
-    url: "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
+    url: liveStatusUrl,
   } as chrome.tabs.Tab);
   executeScript
     .mockResolvedValueOnce([{ result: { status: "clicked" } }])
@@ -417,10 +428,7 @@ async function runInlineMyLibraryReader(
   );
   await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
 
-  stubPage(
-    html,
-    "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu",
-  );
+  stubPage(html, liveStatusUrl);
   const readStatusPage = capturedScript(1) as unknown as (
     requestedScope: InlineMyLibraryScope,
   ) => unknown;
@@ -1076,7 +1084,7 @@ describe("service worker side panel contract", () => {
     expect(createTab).not.toHaveBeenCalled();
   });
 
-  it("submits only the visible OPAC search form", async () => {
+  it("navigates the visible OPAC search form to the short official route", async () => {
     permissionsContains.mockResolvedValue(true);
     executeScript
       .mockResolvedValueOnce([{ result: { status: "submitted" } }])
@@ -1105,15 +1113,11 @@ describe("service worker side panel contract", () => {
     );
     vi.stubGlobal("CSS", { escape: (value: string) => value });
     const forms = Array.from(document.querySelectorAll("form"));
-    const hiddenSubmit = vi.fn();
-    const visibleSubmit = vi.fn();
     for (const form of forms) {
       Object.defineProperty(form, "action", {
         value: "https://library.shibaura-it.ac.jp/opc/xc/search",
       });
     }
-    Object.defineProperty(forms[0], "requestSubmit", { value: hiddenSubmit });
-    Object.defineProperty(forms[1], "requestSubmit", { value: visibleSubmit });
 
     expect(submitCatalog({ query: "可視フォーム" })).toEqual({
       status: "submitted",
@@ -1124,8 +1128,9 @@ describe("service worker side panel contract", () => {
     expect(
       forms[1]?.querySelector<HTMLInputElement>('[name="keys"]')?.value,
     ).toBe("可視フォーム");
-    expect(hiddenSubmit).not.toHaveBeenCalled();
-    expect(visibleSubmit).toHaveBeenCalledTimes(1);
+    expect(location.href).toBe(
+      "https://library.shibaura-it.ac.jp/opc/xc/search/%E5%8F%AF%E8%A6%96%E3%83%95%E3%82%A9%E3%83%BC%E3%83%A0?os%5Bkeys%5D=%E5%8F%AF%E8%A6%96%E3%83%95%E3%82%A9%E3%83%BC%E3%83%A0",
+    );
   });
 
   it("reads the current OPAC detail record without requiring a self-link", async () => {
@@ -1220,6 +1225,41 @@ describe("service worker side panel contract", () => {
     expect(JSON.stringify(projection)).not.toContain("HIDDEN");
   });
 
+  it("waits only for the official OPAC availability AJAX cell", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-detail-loading",
+        query: "ロボット解体新書",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <h1 class="page-title">ロボット解体新書</h1>
+        <dl class="mainTable"><dt>著者名</dt><dd>神崎洋治編著</dd></dl>
+        <table class="xc-full"><tr class="xc-availability">
+          <td id="xc-availability-92593">
+            <img alt="Loading availability information" src="/ajax-loader.gif">
+          </td>
+        </tr></table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB23092122",
+    );
+
+    expect(readCatalogPage()).toEqual({ status: "loading" });
+  });
+
   it("extracts availability and call number from the OPAC search result markup", async () => {
     permissionsContains.mockResolvedValue(true);
     executeScript
@@ -1271,6 +1311,236 @@ describe("service worker side panel contract", () => {
         call_number: "830.79/U32",
       }),
     ]);
+  });
+
+  it("extracts live OPAC search holdings with location and loan status", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-live-holdings-search",
+        query: "ロボットテクノロジー",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <table>
+          <tr class="result-row row-1">
+            <td><a title="Cover image of ロボットテクノロジー" href="/opc/recordID/catalog.bib/BB06629896"><img alt="Cover image"></a></td>
+            <td>
+              <div class="xc-title"><strong><a href="/opc/recordID/catalog.bib/BB06629896?hit=1&caller=xc-search">ロボットテクノロジー</a></strong></div>
+              <div class="xc-creator">日本ロボット学会編</div>
+            </td>
+            <td>
+              <table class="xc-snippet"><tr class="xc-availability">
+                <td class="snippet-label">所蔵情報:</td>
+                <td class="xc-availability"><span class="available"><span class="normal">貸出可</span>, 豊洲図書館　豊洲図書館, 548.3/N77</span></td>
+              </tr></table>
+            </td>
+          </tr>
+        </table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/xc/search",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        title: string;
+        authors: string[];
+        holdings: Array<{
+          campus: string;
+          location: string | null;
+          call_number: string | null;
+          status: string;
+        }>;
+      }>;
+    };
+    expect(projection).toEqual({
+      status: "known",
+      records: [
+        expect.objectContaining({
+          title: "ロボットテクノロジー",
+          authors: ["日本ロボット学会編"],
+          holdings: [
+            expect.objectContaining({
+              campus: "toyosu",
+              location: "豊洲図書館 豊洲図書館",
+              call_number: "548.3/N77",
+              status: "available",
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
+  it("keeps nested holdings inside their own OPAC result row", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-record-boundary",
+        query: "ロボット",
+        limit: 10,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <table>
+          <tr class="result-row row-1">
+            <td>
+              <div class="xc-title"><a href="/opc/recordID/catalog.bib/ROBOT-1?hit=1">ロボット基礎</a></div>
+              <div class="xc-creator">著者A</div>
+              <a class="related" href="/opc/recordID/catalog.bib/SERIES-1">シリーズ名</a>
+              <table class="xc-snippet"><tr class="xc-availability">
+                <td class="xc-availability">貸出可, 豊洲図書館 豊洲図書館, 548.3/A1</td>
+              </tr></table>
+            </td>
+          </tr>
+          <tr class="result-row row-2">
+            <td>
+              <div class="xc-title"><a href="/opc/recordID/catalog.bib/ROBOT-2?hit=2">ロボット応用</a></div>
+              <div class="xc-creator">著者B</div>
+              <table class="xc-snippet"><tr class="xc-availability">
+                <td class="xc-availability">貸出中, 大宮図書館 3階書架(C)機械・電気, 548.3/B2</td>
+              </tr></table>
+            </td>
+          </tr>
+        </table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/xc/search",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        record_id: string;
+        title: string;
+        holdings: Array<{
+          location: string | null;
+          status: string;
+          call_number: string | null;
+        }>;
+      }>;
+    };
+    expect(projection.status).toBe("known");
+    expect(projection.records).toHaveLength(2);
+    expect(projection.records?.map((record) => record.title)).toEqual([
+      "ロボット基礎",
+      "ロボット応用",
+    ]);
+    expect(projection.records?.[0]?.holdings).toEqual([
+      expect.objectContaining({
+        location: "豊洲図書館 豊洲図書館",
+        status: "available",
+        call_number: "548.3/A1",
+      }),
+    ]);
+    expect(projection.records?.[1]?.holdings).toEqual([
+      expect.objectContaining({
+        location: "大宮図書館 3階書架(C)機械・電気",
+        status: "unavailable",
+        call_number: "548.3/B2",
+      }),
+    ]);
+  });
+
+  it("extracts every holding from the live OPAC detail table", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-live-holdings-detail",
+        query: "ロボットテクノロジー",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <div id="xc-search-full-right"><h3>ロボットテクノロジー</h3></div>
+        <dl class="mainTable">
+          <dt>責任表示</dt><dd>日本ロボット学会編</dd>
+          <dt>出版情報</dt><dd>東京 : 出版社, 2024</dd>
+        </dl>
+        <table id="detail_table"><tbody>
+          <tr class="even"><td class="locBox"><div class="loBook01">
+            <div class="bkAva"><dl><dt>状態</dt><dd>貸出可</dd></dl></div>
+            <div class="bkLoc"><dl><dt>所在</dt><dd><a href="/opc/location/toyosu">豊洲図書館　豊洲図書館</a></dd></dl></div>
+            <div class="bkCnu"><dl><dt>請求記号</dt><dd><span class="spDisInl">548.3/N77</span><span class="spDisNon"><ul><li>548.3</li><li>N77</li></ul></span></dd></dl></div>
+            <div class="bkDue"><dl><dt>返却予定日(予約数)</dt><dd>&nbsp;</dd></dl></div>
+          </div></td></tr>
+          <tr class="even"><td class="locBox"><div class="loBook01">
+            <div class="bkAva"><dl><dt>状態</dt><dd>貸出可</dd></dl></div>
+            <div class="bkLoc"><dl><dt>所在</dt><dd>大宮図書館　3階書架(C)機械・電気</dd></dl></div>
+            <div class="bkCnu"><dl><dt>請求記号</dt><dd><span class="spDisInl">548.3/N77</span></dd></dl></div>
+            <div class="bkDue"><dl><dt>返却予定日(予約数)</dt><dd>&nbsp;</dd></dl></div>
+          </div></td></tr>
+        </tbody></table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB06629896",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        holdings: Array<{
+          campus: string;
+          location: string | null;
+          call_number: string | null;
+          status: string;
+        }>;
+      }>;
+    };
+    expect(projection).toEqual({
+      status: "known",
+      records: [
+        expect.objectContaining({
+          holdings: [
+            expect.objectContaining({
+              campus: "toyosu",
+              location: "豊洲図書館 豊洲図書館",
+              call_number: "548.3/N77",
+              status: "available",
+            }),
+            expect.objectContaining({
+              campus: "omiya",
+              location: "大宮図書館 3階書架(C)機械・電気",
+              call_number: "548.3/N77",
+              status: "available",
+            }),
+          ],
+        }),
+      ],
+    });
   });
 
   it("uses the live OPAC title and creator instead of the cover anchor", async () => {
@@ -1372,6 +1642,70 @@ describe("service worker side panel contract", () => {
         reason_code: "unexpected_opac_result",
       });
     }
+  });
+
+  it("re-resolves a manifest record URL after the worker map is empty", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript.mockResolvedValueOnce([
+      {
+        result: {
+          status: "known",
+          records: [
+            {
+              record_id: "RELOAD-1",
+              title: "再読込後も読める公開書誌",
+              authors: ["著者"],
+              subjects: [],
+              isbn: null,
+              publisher: null,
+              publication_year: 2026,
+              format: "book",
+              campus: "omiya",
+              url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1",
+              holdings: [
+                {
+                  campus: "omiya",
+                  location: "大宮図書館 3階",
+                  call_number: "548.3/R1",
+                  status: "available",
+                  due_date: null,
+                  reservation_count: 0,
+                },
+              ],
+              related_records: [],
+            },
+          ],
+        },
+      },
+    ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryItemRead,
+        tool_call_id: "manifest-library-read",
+        resource_ref: createLibraryResourceRef("RELOAD-1"),
+        record_url:
+          "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1",
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "known",
+        projection: expect.objectContaining({
+          item: expect.objectContaining({
+            title: "再読込後も読める公開書誌",
+          }),
+        }),
+      }),
+    );
+    expect(createTab).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1",
+      }),
+    );
   });
 
   it("strips SIT Search session state without collapsing distinct titles", async () => {

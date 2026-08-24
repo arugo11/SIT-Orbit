@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "fastapi",
+  "google-auth[requests]",
   "openai",
   "pydantic-ai-slim[openai]>=2.31,<3",
   "pydantic-settings",

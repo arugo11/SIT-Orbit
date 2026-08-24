@@ -480,6 +480,7 @@ function submitLibraryCatalogSearchInPage(filters: {
     if (!setValue("keys", filters.query)) {
       return { status: "unavailable", reason_code: "query_field_not_found" };
     }
+    let ebookLocation: { index: number; value: string } | null = null;
     const optionalFields: Array<[string, string | null | undefined]> = [
       ["title", null],
       ["fullTitle", null],
@@ -506,22 +507,34 @@ function submitLibraryCatalogSearchInPage(filters: {
     }
     if (filters.format && filters.format !== "any") {
       if (filters.format === "ebook") {
-        const ebookLocation = Array.from(
-          form.querySelectorAll<HTMLInputElement>('input[name^="location["]'),
+        const ebookOption = Array.from(
+          form.querySelectorAll<HTMLOptionElement>(
+            'select[name="localCollectionName"] option',
+          ),
         ).find(
-          (field) =>
-            isVisible(field) &&
-            /eBook|電子図書/iu.test(
-              field.closest("label")?.textContent ?? field.value,
-            ),
+          (option) =>
+            isVisible(option) &&
+            /eBook|電子図書/iu.test(option.textContent ?? ""),
         );
-        if (!ebookLocation) {
+        if (!ebookOption) {
           return {
             status: "unavailable",
             reason_code: "format_filter_unavailable",
           };
         }
-        ebookLocation.checked = true;
+        const ebookSelect = ebookOption.closest<HTMLSelectElement>(
+          'select[name="localCollectionName"]',
+        );
+        const ebookIndex = ebookSelect
+          ? Array.from(ebookSelect.options).indexOf(ebookOption)
+          : -1;
+        if (ebookIndex < 0) {
+          return {
+            status: "unavailable",
+            reason_code: "format_filter_unavailable",
+          };
+        }
+        ebookLocation = { index: ebookIndex, value: ebookOption.value };
       } else {
         const fieldName = `format[${filters.format === "book" ? "Book" : "Journal"}]`;
         const formatField = form.querySelector<HTMLInputElement>(
@@ -549,8 +562,50 @@ function submitLibraryCatalogSearchInPage(filters: {
       }
       campusField.checked = true;
     }
-    if (typeof form.requestSubmit === "function") form.requestSubmit();
-    else form.submit();
+    // The live OPAC POST expands every empty advanced-search field into the
+    // redirect query string.  The resulting Location header is larger than
+    // Apache's request-target limit and the browser receives HTTP 414.  Use
+    // the official short search route instead, preserving only the values the
+    // caller actually requested.
+    const searchUrl = new URL(
+      `/opc/xc/search/${encodeURIComponent(filters.query)}`,
+      location.origin,
+    );
+    const params = searchUrl.searchParams;
+    params.set("os[keys]", filters.query);
+    const setOptional = (name: string, value: string | null | undefined) => {
+      if (value !== null && value !== undefined && value.length > 0) {
+        params.set(`os[${name}]`, value);
+      }
+    };
+    setOptional("auth", filters.author);
+    setOptional("subject", filters.subject);
+    setOptional("isbn", filters.isbn);
+    if (filters.pub_year !== null && filters.pub_year !== undefined) {
+      const year = String(filters.pub_year);
+      params.set("os[pubYearFrom]", year);
+      params.set("os[pubYearTo]", year);
+    }
+    if (filters.campus && filters.campus !== "any") {
+      params.set(
+        "os[location]",
+        filters.campus === "toyosu" ? "Toyosu" : "Omiya",
+      );
+    }
+    if (filters.format && filters.format !== "any") {
+      if (filters.format === "ebook" && ebookLocation) {
+        params.set(
+          `os[localCollectionName][${ebookLocation.index}]`,
+          ebookLocation.value,
+        );
+      } else if (filters.format !== "ebook") {
+        params.set(
+          "os[format]",
+          filters.format === "book" ? "Book" : "Journal",
+        );
+      }
+    }
+    location.href = searchUrl.toString();
     return { status: "submitted" };
   } catch {
     return { status: "unavailable", reason_code: "search_submit_failed" };
@@ -634,52 +689,187 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
   const rowFor = (link: Element): Element =>
     link.closest(".result-row, article, li, tr, .record, .search-result") ??
     link;
-  const parseHolding = (element: Element): LibraryRawHolding | null => {
-    if (!isVisible(element)) return null;
-    const text = visibleText(element, 500);
-    if (!text) return null;
-    const status = /利用可|貸出可|available/i.test(text)
+  const holdingStatus = (text: string): LibraryRawHolding["status"] =>
+    /利用可|貸出可|available/i.test(text)
       ? "available"
       : /貸出中|利用不可|unavailable|checked\s*out/i.test(text)
         ? "unavailable"
         : "unknown";
-    const campus = /豊洲|toyosu/i.test(text)
+  const holdingDate = (
+    text: string,
+    status: LibraryRawHolding["status"],
+  ): string | null => {
+    const match = text.match(/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})/u);
+    if (status === "unknown" || !match) return null;
+    return `${match[1]}-${match[2]?.padStart(2, "0")}-${match[3]?.padStart(2, "0")}`;
+  };
+  const holdingReservationCount = (
+    text: string,
+    status: LibraryRawHolding["status"],
+  ): number | null => {
+    if (status === "unknown") return null;
+    const match = text.match(/予約(?:数|件)?\s*[:：]?\s*(\d+)/u);
+    return match ? Number(match[1]) : null;
+  };
+  const holdingCampus = (text: string): LibraryRawHolding["campus"] =>
+    /豊洲|toyosu/i.test(text)
       ? "toyosu"
       : /大宮|omiya/i.test(text)
         ? "omiya"
         : "unknown";
-    const dueDate = text.match(/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})/u);
-    const dueYear = dueDate?.[1];
-    const dueMonth = dueDate?.[2];
-    const dueDay = dueDate?.[3];
-    const due_date =
-      status !== "unknown" && dueYear && dueMonth && dueDay
-        ? `${dueYear}-${dueMonth.padStart(2, "0")}-${dueDay.padStart(2, "0")}`
-        : null;
-    const reservationMatch = text.match(/予約(?:数|件)?\s*[:：]?\s*(\d+)/u);
-    const callNumber =
-      text.match(/(?:請求記号|call\s*number)\s*[:：]?\s*([^\s,、]+)/iu)?.[1] ??
-      text.match(/(?:貸出可|利用可|貸出中)\s*[,、]\s*([^\s,、]+)/u)?.[1] ??
-      null;
+  const holdingCallNumber = (parts: string[], text: string): string | null => {
+    const labelled = text.match(
+      /(?:請求記号|call\s*number)\s*[:：;]?\s*([^,、]+)/iu,
+    )?.[1];
+    if (labelled) return clean(labelled, 100);
+    return (
+      parts
+        .slice()
+        .reverse()
+        .find((part) =>
+          /[A-Za-z0-9０-９Ａ-Ｚａ-ｚ][-A-Za-z0-9０-９Ａ-Ｚａ-ｚ. ]*[/]\s*[A-Za-z0-9０-９Ａ-Ｚａ-ｚ]/u.test(
+            part,
+          ),
+        ) ?? null
+    );
+  };
+  const parseHoldingText = (rawText: string): LibraryRawHolding | null => {
+    const text = clean(rawText, 500);
+    if (!text) return null;
+    const status = holdingStatus(text);
+    const parts = text
+      .replace(
+        /(?:利用可|貸出可|貸出中|利用不可|available|unavailable|checked\s*out)/giu,
+        " ",
+      )
+      .split(/[,、]/u)
+      .map((part) => clean(part, 200))
+      .filter((part) => part.length > 0);
+    const callNumber = holdingCallNumber(parts, text);
+    const explicitLocation = text.match(
+      /(?:所在|配置場所|location)\s*[:：;]?\s*([^,、]+)/iu,
+    )?.[1];
+    const location =
+      clean(
+        explicitLocation ??
+          parts.find(
+            (part) =>
+              part !== callNumber &&
+              !/^(?:他の\s*\d+\s*件を見る|返却予定日|予約数)/u.test(part) &&
+              !/20\d{2}[/-]\d{1,2}[/-]\d{1,2}/u.test(part),
+          ),
+        200,
+      ) || null;
     return {
-      campus,
-      location:
-        text
-          .match(/(?:所在|配置場所|location)\s*[:：]?\s*([^,、]+)/iu)?.[1]
-          ?.slice(0, 200) ?? null,
-      call_number: callNumber?.slice(0, 100) ?? null,
+      campus: holdingCampus(location ?? text),
+      location,
+      call_number: callNumber ? clean(callNumber, 100) : null,
       status,
-      due_date,
-      reservation_count:
-        reservationMatch && status !== "unknown"
-          ? Number(reservationMatch[1])
-          : null,
+      due_date: holdingDate(text, status),
+      reservation_count: holdingReservationCount(text, status),
     };
   };
-  const parseRecord = (link: HTMLAnchorElement): LibraryRawRecord | null => {
+  const parseDetailHolding = (row: Element): LibraryRawHolding | null => {
+    if (!isVisible(row)) return null;
+    const statusText = row.querySelector(".bkAva dd")
+      ? visibleText(row.querySelector(".bkAva dd") as Element, 100)
+      : "";
+    const locationText = row.querySelector(".bkLoc dd")
+      ? visibleText(row.querySelector(".bkLoc dd") as Element, 200)
+      : "";
+    const inlineCallNumber = row.querySelector(".bkCnu .spDisInl");
+    const callNumberText = inlineCallNumber
+      ? visibleText(inlineCallNumber, 100)
+      : "";
+    const fallbackCallNumber = row.querySelector(".bkCnu dd");
+    const resolvedCallNumber =
+      callNumberText ||
+      (fallbackCallNumber ? visibleText(fallbackCallNumber, 100) : "");
+    const dueText = row.querySelector(".bkDue dd")
+      ? visibleText(row.querySelector(".bkDue dd") as Element, 200)
+      : "";
+    const text = visibleText(row, 1_000);
+    if (!text && !statusText && !locationText && !resolvedCallNumber)
+      return null;
+    const status = holdingStatus(statusText || text);
+    const location = clean(locationText, 200) || null;
+    const callNumber = clean(resolvedCallNumber, 100) || null;
+    return {
+      campus: holdingCampus(location ?? text),
+      location,
+      call_number: callNumber,
+      status,
+      due_date: holdingDate(dueText || text, status),
+      reservation_count: holdingReservationCount(dueText || text, status),
+    };
+  };
+  const parseHolding = (element: Element): LibraryRawHolding | null => {
+    if (!isVisible(element)) return null;
+    if (element.querySelector(".bkAva, .bkLoc, .bkCnu") !== null) {
+      return parseDetailHolding(element);
+    }
+    return parseHoldingText(visibleText(element, 500));
+  };
+  const deduplicateHoldings = (
+    holdings: LibraryRawHolding[],
+  ): LibraryRawHolding[] =>
+    holdings.filter(
+      (holding, index, all) =>
+        all.findIndex(
+          (candidate) =>
+            candidate.campus === holding.campus &&
+            candidate.location === holding.location &&
+            candidate.call_number === holding.call_number &&
+            candidate.status === holding.status &&
+            candidate.due_date === holding.due_date &&
+            candidate.reservation_count === holding.reservation_count,
+        ) === index,
+    );
+  const parseSearchHoldings = (row: Element): LibraryRawHolding[] => {
+    const availabilityCells = Array.from(
+      row.querySelectorAll("td.xc-availability"),
+    ).filter((cell) => visibleText(cell, 500).length > 0);
+    const candidates =
+      availabilityCells.length > 0
+        ? availabilityCells
+        : Array.from(
+            row.querySelectorAll(
+              "[data-availability], .xc-availability, .availability, .holding, .status",
+            ),
+          );
+    return deduplicateHoldings(
+      candidates
+        .map(parseHolding)
+        .filter((item): item is LibraryRawHolding => item !== null)
+        .slice(0, 20),
+    );
+  };
+  const parseDocumentHoldings = (): LibraryRawHolding[] => {
+    const availabilityCells = Array.from(
+      document.querySelectorAll("td.xc-availability"),
+    ).filter((cell) => visibleText(cell, 500).length > 0);
+    const candidates =
+      availabilityCells.length > 0
+        ? availabilityCells
+        : Array.from(
+            document.querySelectorAll(
+              "[data-availability], .xc-availability, .availability, .holding, .status",
+            ),
+          );
+    return deduplicateHoldings(
+      candidates
+        .map(parseHolding)
+        .filter((item): item is LibraryRawHolding => item !== null)
+        .slice(0, 20),
+    );
+  };
+  const parseRecord = (
+    link: HTMLAnchorElement,
+    resultRow?: Element,
+  ): LibraryRawRecord | null => {
     const recordId = recordIdFromUrl(link.href);
     if (!recordId) return null;
-    const row = rowFor(link);
+    const row = resultRow ?? rowFor(link);
     if (!isVisible(link) || !isVisible(row)) return null;
     const titleElement = Array.from(row.querySelectorAll(".xc-title")).find(
       isVisible,
@@ -702,14 +892,10 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
         .filter((value, index, values) => values.indexOf(value) === index)
         .slice(0, 20);
     const yearMatch = text.match(/(?:19|20)\d{2}/u);
-    const holdings = Array.from(
-      row.querySelectorAll(
-        "[data-availability], .xc-availability, .availability, .holding, .status",
-      ),
-    )
-      .map(parseHolding)
-      .filter((item): item is LibraryRawHolding => item !== null)
-      .slice(0, 20);
+    // The live OPAC nests each availability row inside the result row's
+    // snippet table.  Restrict extraction to this row so a later result-row
+    // cannot leak its holdings into the current record.
+    const holdings = parseSearchHoldings(row).slice(0, 20);
     return {
       record_id: recordId,
       title,
@@ -750,21 +936,53 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     ) {
       return { status: "unavailable", reason_code: "unexpected_opac_result" };
     }
-    const loadingElement = document.querySelector(
-      '[aria-busy="true"], .loading, .spinner',
-    );
-    if (
-      (loadingElement && isVisible(loadingElement)) ||
-      (document.body &&
-        /読み込み中|loading/i.test(visibleText(document.body, 100_000)))
-    ) {
+    // OPAC loads availability through an AJAX fragment after the document
+    // itself is ready.  Do not use a page-wide `loading` text/selector here:
+    // the live page contains unrelated loading labels in hidden widgets and
+    // that made a valid detail page look perpetually pending.  Only an
+    // explicitly busy page or a visible availability cell with its loader
+    // placeholder keeps the bounded poll alive.
+    const loadingElement = document.querySelector('[aria-busy="true"]');
+    const pendingAvailability = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        'td.xc-availability, td[id^="xc-availability-"], [data-availability]',
+      ),
+    )
+      .filter(isVisible)
+      .some((cell) => {
+        const text = visibleText(cell, 200).toLowerCase();
+        return (
+          cell.querySelector('img[alt*="loading" i], .ajax-loader') !== null ||
+          /^(?:loading[.…]*|読み込み中)$/iu.test(text)
+        );
+      });
+    if ((loadingElement && isVisible(loadingElement)) || pendingAvailability) {
       return { status: "loading" };
     }
-    const linkedRecords = Array.from(
-      document.querySelectorAll<HTMLAnchorElement>("a[href]"),
-    )
-      .map(parseRecord)
-      .filter((item): item is LibraryRawRecord => item !== null)
+    const resultRows = Array.from(
+      document.querySelectorAll<Element>(".result-row"),
+    ).filter(isVisible);
+    const searchRecords = resultRows
+      .map((row) => {
+        const canonicalLink = Array.from(
+          row.querySelectorAll<HTMLAnchorElement>(
+            '.xc-title a[href], a[href*="/opc/recordID/catalog.bib/"]',
+          ),
+        ).find(
+          (link) =>
+            recordIdFromUrl(link.href) !== null &&
+            !/cover\s+image|表紙/iu.test(link.getAttribute("title") ?? ""),
+        );
+        return canonicalLink ? parseRecord(canonicalLink, row) : null;
+      })
+      .filter((item): item is LibraryRawRecord => item !== null);
+    const fallbackRecords =
+      resultRows.length > 0
+        ? []
+        : Array.from(document.querySelectorAll<HTMLAnchorElement>("a[href]"))
+            .map((link) => parseRecord(link))
+            .filter((item): item is LibraryRawRecord => item !== null);
+    const linkedRecords = [...searchRecords, ...fallbackRecords]
       .filter(
         (item, index, all) =>
           all.findIndex(
@@ -777,7 +995,7 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
       const currentId = recordIdFromUrl(location.href);
       const mainTable = document.querySelector("dl.mainTable");
       const titleElement = document.querySelector(
-        "h1.page-title, #content h3, .node h3",
+        "h1.page-title, #xc-search-full-right h3, #content h3, .node h3",
       );
       const title = titleElement ? visibleText(titleElement, 300) : "";
       if (
@@ -814,6 +1032,16 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
       const yearMatch = publication?.match(/(?:19|20)\d{2}/u);
       const formatText = definition(/^(?:フォーマット|format)$/iu) ?? "";
       const pageText = document.body ? visibleText(document.body, 100_000) : "";
+      const detailHoldings = deduplicateHoldings(
+        Array.from(document.querySelectorAll("#detail_table tr"))
+          .filter(
+            (row) =>
+              row.querySelector(".loBook01, .bkAva, .bkLoc, .bkCnu") !== null,
+          )
+          .map(parseDetailHolding)
+          .filter((item): item is LibraryRawHolding => item !== null)
+          .slice(0, 20),
+      );
       const current: LibraryRawRecord = {
         record_id: currentId,
         title,
@@ -837,14 +1065,8 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
             ? "omiya"
             : "any",
         url: `https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/${encodeURIComponent(currentId)}`,
-        holdings: Array.from(
-          document.querySelectorAll(
-            "[data-availability], .xc-availability, .availability, .holding, .status",
-          ),
-        )
-          .map(parseHolding)
-          .filter((item): item is LibraryRawHolding => item !== null)
-          .slice(0, 20),
+        holdings:
+          detailHoldings.length > 0 ? detailHoldings : parseDocumentHoldings(),
         related_records: linkedRecords
           .filter((record) => record.record_id !== currentId)
           .map((record) => ({
@@ -1306,10 +1528,18 @@ function readMyLibraryActionOptionsInPage(
   targetRawId: string,
 ): MyLibraryActionPageProjection {
   try {
+    const expectedMenuId = MY_LIBRARY_MENU_IDS[scope].toString();
+    const query = new URLSearchParams(location.search);
+    const isObservedMenuQuery =
+      query.size === 2 &&
+      query.getAll("selectedMenuId").length === 1 &&
+      query.getAll("selectMenu").length === 1 &&
+      query.get("selectedMenuId") === expectedMenuId &&
+      query.get("selectMenu") === "1";
     if (
       location.origin !== MY_LIBRARY_ORIGIN ||
       location.pathname !== MY_LIBRARY_STATUS_PATH ||
-      location.search !== "" ||
+      (location.search !== "" && !isObservedMenuQuery) ||
       location.hash !== ""
     ) {
       return { status: "unavailable", reason_code: "unexpected_page" };
@@ -1482,10 +1712,18 @@ function validateMyLibraryWriteSurfaceInPage(
   targetRawId: string,
 ): LibraryWriteSurfaceProjection {
   try {
+    const expectedMenuId = MY_LIBRARY_MENU_IDS[scope].toString();
+    const query = new URLSearchParams(location.search);
+    const isObservedMenuQuery =
+      query.size === 2 &&
+      query.getAll("selectedMenuId").length === 1 &&
+      query.getAll("selectMenu").length === 1 &&
+      query.get("selectedMenuId") === expectedMenuId &&
+      query.get("selectMenu") === "1";
     if (
       location.origin !== MY_LIBRARY_ORIGIN ||
       location.pathname !== MY_LIBRARY_STATUS_PATH ||
-      location.search !== "" ||
+      (location.search !== "" && !isObservedMenuQuery) ||
       location.hash !== ""
     ) {
       return { status: "unavailable", reason_code: "unexpected_page" };
@@ -1988,7 +2226,43 @@ async function handleLibraryItemRead(
       pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
     };
   }
-  const recordId = libraryRecordRefs.get(message.resource_ref);
+  const mappedRecordId = libraryRecordRefs.get(message.resource_ref);
+  let manifestRecordId: string | null = null;
+  if (message.record_url !== undefined) {
+    try {
+      const url = new URL(message.record_url);
+      if (
+        url.origin !== LIBRARY_OPAC_ORIGIN ||
+        url.protocol !== "https:" ||
+        !url.pathname.startsWith(LIBRARY_RECORD_PATH_PREFIX) ||
+        url.search !== "" ||
+        url.hash !== ""
+      ) {
+        return libraryUnavailable("invalid_record_url");
+      }
+      const candidate = decodeURIComponent(
+        url.pathname.slice(LIBRARY_RECORD_PATH_PREFIX.length),
+      );
+      if (
+        !candidate ||
+        !/^[^/?#\s]{1,200}$/u.test(candidate) ||
+        createLibraryResourceRef(candidate) !== message.resource_ref
+      ) {
+        return libraryUnavailable("resource_ref_mismatch");
+      }
+      manifestRecordId = candidate;
+    } catch {
+      return libraryUnavailable("invalid_record_url");
+    }
+  }
+  if (
+    mappedRecordId &&
+    manifestRecordId &&
+    mappedRecordId !== manifestRecordId
+  ) {
+    return libraryUnavailable("resource_ref_mismatch");
+  }
+  const recordId = mappedRecordId ?? manifestRecordId;
   if (!recordId) return libraryUnavailable("unknown_resource_ref");
   let tabId: number | null = null;
   try {
@@ -2134,7 +2408,7 @@ async function readMyLibraryWriteSurface(
     if (clicked?.result?.status !== "clicked") {
       return { status: "unavailable", reason_code: "menu_result_missing" };
     }
-    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+    if (!(await waitForMyLibraryStatusPage(tab.id, target.scope))) {
       return { status: "unavailable", reason_code: "status_page_timeout" };
     }
     const [validated] = await chrome.scripting.executeScript({
@@ -2600,7 +2874,7 @@ async function handleLibraryActionOptions(
         ),
       };
     }
-    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+    if (!(await waitForMyLibraryStatusPage(tab.id, personalTarget.scope))) {
       return {
         status: "known",
         projection: unavailableLibraryActionOptions(
@@ -3442,11 +3716,27 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
   };
 
   try {
+    const expectedMenuId = (
+      {
+        current_loans: 5,
+        reservations: 6,
+        loan_history: 7,
+        purchase_requests: 3,
+        interlibrary_requests: 2,
+      } as const
+    )[scope].toString();
+    const query = new URLSearchParams(location.search);
+    const isObservedMenuQuery =
+      query.size === 2 &&
+      query.getAll("selectedMenuId").length === 1 &&
+      query.getAll("selectMenu").length === 1 &&
+      query.get("selectedMenuId") === expectedMenuId &&
+      query.get("selectMenu") === "1";
     if (
       location.origin !== "https://library.shibaura-it.ac.jp" ||
       location.pathname !==
         "/portal/admin/selectMenu/doSelectPublicUseMainMenu" ||
-      location.search !== "" ||
+      (location.search !== "" && !isObservedMenuQuery) ||
       location.hash !== ""
     ) {
       return { status: "unavailable", reason_code: "unexpected_page" };
@@ -3756,16 +4046,24 @@ function readMyLibraryStatusInPage(scope: MyLibraryScope): MyLibraryPageRead {
 
 async function waitForMyLibraryStatusPage(
   tabId: number,
+  scope: MyLibraryScope,
 ): Promise<chrome.tabs.Tab | null> {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     try {
       const tab = await chrome.tabs.get(tabId);
       if (tab.status === "complete" && tab.url) {
         const url = new URL(tab.url);
+        const expectedMenuId = MY_LIBRARY_MENU_IDS[scope].toString();
+        const isObservedMenuQuery =
+          url.searchParams.size === 2 &&
+          url.searchParams.getAll("selectedMenuId").length === 1 &&
+          url.searchParams.getAll("selectMenu").length === 1 &&
+          url.searchParams.get("selectedMenuId") === expectedMenuId &&
+          url.searchParams.get("selectMenu") === "1";
         if (
           url.origin === MY_LIBRARY_ORIGIN &&
           url.pathname === MY_LIBRARY_STATUS_PATH &&
-          url.search === "" &&
+          (url.search === "" || isObservedMenuQuery) &&
           url.hash === ""
         ) {
           return tab;
@@ -3782,10 +4080,15 @@ async function waitForMyLibraryStatusPage(
 async function readMyLibrarySection(
   scope: MyLibraryScope,
 ): Promise<MyLibraryPageRead> {
-  const tab = await chrome.tabs.create({
-    url: MY_LIBRARY_ENTRY_URL,
-    active: false,
-  });
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.create({
+      url: MY_LIBRARY_ENTRY_URL,
+      active: false,
+    });
+  } catch {
+    return { status: "unavailable", reason_code: "entry_tab_create_failed" };
+  }
   if (tab.id === undefined) {
     return { status: "unavailable", reason_code: "entry_tab_missing" };
   }
@@ -3818,7 +4121,7 @@ async function readMyLibrarySection(
         reason_code: clicked?.result?.reason_code ?? "menu_result_missing",
       };
     }
-    if (!(await waitForMyLibraryStatusPage(tab.id))) {
+    if (!(await waitForMyLibraryStatusPage(tab.id, scope))) {
       return { status: "unavailable", reason_code: "status_page_timeout" };
     }
     const [read] = await chrome.scripting.executeScript({
@@ -4754,7 +5057,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
       return true;
     }
-    void handleMyLibraryRead(message).then(sendResponse);
+    void handleMyLibraryRead(message)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse({
+          status: "unavailable",
+          reason_code: "my_library_read_failed",
+        }),
+      );
     return true;
   }
 

@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentApiClient, ChatRunResponse } from "../api/client";
 import {
   buttonByName,
-  click,
   type MountedSidePanel,
   mountSidePanel,
   unmountSidePanel,
@@ -12,24 +11,16 @@ import {
 import { ChatPanel } from "./ChatPanel";
 import { deleteAllConversations } from "./chat-history";
 
-const LIBRARY_DISCLOSURE =
-  "検索語をこのサイトへ送信し、表示された結果のみを読み取ります。予約等の変更はしません。";
-
 function toolRequired(
   name: string,
   argumentsValue: Record<string, unknown>,
-  options: {
-    runId?: string;
-    toolCallId?: string;
-  } = {},
 ): ChatRunResponse {
-  const runId = options.runId ?? "chat-permission-run";
   return {
     status: "tool_required",
-    run_id: runId,
+    run_id: "chat-read-only-run",
     calls: [
       {
-        tool_call_id: options.toolCallId ?? `chat-permission-${name}`,
+        tool_call_id: `chat-read-only-${name}`,
         name,
         version: 1,
         arguments: argumentsValue,
@@ -38,10 +29,7 @@ function toolRequired(
   } as ChatRunResponse;
 }
 
-function createApiClient(
-  response: ChatRunResponse,
-  completionId = "unexpected-completion",
-): AgentApiClient & {
+function createApiClient(response: ChatRunResponse): AgentApiClient & {
   startChat: ReturnType<typeof vi.fn>;
   submitChatToolResult: ReturnType<typeof vi.fn>;
 } {
@@ -50,8 +38,8 @@ function createApiClient(
     submitChatToolResult: vi.fn(async () => ({
       status: "completed",
       message: {
-        message_id: completionId,
-        content_markdown: "unexpected",
+        message_id: "read-only-completed",
+        content_markdown: "確認しました。",
         evidence: [],
       },
       proposal: null,
@@ -60,39 +48,6 @@ function createApiClient(
     startChat: ReturnType<typeof vi.fn>;
     submitChatToolResult: ReturnType<typeof vi.fn>;
   };
-}
-
-type TestChromePermissions = {
-  contains: ReturnType<typeof vi.fn>;
-  request: ReturnType<typeof vi.fn>;
-  remove: ReturnType<typeof vi.fn>;
-};
-
-function installKnownLibraryRuntime(
-  mounted: MountedSidePanel,
-  query: string,
-): TestChromePermissions {
-  const permissions: TestChromePermissions = {
-    contains: vi.fn(async () => true),
-    request: vi.fn(async () => true),
-    remove: vi.fn(async () => true),
-  };
-  Object.assign(chrome, { permissions });
-  mounted.chromeRuntime.sendMessage.mockImplementation(
-    (_message: unknown, callback?: (response: unknown) => void) => {
-      callback?.({
-        status: "known",
-        projection: {
-          schema_version: "v1",
-          status: "known",
-          query,
-          items: [],
-          reason_code: null,
-        },
-      });
-    },
-  );
-  return permissions;
 }
 
 async function sendMessage(
@@ -110,14 +65,6 @@ async function sendMessage(
   await act(async () => {
     if (valueSetter) valueSetter.call(textarea, message);
     else textarea.value = message;
-    textarea.dispatchEvent(
-      new window.InputEvent("input", {
-        bubbles: true,
-        inputType: "insertText",
-        data: message,
-      }),
-    );
-    textarea.dispatchEvent(new window.Event("change", { bubbles: true }));
     const propsKey = Object.keys(textarea).find((key) =>
       key.startsWith("__reactProps$"),
     );
@@ -141,12 +88,79 @@ async function sendMessage(
       new window.Event("submit", { bubbles: true, cancelable: true }),
     );
   });
-  await waitFor(
-    () => mounted.document.querySelector(".chat-permission-prompt") !== null,
-  );
 }
 
-describe("ChatPanel library permission disclosure", () => {
+function installReadOnlyRuntime(
+  mounted: MountedSidePanel,
+  kind: "library" | "browser",
+  libraryItems: Array<Record<string, unknown>> = [],
+): ReturnType<typeof vi.fn> {
+  const permissionsRequest = vi.fn(async () => true);
+  Object.assign(chrome, {
+    permissions: { request: permissionsRequest },
+  });
+  mounted.chromeRuntime.sendMessage.mockImplementation(
+    (request: unknown, callback?: (response: unknown) => void) => {
+      if (
+        kind === "library" &&
+        typeof request === "object" &&
+        request !== null &&
+        (request as { type?: string }).type === "library-catalog-search"
+      ) {
+        callback?.({
+          status: "known",
+          projection: {
+            schema_version: "v1",
+            status: "known",
+            query: "図書館で本を検索して",
+            items: libraryItems,
+            reason_code: null,
+          },
+        });
+        return;
+      }
+      if (
+        kind === "library" &&
+        typeof request === "object" &&
+        request !== null &&
+        (request as { type?: string }).type === "library-item-read"
+      ) {
+        callback?.({
+          status: "known",
+          projection: {
+            schema_version: "v1",
+            status: "known",
+            resource_ref: libraryItems[0]?.resource_ref,
+            item: libraryItems[0] ?? null,
+            reason_code: null,
+          },
+        });
+        return;
+      }
+      if (kind === "browser") {
+        callback?.({
+          status: "known",
+          projection: {
+            schema_version: "v1",
+            status: "known",
+            url: "https://example.com/course",
+            title: "公開ページ",
+            text: "公開された本文",
+            links: [],
+            truncated: false,
+            data_classification: "public",
+            reason_code: null,
+          },
+        });
+        return;
+      }
+      callback?.({ ok: true });
+    },
+  );
+  return permissionsRequest;
+}
+
+describe("ChatPanel read-only execution boundary", () => {
   let mounted: MountedSidePanel | undefined;
 
   beforeEach(async () => {
@@ -161,149 +175,111 @@ describe("ChatPanel library permission disclosure", () => {
     await deleteAllConversations();
   });
 
-  it.each([
-    [
-      "library_catalog_search",
-      "図書館で本を検索して",
-      "https://library.shibaura-it.ac.jp",
-    ],
-    [
-      "library_discovery_search",
-      "電子ジャーナルを検索して",
-      "https://slib.shibaura-it.ac.jp",
-    ],
-  ] as const)(
-    "discloses official-site search and read-only behavior for %s",
-    async (toolName, message, origin) => {
-      const apiClient = createApiClient(
-        toolRequired(toolName, { query: message, limit: 10 }),
-      );
-      mounted = await mountSidePanel(
-        () => (
-          <ChatPanel
-            apiClient={apiClient}
-            pageContext={null}
-            calendarState={{ status: "not_connected" }}
-            calendarRequest={async () => ({ status: "not_connected" })}
-          />
-        ),
-        (runtime) => {
-          runtime.sendMessage.mockImplementation(
-            (_request: unknown, callback?: (response: unknown) => void) => {
-              callback?.({
-                status: "permission_required",
-                origin,
-                pattern: `${origin}/*`,
-              });
-            },
-          );
-        },
-      );
-
-      await sendMessage(mounted, message);
-      const prompt = mounted.document.querySelector(".chat-permission-prompt");
-      expect(prompt?.textContent).toContain(origin);
-      expect(prompt?.textContent).toContain(LIBRARY_DISCLOSURE);
-      expect(prompt?.textContent).not.toContain(
-        "ページの表示情報だけを使い、送信・変更は行いません。",
-      );
-      expect(
-        Array.from(mounted.document.querySelectorAll("button")).find(
-          (button) => button.textContent?.trim() === "このサイトを常に許可",
-        ),
-      ).toBeUndefined();
-
-      await click(buttonByName(mounted.document, "拒否"));
-      expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
-      expect(mounted.document.body.textContent).toContain(
-        "サイトの読み取りを拒否しました。",
-      );
-    },
-  );
-
-  it.each([
-    ["catalog/ask", "library_catalog_search", "図書館で本を検索して", false],
-    [
-      "discovery/ask",
-      "library_discovery_search",
-      "電子ジャーナルを検索して",
-      false,
-    ],
-    ["catalog/full", "library_catalog_search", "図書館で本を検索して", true],
-    [
-      "discovery/full",
-      "library_discovery_search",
-      "電子ジャーナルを検索して",
-      true,
-    ],
-  ] as const)(
-    "requires run-scoped library approval before runtime known result (%s)",
-    async (caseName, toolName, message, fullAccess) => {
-      const runId = `known-${caseName}`;
-      const toolCallId = `${runId}-call`;
-      const apiClient = createApiClient(
-        toolRequired(
-          toolName,
-          { query: message, limit: 10 },
-          { runId, toolCallId },
-        ),
-        `${runId}-completed`,
-      );
-      const panel = await mountSidePanel(() => (
-        <ChatPanel
-          apiClient={apiClient}
-          pageContext={null}
-          calendarState={{ status: "not_connected" }}
-          calendarRequest={async () => ({ status: "not_connected" })}
-        />
-      ));
-      mounted = panel;
-      const permissions = installKnownLibraryRuntime(panel, message);
-
-      if (fullAccess) {
-        await click(buttonByName(panel.document, "Full access"));
-        await waitFor(
-          () =>
-            buttonByName(panel.document, "Full access").getAttribute(
-              "aria-pressed",
-            ) === "true",
-        );
-      }
-      expect(panel.chromeRuntime.sendMessage).not.toHaveBeenCalled();
-
-      await sendMessage(panel, message);
-      const prompt = panel.document.querySelector(".chat-permission-prompt");
-      expect(prompt?.textContent).toContain(LIBRARY_DISCLOSURE);
-      expect(panel.chromeRuntime.sendMessage).not.toHaveBeenCalled();
-
-      await click(buttonByName(panel.document, "今回だけ許可"));
-      await waitFor(
-        () => panel.chromeRuntime.sendMessage.mock.calls.length === 1,
-      );
-      expect(panel.chromeRuntime.sendMessage).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: toolName.replaceAll("_", "-"),
-          tool_call_id: toolCallId,
-        }),
-        expect.any(Function),
-      );
-      expect(permissions.request).toHaveBeenLastCalledWith({
-        origins: [
-          toolName === "library_catalog_search"
-            ? "https://library.shibaura-it.ac.jp/*"
-            : "https://slib.shibaura-it.ac.jp/*",
-        ],
-      });
-      await waitFor(
-        () => apiClient.submitChatToolResult.mock.calls.length === 1,
-      );
-    },
-  );
-
-  it("keeps the generic read-only disclosure for browser_read_url", async () => {
+  it("runs library search without an in-chat permission card", async () => {
     const apiClient = createApiClient(
-      toolRequired("browser_read_url", {
-        url: "https://example.com/course",
+      toolRequired("library_catalog_search", { query: "図書館で本を検索して" }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    const permissionsRequest = installReadOnlyRuntime(mounted, "library");
+
+    await sendMessage(mounted, "図書館で本を検索して");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+
+    expect(
+      mounted.document.querySelector(".chat-permission-prompt"),
+    ).toBeNull();
+    expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
+  it("renders public OPAC holding location and loan status in the tool timeline", async () => {
+    const apiClient = createApiClient(
+      toolRequired("library_catalog_search", { query: "ロボット" }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    installReadOnlyRuntime(mounted, "library", [
+      {
+        resource_ref: "orbit-library://record/0123456789abcdef",
+        title: "ロボットテクノロジー",
+        authors: ["日本ロボット学会編"],
+        subjects: ["ロボット"],
+        isbn: null,
+        publisher: "公開出版社",
+        publication_year: 2024,
+        format: "book",
+        campus: "any",
+        url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB06629896",
+        holdings: [
+          {
+            campus: "toyosu",
+            location: "豊洲図書館 豊洲図書館",
+            call_number: "548.3/N77",
+            status: "available",
+            due_date: null,
+            reservation_count: 0,
+          },
+        ],
+        related_records: [],
+      },
+    ]);
+
+    await sendMessage(mounted, "図書館でロボットの本を探して");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+
+    expect(mounted.document.body.textContent).toContain("ロボットテクノロジー");
+    expect(mounted.document.body.textContent).toContain(
+      "豊洲図書館 豊洲図書館",
+    );
+    expect(mounted.document.body.textContent).toContain("配架場所:");
+    expect(mounted.document.body.textContent).toContain("548.3/N77");
+    expect(mounted.document.body.textContent).toContain("貸出可");
+
+    const mapImage = mounted.document.querySelector<HTMLImageElement>(
+      'img[alt="豊洲図書館フロアマップ"]',
+    );
+    expect(mapImage).toBeNull();
+  });
+
+  it("renders a floor map only for a single-book detail read", async () => {
+    const item = {
+      resource_ref: "orbit-library://record/0123456789abcdef",
+      title: "ロボットテクノロジー",
+      authors: ["日本ロボット学会編"],
+      subjects: ["ロボット"],
+      isbn: null,
+      publisher: "公開出版社",
+      publication_year: 2024,
+      format: "book",
+      campus: "toyosu",
+      url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB06629896",
+      holdings: [
+        {
+          campus: "toyosu",
+          location: "豊洲図書館 豊洲図書館",
+          call_number: "548.3/N77",
+          status: "available",
+          due_date: null,
+          reservation_count: 0,
+        },
+      ],
+      related_records: [],
+    };
+    const apiClient = createApiClient(
+      toolRequired("library_item_read", {
+        resource_ref: item.resource_ref,
       }),
     );
     mounted = await mountSidePanel(() => (
@@ -314,16 +290,172 @@ describe("ChatPanel library permission disclosure", () => {
         calendarRequest={async () => ({ status: "not_connected" })}
       />
     ));
+    installReadOnlyRuntime(mounted, "library", [item]);
+
+    await sendMessage(mounted, "どこに配架されていますか？");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+
+    const mapImage = mounted.document.querySelector<HTMLImageElement>(
+      'img[alt="豊洲図書館フロアマップ"]',
+    );
+    expect(mapImage?.getAttribute("src")).toBe(
+      "https://lib.shibaura-it.ac.jp/files/images/toyosu_room_map_2607.png",
+    );
+    expect(mapImage?.closest("a")?.getAttribute("aria-label")).toBe(
+      "豊洲図書館フロアマップの画像を原寸で開く",
+    );
+  });
+
+  it("sends an ordinary greeting directly to the Agent without permission checks", async () => {
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "greeting-completed",
+        content_markdown: "こんにちは。今日は何を進めますか？",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    const permissionsRequest = vi.fn(async () => true);
+    Object.assign(chrome, { permissions: { request: permissionsRequest } });
+
+    await sendMessage(mounted, "こんにちは");
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes(
+        "こんにちは。今日は何を進めますか？",
+      ),
+    );
+
+    expect(apiClient.startChat).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "こんにちは" }),
+    );
+    const request = apiClient.startChat.mock.calls[0]?.[0] as {
+      client_tools?: Array<{ name: string }>;
+    };
+    expect(request.client_tools?.map((tool) => tool.name)).toEqual(
+      expect.arrayContaining([
+        "library_catalog_search",
+        "library_item_read",
+        "library_catalog_browse",
+        "library_discovery_search",
+      ]),
+    );
+    expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
+  it("reads a public URL without an in-chat permission card", async () => {
+    const apiClient = createApiClient(
+      toolRequired("browser_read_url", { url: "https://example.com/course" }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    const permissionsRequest = installReadOnlyRuntime(mounted, "browser");
 
     await sendMessage(mounted, "https://example.com/course を読んで");
-    const prompt = mounted.document.querySelector(".chat-permission-prompt");
-    expect(prompt?.textContent).toContain(
-      "ページの表示情報だけを使い、送信・変更は行いません。",
-    );
-    expect(prompt?.textContent).not.toContain("検索語をこのサイトへ送信し");
-    expect(prompt?.textContent).not.toContain("予約等の変更はしません。");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
 
-    await click(buttonByName(mounted.document, "拒否"));
-    expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
+    expect(
+      mounted.document.querySelector(".chat-permission-prompt"),
+    ).toBeNull();
+    expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
+  it("shows one generic retryable assistant error without network details", async () => {
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "unused",
+        content_markdown: "unused",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    apiClient.startChat.mockRejectedValue(new Error("Failed to fetch"));
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "こんにちは");
+    await waitFor(
+      () => mounted?.document.querySelector(".chat-retry-button") !== null,
+    );
+
+    expect(mounted.document.body.textContent).toContain(
+      "今は応答できませんでした。もう一度お試しください。",
+    );
+    expect(mounted.document.body.textContent).not.toContain("Failed to fetch");
+    expect(mounted.document.body.textContent).not.toContain("接続状態");
+    expect(mounted.document.body.textContent).not.toContain("許可を確認");
+  });
+
+  it("shows a concise Agent progress status while the request is pending", async () => {
+    let resolveStart: ((value: ChatRunResponse) => void) | undefined;
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "progress-completed",
+        content_markdown: "完了",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    apiClient.startChat.mockImplementation(
+      () =>
+        new Promise<ChatRunResponse>((resolve) => {
+          resolveStart = resolve;
+        }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "予定を確認して");
+    await waitFor(() =>
+      (
+        mounted?.document.querySelector(".chat-progress")?.textContent ?? ""
+      ).includes("Agentに質問を送信中"),
+    );
+    expect(
+      mounted.document.querySelector(".chat-progress")?.textContent,
+    ).not.toContain("思考");
+
+    resolveStart?.({
+      status: "completed",
+      message: {
+        message_id: "progress-completed",
+        content_markdown: "完了",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    await waitFor(() =>
+      (
+        mounted?.document.querySelector(".chat-progress")?.textContent ?? ""
+      ).includes("完了"),
+    );
   });
 });

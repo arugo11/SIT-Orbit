@@ -129,15 +129,11 @@ export type LibraryToolResult =
   | LibraryCatalogBrowseResult
   | LibraryDiscoverySearchResult;
 
-/** Advertise public-library tools only for the current explicit user turn. */
-export function requestsLibraryTools(message: string): boolean {
-  return (
-    /図書館|蔵書|電子(?:書籍|ブック)|OPAC|SIT\s*Search|貸出|請求記号|新着図書|貸出ランキング/iu.test(
-      message,
-    ) ||
-    /(?:本|図書|書籍|論文|文献|ジャーナル).{0,20}(?:探|検索|所蔵|借|読|閲覧|取り寄|取寄|予約|場所|どこ|ある|ない|新着|おすすめ|関連|詳細)|(?:探|検索|所蔵|借|読|閲覧|取り寄|取寄|予約|場所|どこ|ある|ない|新着|おすすめ|関連|詳細).{0,20}(?:本|図書|書籍|論文|文献|ジャーナル)/iu.test(
-      message,
-    ) ||
-    /orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}/u.test(message)
-  );
+/**
+ * Public library reads are available on every Chat turn. Keep this helper as
+ * a compatibility surface for callers that used the old intent heuristic;
+ * the latest-message wording must not gate catalog access.
+ */
+export function requestsLibraryTools(_message: string): boolean {
+  return true;
 }

@@ -78,9 +78,11 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
 
 拡張機能ページを`chrome.tabs.create()`で開くための`tabs`権限は追加しない。既存のScombZ host permissionと`storage`権限の範囲で実装する。[Chrome Tabs API](https://developer.chrome.com/docs/extensions/reference/api/tabs)、[Chrome Storage API](https://developer.chrome.com/docs/extensions/reference/api/storage)
 
-### 最小権限
+### Chrome権限と管理認証
 
-初期版の権限は、ScombZの読み取り、パネル表示、利用者が開始した読み取りToolに限定する。
+通常のAgent会話は、初回セットアップ完了後は追加設定なしで実行できる。初めて拡張機能を使うときにセットアップ画面を表示し、Chat送信より先にChrome Identityの`launchWebAuthFlow`でSITアカウントを選択できる認可コードフローを開始する。Agent用Google OAuth clientはWeb application型とし、`https://<extension-id>.chromiumapp.org/agent-auth`をAuthorized redirect URIへ完全一致で登録する。拡張機能はS256 PKCE、`state`、`response_type=code`を使い、one-time codeとverifierだけを`POST /v1/auth/session`へ渡す。APIはAzure Secretのclient secretでcodeを交換し、Google ID tokenを検証後に破棄する。認証後、公式のScombZ、SITRUS、Moodle、My Library、CASTログイン画面を開き、利用者が必要なパスワード・2段階認証をブラウザで完了してからChatを解放する。拡張機能が保持する認証情報は、交換後の短命なsession tokenと期限だけに限定し、メモリと`chrome.storage.session`へ保存する。初回セットアップの開始・完了時刻以外にログイン状態や資格情報を保存しない。ローカルのAgent APIは開発時に明示的な環境変数を設定した場合だけ利用する。
+
+拡張機能の権限は、ScombZ、Connector、公開Web読取、Agent API、認証交換を含む。全サイトhost permissionはインストールまたは更新時のChrome権限確認で一度だけ扱い、Chat中に読み取り許可を表示しない。
 
 ```json
 {
@@ -94,17 +96,22 @@ Service Workerは、ボタンを押した時点のScombZタブを`sourceTabId`�
   ],
   "host_permissions": [
     "https://scombz.shibaura-it.ac.jp/*",
-    "https://syllabus.sic.shibaura-it.ac.jp/*"
-  ],
-  "optional_host_permissions": ["https://*/*", "http://*/*"]
+    "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io/*",
+    "https://www.googleapis.com/*",
+    "https://oauth2.googleapis.com/*",
+    "https://syllabus.sic.shibaura-it.ac.jp/*",
+    "https://sitrus.sic.shibaura-it.ac.jp/*",
+    "https://*/*",
+    "http://*/*"
+  ]
 }
 ```
 
 Side Panelのパスは、ScombZのタブを検出したService Workerが`sidePanel.setOptions()`へ渡す。全サイト共通の`default_path`は宣言しない。
 
-`identity`はGoogle Calendarの読み取りに使用し、`storage`はGoogle Driveの選択メタデータをブラウザのセッション中だけ保持するために使用する。
+`identity`はSITアカウントの認証交換とConnector固有のOAuthに使用する。AgentのWeb application clientと、Calendarの`getAuthToken`で使うChrome Extension clientは分離する。`storage`はsession tokenとGoogle Driveの選択メタデータをブラウザのセッション中だけ保持するために使用する。
 
-`debugger`、`cookies`、`history`、`webRequest`、`browsingData`は使用しない。任意ホスト権限は、ユーザーがChat内の許可操作を押した場合だけ要求する。
+`debugger`、`cookies`、`history`、`webRequest`、`browsingData`は使用しない。`chrome.permissions.request`は使用せず、host permissionの追加要求をChatへ持ち込まない。
 
 Chromeの権限は、処理に必要な範囲だけを宣言する。[Declare permissions](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions)
 
@@ -229,9 +236,9 @@ Tool結果を同じrunへ返してAgentを再開
 Markdown回答、引用、必要ならActionProposalを表示
 ```
 
-### ChatのアクセスモードとBrowser Reader
+### Chatのアクセス境界とBrowser Reader
 
-Composerでは`Ask every time`を既定にし、未許可ホストの読み取り前に今回のみ許可・サイトを常に許可・拒否を表示する。`Full access`はユーザーがChromeのoptional host permissionを明示的に付与した場合だけ有効になるが、読み取り専用であり、提出・送信・更新・削除・ダウンロード・アップロードは常に確認対象である。成績、出欠、個人評価のURLは、サイト許可済みでもAskでは毎回確認する。
+Composerにアクセスモードやサイト単位の承認状態は持たせない。`https://*/*`と`http://*/*`は必須host permissionとしてインストール・更新時に確認し、Chat中に`chrome.permissions.request`を呼ばない。Web検索、公開ページ読取、SCombZ、Moodle、CAST、図書館などread-only ToolはChat送信を起点に追加確認なしで実行する。認証画面が必要なサービスではサービス固有の認証だけを扱い、提出・送信・更新・削除・ダウンロード・アップロードはActionProposal、公式preview、毎回の明示確認を要求する。
 
 `browser_read_url`はService Workerが許可済みURLを非アクティブタブへ開き、`scripting.executeScript`で`browser-reader.js`をIsolated Worldへ注入する。抽出結果は表示本文、最大50リンク、opaqueな引用情報だけをAgentへ渡し、結果取得後にタブを閉じる。一般Webの検索やGoogle検索画面のスクレイピングへはfallbackしない。公式シラバス検索は`syllabus.sic.shibaura-it.ac.jp/namazu/`だけを対象とする。
 
@@ -241,7 +248,7 @@ Branch 1では、公開ページの検索・閲覧だけを4つのChat client to
 
 Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命なopaque対応表から解決できた公開OPACまたは同意済みMy Libraryの参照だけを、現在の公式ページから再読して8操作の可否として返す。`ActionProposal.operation`はこのoptions evidenceの同じ`resource_ref`に結び付き、write操作は`external_action=library_write`かつ常に明示確認を要求する。提案承認は送信ではなく、Chrome内の短命previewを開始するだけである。previewでは公式origin/path、対象、現在状態、フォームとCSRFの形を再検証し、別UI操作の`この内容で送信`を経なければsubmitしない。読み取り専用の棚・公式viewer操作は再読込後に公式ページを開く。live providerのフォーム挙動を検証できないwrite操作は、previewも送信ボタンも出さず`write_form_not_verified`で停止する。fixtureのwrite state machine以外は、実送信・擬似成功・完了イベントを生成しない。
 
-現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。optional host permissionが未付与でもTool要求までは進め、読み取り直前にChat内でサイト単位の許可を求める。許可後、Service Workerは公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
+現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。必須host permissionの範囲内でService Workerは公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
 
 書誌レコードの`resource_ref`は安定した公開レコードIDから導出したopaque値であり、元IDはService Workerの短命なメモリ対応表にだけ保持する。対応表が失われた再起動後や衝突検出時は解決せず、推測で読み替えない。Holdingは表示されたcampus、location、call number、status、due date、reservation countだけを返し、未表示の値は`unknown`または`null`とする。通常の公開Evidenceは`source_type=library`、`classification=public`、`orbit-library://public/` locatorに限定し、Branch 3 action-options Evidenceは専用IDとopaque `resource_ref` locatorへ分離する。
 
@@ -249,25 +256,25 @@ Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命�
 
 `ORBIT_WEB_SEARCH=azure`かつ`ORBIT_AGENT_BACKEND=azure_openai`の場合だけ、Chat Agentへサーバー内部の`general_web_search`を追加する。検索専用のPydanticAI runはAzure Responsesの`NativeTool(WebSearchTool)`を使用し、Grounding with Bingへ渡す入力を検証済みの検索語だけに限定する。親Chatの履歴、SCombZ、成績、学内Tool結果は検索runへ渡さない。
 
-検索結果は要約と最大10件の公開URLへ正規化し、`web-search-v1-*` Evidenceとして元のChatへ戻す。URL本文がさらに必要な場合だけ既存`browser_read_url`を使用する。検索も既存の1ターン最大8 Toolに含め、Azure側で利用できない場合は別Providerや検索画面スクレイピングへfallbackしない。
+検索結果は要約と最大10件の公開URLへ正規化し、`web-search-v1-*` Evidenceとして元のChatへ戻す。URL本文がさらに必要な場合だけ既存`browser_read_url`を使用する。検索も既存の1ターン最大8 Toolに含め、Azure側で利用できない場合は別Providerや検索画面スクレイピングへfallbackしない。利用者が「関連する本」「おすすめの本」などの公開推薦を明示したターンだけは、直前に同意済みMy Libraryから取得した書名・著者を公開検索語の材料として使える。この例外は推薦のための最小文脈に限り、検索語と送信先をChat上で表示し、蔵書の貸出状態・返却期限・利用者識別子などは検索語へ含めない。図書館の所蔵確認を求めるターンでは、一般Web検索ではなく公式OPACを優先する。
 
 ### SITRUS成績通知書の参照
 
 SITRUSの成績は、実在する画面を利用者が開いている場合だけ、専用の`sitrus_read` Toolで参照する。Service Workerは接続元タブが同じorigin・pathnameであることを確認する。優先する`/SITRUS/login/ShutokuTaniShukei.html`では、`MAIN` worldから可視のHTML表を読み、判定・評価・科目名だけをメモリ上で投影する。表にない科目コードや単位数は`null`とし、推測しない。`/SITRUS/login/SeisekiTsutiSho.html`では、表が使えない場合に限り認証済みPDF.jsのテキスト層をメモリ上で処理する。PDFファイル、Base64、学籍番号、認証情報を保存・ダウンロード・APIログへ渡さず、取得できた科目名、科目コード、成績、単位、年度・期・ターム、再履修フラグ、累積GPAだけへ投影する。
 
-成績値は個人情報のため、都度の利用者確認を必須とする。現行のAgent契約ではこの結果を外部LLMやW&Bへ送らず、`fixture` BackendのローカルChatでのみ回答に使う。ページが閉じた、別URLへ遷移した、またはPDF.jsを利用できない場合は成功扱いにしない。
+成績値は一般Agentへ渡さず、専用のローカルToolで表示するかfail closedとする。確認カードで外部送信の同意を取る経路は作らない。現行のAgent契約ではこの結果を外部LLMやW&Bへ送らず、`fixture` BackendのローカルChatでのみ回答に使う。ページが閉じた、別URLへ遷移した、またはPDF.jsを利用できない場合は成功扱いにしない。
 
 ### SIT Moodleダッシュボードの参照
 
-`moodle_read`は、確認済みの正規origin `moodle.sic.shibaura-it.ac.jp`と`/moodle/my/`だけを対象にする。利用者がChatまたは接続設定から明示的に実行した場合だけ、既に開かれているダッシュボードをIsolated Worldで読み取る。未認証時は`/moodle/login/index.php`を開くが、資格情報の入力や保存は行わない。未知のpath、404、ログイン画面、構造不一致を空データの成功として扱わない。
+`moodle_read`は、確認済みの正規origin `moodle.sic.shibaura-it.ac.jp`と`/moodle/my/`だけを対象にする。利用者がChatを明示送信した場合だけ、既に開かれているダッシュボードをIsolated Worldで読み取る。未認証時は`/moodle/login/index.php`を開くが、資格情報の入力や保存は行わない。未知のpath、404、ログイン画面、構造不一致を空データの成功として扱わない。
 
-コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。送信前には、Full accessでもrunごとに確認し、Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
+コース名、活動・課題名、期限は拡張機能のReact stateにだけ保持し、同じToolタイムラインへ端末内詳細として表示する。IndexedDB、`chrome.storage`、FastAPI、W&Bには保存しない。Agentへ送る`MoodleReadResult`は、コース数、直近項目数、延滞数、最短期限、未読通知数だけである。read-only取得に会話ごとの追加確認は行わない。Evidence locatorは`orbit-moodle://summary/<opaque>`へ置き換える。
 
-`my_library_read`は、利用者が接続設定で明示的に接続・許可した後、確認済みの正規入口`library.shibaura-it.ac.jp/portal/portal/selectLogin/?lang=ja`から、指定された一つのscopeだけを読む。scopeは`current_loans`（menu ID 5）、`reservations`（6）、`loan_history`（7）、`purchase_requests`（3）、`interlibrary_requests`（2）であり、その他のmenu IDやURLを推測しない。status pathは確認済みの`/portal/admin/selectMenu/doSelectPublicUseMainMenu`だけとする。貸出・予約はそれぞれ可視の`#lendList`・`#reservationList`、履歴・購入・ILLは表示されたtable見出しを検証して読む。hidden要素やinputのvalueは読まず、origin・path・table構造・見出しが一致しない場合や、非空行を一件でも解析できない場合はfail closedで`unavailable`を返す。資格情報の入力、貸出延長、予約取消、購入・ILL申請は行わない。
+`my_library_read`は、利用者が接続設定で明示的に接続した後、Chat送信時に限り、確認済みの正規入口`library.shibaura-it.ac.jp/portal/portal/selectLogin/?lang=ja`から、指定された一つのscopeだけを読む。scopeは`current_loans`（menu ID 5）、`reservations`（6）、`loan_history`（7）、`purchase_requests`（3）、`interlibrary_requests`（2）であり、その他のmenu IDやURLを推測しない。status pathは確認済みの`/portal/admin/selectMenu/doSelectPublicUseMainMenu`だけとする。貸出・予約はそれぞれ可視の`#lendList`・`#reservationList`、履歴・購入・ILLは表示されたtable見出しを検証して読む。hidden要素やinputのvalueは読まず、origin・path・table構造・見出しが一致しない場合や、非空行を一件でも解析できない場合はfail closedで`unavailable`を返す。資格情報の入力、貸出延長、予約取消、購入・ILL申請は行わない。
 
 各要求は`scope`、任意の`query`（最大200文字）、`offset`（0〜1000）、`limit`（1〜20）を持ち、DOM全件を拡張機能内で検索・ページングしてから最大20件だけを返す。`MyLibraryReadResult`のitemはopaqueな`resource_ref`、表示された書名・著者・状態・返却期限・延長可否・活動日・申請種別だけで、`total_count`と`next_offset`を添える。scope外で読んでいない集計値は0ではなく`null`にする。従来の貸出・予約集計shapeは後方互換のため残す。資料ID、請求記号、氏名、学籍番号、メールアドレス、SSO URLのtoken/query/fragment、フォーム値、購入理由、連絡事項、整理番号にはAPI Schema上の表現を与えない。表示セルから取得した元のmaterial/request IDはService Workerの短命なメモリ対応表にだけ保持し、hidden/inputの値は読まない。`createLibraryResourceRef`相当のopaque化で衝突を検出した場合、またはIDが表示されない場合はactionを推測せずfail closedし、再起動後も解決しない。
 
-接続後は会話ごとの再確認を行わず、最初の明示的な接続・許可時だけ`chrome.storage.session`へAIへのタイトル等共有を許可するsession consentフラグを保存する。Full accessだけではこの同意を代用しない。タイトル等の回答に現れた項目は拡張機能originのローカルChat履歴へ保存され、利用者が会話単位または全件で削除できることを接続設定Drawerに表示する。raw snapshotはReactのメモリだけに置き、IndexedDB・`chrome.storage`・API・W&Bへ保存しない。切断またはChromeセッション終了時にconsentを無効化する。
+接続後は会話ごとの追加確認を行わない。タイトル等の回答に現れた項目は拡張機能originのローカルChat履歴へ保存され、利用者が会話単位または全件で削除できることを接続設定Drawerに表示する。raw snapshotはReactのメモリだけに置き、IndexedDB・`chrome.storage`・API・W&Bへ保存しない。切断またはChromeセッション終了時に接続状態を無効化する。予約、購入希望、延長、取寄せなど外部状態を変更する操作だけはActionProposal、公式preview、明示確認を経る。
 
 ### CASTトップ画面の参照
 
@@ -423,7 +430,7 @@ ExtensionのSide Panelから、利用者が明示的に接続、更新、再認�
 トークンをFastAPI、DOM、Extension storage、ログへ渡さず、予定の書き込みも行わない。OAuth失効以外の外部エンドポイントへトークンを送信しない。
 
 通常のfixture CIにはGoogle OAuth client IDを含めない。
-登録済みChrome拡張OAuth client IDは`ORBIT_GOOGLE_OAUTH_CLIENT_ID`のbuild-time設定として後から注入できるが、Calendar API有効化、同意設定、demo accountを含むProvider acceptanceが成立するまでは、実Google連携を成功済みとは扱わない。
+登録済みAgent Web application OAuth client IDは`ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID`のbuild-time設定として注入する。APIは同じIDを`ORBIT_GOOGLE_OAUTH_CLIENT_ID`、client secretを`ORBIT_GOOGLE_OAUTH_CLIENT_SECRET`のAzure Secret参照、完全一致のredirect URIを`ORBIT_GOOGLE_OAUTH_REDIRECT_URI`として受け取る。Calendar用のChrome Extension OAuth client IDは`ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID`へ分ける。Calendar API有効化、同意設定、demo accountを含むProvider acceptanceが成立するまでは、実Google連携を成功済みとは扱わない。
 
 ### Branch 5 Google Drive選択ファイルの実装境界
 
@@ -456,7 +463,7 @@ Static Web Apps Freeは、静的ホスティング、GitHub連携、SSL、管理
 
 Container Apps Consumptionは、利用量に応じた課金とscale-to-zeroを利用できるため、常時稼働の仮想マシンよりデモ向きである。[Container Appsの環境](https://learn.microsoft.com/en-us/azure/container-apps/environment)
 
-外部公開したAgent APIは、`ORBIT_API_TOKEN`をContainer Apps Secretから設定し、`/v1/*`だけにBearer認証を要求する。`/health`はscale-to-zeroからの起動と監視に使うため公開のままにする。API側のCORSは`ORBIT_CORS_ORIGINS`へ明示した拡張機能originだけを許可し、ワイルドカードを使わない。拡張機能は明示的に許可したContainer Apps originだけへ接続し、endpointとtokenを`chrome.storage.session`で共有する。通常のローカル開発とCIでは`ORBIT_API_TOKEN`と`ORBIT_CORS_ORIGINS`を設定しない。
+外部公開したAgent APIは、`ORBIT_API_TOKEN`をContainer Apps Secretから設定し、`/v1/*`へ既存の管理用Bearer認証を要求する。Chrome拡張機能はChrome Identityの認可コード＋PKCEでSITアカウントを認証し、`POST /v1/auth/session`で短命なopaque session tokenへ交換して同じBearer境界を使う。authorization code、PKCE verifier、Google ID/access/refresh token、client secret、session tokenはログやChat履歴へ保存せず、拡張機能はsession tokenと期限だけをメモリと`chrome.storage.session`に保持する。`/health`はscale-to-zeroからの起動と監視に使うため公開のままにする。API側のCORSは`ORBIT_CORS_ORIGINS`へ明示した拡張機能originだけを許可し、ワイルドカードを使わない。通常のローカル開発とCIではGoogle OAuth secret、`ORBIT_API_TOKEN`、`ORBIT_CORS_ORIGINS`を設定せず、認証交換はmockする。
 
 Azure Functions Timerは、短時間でステートレスな定期処理に使う。
 

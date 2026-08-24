@@ -13,14 +13,14 @@
   ],
   "host_permissions": [
     "https://scombz.shibaura-it.ac.jp/*",
-    "http://localhost:8000/*",
     "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io/*",
     "https://www.googleapis.com/*",
     "https://oauth2.googleapis.com/*",
     "https://syllabus.sic.shibaura-it.ac.jp/*",
-    "https://sitrus.sic.shibaura-it.ac.jp/*"
+    "https://sitrus.sic.shibaura-it.ac.jp/*",
+    "https://*/*",
+    "http://*/*"
   ],
-  "optional_host_permissions": ["https://*/*", "http://*/*"],
   "background": {
     "service_worker": "service-worker.js"
   },

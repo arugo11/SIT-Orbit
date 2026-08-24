@@ -141,6 +141,9 @@ def test_fixture_library_catalog_tool_loop(monkeypatch) -> None:
     payload = second.json()
     assert payload["status"] == "completed"
     assert "公開ロボット工学" in payload["message"]["content_markdown"]
+    assert "貸出可" in payload["message"]["content_markdown"]
+    assert "大宮図書館" in payload["message"]["content_markdown"]
+    assert "548.3" in payload["message"]["content_markdown"]
     assert payload["message"]["evidence"][0]["data_classification"] == "public"
     assert "material" not in second.text.lower()
 

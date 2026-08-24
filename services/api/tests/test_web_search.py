@@ -6,7 +6,12 @@ import pytest
 from orbit_api.agent.azure_openai_backend import AzureOpenAIAgent
 from orbit_api.agent.chat import ChatRunService
 from orbit_api.agent.openai_backend import OpenAIAgent
-from orbit_api.agent.pydantic_ai_backend import ChatWebSearchState
+from orbit_api.agent.pydantic_ai_backend import (
+    MY_LIBRARY_TOOL_NAME,
+    ChatDraft,
+    ChatWebSearchState,
+    my_library_read,
+)
 from orbit_api.agent.web_search import (
     AzureNativeWebSearchExecutor,
     WebSearchResponse,
@@ -15,8 +20,14 @@ from orbit_api.agent.web_search import (
     normalize_public_source_url,
     validate_public_search_query,
 )
-from orbit_api.models import ChatRunCompleted, ChatRunRequest
-from pydantic_ai import ModelResponse, ToolCallPart
+from orbit_api.models import (
+    ChatRunCompleted,
+    ChatRunRequest,
+    EvidenceLink,
+    MyLibraryItem,
+    ScopedMyLibraryReadResult,
+)
+from pydantic_ai import Agent, DeferredToolRequests, ModelResponse, ToolCallPart
 from pydantic_ai.messages import NativeToolReturnPart, ToolReturnPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -174,6 +185,116 @@ async def test_chat_runs_server_search_and_restores_evidence(monkeypatch) -> Non
     assert len(response.message.evidence) == 1
     assert response.message.evidence[0].evidence_id.startswith("web-search-v1-")
     assert response.message.evidence[0].locator == "https://www.shibaura-it.ac.jp/"
+
+
+@pytest.mark.asyncio
+async def test_book_recommendation_allows_public_search_after_my_library_result(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    executor = FakeWebSearchExecutor(calls=[])
+    calls = 0
+
+    def model_function(messages, _info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(
+                parts=[ToolCallPart(MY_LIBRARY_TOOL_NAME, {}, tool_call_id="library-1")]
+            )
+        if calls == 2:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "general_web_search",
+                        {"query": "GPU LLM software design books"},
+                        tool_call_id="web-search-1",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "公開検索に基づく推薦です。",
+                        "evidence_ids": [
+                            "web-search-v1-search-1-1",
+                        ],
+                    },
+                    tool_call_id="final-recommendation-1",
+                )
+            ]
+        )
+
+    def make_agent(*, advertised_tools, web_search_state=None):
+        del advertised_tools
+        tools = [my_library_read]
+        if web_search_state is not None:
+            tools.append(web_search_state.general_web_search)
+        return Agent(
+            FunctionModel(model_function, model_name="recommendation-test"),
+            output_type=[ChatDraft, DeferredToolRequests],
+            instructions="test",
+            tools=tools,
+        )
+
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend.web_search_executor = executor
+    backend._chat_agent = make_agent  # type: ignore[method-assign]
+    first = await backend.start_chat(
+        conversation_id="conversation-book-recommendation",
+        message="借りている本に関連して面白そうな本をおすすめして",
+        history=[],
+        advertised_tools={MY_LIBRARY_TOOL_NAME},
+    )
+    assert first.deferred is not None
+    assert first.deferred.allow_personal_web_search is True
+
+    result = ScopedMyLibraryReadResult(
+        status="known",
+        scope="current_loans",
+        items=[
+            MyLibraryItem(
+                resource_ref="orbit-library://record/1234567890abcdef",
+                title="合成貸出資料",
+                author="公開著者",
+                status="loaned",
+                due_date="2026-09-01",
+                renewable=True,
+                activity_date=None,
+                request_type=None,
+            )
+        ],
+        total_count=1,
+        next_offset=None,
+        loan_count=1,
+        reservation_count=None,
+        overdue_count=0,
+        renewable_count=1,
+        earliest_due_date="2026-09-01",
+        reason_code=None,
+    )
+    evidence = EvidenceLink(
+        evidence_id="my-library-summary-v1-recommendation",
+        title="My Library概要",
+        source_type="library",
+        locator="orbit-library://summary/1234567890abcdef",
+        data_classification="personal",
+    )
+    completed = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=result,
+        context=[evidence],
+        advertised_tools={MY_LIBRARY_TOOL_NAME},
+    )
+
+    assert completed.draft is not None
+    assert executor.calls == ["GPU LLM software design books"]
 
 
 def test_web_search_is_azure_only(monkeypatch) -> None:

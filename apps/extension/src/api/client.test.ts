@@ -497,6 +497,72 @@ describe("AgentApiClient", () => {
     );
   });
 
+  it("exchanges one-time PKCE material without forwarding a bearer credential", async () => {
+    const fetcher = createFetcher(
+      jsonResponse({
+        access_token: "opaque-session",
+        expires_at: "2026-08-23T04:30:00Z",
+      }),
+    );
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      accessToken: "must-not-be-used-for-exchange",
+      fetcher,
+    });
+
+    await expect(
+      client.createSession({
+        authorization_code: "one-time-code",
+        code_verifier: "v".repeat(43),
+      }),
+    ).resolves.toEqual({
+      access_token: "opaque-session",
+      expires_at: "2026-08-23T04:30:00Z",
+    });
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://agent.example.test/v1/auth/session",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          authorization_code: "one-time-code",
+          code_verifier: "v".repeat(43),
+        }),
+      },
+    );
+  });
+
+  it("refreshes the managed session once after a 401 and does not fallback", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ detail: "expired" }, 401))
+      .mockResolvedValueOnce(jsonResponse(proposal));
+    const sessionProvider = vi.fn(async (forceRefresh = false) =>
+      forceRefresh ? "fresh-session" : "stale-session",
+    );
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      sessionProvider,
+      fetcher,
+    });
+
+    await expect(
+      client.propose({ event: B1_OMIYA_EVENT, context: B1_OMIYA_CONTEXT }),
+    ).resolves.toEqual(proposal);
+    expect(sessionProvider).toHaveBeenNthCalledWith(1, false);
+    expect(sessionProvider).toHaveBeenNthCalledWith(2, true);
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "https://agent.example.test/v1/actions/propose",
+      expect.objectContaining({
+        headers: {
+          Authorization: "Bearer fresh-session",
+          "Content-Type": "application/json",
+        },
+      }),
+    );
+  });
+
   it("checks health without requiring a JSON response", async () => {
     const fetcher = vi.fn(async () => new Response(null, { status: 200 }));
     const client = new AgentApiClient({
@@ -617,7 +683,8 @@ describe("AgentApiClient", () => {
     ).rejects.toMatchObject({
       name: "AgentApiError",
       status: 0,
-      message: "Agent API request failed: connection refused",
+      message: "Agent API request failed: network",
+      body: { category: "network" },
     });
 
     const emptyResponseClient = new AgentApiClient({

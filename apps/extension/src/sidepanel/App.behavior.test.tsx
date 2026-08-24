@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ActionProposal, OrbitEvent } from "../api/client";
+import {
+  type ActionProposal,
+  AZURE_DEMO_AGENT_API_BASE,
+  type OrbitEvent,
+} from "../api/client";
 import type {
   CalendarConnector,
   CalendarConnectorResult,
@@ -19,7 +23,7 @@ import {
   waitFor,
 } from "./ui-test-helpers";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = AZURE_DEMO_AGENT_API_BASE;
 
 const validEvidence: ActionProposal["evidence"][number] = {
   evidence_id: "ev-assignment-calculus-01",
@@ -164,6 +168,45 @@ describe("Side Panel B1 agent loop behavior", () => {
     expect(mounted.document.body.textContent).toContain(
       "一般Web検索を使う場合、公開情報の検索語はGrounding with Bingへ送信され、Azureの通常の地理・DPA境界外で処理されます。",
     );
+  });
+
+  it("keeps technical settings out of the Agent surface and restores focus after closing the drawer", async () => {
+    mounted = await mountSidePanel(() => <App />);
+
+    const chatPanel = mounted.document.querySelector(".chat-panel");
+    expect(chatPanel?.textContent).not.toContain("Endpoint");
+    expect(chatPanel?.textContent).not.toContain("Access token");
+    expect(chatPanel?.textContent).not.toContain("B1 大宮の提案を作成");
+
+    const settingsButton = mounted.document.querySelector(
+      'button[aria-label="設定"]',
+    );
+    if (!(settingsButton instanceof HTMLElement)) {
+      throw new Error("Settings button was not rendered.");
+    }
+    const closeButton = mounted.document.querySelector(
+      '.settings-header button[aria-label="設定を閉じる"]',
+    );
+    if (!(closeButton instanceof HTMLElement)) {
+      throw new Error("Settings close button was not rendered.");
+    }
+    const settingsFocus = vi.spyOn(settingsButton, "focus");
+    const closeFocus = vi.spyOn(closeButton, "focus");
+    await click(settingsButton);
+    expect(
+      mounted.document
+        .querySelector(".settings-backdrop")
+        ?.hasAttribute("hidden"),
+    ).toBe(false);
+    expect(closeFocus).toHaveBeenCalled();
+
+    await click(closeButton);
+    expect(
+      mounted.document
+        .querySelector(".settings-backdrop")
+        ?.hasAttribute("hidden"),
+    ).toBe(true);
+    expect(settingsFocus).toHaveBeenCalled();
   });
 
   it("requests the synthetic campus_entered proposal once, only after an explicit click", async () => {
@@ -586,10 +629,13 @@ describe("Side Panel B1 agent loop behavior", () => {
       .filter(isCalendarCommandMessage);
     expect(calendarMessages).toEqual([]);
     expect(apiFetcher).not.toHaveBeenCalled();
-    expect(mounted.document.body.textContent).toContain("未接続");
-    expect(mounted.document.body.textContent).toContain(
-      "ボタンを押したときだけ、合成データをローカル Agent API に送ります。",
-    );
+    expect(
+      mounted.document
+        .querySelector(".settings-backdrop")
+        ?.hasAttribute("hidden"),
+    ).toBe(true);
+    expect(mounted.document.querySelector(".context-card")).toBeNull();
+    expect(mounted.document.querySelector(".fixture-card")).toBeNull();
     expect(mounted.document.body.textContent).not.toContain(
       "予定名などを除いた空き時間もAPI経由で選択中のモデルへ送ります。",
     );

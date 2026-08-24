@@ -53,7 +53,7 @@ describe("My Library session consent", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps consent independent from Full access, spans chats, and clears on disconnect", async () => {
+  it("keeps session consent scoped to the browser session and clears on disconnect", async () => {
     permissionState.add("https://*/*");
 
     // A broad browser permission is not a disclosure consent.

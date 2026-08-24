@@ -106,7 +106,6 @@ export interface BrowserReadMessage {
   type: typeof MESSAGE_TYPES.browserRead;
   tool_call_id: string;
   url: string;
-  access_mode: "ask" | "full";
 }
 
 export type BrowserReadResponse =
@@ -215,6 +214,12 @@ export interface LibraryItemReadMessage {
   type: typeof MESSAGE_TYPES.libraryItemRead;
   tool_call_id: string;
   resource_ref: string;
+  /**
+   * Public OPAC record URL carried by the local Context Manifest.  It lets a
+   * restarted service worker re-derive and verify the opaque reference
+   * without persisting the internal record id.
+   */
+  record_url?: string;
 }
 
 export interface LibraryCatalogBrowseMessage
@@ -395,8 +400,7 @@ export function isBrowserReadMessage(
     message.type === MESSAGE_TYPES.browserRead &&
     typeof message.tool_call_id === "string" &&
     message.tool_call_id.length > 0 &&
-    typeof message.url === "string" &&
-    (message.access_mode === "ask" || message.access_mode === "full")
+    typeof message.url === "string"
   );
 }
 
@@ -617,13 +621,32 @@ export function isLibraryCatalogSearchMessage(
 export function isLibraryItemReadMessage(
   message: unknown,
 ): message is LibraryItemReadMessage {
-  return (
+  if (
     isRecord(message) &&
     message.type === MESSAGE_TYPES.libraryItemRead &&
     typeof message.tool_call_id === "string" &&
     message.tool_call_id.length > 0 &&
     isLibraryResourceRef(message.resource_ref)
-  );
+  ) {
+    if (message.record_url === undefined) return true;
+    if (typeof message.record_url !== "string") return false;
+    try {
+      const url = new URL(message.record_url);
+      return (
+        url.protocol === "https:" &&
+        url.origin === "https://library.shibaura-it.ac.jp" &&
+        url.pathname.startsWith("/opc/recordID/catalog.bib/") &&
+        url.pathname.slice("/opc/recordID/catalog.bib/".length).length > 0 &&
+        url.search === "" &&
+        url.hash === "" &&
+        url.username === "" &&
+        url.password === ""
+      );
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 export function isLibraryCatalogBrowseMessage(

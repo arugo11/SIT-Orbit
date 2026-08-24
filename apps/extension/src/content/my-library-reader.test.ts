@@ -27,6 +27,24 @@ describe("My Library reader", () => {
     expect(isMyLibraryStatusUrl(pageUrl)).toBe(true);
     expect(
       isMyLibraryStatusUrl(
+        `${pageUrl}?selectedMenuId=5&selectMenu=1`,
+        "current_loans",
+      ),
+    ).toBe(true);
+    expect(
+      isMyLibraryStatusUrl(
+        `${pageUrl}?selectedMenuId=6&selectMenu=1`,
+        "current_loans",
+      ),
+    ).toBe(false);
+    expect(
+      isMyLibraryStatusUrl(
+        `${pageUrl}?selectedMenuId=5&selectMenu=1&token=secret`,
+        "current_loans",
+      ),
+    ).toBe(false);
+    expect(
+      isMyLibraryStatusUrl(
         "https://library.shibaura-it.ac.jp/portal/unknown/path",
       ),
     ).toBe(false);
@@ -74,6 +92,17 @@ describe("My Library reader", () => {
     ]) {
       expect(serialized).not.toContain(prohibited);
     }
+  });
+
+  it("extracts current loans from the live observed menu URL", () => {
+    const loanDocument = parseHTML(loansFixture).document;
+    expect(
+      extractMyLibraryLoanPage(
+        loanDocument,
+        `${pageUrl}?selectedMenuId=5&selectMenu=1`,
+        new Date("2026-08-22T00:00:00+09:00"),
+      ),
+    ).toHaveLength(2);
   });
 
   it("does not accept login pages or empty placeholder rows as records", () => {

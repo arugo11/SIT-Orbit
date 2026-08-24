@@ -37,6 +37,24 @@ class AgentCapabilities(StrictApiModel):
     my_library_personal_context: StrictBool
 
 
+class AgentSessionRequest(StrictApiModel):
+    """One-time Google authorization material used to create an Agent session."""
+
+    authorization_code: StrictStr = Field(min_length=1, max_length=4096)
+    code_verifier: StrictStr = Field(
+        min_length=43,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._~-]+$",
+    )
+
+
+class AgentSessionResponse(StrictApiModel):
+    """An opaque, short-lived bearer token for Agent API requests."""
+
+    access_token: StrictStr = Field(min_length=1, max_length=512)
+    expires_at: datetime
+
+
 class CalendarAvailabilityInterval(StrictApiModel):
     """One derived free-time interval, without calendar event details."""
 
@@ -932,6 +950,78 @@ class ChatHistoryMessage(StrictApiModel):
     content: StrictStr = Field(min_length=1, max_length=8000)
 
 
+class ChatLibraryContextRecord(StrictApiModel):
+    """A bounded public OPAC record carried between Chat turns.
+
+    This is deliberately separate from the transcript.  It contains only
+    the structured, public projection that the next model turn may use to
+    resolve elliptical follow-ups such as ``"どこにある？"``.
+    """
+
+    resource_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    record: LibraryBibliographicRecord
+    evidence_ids: list[StrictStr] = Field(default_factory=list, max_length=10)
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def validates_public_context(self) -> "ChatLibraryContextRecord":
+        try:
+            observed = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("Library context timestamps must use RFC3339.") from error
+        if observed.tzinfo is None:
+            raise ValueError("Library context timestamps must include a timezone.")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("Library context evidence IDs must be unique.")
+        if self.resource_ref != self.record.resource_ref:
+            raise ValueError("Library context resource_ref must match its record.")
+        raw = self.model_dump_json().lower()
+        for marker in ("<script", "<input", "cookie=", "access_token", "oauth_token"):
+            if marker in raw:
+                raise ValueError("Library context contains a prohibited raw marker.")
+        return self
+
+
+class ChatContextManifest(StrictApiModel):
+    """Typed, short-lived public context supplied by the extension."""
+
+    schema_version: Literal["v1"] = "v1"
+    evidence: list[EvidenceLink] = Field(default_factory=list, max_length=100)
+    library_records: list[ChatLibraryContextRecord] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    @model_validator(mode="after")
+    def validates_manifest(self) -> "ChatContextManifest":
+        evidence_ids = {item.evidence_id for item in self.evidence}
+        if len(evidence_ids) != len(self.evidence):
+            raise ValueError("Context manifest evidence IDs must be unique.")
+        for item in self.evidence:
+            if item.data_classification not in {"public", "synthetic"}:
+                raise ValueError("Personal evidence cannot be included in a context manifest.")
+            locator = urlparse(item.locator)
+            if locator.scheme in {"http", "https"} and (
+                locator.username
+                or locator.password
+                or locator.query
+                or locator.fragment
+            ):
+                raise ValueError(
+                    "Manifest evidence locators must not contain credentials or query data."
+                )
+        for record in self.library_records:
+            if any(evidence_id not in evidence_ids for evidence_id in record.evidence_ids):
+                raise ValueError("Library context references an unknown evidence ID.")
+        if len(self.model_dump_json()) > 64_000:
+            raise ValueError("Context manifest must not exceed 64000 characters.")
+        return self
+
+
 class ChatClientTool(StrictApiModel):
     name: ChatToolName
     version: Literal[1]
@@ -942,6 +1032,7 @@ class ChatRunRequest(StrictApiModel):
     message: StrictStr = Field(min_length=1, max_length=8000)
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
     client_tools: list[ChatClientTool] = Field(default_factory=list, max_length=12)
+    context_manifest: ChatContextManifest | None = None
 
     @model_validator(mode="after")
     def history_is_bounded(self) -> "ChatRunRequest":
@@ -1071,7 +1162,9 @@ __all__ = [
     "AgentToolResultRequest",
     "ChatAssistantMessage",
     "ChatClientTool",
+    "ChatContextManifest",
     "ChatHistoryMessage",
+    "ChatLibraryContextRecord",
     "ChatRunCompleted",
     "ChatRunRequest",
     "ChatRunResponse",
