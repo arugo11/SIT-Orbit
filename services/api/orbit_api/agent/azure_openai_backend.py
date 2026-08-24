@@ -2,10 +2,12 @@
 
 import os
 from collections.abc import Callable
+from typing import Literal, cast
 
 from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import RunUsage
 
+from .book_discovery import AzureRelatedBookDiscoveryExecutor
 from .pydantic_ai_backend import PydanticAIAgentBackend
 from .web_search import AzureNativeWebSearchExecutor
 
@@ -44,6 +46,26 @@ class AzureOpenAIAgent(PydanticAIAgentBackend):
             raise RuntimeError("ORBIT_WEB_SEARCH must be either 'off' or 'azure'.")
         if web_search_mode == "azure":
             self.web_search_executor = AzureNativeWebSearchExecutor(self.model)
+        book_discovery_mode = cast(
+            Literal["off", "multi_query", "semantic"],
+            os.getenv("ORBIT_BOOK_DISCOVERY", "off"),
+        )
+        if book_discovery_mode not in {"off", "multi_query", "semantic"}:
+            raise RuntimeError(
+                "ORBIT_BOOK_DISCOVERY must be 'off', 'multi_query', or 'semantic'."
+            )
+        if book_discovery_mode != "off" and web_search_mode != "azure":
+            raise RuntimeError(
+                "ORBIT_BOOK_DISCOVERY requires ORBIT_WEB_SEARCH=azure."
+            )
+        if book_discovery_mode in {"multi_query", "semantic"}:
+            self.book_discovery_executor = AzureRelatedBookDiscoveryExecutor(
+                self.model,
+                feature_mode=cast(
+                    Literal["multi_query", "semantic"],
+                    book_discovery_mode,
+                ),
+            )
 
 
 def build_azure_openai_agent() -> AzureOpenAIAgent:

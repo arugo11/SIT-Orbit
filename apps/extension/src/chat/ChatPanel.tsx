@@ -69,8 +69,8 @@ import {
   deleteConversation,
   listConversations,
   loadConversation,
-  mergeConversationEvidence,
   mergeLibraryContext,
+  mergeRelatedBookContext,
   newConversation,
   saveConversation,
   toChatContextManifest,
@@ -196,6 +196,7 @@ function messageFromResponse(response: ChatRunResponse): ChatTimelineMessage {
     evidence: response.message.evidence,
     proposal: response.proposal,
     proposalState: response.proposal ? "pending" : undefined,
+    relatedBooks: response.message.related_books ?? [],
   };
 }
 
@@ -1168,8 +1169,9 @@ export function ChatPanel({
     }
     const assistant = messageFromResponse(response);
     setChatProgress("completed", "完了", "回答と参照元を表示しました。");
-    const withEvidence = mergeConversationEvidence(
+    const withEvidence = mergeRelatedBookContext(
       current,
+      assistant.relatedBooks ?? [],
       assistant.evidence ?? [],
     );
     await persist({
@@ -1604,6 +1606,49 @@ export function ChatPanel({
             </span>
             <div className="chat-message-content">
               <p>{message.content}</p>
+              {message.role === "assistant" &&
+              message.relatedBooks &&
+              message.relatedBooks.length > 0 ? (
+                <section
+                  className="related-book-grid"
+                  aria-label="関連書籍の候補"
+                >
+                  {message.relatedBooks.slice(0, 5).map((book) => (
+                    <article
+                      className="related-book-card"
+                      key={book.candidate_ref}
+                    >
+                      <div className="related-book-card-heading">
+                        <strong>{book.title}</strong>
+                        <span
+                          className="related-book-status"
+                          data-status={
+                            book.catalog_verification?.status ?? "unverified"
+                          }
+                        >
+                          {book.catalog_verification?.status === "verified"
+                            ? "SIT所蔵確認済み"
+                            : book.catalog_verification?.status ===
+                                "recheck_failed"
+                              ? "SIT所蔵の再確認失敗"
+                              : "SIT所蔵未確認"}
+                        </span>
+                      </div>
+                      {book.authors && book.authors.length > 0 ? (
+                        <small>{book.authors.join("、")}</small>
+                      ) : null}
+                      <p>{book.why_related}</p>
+                      <div className="related-book-axes">
+                        {(book.relation_axes ?? []).map((axis) => (
+                          <span key={`${axis.source}-${axis.label}`}>
+                            {axis.label}
+                          </span>
+                        ))}
+                      </div>
+                    </article>
+                  ))}
+                </section>
+              ) : null}
               {message.role === "tool" && localMoodleDetails[message.id] ? (
                 <details className="chat-local-detail">
                   <summary>確認した内容</summary>

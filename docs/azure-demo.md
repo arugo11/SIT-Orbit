@@ -89,10 +89,13 @@ Azure OpenAIの設定は、次の3つがすべて揃った場合だけ有効で�
 ```text
 ORBIT_AGENT_BACKEND=azure_openai
 ORBIT_WEB_SEARCH=azure
+ORBIT_BOOK_DISCOVERY=off
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
 AZURE_OPENAI_MODEL=<deployment-name>
 AZURE_OPENAI_API_KEY=<secret>
 ```
+
+関連書籍Discoveryを有効にする場合は、`ORBIT_BOOK_DISCOVERY=multi_query`または`semantic`を追加します。どちらも`ORBIT_WEB_SEARCH=azure`が必須で、条件不足時にOPAC単独や別検索Providerへfallbackしません。まず`multi_query`で実検索payloadと候補精度を確認し、semantic rerankerのshadow評価後に`semantic`へ切り替えます。
 
 `AZURE_OPENAI_MODEL`はモデルの表示名ではなく、Azure側のデプロイ名です。API versionをアプリケーションへ固定せず、v1のベースURLを利用します。
 

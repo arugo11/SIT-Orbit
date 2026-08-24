@@ -26,6 +26,8 @@ export type ChatClientTool = components["schemas"]["ChatClientTool"];
 export type ChatContextManifest = components["schemas"]["ChatContextManifest"];
 export type ChatLibraryContextRecord =
   components["schemas"]["ChatLibraryContextRecord"];
+export type RelatedBookCandidate =
+  components["schemas"]["RelatedBookCandidate"];
 export type EvidenceLink = components["schemas"]["EvidenceLink"];
 export type CalendarAvailabilityResult =
   components["schemas"]["CalendarAvailabilityResult"];
@@ -1256,13 +1258,102 @@ const chatToolNames = [
 ] as const;
 
 function isChatEvidenceMessage(value: unknown): boolean {
-  return (
-    isRecord(value) &&
-    hasExactlyKeys(value, ["message_id", "content_markdown", "evidence"]) &&
+  if (!isRecord(value)) return false;
+  const hasBaseKeys = hasExactlyKeys(value, [
+    "message_id",
+    "content_markdown",
+    "evidence",
+  ]);
+  const hasRelatedKeys = hasExactlyKeys(value, [
+    "message_id",
+    "content_markdown",
+    "evidence",
+    "related_books",
+  ]);
+  const structurallyValid =
+    (hasBaseKeys || hasRelatedKeys) &&
     isNonEmptyString(value.message_id) &&
     isNonEmptyString(value.content_markdown) &&
     Array.isArray(value.evidence) &&
-    value.evidence.every(isEvidenceLink)
+    value.evidence.every(isEvidenceLink) &&
+    (value.related_books === undefined ||
+      (Array.isArray(value.related_books) &&
+        value.related_books.length <= 5 &&
+        value.related_books.every(isRelatedBookCandidate)));
+  if (!structurallyValid) return false;
+  const messageEvidenceIds = new Set(
+    (value.evidence as EvidenceLink[]).map((item) => item.evidence_id),
+  );
+  const relatedBooks = Array.isArray(value.related_books)
+    ? (value.related_books as RelatedBookCandidate[])
+    : [];
+  return relatedBooks.every((candidate) =>
+    candidate.evidence_ids.every((evidenceId) =>
+      messageEvidenceIds.has(evidenceId),
+    ),
+  );
+}
+
+function isRelatedBookCandidate(value: unknown): value is RelatedBookCandidate {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "candidate_ref",
+      "title",
+      "authors",
+      "isbn",
+      "publication_year",
+      "relation_axes",
+      "why_related",
+      "evidence_ids",
+      "catalog_verification",
+      "observed_at",
+    ]) ||
+    !/^orbit-book:\/\/candidate\/[A-Za-z0-9_-]{16,128}$/u.test(
+      String(value.candidate_ref),
+    ) ||
+    !isNonEmptyString(value.title) ||
+    !Array.isArray(value.authors) ||
+    !value.authors.every((item) => typeof item === "string") ||
+    !Array.isArray(value.relation_axes) ||
+    value.relation_axes.length === 0 ||
+    !value.relation_axes.every(
+      (axis) =>
+        isRecord(axis) &&
+        hasExactlyKeys(axis, ["label", "source"]) &&
+        isNonEmptyString(axis.label) &&
+        isOneOf(axis.source, ["explicit", "metadata", "inferred"] as const),
+    ) ||
+    !isNonEmptyString(value.why_related) ||
+    !Array.isArray(value.evidence_ids) ||
+    value.evidence_ids.length === 0 ||
+    !value.evidence_ids.every(isNonEmptyString) ||
+    !isNonEmptyString(value.observed_at) ||
+    !isRecord(value.catalog_verification)
+  ) {
+    return false;
+  }
+  const verification = value.catalog_verification;
+  if (
+    !hasExactlyKeys(verification, ["status", "resource_ref", "observed_at"]) ||
+    !isOneOf(verification.status, [
+      "unverified",
+      "verified",
+      "recheck_failed",
+    ] as const)
+  ) {
+    return false;
+  }
+  if (verification.status === "verified") {
+    return (
+      isLibraryResourceRef(verification.resource_ref) &&
+      isNonEmptyString(verification.observed_at)
+    );
+  }
+  return (
+    verification.resource_ref === null &&
+    (verification.status === "unverified" ||
+      isNonEmptyString(verification.observed_at))
   );
 }
 

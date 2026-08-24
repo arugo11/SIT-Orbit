@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { EvidenceLink, LibraryBibliographicRecord } from "../api/client";
+import type {
+  EvidenceLink,
+  LibraryBibliographicRecord,
+  RelatedBookCandidate,
+} from "../api/client";
 import {
   mergeConversationEvidence,
   mergeLibraryContext,
+  mergeRelatedBookContext,
   newConversation,
   toChatContextManifest,
 } from "./chat-history";
@@ -39,6 +44,19 @@ const record: LibraryBibliographicRecord = {
   related_records: [],
 };
 
+const relatedBook: RelatedBookCandidate = {
+  candidate_ref: "orbit-book://candidate/abcdef1234567890",
+  title: "Robot Learning",
+  authors: ["Jane Doe"],
+  isbn: "9780000000001",
+  publication_year: 2024,
+  relation_axes: [{ label: "強化学習", source: "metadata" }],
+  why_related: "ロボット制御への学習応用を扱う。",
+  evidence_ids: [evidence.evidence_id],
+  catalog_verification: { status: "unverified" },
+  observed_at: "2026-08-24T00:00:00Z",
+};
+
 describe("chat context manifest", () => {
   it("keeps a public OPAC record across turns and adds completion evidence", () => {
     let conversation = newConversation();
@@ -68,5 +86,29 @@ describe("chat context manifest", () => {
       },
     ]);
     expect(conversation.contextManifest.library_records).toHaveLength(0);
+  });
+
+  it("persists only grounded public related-book candidates", () => {
+    let conversation = newConversation();
+    conversation = mergeRelatedBookContext(
+      conversation,
+      [relatedBook],
+      [evidence],
+    );
+
+    expect(conversation.contextManifest.related_books).toHaveLength(1);
+    expect(
+      toChatContextManifest(conversation.contextManifest).related_books?.[0]
+        ?.candidate_ref,
+    ).toBe(relatedBook.candidate_ref);
+
+    conversation = mergeRelatedBookContext(conversation, [
+      {
+        ...relatedBook,
+        candidate_ref: "orbit-book://candidate/unsafeunsafeunsafe1",
+        evidence_ids: ["unknown-evidence"],
+      },
+    ]);
+    expect(conversation.contextManifest.related_books).toHaveLength(1);
   });
 });

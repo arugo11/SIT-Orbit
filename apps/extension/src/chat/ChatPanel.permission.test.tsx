@@ -351,6 +351,86 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(permissionsRequest).not.toHaveBeenCalled();
   });
 
+  it("renders compact related-book cards and reuses them in the next turn", async () => {
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "related-books-completed",
+        content_markdown: "異なる観点から候補を比較しました。",
+        evidence: [
+          {
+            evidence_id: "web-search-v1-books-1",
+            title: "公開書誌",
+            source_type: "web",
+            locator: "https://books.example/robot-learning",
+            data_classification: "public",
+          },
+        ],
+        related_books: [
+          {
+            candidate_ref: "orbit-book://candidate/1234567890abcdef",
+            title: "Robot Learning",
+            authors: ["Jane Doe"],
+            isbn: "9780000000001",
+            publication_year: 2024,
+            relation_axes: [
+              { label: "強化学習", source: "metadata" },
+              { label: "身体性", source: "inferred" },
+            ],
+            why_related: "学習とロボット制御を別の観点から結び付けます。",
+            evidence_ids: ["web-search-v1-books-1"],
+            catalog_verification: {
+              status: "unverified",
+              resource_ref: null,
+              observed_at: null,
+            },
+            observed_at: "2026-08-24T00:00:00Z",
+          },
+        ],
+      },
+      proposal: null,
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "関連する本を探して");
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes("Robot Learning"),
+    );
+
+    expect(
+      mounted.document.querySelectorAll(".related-book-card"),
+    ).toHaveLength(1);
+    expect(mounted.document.body.textContent).toContain("SIT所蔵未確認");
+    expect(mounted.document.body.textContent).toContain("強化学習");
+    expect(mounted.document.querySelector(".related-book-card img")).toBeNull();
+
+    apiClient.startChat.mockResolvedValueOnce({
+      status: "completed",
+      message: {
+        message_id: "related-books-follow-up",
+        content_markdown: "SIT所蔵を確認します。",
+        evidence: [],
+        related_books: [],
+      },
+      proposal: null,
+    });
+    await sendMessage(mounted, "その中でSITにある本は？");
+    await waitFor(() => apiClient.startChat.mock.calls.length === 2);
+    const secondRequest = apiClient.startChat.mock.calls[1]?.[0] as {
+      context_manifest?: { related_books?: Array<{ candidate_ref: string }> };
+    };
+    expect(
+      secondRequest.context_manifest?.related_books?.[0]?.candidate_ref,
+    ).toBe("orbit-book://candidate/1234567890abcdef");
+  });
+
   it("reads a public URL without an in-chat permission card", async () => {
     const apiClient = createApiClient(
       toolRequired("browser_read_url", { url: "https://example.com/course" }),

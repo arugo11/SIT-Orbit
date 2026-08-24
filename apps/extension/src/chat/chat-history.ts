@@ -5,6 +5,7 @@ import type {
   ChatHistoryMessage,
   EvidenceLink,
   LibraryBibliographicRecord,
+  RelatedBookCandidate,
 } from "../api/client";
 
 export type ChatTimelineRole = "user" | "assistant" | "tool";
@@ -18,6 +19,7 @@ export interface ChatTimelineMessage {
   proposalState?: "pending" | "approved" | "rejected";
   toolName?: string;
   toolState?: "running" | "completed" | "failed";
+  relatedBooks?: RelatedBookCandidate[];
 }
 
 export interface ChatConversation {
@@ -33,6 +35,7 @@ export interface ChatContextManifest {
   schema_version: "v1";
   evidence: EvidenceLink[];
   library_records: ChatLibraryContextRecord[];
+  related_books: RelatedBookCandidate[];
 }
 
 export interface ChatLibraryContextRecord {
@@ -55,6 +58,8 @@ function sanitizeStoredText(value: string): string {
 const LIBRARY_RESOURCE_REF_RE =
   /^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u;
 const LIBRARY_RECORD_PATH = "/opc/recordID/catalog.bib/";
+const RELATED_BOOK_REF_RE =
+  /^orbit-book:\/\/candidate\/[A-Za-z0-9_-]{16,128}$/u;
 
 function sanitizeEvidence(item: EvidenceLink): EvidenceLink | null {
   if (
@@ -192,30 +197,120 @@ function sanitizeContextManifest(
     .slice(0, 20);
   const byRef = new Map<string, ChatLibraryContextRecord>();
   for (const item of records) byRef.set(item.record.resource_ref, item);
+  const related = (value?.related_books ?? [])
+    .map((item) =>
+      sanitizeRelatedBook(item, evidenceIds, new Set(byRef.keys())),
+    )
+    .filter((item): item is RelatedBookCandidate => item !== null)
+    .slice(0, 20);
+  const relatedByRef = new Map<string, RelatedBookCandidate>();
+  for (const item of related) relatedByRef.set(item.candidate_ref, item);
   return {
     schema_version: "v1",
     evidence,
     library_records: [...byRef.values()],
+    related_books: [...relatedByRef.values()],
   };
 }
 
-function sanitizeMessage(message: ChatTimelineMessage): ChatTimelineMessage {
+function sanitizeRelatedBook(
+  item: RelatedBookCandidate,
+  evidenceIds: ReadonlySet<string>,
+  libraryRefs: ReadonlySet<string>,
+): RelatedBookCandidate | null {
+  if (!item || !RELATED_BOOK_REF_RE.test(item.candidate_ref) || !item.title) {
+    return null;
+  }
+  const observed = new Date(item.observed_at);
+  if (Number.isNaN(observed.getTime())) return null;
+  const evidence_ids = [...new Set(item.evidence_ids ?? [])]
+    .filter((id) => evidenceIds.has(id))
+    .slice(0, 10);
+  if (evidence_ids.length === 0) return null;
+  const verification = item.catalog_verification ?? { status: "unverified" };
+  const resourceRef = verification.resource_ref ?? null;
+  const verificationObserved = verification.observed_at
+    ? new Date(verification.observed_at)
+    : null;
+  if (
+    verification.status === "verified" &&
+    (!resourceRef || !libraryRefs.has(resourceRef))
+  ) {
+    return null;
+  }
+  if (
+    verification.status !== "unverified" &&
+    (!verificationObserved || Number.isNaN(verificationObserved.getTime()))
+  ) {
+    return null;
+  }
+  const publicText = JSON.stringify({
+    title: item.title,
+    authors: item.authors,
+    isbn: item.isbn,
+    relation_axes: item.relation_axes,
+    why_related: item.why_related,
+  }).toLowerCase();
+  if (
+    /<script|<input|cookie=|access_token|oauth_token|csrf|session_token|orbit-/u.test(
+      publicText,
+    )
+  ) {
+    return null;
+  }
+  return {
+    candidate_ref: item.candidate_ref,
+    title: sanitizeStoredText(item.title).slice(0, 300),
+    authors: (item.authors ?? [])
+      .slice(0, 20)
+      .map((author) => sanitizeStoredText(author).slice(0, 200)),
+    isbn: item.isbn ? sanitizeStoredText(item.isbn).slice(0, 32) : null,
+    publication_year: item.publication_year ?? null,
+    relation_axes: (item.relation_axes ?? []).slice(0, 5).map((axis) => ({
+      label: sanitizeStoredText(axis.label).slice(0, 100),
+      source: axis.source,
+    })),
+    why_related: sanitizeStoredText(item.why_related).slice(0, 500),
+    evidence_ids,
+    catalog_verification: {
+      status: verification.status,
+      resource_ref: resourceRef,
+      observed_at: verificationObserved?.toISOString() ?? null,
+    },
+    observed_at: observed.toISOString(),
+  };
+}
+
+function sanitizeMessage(
+  message: ChatTimelineMessage,
+  context: ChatContextManifest,
+): ChatTimelineMessage {
+  const relatedByRef = new Map(
+    context.related_books.map((item) => [item.candidate_ref, item]),
+  );
   return {
     ...message,
     content: sanitizeStoredText(message.content),
     evidence: message.evidence?.map((item) => ({ ...item })),
     proposal: message.proposal ? { ...message.proposal } : message.proposal,
+    relatedBooks: message.relatedBooks
+      ?.map((item) => relatedByRef.get(item.candidate_ref))
+      .filter((item): item is RelatedBookCandidate => item !== undefined)
+      .slice(0, 5),
   };
 }
 
 function sanitizeConversation(
   conversation: ChatConversation,
 ): ChatConversation {
+  const contextManifest = sanitizeContextManifest(conversation.contextManifest);
   return {
     ...conversation,
     title: sanitizeStoredText(conversation.title).slice(0, 120),
-    messages: conversation.messages.map(sanitizeMessage),
-    contextManifest: sanitizeContextManifest(conversation.contextManifest),
+    messages: conversation.messages.map((message) =>
+      sanitizeMessage(message, contextManifest),
+    ),
+    contextManifest,
   };
 }
 
@@ -362,6 +457,7 @@ export function toChatContextManifest(
         observed_at: item.observed_at,
       }),
     ),
+    related_books: sanitized.related_books,
   };
 }
 
@@ -416,6 +512,7 @@ export function mergeLibraryContext(
     schema_version: "v1",
     evidence: normalizedEvidence,
     library_records: [...byRef.values()].slice(0, 20),
+    related_books: current.related_books,
   });
   return { ...conversation, contextManifest };
 }
@@ -425,6 +522,33 @@ export function mergeConversationEvidence(
   evidence: readonly EvidenceLink[],
 ): ChatConversation {
   return mergeLibraryContext(conversation, [], evidence);
+}
+
+export function mergeRelatedBookContext(
+  conversation: ChatConversation,
+  candidates: readonly RelatedBookCandidate[],
+  evidence: readonly EvidenceLink[] = [],
+): ChatConversation {
+  const withEvidence = mergeConversationEvidence(conversation, evidence);
+  const current = sanitizeContextManifest(withEvidence.contextManifest);
+  const byRef = new Map(
+    current.related_books.map((item) => [item.candidate_ref, item]),
+  );
+  const evidenceIds = new Set(current.evidence.map((item) => item.evidence_id));
+  const libraryRefs = new Set(
+    current.library_records.map((item) => item.resource_ref),
+  );
+  for (const item of candidates) {
+    const sanitized = sanitizeRelatedBook(item, evidenceIds, libraryRefs);
+    if (sanitized) byRef.set(sanitized.candidate_ref, sanitized);
+  }
+  return {
+    ...withEvidence,
+    contextManifest: sanitizeContextManifest({
+      ...current,
+      related_books: [...byRef.values()].slice(-20),
+    }),
+  };
 }
 
 export function newConversation(): ChatConversation {
@@ -441,6 +565,7 @@ export function newConversation(): ChatConversation {
       schema_version: "v1",
       evidence: [],
       library_records: [],
+      related_books: [],
     },
   };
 }

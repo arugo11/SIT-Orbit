@@ -988,6 +988,57 @@ textarea {
   white-space: pre-wrap;
 }
 
+.related-book-grid {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.75rem;
+}
+
+.related-book-card {
+  border: 1px solid #dbe4ec;
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: #fff;
+}
+
+.related-book-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.related-book-status,
+.related-book-axes span {
+  display: inline-flex;
+  border-radius: 999px;
+  padding: 0.15rem 0.45rem;
+  background: #edf3f7;
+  color: #435463;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.related-book-status[data-status="verified"] {
+  background: #e1f3e7;
+  color: #21663a;
+}
+
+.related-book-status[data-status="recheck_failed"] {
+  background: #fff2d9;
+  color: #795313;
+}
+
+.related-book-card > p {
+  margin: 0.5rem 0;
+}
+
+.related-book-axes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
 .chat-citations {
   margin-top: 10px;
   border-top: 1px solid #dce5eb;
