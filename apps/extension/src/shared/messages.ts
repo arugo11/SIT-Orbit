@@ -17,6 +17,13 @@ import type {
   LibraryDiscoverySearchArguments,
 } from "../connectors/library-discovery";
 import { isLibraryResourceRef } from "../connectors/library-discovery";
+import {
+  type CastSearchAgentProjection,
+  type CastSearchLocalKnownResult,
+  type CastSearchLocalResult,
+  type CastSearchRequest,
+  isCastSearchRequest,
+} from "../content/cast-search-api";
 import type { MyLibraryScope } from "../content/my-library-reader";
 import {
   classifyPageKind,
@@ -62,6 +69,7 @@ export const MESSAGE_TYPES = {
   castRead: "cast-read",
   castOpen: "cast-open",
   castAlumniRead: "cast-alumni-read",
+  castSearch: "cast-search",
   libraryCatalogSearch: "library-catalog-search",
   libraryItemRead: "library-item-read",
   libraryCatalogBrowse: "library-catalog-browse",
@@ -202,6 +210,19 @@ export interface CastAlumniReadMessage {
   type: typeof MESSAGE_TYPES.castAlumniRead;
   tool_call_id: string;
 }
+
+export interface CastSearchMessage extends CastSearchRequest {
+  type: typeof MESSAGE_TYPES.castSearch;
+  tool_call_id: string;
+}
+
+export type CastSearchResponse =
+  | {
+      status: "known";
+      local: CastSearchLocalKnownResult;
+      projection: CastSearchAgentProjection;
+    }
+  | Exclude<CastSearchLocalResult, { status: "known" }>;
 
 export interface LibraryCatalogSearchMessage
   extends Omit<LibraryCatalogSearchArguments, "limit"> {
@@ -384,6 +405,7 @@ export type ExtensionMessage =
   | CastReadMessage
   | CastOpenMessage
   | CastAlumniReadMessage
+  | CastSearchMessage
   | LibraryCatalogSearchMessage
   | LibraryItemReadMessage
   | LibraryCatalogBrowseMessage
@@ -545,6 +567,42 @@ export function isCastAlumniReadMessage(
     typeof message.tool_call_id === "string" &&
     message.tool_call_id.length > 0
   );
+}
+
+export function isCastSearchMessage(
+  message: unknown,
+): message is CastSearchMessage {
+  if (!isRecord(message) || message.type !== MESSAGE_TYPES.castSearch)
+    return false;
+  if (
+    typeof message.tool_call_id !== "string" ||
+    message.tool_call_id.length === 0
+  )
+    return false;
+  if (
+    Object.keys(message).some(
+      (key) =>
+        ![
+          "type",
+          "tool_call_id",
+          "kind",
+          "filters",
+          "sort",
+          "cursor",
+          "exhaustive",
+        ].includes(key),
+    )
+  ) {
+    return false;
+  }
+  const request = {
+    kind: message.kind,
+    filters: message.filters,
+    sort: message.sort,
+    cursor: message.cursor,
+    exhaustive: message.exhaustive,
+  };
+  return isCastSearchRequest(request);
 }
 
 export function isLibraryCatalogSearchMessage(

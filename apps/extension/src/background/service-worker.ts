@@ -46,6 +46,10 @@ import {
   projectCastForAgent,
 } from "../content/cast-reader";
 import {
+  type CastSearchLocalResult,
+  projectCastSearchForAgent,
+} from "../content/cast-search-api";
+import {
   MOODLE_DASHBOARD_URL,
   MOODLE_LOGIN_URL,
   MOODLE_ORIGIN,
@@ -78,12 +82,15 @@ import {
   type CalendarCommandMessage,
   type CastAlumniReadResponse,
   type CastReadResponse,
+  type CastSearchMessage,
+  type CastSearchResponse,
   type DriveCommandMessage,
   isBrowserReadMessage,
   isCalendarCommandMessage,
   isCastAlumniReadMessage,
   isCastOpenMessage,
   isCastReadMessage,
+  isCastSearchMessage,
   isDriveCommandMessage,
   isGetPageContextMessage,
   isGetWorkspaceSessionMessage,
@@ -4568,6 +4575,81 @@ async function handleCastAlumniRead(): Promise<CastAlumniReadResponse> {
   }
 }
 
+function isCastSearchCandidateTab(tab: chrome.tabs.Tab): boolean {
+  if (tab.id === undefined || !tab.url) return false;
+  try {
+    const url = new URL(tab.url);
+    return (
+      url.origin === CAST_ORIGIN &&
+      url.pathname.startsWith("/career/") &&
+      !["/career/login", "/career/session_timeout"].includes(url.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function readCastSearchPage(
+  tabId: number,
+  message: CastSearchMessage,
+): Promise<CastSearchLocalResult> {
+  const send = async (): Promise<unknown> =>
+    chrome.tabs.sendMessage(tabId, message);
+  try {
+    const first = await send();
+    if (first && typeof first === "object") {
+      return first as CastSearchLocalResult;
+    }
+  } catch {
+    // A tab can predate an extension reload. Inject only our own bundled
+    // content script, then retry the same verified CAST page.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content-script.js"],
+      });
+      const second = await send();
+      if (second && typeof second === "object") {
+        return second as CastSearchLocalResult;
+      }
+    } catch {
+      // handled below
+    }
+  }
+  return {
+    status: "unavailable",
+    reason_code: "cast_content_script_unavailable",
+  };
+}
+
+async function handleCastSearch(
+  message: CastSearchMessage,
+): Promise<CastSearchResponse> {
+  if (!(await hasBrowserPermission(CAST_PERMISSION_PATTERN, CAST_ORIGIN))) {
+    return {
+      status: "unavailable",
+      reason_code: "permission_required",
+    };
+  }
+  try {
+    const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
+    const tab = tabs.find(isCastSearchCandidateTab);
+    if (tab?.id === undefined) {
+      await openCastEntry();
+      return { status: "reauth_required", reason_code: "cast_page_not_open" };
+    }
+    const local = await readCastSearchPage(tab.id, message);
+    if (local.status !== "known") return local;
+    return {
+      status: "known",
+      local,
+      projection: projectCastSearchForAgent(local),
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "cast_search_failed" };
+  }
+}
+
 function isTrustedExtensionPageSender(sender: chrome.runtime.MessageSender) {
   if (sender.id !== undefined && sender.id !== chrome.runtime.id) {
     return false;
@@ -5104,6 +5186,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleCastAlumniRead().then(sendResponse);
+    return true;
+  }
+
+  if (isCastSearchMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleCastSearch(message)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse({
+          status: "unavailable",
+          reason_code: "cast_search_failed",
+        }),
+      );
     return true;
   }
 

@@ -1953,6 +1953,84 @@ describe("service worker side panel contract", () => {
     expect(setPanelBehavior).not.toHaveBeenCalled();
   });
 
+  it("forwards a semantic CAST search to the authenticated page and keeps the agent projection aggregate-only", async () => {
+    permissionsContains.mockResolvedValue(true);
+    queryTabs.mockResolvedValue([
+      {
+        id: 79,
+        url: "https://shibaura.pita.services/career/top/student",
+      },
+    ] as chrome.tabs.Tab[]);
+    tabSendMessage.mockResolvedValue({
+      status: "known",
+      applied_filters: {
+        kind: "hiring_record",
+        filters: { graduation_years: [2024, 2023] },
+        sort: null,
+        graduation_years_defaulted: false,
+      },
+      total_count: 6,
+      coverage: {
+        mode: "page",
+        page_size: 10,
+        fetched_pages: 1,
+        total_pages: 1,
+      },
+      page: 1,
+      next_cursor: null,
+      typed_items: [
+        {
+          item_ref: "local-hiring-1",
+          kind: "hiring_record",
+          title: "企業A",
+          company_name: "企業A",
+          industry: ["情報通信"],
+          locations: [],
+          occupations: [],
+          academic_programs: [],
+          deadline: null,
+          graduation_year: 2024,
+          hiring_count: 1,
+          relation_flags: [],
+          local_summary: null,
+        },
+      ],
+      local_evidence: [
+        {
+          evidence_id: "cast-search-v1-test",
+          title: "CAST採用実績検索結果",
+          locator: "orbit-cast://search/test",
+        },
+      ],
+    });
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.castSearch,
+        tool_call_id: "cast-search-call-1",
+        kind: "hiring_record",
+        filters: { graduation_years: [2024, 2023] },
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(tabSendMessage).toHaveBeenCalledWith(
+      79,
+      expect.objectContaining({
+        type: MESSAGE_TYPES.castSearch,
+        kind: "hiring_record",
+        filters: { graduation_years: [2024, 2023] },
+      }),
+    );
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload.status).toBe("known");
+    expect(payload.projection.returned_count).toBe(1);
+    expect(payload.projection.anonymous_aggregates).toEqual([]);
+    expect(JSON.stringify(payload.projection)).not.toContain("企業A");
+    expect(payload.projection.evidence_ids).toEqual(["cast-search-v1-test"]);
+  });
+
   it("does not rebroadcast a background tab context to the visible panel", async () => {
     queryTabs.mockResolvedValueOnce([
       {
