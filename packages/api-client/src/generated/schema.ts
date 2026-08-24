@@ -483,6 +483,96 @@ export interface components {
             /** Reason Code */
             reason_code?: string | null;
         };
+        /** CastSearchAggregate */
+        CastSearchAggregate: {
+            /**
+             * Dimension
+             * @enum {string}
+             */
+            dimension: "industry" | "location" | "graduation_year";
+            /** Value */
+            value: string;
+            /** Count */
+            count: number;
+        };
+        /** CastSearchAppliedFilters */
+        CastSearchAppliedFilters: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "job" | "internship" | "company_session" | "company" | "hiring_record";
+            /** Filters */
+            filters?: {
+                [key: string]: unknown;
+            };
+            sort?: components["schemas"]["CastSearchSort"] | null;
+            /**
+             * Graduation Years Defaulted
+             * @default false
+             */
+            graduation_years_defaulted: boolean;
+        };
+        /** CastSearchCoverage */
+        CastSearchCoverage: {
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "page" | "complete" | "partial";
+            /** Page Size */
+            page_size: number;
+            /** Fetched Pages */
+            fetched_pages: number;
+            /** Total Pages */
+            total_pages?: number | null;
+        };
+        /**
+         * CastSearchResult
+         * @description Aggregate-only projection returned by the authenticated CAST search tool.
+         *
+         *     Company/person detail remains in the extension's local result card.  This
+         *     schema intentionally has no company code, person identifier, HTML, or
+         *     source URL field.
+         */
+        CastSearchResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "reauth_required" | "form_changed" | "rate_limited" | "unavailable";
+            applied_filters?: components["schemas"]["CastSearchAppliedFilters"] | null;
+            /** Total Count */
+            total_count: number;
+            /** Returned Count */
+            returned_count: number;
+            coverage?: components["schemas"]["CastSearchCoverage"] | null;
+            /** Anonymous Aggregates */
+            anonymous_aggregates?: components["schemas"]["CastSearchAggregate"][];
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /** CastSearchSort */
+        CastSearchSort: {
+            /**
+             * Key
+             * @enum {string}
+             */
+            key: "company_name" | "hiring_count" | "graduation_year" | "deadline";
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "asc" | "desc";
+        };
         /** ChatAssistantMessage */
         ChatAssistantMessage: {
             /** Message Id */
@@ -500,7 +590,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -594,7 +684,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -613,14 +703,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["CastSearchResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
         };
         /**
          * ClientTool

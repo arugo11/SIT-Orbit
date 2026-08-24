@@ -48,6 +48,7 @@ export type MyLibraryReadResult =
 export type CastReadResult = components["schemas"]["CastReadResult"];
 export type CastAlumniReadResult =
   components["schemas"]["CastAlumniReadResult"];
+export type CastSearchResult = components["schemas"]["CastSearchResult"];
 export type LibraryHoldingSummary =
   components["schemas"]["LibraryHoldingSummary"];
 export type LibraryRelatedRecordRef =
@@ -1214,6 +1215,216 @@ export function isCastAlumniReadResult(
   );
 }
 
+function isCastSearchAppliedFilters(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "kind",
+      "filters",
+      "sort",
+      "graduation_years_defaulted",
+    ]) ||
+    !isOneOf(value.kind, [
+      "job",
+      "internship",
+      "company_session",
+      "company",
+      "hiring_record",
+    ]) ||
+    typeof value.graduation_years_defaulted !== "boolean"
+  ) {
+    return false;
+  }
+  if (value.filters !== undefined && !isRecord(value.filters)) return false;
+  if (value.sort !== null && value.sort !== undefined) {
+    if (
+      !isRecord(value.sort) ||
+      !hasExactlyKeys(value.sort, ["key", "direction"]) ||
+      !isOneOf(value.sort.key, [
+        "company_name",
+        "hiring_count",
+        "graduation_year",
+        "deadline",
+      ]) ||
+      !isOneOf(value.sort.direction, ["asc", "desc"])
+    ) {
+      return false;
+    }
+  }
+  const filterKeys = new Set([
+    "company_name",
+    "new_only",
+    "year",
+    "graduation_years",
+    "academic_programs",
+    "industries",
+    "relation",
+    "occupations",
+    "locations",
+    "deadline_before",
+    "include_closed",
+    "application_method",
+    "target_grades",
+    "duration",
+    "event_start",
+    "event_end",
+    "advisor",
+    "faculty",
+  ]);
+  if (value.filters === undefined) return false;
+  if (Object.keys(value.filters).some((key) => !filterKeys.has(key))) {
+    return false;
+  }
+  const listKeys = new Set([
+    "graduation_years",
+    "academic_programs",
+    "industries",
+    "occupations",
+    "locations",
+    "target_grades",
+    "duration",
+  ]);
+  const relationValues = new Set([
+    "hiring_record",
+    "obog",
+    "career_supporter",
+    "company_session",
+    "internship",
+    "entrance_exam",
+  ]);
+  for (const [key, item] of Object.entries(value.filters)) {
+    if (listKeys.has(key)) {
+      if (
+        !Array.isArray(item) ||
+        item.length === 0 ||
+        item.length > 20 ||
+        !item.every((entry) =>
+          key === "graduation_years"
+            ? isIntegerInRange(entry, 1995, 2100)
+            : typeof entry === "string" &&
+              entry.trim().length > 0 &&
+              entry.length <= 200,
+        )
+      ) {
+        return false;
+      }
+      continue;
+    }
+    if (key === "new_only" || key === "include_closed") {
+      if (typeof item !== "boolean") return false;
+      continue;
+    }
+    if (key === "year") {
+      if (!isIntegerInRange(item, 1995, 2100)) return false;
+      continue;
+    }
+    if (key === "relation") {
+      if (typeof item !== "string" || !relationValues.has(item)) return false;
+      continue;
+    }
+    if (key === "application_method") {
+      if (item !== "free" && item !== "recommendation") return false;
+      continue;
+    }
+    if (
+      typeof item !== "string" ||
+      item.trim().length === 0 ||
+      item.length > 200
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export function isCastSearchResult(value: unknown): value is CastSearchResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "applied_filters",
+      "total_count",
+      "returned_count",
+      "coverage",
+      "anonymous_aggregates",
+      "evidence_ids",
+      "reason_code",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isOneOf(value.status, [
+      "known",
+      "reauth_required",
+      "form_changed",
+      "rate_limited",
+      "unavailable",
+    ]) ||
+    !isIntegerInRange(value.total_count, 0, 100_000) ||
+    !isIntegerInRange(value.returned_count, 0, 1_000) ||
+    value.returned_count > value.total_count ||
+    !Array.isArray(value.anonymous_aggregates) ||
+    value.anonymous_aggregates.length > 100 ||
+    !value.anonymous_aggregates.every((item) => {
+      if (
+        !isRecord(item) ||
+        !hasExactlyKeys(item, ["dimension", "value", "count"]) ||
+        !isOneOf(item.dimension, ["industry", "location", "graduation_year"]) ||
+        !isNonEmptyString(item.value) ||
+        !isIntegerInRange(item.count, 5, 100_000)
+      ) {
+        return false;
+      }
+      return true;
+    }) ||
+    !Array.isArray(value.evidence_ids) ||
+    value.evidence_ids.length > 32 ||
+    new Set(value.evidence_ids).size !== value.evidence_ids.length ||
+    !value.evidence_ids.every(
+      (item) =>
+        typeof item === "string" &&
+        /^cast-search-v1-[A-Za-z0-9_-]{16,200}$/u.test(item),
+    ) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string") ||
+    new Set(
+      value.anonymous_aggregates.map((item) =>
+        isRecord(item)
+          ? `${String(item.dimension)}\u0000${String(item.value)}`
+          : "",
+      ),
+    ).size !== value.anonymous_aggregates.length
+  ) {
+    return false;
+  }
+  if (value.status === "known") {
+    if (!isCastSearchAppliedFilters(value.applied_filters)) return false;
+    if (
+      !isRecord(value.coverage) ||
+      !hasExactlyKeys(value.coverage, [
+        "mode",
+        "page_size",
+        "fetched_pages",
+        "total_pages",
+      ]) ||
+      !isOneOf(value.coverage.mode, ["page", "complete", "partial"]) ||
+      !isIntegerInRange(value.coverage.page_size, 1, 50) ||
+      !isIntegerInRange(value.coverage.fetched_pages, 0, 100) ||
+      (value.coverage.total_pages !== null &&
+        !isIntegerInRange(value.coverage.total_pages, 0, 100))
+    ) {
+      return false;
+    }
+    return true;
+  }
+  return (
+    value.applied_filters === null &&
+    value.coverage === null &&
+    value.total_count === 0 &&
+    value.returned_count === 0 &&
+    value.anonymous_aggregates.length === 0 &&
+    value.evidence_ids.length === 0
+  );
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -1250,6 +1461,7 @@ const chatToolNames = [
   "my_library_read",
   "cast_read",
   "cast_alumni_read",
+  "cast_search",
   "library_catalog_search",
   "library_item_read",
   "library_catalog_browse",

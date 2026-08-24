@@ -2,11 +2,13 @@ import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   type ActionProposal,
   type AgentApiClient,
+  AgentApiError,
   type ChatRunResponse,
   type ChatToolResultRequest,
   isBrowserReadResult,
   isCastAlumniReadResult,
   isCastReadResult,
+  isCastSearchResult,
   isLibraryActionOptionsResult,
   isLibraryCatalogBrowseResult,
   isLibraryCatalogSearchResult,
@@ -32,6 +34,10 @@ import {
 import type { CastAlumniLocalSnapshot } from "../content/cast-alumni-reader";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
+  type CastSearchLocalKnownResult,
+  isCastSearchRequest,
+} from "../content/cast-search-api";
+import {
   MOODLE_DASHBOARD_URL,
   type MoodleLocalSnapshot,
 } from "../content/moodle-reader";
@@ -49,6 +55,7 @@ import type {
   BrowserReadResponse,
   CastAlumniReadResponse,
   CastReadResponse,
+  CastSearchResponse,
   LibraryActionOptionsResponse,
   LibraryActionPreviewResponse,
   LibraryActionSubmitResponse,
@@ -79,6 +86,25 @@ import {
 
 const CHAT_FAILURE_MESSAGE =
   "今は応答できませんでした。もう一度お試しください。";
+
+function chatFailureMessage(error: unknown): string {
+  if (error instanceof AgentApiError) {
+    if (error.status === 0) {
+      return "Agent APIに接続できませんでした（agent_api_error）。接続設定を確認してください。";
+    }
+    if (error.status === 401 || error.status === 403) {
+      return "Agent APIの認証に失敗しました（agent_api_error）。接続設定を確認してください。";
+    }
+    if (error.status === 422) {
+      return "Agent APIが検索要求を受け付けませんでした（request_rejected）。条件を見直してください。";
+    }
+    return `Agent APIで処理できませんでした（agent_api_error: HTTP ${error.status}）。`;
+  }
+  if (error instanceof Error && error.message.startsWith("CAST")) {
+    return error.message;
+  }
+  return CHAT_FAILURE_MESSAGE;
+}
 
 export interface ChatPanelProps {
   apiClient: AgentApiClient;
@@ -117,6 +143,8 @@ function toolLabel(name: string): string {
       return "CASTを確認中";
     case "cast_alumni_read":
       return "CASTの就活サポーターを確認中";
+    case "cast_search":
+      return "CASTを検索中";
     case "library_catalog_search":
       return "OPACを検索中";
     case "library_item_read":
@@ -213,6 +241,7 @@ function toolResultRequest(
     | "my_library_read"
     | "cast_read"
     | "cast_alumni_read"
+    | "cast_search"
     | "library_catalog_search"
     | "library_item_read"
     | "library_catalog_browse"
@@ -297,6 +326,9 @@ export function ChatPanel({
   const [localCastAlumniDetails, setLocalCastAlumniDetails] = useState<
     Record<string, CastAlumniLocalSnapshot>
   >({});
+  const [localCastSearchDetails, setLocalCastSearchDetails] = useState<
+    Record<string, CastSearchLocalKnownResult>
+  >({});
   type LocalLibraryRecord = NonNullable<
     LibraryCatalogSearchResult["items"]
   >[number];
@@ -368,6 +400,7 @@ export function ChatPanel({
         | "my_library_read"
         | "cast_read"
         | "cast_alumni_read"
+        | "cast_search"
         | "library_catalog_search"
         | "library_item_read"
         | "library_catalog_browse"
@@ -390,6 +423,7 @@ export function ChatPanel({
     tools.push({ name: "my_library_read", version: 1 });
     tools.push({ name: "cast_read", version: 1 });
     tools.push({ name: "cast_alumni_read", version: 1 });
+    tools.push({ name: "cast_search", version: 1 });
     // OPAC/SIT Search reads are public and read-only. Advertise them on every
     // turn so the Agent can resolve elliptical follow-ups such as
     // 「どこに配架されてる？」 from the conversation context instead of
@@ -425,6 +459,7 @@ export function ChatPanel({
       call.name !== "my_library_read" &&
       call.name !== "cast_read" &&
       call.name !== "cast_alumni_read" &&
+      call.name !== "cast_search" &&
       call.name !== "library_catalog_search" &&
       call.name !== "library_item_read" &&
       call.name !== "library_catalog_browse" &&
@@ -444,6 +479,9 @@ export function ChatPanel({
       Object.keys(argumentsObject).length > 0
     ) {
       throw new Error("このToolには引数を指定できません。");
+    }
+    if (call.name === "cast_search" && !isCastSearchRequest(argumentsObject)) {
+      throw new Error("CAST検索の意味フィルターを検証できません。");
     }
     if (
       call.name === "syllabus_search" &&
@@ -1096,6 +1134,39 @@ export function ChatPanel({
         call.name,
         alumni.projection,
       );
+    } else if (call.name === "cast_search") {
+      const cast = await sendExtensionMessage<CastSearchResponse>({
+        type: MESSAGE_TYPES.castSearch,
+        tool_call_id: call.tool_call_id,
+        ...argumentsObject,
+      });
+      if (cast.status !== "known") {
+        const message =
+          cast.status === "reauth_required"
+            ? "CASTのログインが必要です。開いた公式ページでログイン後、もう一度検索してください。"
+            : cast.status === "form_changed"
+              ? "CASTの検索フォームが変更されました。検索を中断しました。"
+              : cast.status === "rate_limited"
+                ? "CASTの検索が一時的に制限されました。時間を置いて再試行してください。"
+                : `CAST検索を利用できませんでした（${cast.reason_code}）。`;
+        throw new Error(message);
+      }
+      if (
+        !isCastSearchResult(cast.projection) ||
+        !cast.local ||
+        cast.local.status !== "known"
+      ) {
+        throw new Error("CAST検索結果を検証できませんでした。");
+      }
+      setLocalCastSearchDetails((items) => ({
+        ...items,
+        [activity.id]: cast.local,
+      }));
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        cast.projection,
+      );
     } else {
       const url = argumentsObject.url as string;
       const access = hostAccessRequest(url);
@@ -1223,8 +1294,8 @@ export function ChatPanel({
         "必要なToolがある場合だけ、ここから順番に実行します。",
       );
       await finishResponse(response, current);
-    } catch {
-      const failureMessage = CHAT_FAILURE_MESSAGE;
+    } catch (error) {
+      const failureMessage = chatFailureMessage(error);
       setRetryText(message);
       setProgress(null);
       await persist({
@@ -1873,6 +1944,39 @@ export function ChatPanel({
                     <p>
                       CAST上の関連リンクを検出しました。リンク先を開いてから、再度確認できます。
                     </p>
+                  ) : null}
+                </details>
+              ) : null}
+              {message.role === "tool" && localCastSearchDetails[message.id] ? (
+                <details className="chat-local-detail">
+                  <summary>
+                    CAST検索の端末内詳細（
+                    {localCastSearchDetails[message.id]?.typed_items.length ??
+                      0}
+                    件）
+                  </summary>
+                  <p>
+                    適用条件:{" "}
+                    {localCastSearchDetails[message.id]?.applied_filters.kind} /{" "}
+                    {localCastSearchDetails[message.id]?.coverage.mode} /
+                    総件数: {localCastSearchDetails[message.id]?.total_count}件
+                  </p>
+                  <ul>
+                    {localCastSearchDetails[message.id]?.typed_items.map(
+                      (item) => (
+                        <li key={item.item_ref}>
+                          <strong>{item.title}</strong>
+                          {item.company_name ? ` / ${item.company_name}` : ""}
+                          {item.industry.length > 0
+                            ? ` / ${item.industry.join("、")}`
+                            : ""}
+                          {item.deadline ? ` / 締切: ${item.deadline}` : ""}
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                  {localCastSearchDetails[message.id]?.next_cursor ? (
+                    <p>続きの結果は、追加の検索が必要な場合だけ取得します。</p>
                   ) : null}
                 </details>
               ) : null}

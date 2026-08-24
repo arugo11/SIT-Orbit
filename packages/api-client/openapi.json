@@ -1162,6 +1162,246 @@
         "title": "CastReadResult",
         "description": "Derived CAST dashboard counts safe for an explicitly confirmed run.\n\nNotice text, career preferences, application history, user identity, and\nsubmitted documents deliberately have no representation in this model."
       },
+      "CastSearchAggregate": {
+        "properties": {
+          "dimension": {
+            "type": "string",
+            "enum": [
+              "industry",
+              "location",
+              "graduation_year"
+            ],
+            "title": "Dimension"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Value"
+          },
+          "count": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 5.0,
+            "title": "Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dimension",
+          "value",
+          "count"
+        ],
+        "title": "CastSearchAggregate"
+      },
+      "CastSearchAppliedFilters": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "job",
+              "internship",
+              "company_session",
+              "company",
+              "hiring_record"
+            ],
+            "title": "Kind"
+          },
+          "filters": {
+            "additionalProperties": true,
+            "type": "object",
+            "maxProperties": 24,
+            "title": "Filters"
+          },
+          "sort": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CastSearchSort"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "graduation_years_defaulted": {
+            "type": "boolean",
+            "title": "Graduation Years Defaulted",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "CastSearchAppliedFilters"
+      },
+      "CastSearchCoverage": {
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "page",
+              "complete",
+              "partial"
+            ],
+            "title": "Mode"
+          },
+          "page_size": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Page Size"
+          },
+          "fetched_pages": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Fetched Pages"
+          },
+          "total_pages": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Pages"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mode",
+          "page_size",
+          "fetched_pages"
+        ],
+        "title": "CastSearchCoverage"
+      },
+      "CastSearchResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "reauth_required",
+              "form_changed",
+              "rate_limited",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "applied_filters": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CastSearchAppliedFilters"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total_count": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Total Count"
+          },
+          "returned_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Returned Count"
+          },
+          "coverage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CastSearchCoverage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anonymous_aggregates": {
+            "items": {
+              "$ref": "#/components/schemas/CastSearchAggregate"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Anonymous Aggregates"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "title": "Evidence Ids"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "total_count",
+          "returned_count"
+        ],
+        "title": "CastSearchResult",
+        "description": "Aggregate-only projection returned by the authenticated CAST search tool.\n\nCompany/person detail remains in the extension's local result card.  This\nschema intentionally has no company code, person identifier, HTML, or\nsource URL field."
+      },
+      "CastSearchSort": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "company_name",
+              "hiring_count",
+              "graduation_year",
+              "deadline"
+            ],
+            "title": "Key"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "asc",
+              "desc"
+            ],
+            "title": "Direction"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "key",
+          "direction"
+        ],
+        "title": "CastSearchSort"
+      },
       "ChatAssistantMessage": {
         "properties": {
           "message_id": {
@@ -1216,6 +1456,7 @@
               "my_library_read",
               "cast_read",
               "cast_alumni_read",
+              "cast_search",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -1469,6 +1710,7 @@
               "my_library_read",
               "cast_read",
               "cast_alumni_read",
+              "cast_search",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -1518,6 +1760,7 @@
               "my_library_read",
               "cast_read",
               "cast_alumni_read",
+              "cast_search",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -1565,6 +1808,9 @@
               },
               {
                 "$ref": "#/components/schemas/CastAlumniReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/CastSearchResult"
               },
               {
                 "$ref": "#/components/schemas/LibraryCatalogSearchResult"

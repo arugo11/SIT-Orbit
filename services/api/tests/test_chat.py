@@ -5,6 +5,7 @@ from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     CAST_ALUMNI_TOOL_NAME,
+    CAST_SEARCH_TOOL_NAME,
     CAST_TOOL_NAME,
     LIBRARY_CATALOG_SEARCH_TOOL_NAME,
     LIBRARY_ITEM_READ_TOOL_NAME,
@@ -16,6 +17,7 @@ from orbit_api.agent.pydantic_ai_backend import (
     ChatDraft,
     DeferredChatRun,
     cast_read,
+    cast_search,
     google_calendar_availability,
     library_catalog_search,
     library_item_read,
@@ -28,6 +30,10 @@ from orbit_api.models import (
     CalendarAvailabilityResult,
     CastAlumniReadResult,
     CastReadResult,
+    CastSearchAggregate,
+    CastSearchAppliedFilters,
+    CastSearchCoverage,
+    CastSearchResult,
     ChatClientTool,
     ChatHistoryMessage,
     ChatRunRequest,
@@ -559,6 +565,144 @@ def test_cast_projection_rejects_detail_and_unavailable_data() -> None:
             nearest_notice_date=None,
             reason_code="login_required",
         )
+
+
+def cast_search_fixture_result() -> CastSearchResult:
+    return CastSearchResult(
+        status="known",
+        applied_filters=CastSearchAppliedFilters(
+            kind="hiring_record",
+            filters={
+                "academic_programs": ["情報系"],
+                "graduation_years": [2026, 2025, 2024, 2023, 2022],
+            },
+            sort=None,
+            graduation_years_defaulted=True,
+        ),
+        total_count=22,
+        returned_count=10,
+        coverage=CastSearchCoverage(
+            mode="page",
+            page_size=10,
+            fetched_pages=1,
+            total_pages=3,
+        ),
+        anonymous_aggregates=[
+            CastSearchAggregate(dimension="industry", value="情報通信", count=12)
+        ],
+        evidence_ids=["cast-search-v1-0123456789abcdef"],
+        reason_code=None,
+    )
+
+
+def test_cast_search_result_rejects_person_fields_and_small_cells() -> None:
+    result = cast_search_fixture_result()
+    assert "company_code" not in result.model_dump_json()
+    with pytest.raises(ValueError):
+        CastSearchResult.model_validate(
+            {
+                **result.model_dump(mode="json"),
+                "anonymous_aggregates": [
+                    {"dimension": "industry", "value": "小規模", "count": 4}
+                ],
+            }
+        )
+    with pytest.raises(ValueError):
+        CastSearchResult.model_validate(
+            {
+                **result.model_dump(mode="json"),
+                "person_name": "must stay local",
+            }
+        )
+    with pytest.raises(ValueError, match="invalid values"):
+        CastSearchAppliedFilters.model_validate(
+            {
+                "kind": "hiring_record",
+                "filters": {"academic_programs": "情報系"},
+                "sort": None,
+                "graduation_years_defaulted": False,
+            }
+        )
+
+
+def test_fixture_chat_route_runs_cast_search_loop(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-cast-search",
+                "message": "情報系の就職先としては先輩はどんなとこに就職してる？",
+                "history": [],
+                "client_tools": [{"name": CAST_SEARCH_TOOL_NAME, "version": 1}],
+            },
+        ).json()
+        assert first["status"] == "tool_required"
+        call = first["calls"][0]
+        assert call["name"] == CAST_SEARCH_TOOL_NAME
+        assert call["arguments"]["kind"] == "hiring_record"
+        assert call["arguments"]["filters"]["graduation_years"] == [
+            2026,
+            2025,
+            2024,
+            2023,
+            2022,
+        ]
+        second = client.post(
+            f"/v1/chat/runs/{first['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": CAST_SEARCH_TOOL_NAME,
+                "version": 1,
+                "result": cast_search_fixture_result().model_dump(mode="json"),
+            },
+        )
+    assert second.status_code == 200
+    completed = second.json()
+    assert completed["status"] == "completed"
+    assert "該当件数: 22件" in completed["message"]["content_markdown"]
+    assert completed["message"]["evidence"][0]["evidence_id"].startswith(
+        "cast-search-v1-"
+    )
+    assert "company_code" not in second.text
+    assert "person_name" not in second.text
+
+
+def test_cast_search_error_does_not_resume_chat(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-cast-search-error",
+                "message": "情報系の就職先を検索して",
+                "history": [],
+                "client_tools": [{"name": CAST_SEARCH_TOOL_NAME, "version": 1}],
+            },
+        ).json()
+        call = first["calls"][0]
+        second = client.post(
+            f"/v1/chat/runs/{first['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": CAST_SEARCH_TOOL_NAME,
+                "version": 1,
+                "result": {
+                    "schema_version": "v1",
+                    "status": "form_changed",
+                    "applied_filters": None,
+                    "total_count": 0,
+                    "returned_count": 0,
+                    "coverage": None,
+                    "anonymous_aggregates": [],
+                    "evidence_ids": [],
+                    "reason_code": "search_form_changed",
+                },
+            },
+        )
+    assert second.status_code == 422
 
 
 def test_fixture_chat_route_runs_cast_alumni_aggregate_loop(monkeypatch) -> None:
@@ -1309,3 +1453,101 @@ async def test_function_model_runs_moodle_library_cast_sequence_with_derived_val
     assert "new_job_count" in serialized
     assert "合成キャリア講座" not in serialized
     assert "応募履歴" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_function_model_deferred_cast_search_accepts_semantic_filters_only() -> None:
+    calls = [0]
+    captured: list[str] = []
+
+    def model_function(messages, _info):
+        calls[0] += 1
+        captured.append(str(messages))
+        if calls[0] == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        CAST_SEARCH_TOOL_NAME,
+                        {
+                            "kind": "hiring_record",
+                            "filters": {
+                                "academic_programs": ["情報系"],
+                                "graduation_years": [2026, 2025, 2024, 2023, 2022],
+                            },
+                            "sort": None,
+                            "cursor": None,
+                            "exhaustive": False,
+                        },
+                        tool_call_id="cast-search-call-1",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "CASTの採用実績を匿名集計で確認しました。",
+                        "evidence_ids": ["cast-search-v1-server1234567890abcd"],
+                    },
+                    tool_call_id="cast-search-final-1",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="cast-search-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[cast_search],
+    )
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    advertised = {CAST_SEARCH_TOOL_NAME}
+    first = await backend.start_chat(
+        conversation_id="conversation-cast-search-function-model",
+        message="情報系の先輩の採用実績を検索して",
+        history=[],
+        advertised_tools=advertised,
+    )
+    assert first.deferred is not None
+    assert first.deferred.arguments["kind"] == "hiring_record"
+    assert first.deferred.arguments["filters"]["graduation_years"] == [
+        2026,
+        2025,
+        2024,
+        2023,
+        2022,
+    ]
+    evidence = EvidenceLink(
+        evidence_id="cast-search-v1-server1234567890abcd",
+        title="CAST検索から導出した匿名集計",
+        source_type="career",
+        locator="orbit-cast://search/1234567890abcdef",
+        data_classification="personal",
+    )
+    completed = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=cast_search_fixture_result()
+        .model_copy(
+            update={
+                "evidence_ids": ["cast-search-v1-local1234567890"],
+                "applied_filters": CastSearchAppliedFilters(
+                    kind="hiring_record",
+                    filters={"advisor": "個人名は外部へ出さない"},
+                    sort=None,
+                    graduation_years_defaulted=False,
+                ),
+            },
+        ),
+        context=[evidence],
+        advertised_tools=advertised,
+    )
+    assert completed.draft is not None
+    assert completed.draft.evidence_ids == ["cast-search-v1-server1234567890abcd"]
+    assert "cast-search-v1-local1234567890" not in captured[-1]
+    assert "個人名は外部へ出さない" not in captured[-1]

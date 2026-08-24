@@ -290,7 +290,9 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 ### CAST求人・インターン検索の参照
 
-求人は実ログイン環境で確認した`https://shibaura.pita.services/career/job_offer_search/search`、インターンは`https://shibaura.pita.services/career/internship_search`だけを許可する。検索結果カードの確認済みの`panel-heading`、`cell-th`/`cell-td`行、`linkTo`企業リンクだけをtyped snapshotへ変換し、検索フォームの送信、詳細画面への推測遷移、ページング、応募操作は行わない。query、fragment、未知origin、404、ログイン画面、構造変更は成功扱いしない。
+求人、インターン、会社説明会、企業、採用実績の検索は、実ログイン環境で確認した次の正規フォームだけを使う。`/career/job_offer_search`→`/career/job_offer_search/search`、`/career/internship_search`、`/career/company_session_search`、`/career/company_search`→`/career/company_search/search`、`/career/adopters_search`→`/career/adopters_search/search`。Service Workerは認証済みCASTタブのcontent scriptへ意味フィルターだけを送り、content scriptがentry formをGETしてhidden stateを同一originのPOSTへ引き継ぐ。AgentからURL、form action、field名、hidden値は指定できない。検索結果カードの確認済み`panel-heading`、`cell-th`/`cell-td`行、`linkTo`企業リンクだけをtyped snapshotへ変換し、詳細画面への推測遷移、応募操作は行わない。query、fragment、未知origin、404、ログイン画面、構造変更、未解決の意味フィルターは成功扱いしない。
+
+通常はCASTの1ページ（10件）だけを返し、続きはcontent script内の短命なopaque cursorで取得する。`exhaustive`は利用者が全件取得を明示した場合だけ、最大100ページ・1000件まで直列に実行する。未取得の全体をランキングや割合として断定しない。採用実績に年度指定がない場合は直近5完了年度（実装時点では2026〜2022）を適用条件として表示する。企業名などのローカル詳細は端末内カードへ残し、Agent projectionは件数、取得範囲、5件以上の匿名集計、server-issued Evidence IDだけを持つ。
 
 カードの企業名、仕事内容、職種、勤務地、対象学科、締切、CAST上の関連表示は端末内の`CastOpportunityLocalSnapshot`にだけ保持する。Agentへ渡す`CastOpportunityAgentProjection`は求人・インターンの件数、状態別件数、最短締切、状態コードだけで、企業名、仕事内容、企業コード、求人番号、raw HTMLは表現できない。projectionをPseudonymization Gateway以外の経路からモデルへ渡さない。PDF、添付、フォーム値、法人番号は抽出しない。
 

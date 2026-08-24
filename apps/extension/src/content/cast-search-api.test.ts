@@ -51,6 +51,7 @@ const companyForm = `
   <form action="/career/company_search" method="post">
     <h1>企業検索</h1><label for="company">企業名</label><input id="company" name="company" />
     <label for="relation">本学との関連</label><select id="relation" name="relation"><option value="obog">OB・OG</option></select>
+    <label for="company-page">ページ番号</label><input id="company-page" name="csc.currentPageNumber" />
     <button type="submit">検索</button>
   </form>`;
 
@@ -90,6 +91,12 @@ describe("CAST direct search transport", () => {
       isCastSearchRequest({
         kind: "job",
         filters: { company_name: "x", field_name: "csrf" },
+      }),
+    ).toBe(false);
+    expect(
+      isCastSearchRequest({
+        kind: "job",
+        filters: { industries: "情報通信" },
       }),
     ).toBe(false);
   });
@@ -198,6 +205,28 @@ describe("CAST direct search transport", () => {
       status: "form_changed",
       reason_code: "search_form_changed",
     });
+  });
+
+  it("fails closed when a requested semantic filter is absent from the form", async () => {
+    const calls: string[] = [];
+    const result = await runCastSearch(
+      { kind: "company", filters: { locations: ["東京都"] } },
+      {
+        parseHtml: (html) => parseHTML(html).document,
+        fetcher: async (input) => {
+          calls.push(String(input));
+          return response(
+            companyForm,
+            "https://shibaura.pita.services/career/company_search?common_header=on",
+          );
+        },
+      },
+    );
+    expect(result).toEqual({
+      status: "form_changed",
+      reason_code: "filter_not_available",
+    });
+    expect(calls).toHaveLength(1);
   });
 
   it("supports the five observed search surfaces with typed result parsing", async () => {
