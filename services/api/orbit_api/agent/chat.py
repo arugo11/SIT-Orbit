@@ -18,6 +18,7 @@ from orbit_api.models import (
     BrowserReadResult,
     CalendarAvailabilityResult,
     CastAlumniReadResult,
+    CastCareerSearchResult,
     CastReadResult,
     CastSearchResult,
     ChatAssistantMessage,
@@ -63,6 +64,8 @@ from .pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     CAST_ALUMNI_LOCATOR_PREFIX,
     CAST_ALUMNI_TOOL_NAME,
+    CAST_CAREER_SEARCH_LOCATOR_PREFIX,
+    CAST_CAREER_SEARCH_TOOL_NAME,
     CAST_LOCATOR_PREFIX,
     CAST_SEARCH_LOCATOR_PREFIX,
     CAST_SEARCH_TOOL_NAME,
@@ -136,6 +139,10 @@ _FIXTURE_CAST_SEARCH_QUERY = re.compile(
     r"(?:検索|探して|就職先|採用実績|どんなとこ|締切が近い|通いやす|情報系|機械系)",
     re.IGNORECASE,
 )
+_FIXTURE_CAST_CAREER_SEARCH_QUERY = re.compile(
+    r"(?:横断|関連する|過去5年|OB.?OG|先輩.*選考|見るべき録画|相談枠|通いやすく.*機械|インターン.*説明会)",
+    re.IGNORECASE,
+)
 _FIXTURE_LIBRARY_CATALOG_QUERY = re.compile(
     r"(?:opac|蔵書|図書館の所蔵|書籍|"
     r"本[^。!?\n]{0,24}(?:探|検索|見つけ|おすすめ|どんな|ある)|"
@@ -185,6 +192,7 @@ class ChatBackend(Protocol):
             | CastReadResult
             | CastAlumniReadResult
             | CastSearchResult
+            | CastCareerSearchResult
             | LibraryCatalogSearchResult
             | LibraryItemReadResult
             | LibraryCatalogBrowseResult
@@ -344,6 +352,67 @@ class FixtureChatBackend:
             return False
         recent_text = "\n".join(item.content for item in history[-4:])
         return bool(_FIXTURE_CAST_SEARCH_QUERY.search(f"{recent_text}\n{message}"))
+
+    @staticmethod
+    def _requests_cast_career_search(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if CAST_CAREER_SEARCH_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        text = f"{recent_text}\n{message}"
+        return bool(_FIXTURE_CAST_CAREER_SEARCH_QUERY.search(text))
+
+    @staticmethod
+    def _cast_career_search_arguments(message: str) -> dict[str, Any]:
+        surfaces: list[str] = []
+        if "求人" in message or "仕事" in message or "通いやす" in message:
+            surfaces.extend(["job", "company"])
+        if "インターン" in message:
+            surfaces.append("internship")
+        if "説明会" in message:
+            surfaces.append("company_session")
+        if "採用実績" in message or "就職先" in message or "先輩" in message:
+            surfaces.append("hiring_record")
+        if "選考" in message or "入社試験" in message:
+            surfaces.append("selection_report")
+        if "録画" in message or "講座" in message:
+            surfaces.append("recording")
+        if "イベント" in message:
+            surfaces.append("career_event")
+        if "相談" in message or "面談" in message or "ES" in message:
+            surfaces.append("counseling")
+        if not surfaces:
+            surfaces = ["job", "company", "hiring_record"]
+        surfaces = list(dict.fromkeys(surfaces))
+        filters: dict[str, Any] = {}
+        if "豊洲" in message:
+            filters["locations"] = ["豊洲"]
+        if "機械" in message:
+            filters["academic_programs"] = ["機械系"]
+        elif "情報" in message:
+            filters["academic_programs"] = ["情報系"]
+        if "プログラミング" in message:
+            filters["technical_domains"] = ["プログラミング"]
+        if "過去5年" in message and any(
+            surface in surfaces for surface in ("hiring_record", "selection_report")
+        ):
+            filters["graduation_years"] = [2026, 2025, 2024, 2023, 2022]
+        if "OB" in message or "OG" in message or "先輩" in message:
+            filters["obog_required"] = True
+        if "サポーター" in message:
+            filters["career_supporter_required"] = True
+        if "録画" in message:
+            filters["recording_required"] = True
+        return {
+            "query": message.strip()[:1000],
+            "surfaces": surfaces[:9],
+            "filters": filters,
+            "limit": 10,
+            "exhaustive": False,
+        }
 
     @staticmethod
     def _cast_search_arguments(message: str) -> dict[str, Any]:
@@ -604,6 +673,16 @@ class FixtureChatBackend:
                     arguments={"query": message.strip()[:200], "limit": 10},
                 )
             )
+        if self._requests_cast_career_search(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-cast-career-search-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=CAST_CAREER_SEARCH_TOOL_NAME,
+                    arguments=self._cast_career_search_arguments(message),
+                )
+            )
         if self._requests_cast_search(message, history, advertised):
             return ChatAgentExecution(
                 deferred=DeferredChatRun(
@@ -697,6 +776,7 @@ class FixtureChatBackend:
             | CastReadResult
             | CastAlumniReadResult
             | CastSearchResult
+            | CastCareerSearchResult
             | LibraryCatalogSearchResult
             | LibraryItemReadResult
             | LibraryCatalogBrowseResult
@@ -922,6 +1002,51 @@ class FixtureChatBackend:
             ]
             if tool_result.anonymous_aggregates:
                 lines.append("- 5件以上の匿名集計:")
+                lines.extend(
+                    f"  - {item.dimension}: {item.value}（{item.count}件）"
+                    for item in tool_result.anonymous_aggregates
+                )
+            return ChatAgentExecution(
+                draft=ChatDraft(
+                    content_markdown="\n".join(lines),
+                    evidence_ids=[evidence.evidence_id],
+                )
+            )
+        if deferred.tool_name == CAST_CAREER_SEARCH_TOOL_NAME:
+            if not isinstance(tool_result, CastCareerSearchResult):
+                raise ValueError(
+                    "The fixture CAST career call requires a CastCareerSearchResult."
+                )
+            evidence = next(
+                (item for item in context if item.evidence_id.startswith("cast-career-search-v1-")),
+                None,
+            )
+            if evidence is None:
+                raise ValueError("A resumed fixture Chat run requires CAST career evidence.")
+            if tool_result.status not in {"known", "partial"}:
+                raise ValueError("Unavailable CAST career results cannot be summarized.")
+            lines = [
+                "CASTの求人・採用実績・選考記録などを横断検索しました。",
+                f"- 検索面: {', '.join(tool_result.searched_surfaces)}",
+                f"- 合計件数: {tool_result.total_count}件",
+                f"- 今回取得: {tool_result.returned_count}件",
+            ]
+            if tool_result.status == "partial":
+                lines.append("- 一部の検索面は取得できず、結果はpartialです。")
+            for coverage in tool_result.surface_coverage:
+                suffix = (
+                    f" / {coverage.reason_code}"
+                    if coverage.reason_code
+                    else ""
+                )
+                count = (
+                    f"{coverage.returned_count}件"
+                    if coverage.total_count is None
+                    else f"{coverage.returned_count}/{coverage.total_count}件"
+                )
+                lines.append(f"  - {coverage.surface}: {coverage.status} ({count}){suffix}")
+            if tool_result.anonymous_aggregates:
+                lines.append("- 匿名集計（5件未満は非表示）:")
                 lines.extend(
                     f"  - {item.dimension}: {item.value}（{item.count}件）"
                     for item in tool_result.anonymous_aggregates
@@ -1439,6 +1564,10 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "CAST検索から導出した匿名集計"
         source_type = "career"
         locator = f"{CAST_SEARCH_LOCATOR_PREFIX}{uuid4().hex}"
+    elif request.name == CAST_CAREER_SEARCH_TOOL_NAME:
+        title = "CAST横断検索から導出した匿名集計"
+        source_type = "career"
+        locator = f"{CAST_CAREER_SEARCH_LOCATOR_PREFIX}{uuid4().hex}"
     elif request.name == LIBRARY_CATALOG_SEARCH_TOOL_NAME:
         title = "芝浦工業大学公式OPACの公開カタログ検索"
         source_type = "library"
@@ -1482,6 +1611,7 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         CAST_TOOL_NAME: "cast-summary-v1",
         CAST_ALUMNI_TOOL_NAME: "cast-alumni-v1",
         CAST_SEARCH_TOOL_NAME: "cast-search-v1",
+        CAST_CAREER_SEARCH_TOOL_NAME: "cast-career-search-v1",
         LIBRARY_CATALOG_SEARCH_TOOL_NAME: "library-catalog-search-v1",
         LIBRARY_ITEM_READ_TOOL_NAME: "library-item-read-v1",
         LIBRARY_CATALOG_BROWSE_TOOL_NAME: "library-catalog-browse-v1",
@@ -1952,6 +2082,11 @@ class ChatRunService:
             and getattr(request.result, "status", None) != "known"
         ):
             raise ValueError("CAST search errors cannot resume a chat run.")
+        if (
+            request.name == CAST_CAREER_SEARCH_TOOL_NAME
+            and getattr(request.result, "status", None) not in {"known", "partial"}
+        ):
+            raise ValueError("CAST career search errors cannot resume a chat run.")
         claimed = self.store.claim(
             run_id,
             tool_call_id=request.tool_call_id,

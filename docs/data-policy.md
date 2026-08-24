@@ -237,6 +237,8 @@ Decision Roomが表示する次の一歩は読み取り専用の確認案内だ�
 
 ### CAST横断検索のデータ境界
 
+`cast_career_search`は求人、インターン、会社説明会、企業、採用実績、選考記録、録画、キャリアイベント、相談枠を一回のread-only Deferred Toolで横断する。拡張機能内の詳細カード、企業名、締切、相談日時、人物情報、source URLはローカル結果にだけ残し、APIへ送る`CastCareerSearchResult`は面別件数・取得範囲・5件以上の匿名集計・失敗理由に限定する。検索要求にURL、form field、hidden値、company code、POST bodyを含めず、面ごとの失敗は空結果へ変換しない。
+
 横断検索のPrompt入力は、利用者が明示した自然言語の質問だけとする。求人カード、採用実績、選考記録、人物名、内部ID、URL、raw HTMLをPrompt APIの入力へ連結しない。Chrome Prompt APIが返した構造化クエリは、配列長・文字数・種別を検証してから端末内MiniSearchへ渡す。MiniSearchの結果と詳細Snapshotは拡張機能メモリ内だけで扱い、FastAPI、Azure、W&B、IndexedDB、Chat履歴へ保存しない。
 
 検索条件の勤務地、技術領域、職種、年度、OB・OG条件は厳密フィルタとして適用し、曖昧な検索語だけをprefix・fuzzyランキングへ回す。検索語が空、構造化結果が不正、Prompt APIが利用できない場合は外部Providerへfallbackせず、端末内で検索を開始しない。これはCAST個人記録を外部へ送らない既存のGateway境界を維持する。

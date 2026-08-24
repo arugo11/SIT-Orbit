@@ -40,6 +40,7 @@ ChatToolName = Literal[
     "cast_read",
     "cast_alumni_read",
     "cast_search",
+    "cast_career_search",
     "library_catalog_search",
     "library_item_read",
     "library_catalog_browse",
@@ -1329,6 +1330,118 @@ class CastSearchResult(StrictApiModel):
         return self
 
 
+CastCareerSurface = Literal[
+    "job",
+    "internship",
+    "company_session",
+    "company",
+    "hiring_record",
+    "selection_report",
+    "recording",
+    "career_event",
+    "counseling",
+]
+CastCareerStatus = Literal[
+    "known",
+    "partial",
+    "reauth_required",
+    "form_changed",
+    "rate_limited",
+    "local_model_unavailable",
+    "unavailable",
+]
+
+
+class CastCareerSurfaceCoverage(StrictApiModel):
+    surface: CastCareerSurface
+    status: CastCareerStatus
+    total_count: StrictInt | None = Field(default=None, ge=0, le=100_000)
+    returned_count: StrictInt = Field(ge=0, le=1_000)
+    fetched_pages: StrictInt = Field(ge=0, le=100)
+    page_size: StrictInt = Field(ge=0, le=50)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+
+class CastCareerAggregate(StrictApiModel):
+    """Anonymized cell from the local nine-surface CAST result.
+
+    Values are intentionally category labels only.  A minimum cell size keeps
+    the projection from becoming a proxy for an individual record.
+    """
+
+    dimension: Literal[
+        "surface",
+        "industry",
+        "location",
+        "graduation_year",
+        "occupation",
+        "technical_domain",
+        "relation",
+    ]
+    value: StrictStr = Field(min_length=1, max_length=200)
+    count: StrictInt = Field(ge=5, le=100_000)
+
+
+class CastCareerSearchResult(StrictApiModel):
+    """Aggregate-only projection for one bounded CAST career search.
+
+    Detailed cards remain in the extension.  This model deliberately has no
+    query, company, person, date, URL, internal-id, or raw-HTML fields.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    status: CastCareerStatus
+    searched_surfaces: list[CastCareerSurface] = Field(min_length=1, max_length=9)
+    surface_coverage: list[CastCareerSurfaceCoverage] = Field(
+        min_length=1,
+        max_length=9,
+    )
+    total_count: StrictInt = Field(ge=0, le=900_000)
+    returned_count: StrictInt = Field(ge=0, le=9_000)
+    anonymous_aggregates: list[CastCareerAggregate] = Field(
+        default_factory=list,
+        max_length=200,
+    )
+    evidence_ids: list[StrictStr] = Field(default_factory=list, max_length=32)
+    reason_codes: list[StrictStr] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "CastCareerSearchResult":
+        if len(set(self.searched_surfaces)) != len(self.searched_surfaces):
+            raise ValueError("CAST career searched surfaces must be unique.")
+        coverage_surfaces = [item.surface for item in self.surface_coverage]
+        if len(set(coverage_surfaces)) != len(coverage_surfaces):
+            raise ValueError("CAST career surface coverage must be unique.")
+        if set(coverage_surfaces) != set(self.searched_surfaces):
+            raise ValueError("CAST career coverage must match searched surfaces.")
+        if self.returned_count > self.total_count:
+            raise ValueError("CAST career returned_count cannot exceed total_count.")
+        aggregate_keys = [(item.dimension, item.value) for item in self.anonymous_aggregates]
+        if len(set(aggregate_keys)) != len(aggregate_keys):
+            raise ValueError("CAST career aggregates must be unique.")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("CAST career evidence IDs must be unique.")
+        if any(
+            not re.fullmatch(
+                r"cast-career-search-v1-[A-Za-z0-9_-]{16,200}", evidence_id
+            )
+            for evidence_id in self.evidence_ids
+        ):
+            raise ValueError("CAST career evidence IDs must be opaque v1 IDs.")
+        if len(set(self.reason_codes)) != len(self.reason_codes):
+            raise ValueError("CAST career reason codes must be unique.")
+        if self.status == "known":
+            if any(item.status not in {"known"} for item in self.surface_coverage):
+                raise ValueError("Known CAST career results require known surface coverage.")
+        elif self.status == "partial":
+            if not any(item.status == "known" for item in self.surface_coverage):
+                raise ValueError("Partial CAST career results require one known surface.")
+        else:
+            if self.total_count or self.returned_count or self.anonymous_aggregates:
+                raise ValueError("Unavailable CAST career results cannot include derived data.")
+        return self
+
+
 class ClientTool(StrictApiModel):
     """A capability explicitly advertised by the client for one run."""
 
@@ -1710,6 +1823,7 @@ class ChatToolResultRequest(StrictApiModel):
         | CastReadResult
         | CastAlumniReadResult
         | CastSearchResult
+        | CastCareerSearchResult
         | LibraryCatalogSearchResult
         | LibraryItemReadResult
         | LibraryCatalogBrowseResult
@@ -1763,6 +1877,10 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("CAST alumni results must use CastAlumniReadResult.")
         if self.name == "cast_search" and not isinstance(self.result, CastSearchResult):
             raise ValueError("CAST search results must use CastSearchResult.")
+        if self.name == "cast_career_search" and not isinstance(
+            self.result, CastCareerSearchResult
+        ):
+            raise ValueError("CAST career search results must use CastCareerSearchResult.")
         if self.name == "library_catalog_search" and not isinstance(
             self.result, LibraryCatalogSearchResult
         ):
@@ -1914,6 +2032,9 @@ __all__ = [
     "CastSearchAppliedFilters",
     "CastSearchCoverage",
     "CastSearchResult",
+    "CastCareerSurfaceCoverage",
+    "CastCareerAggregate",
+    "CastCareerSearchResult",
     "CastSearchSort",
     "SitrusGradeItem",
     "SitrusGradeResult",

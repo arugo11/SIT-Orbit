@@ -322,7 +322,7 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 ### CAST採用実績・選考記録の参照
 
-採用実績と選考記録は、実ログイン環境で確認した企業詳細`https://shibaura.pita.services/career/company_detail_view`の`#employment`、`#company_exam_entry`、`#company_obog`領域だけをread-onlyで読む。企業コードは端末内のローカルID生成にだけ使い、応募、OB・OG名簿の閲覧要求、添付・PDF取得、`published_company_exam_view`への推測遷移は行わない。ログイン画面、未知のpath、query/fragment、必須sectionやtableの構造不一致は成功扱いしない。
+採用実績と選考記録は、実ログイン環境で確認した企業詳細`https://shibaura.pita.services/career/company_detail_view`の`#employment`、`#company_exam_entry`、`#company_obog`領域だけをread-onlyで読む。企業コードは端末内の一時MapとローカルID生成にだけ使い、応募、OB・OG名簿の閲覧要求、添付・PDF取得は行わない。`/career/published_company_exam_view`は企業詳細DOMが実際に提示した、query・fragmentなしの同一originリンクである場合だけその完全一致URLを追跡し、企業コードやモデル引数からURLを合成しない。リンクが観測できない場合は既存の確認済みfragment経路を使い、未知のpath、query/fragment、必須sectionやtableの構造不一致は成功扱いしない。
 
 企業名、卒業年月、学科、職種、採用形態、選考記録の概要は端末内`CastHistoryLocalSnapshot`に保持する。行中の氏名・指導教員など人物らしい値はPseudonymization Gatewayへ渡し、Career Vaultで対応表を暗号化したうえでmission固有の別名へ置換する。Prompt projectionから元の氏名、企業コード、内部local_id、report href、raw HTML、フォーム値を除外し、外部Providerへ送る経路はこのprojectionに与えない。OB・OG名簿は有無だけを扱い、名簿本文や直接連絡先は取得しない。
 
@@ -355,6 +355,8 @@ CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含�
 個人・第三者のCAST記録は、このDecision RoomとローカルPrompt経路ではChrome Prompt APIのオンデバイス実行へ固定し、APIが利用できない場合にAzureへfallbackしない。別のChat経路で`restricted/cast_career`を明示的に有効化する場合だけ、allowlist済みの型付き仮名projectionをAzure OpenAIかつ観測無効のrunへ送れる。Context Manifestで処理先と送信payloadを表示し、外部書込み、応募、予約、添付、Calendar登録はpreview後の本人確認を必須とする。個人情報を安全に仮名化できない自由記述は送信せず、端末内で停止する。
 
 ### CAST横断検索
+
+Chatからは低水準検索を面ごとに選ばせず、`cast_career_search` v1 Deferred Toolを一回だけ要求する。`query`、9面の`surfaces`、意味フィルター、1〜20件の`limit`、明示時だけの`exhaustive`を受け取り、URL、form field、hidden値、company code、POST bodyは受け付けない。content scriptが既存のallowlist経路を直列に実行し、面ごとのcoverageと失敗理由を保持したままローカル結果をMiniSearchへ渡す。Azureへはサーバー発行のopaque Evidence IDと5件以上の匿名集計だけを渡す。
 
 `cast-cross-search.ts`は、求人・インターン、採用実績・選考記録、支援リソースのtyped Snapshotを一つの端末内コーパスへまとめる。自然言語の質問はChrome Prompt APIへ質問文だけを渡して、検索語・必須語・勤務地・技術領域・職種・年度・OB・OG条件へ構造化する。Snapshotや人物情報をこのPromptへ渡す経路は用意しない。
 

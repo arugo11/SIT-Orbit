@@ -1375,6 +1375,228 @@
         "title": "CastAlumniReadResult",
         "description": "Generalized CAST supporter data with no person or contact fields.\n\nThe extension keeps the authenticated page and local detail card.  Only\nthese bounded categories cross the Chat API; names, contact values, CAST\nidentifiers, URLs, and free text have no representation here."
       },
+      "CastCareerAggregate": {
+        "properties": {
+          "dimension": {
+            "type": "string",
+            "enum": [
+              "surface",
+              "industry",
+              "location",
+              "graduation_year",
+              "occupation",
+              "technical_domain",
+              "relation"
+            ],
+            "title": "Dimension"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Value"
+          },
+          "count": {
+            "type": "integer",
+            "maximum": 100000.0,
+            "minimum": 5.0,
+            "title": "Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "dimension",
+          "value",
+          "count"
+        ],
+        "title": "CastCareerAggregate",
+        "description": "Anonymized cell from the local nine-surface CAST result.\n\nValues are intentionally category labels only.  A minimum cell size keeps\nthe projection from becoming a proxy for an individual record."
+      },
+      "CastCareerSearchResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "partial",
+              "reauth_required",
+              "form_changed",
+              "rate_limited",
+              "local_model_unavailable",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "searched_surfaces": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "job",
+                "internship",
+                "company_session",
+                "company",
+                "hiring_record",
+                "selection_report",
+                "recording",
+                "career_event",
+                "counseling"
+              ]
+            },
+            "type": "array",
+            "maxItems": 9,
+            "minItems": 1,
+            "title": "Searched Surfaces"
+          },
+          "surface_coverage": {
+            "items": {
+              "$ref": "#/components/schemas/CastCareerSurfaceCoverage"
+            },
+            "type": "array",
+            "maxItems": 9,
+            "minItems": 1,
+            "title": "Surface Coverage"
+          },
+          "total_count": {
+            "type": "integer",
+            "maximum": 900000.0,
+            "minimum": 0.0,
+            "title": "Total Count"
+          },
+          "returned_count": {
+            "type": "integer",
+            "maximum": 9000.0,
+            "minimum": 0.0,
+            "title": "Returned Count"
+          },
+          "anonymous_aggregates": {
+            "items": {
+              "$ref": "#/components/schemas/CastCareerAggregate"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Anonymous Aggregates"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "title": "Evidence Ids"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 32,
+            "title": "Reason Codes"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "searched_surfaces",
+          "surface_coverage",
+          "total_count",
+          "returned_count"
+        ],
+        "title": "CastCareerSearchResult",
+        "description": "Aggregate-only projection for one bounded CAST career search.\n\nDetailed cards remain in the extension.  This model deliberately has no\nquery, company, person, date, URL, internal-id, or raw-HTML fields."
+      },
+      "CastCareerSurfaceCoverage": {
+        "properties": {
+          "surface": {
+            "type": "string",
+            "enum": [
+              "job",
+              "internship",
+              "company_session",
+              "company",
+              "hiring_record",
+              "selection_report",
+              "recording",
+              "career_event",
+              "counseling"
+            ],
+            "title": "Surface"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "partial",
+              "reauth_required",
+              "form_changed",
+              "rate_limited",
+              "local_model_unavailable",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "total_count": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 100000.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Count"
+          },
+          "returned_count": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Returned Count"
+          },
+          "fetched_pages": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Fetched Pages"
+          },
+          "page_size": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 0.0,
+            "title": "Page Size"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "surface",
+          "status",
+          "returned_count",
+          "fetched_pages",
+          "page_size"
+        ],
+        "title": "CastCareerSurfaceCoverage"
+      },
       "CastReadResult": {
         "properties": {
           "schema_version": {
@@ -1842,6 +2064,7 @@
               "cast_read",
               "cast_alumni_read",
               "cast_search",
+              "cast_career_search",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -2143,6 +2366,7 @@
               "cast_read",
               "cast_alumni_read",
               "cast_search",
+              "cast_career_search",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -2198,6 +2422,7 @@
               "cast_read",
               "cast_alumni_read",
               "cast_search",
+              "cast_career_search",
               "library_catalog_search",
               "library_item_read",
               "library_catalog_browse",
@@ -2263,6 +2488,9 @@
               },
               {
                 "$ref": "#/components/schemas/CastSearchResult"
+              },
+              {
+                "$ref": "#/components/schemas/CastCareerSearchResult"
               },
               {
                 "$ref": "#/components/schemas/LibraryCatalogSearchResult"

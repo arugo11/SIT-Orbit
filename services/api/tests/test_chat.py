@@ -5,6 +5,7 @@ from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     CAST_ALUMNI_TOOL_NAME,
+    CAST_CAREER_SEARCH_TOOL_NAME,
     CAST_SEARCH_TOOL_NAME,
     CAST_TOOL_NAME,
     LIBRARY_CATALOG_SEARCH_TOOL_NAME,
@@ -17,6 +18,7 @@ from orbit_api.agent.pydantic_ai_backend import (
     ChatDraft,
     DeferredChatRun,
     ToolName,
+    cast_career_search,
     cast_read,
     cast_search,
     google_calendar_availability,
@@ -31,6 +33,9 @@ from orbit_api.models import (
     CalendarAvailabilityResult,
     CastAlumniProfile,
     CastAlumniReadResult,
+    CastCareerAggregate,
+    CastCareerSearchResult,
+    CastCareerSurfaceCoverage,
     CastReadResult,
     CastSearchAggregate,
     CastSearchAppliedFilters,
@@ -42,6 +47,7 @@ from orbit_api.models import (
     ChatHistoryMessage,
     ChatRunRequest,
     ChatRunToolRequired,
+    ChatToolName,
     ChatToolResultRequest,
     EvidenceLink,
     LegacyMyLibraryReadResult,
@@ -55,7 +61,7 @@ from orbit_api.models import (
     ScombzReadResult,
     ScopedMyLibraryReadResult,
 )
-from orbit_api.models.agent import ChatToolName
+from orbit_api.models.agent import CastCareerSurface
 from pydantic_ai import Agent, DeferredToolRequests, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -920,6 +926,135 @@ def test_cast_search_error_does_not_resume_chat(monkeypatch) -> None:
             },
         )
     assert second.status_code == 422
+
+
+def cast_career_search_fixture_result() -> CastCareerSearchResult:
+    surfaces: list[CastCareerSurface] = ["job", "company", "hiring_record"]
+    return CastCareerSearchResult(
+        status="known",
+        searched_surfaces=surfaces,
+        surface_coverage=[
+            CastCareerSurfaceCoverage(
+                surface=surface,
+                status="known",
+                total_count=8,
+                returned_count=8,
+                fetched_pages=1,
+                page_size=10,
+                reason_code=None,
+            )
+            for surface in surfaces
+        ],
+        total_count=32,
+        returned_count=32,
+        anonymous_aggregates=[
+            CastCareerAggregate(dimension="surface", value="company", count=8),
+            CastCareerAggregate(dimension="industry", value="情報通信", count=8),
+        ],
+        evidence_ids=[],
+        reason_codes=[],
+    )
+
+
+def test_fixture_chat_route_runs_one_cast_career_cross_search(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-cast-career-search",
+                "message": (
+                    "豊洲から通いやすく、機械系とプログラミングを使い、"
+                    "過去5年の採用実績とOB・OGがある企業"
+                ),
+                "history": [],
+                "client_tools": [{"name": CAST_CAREER_SEARCH_TOOL_NAME, "version": 1}],
+            },
+        ).json()
+        assert first["status"] == "tool_required"
+        call = first["calls"][0]
+        assert call["name"] == CAST_CAREER_SEARCH_TOOL_NAME
+        assert call["arguments"]["surfaces"] == [
+            "job",
+            "company",
+            "hiring_record",
+        ]
+        assert call["arguments"]["filters"]["graduation_years"] == [
+            2026,
+            2025,
+            2024,
+            2023,
+            2022,
+        ]
+        second = client.post(
+            f"/v1/chat/runs/{first['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": CAST_CAREER_SEARCH_TOOL_NAME,
+                "version": 1,
+                "result": cast_career_search_fixture_result().model_dump(mode="json"),
+            },
+        )
+    assert second.status_code == 200
+    completed = second.json()
+    assert completed["status"] == "completed"
+    assert "横断検索しました" in completed["message"]["content_markdown"]
+    assert "合計件数: 32件" in completed["message"]["content_markdown"]
+    assert completed["message"]["evidence"][0]["evidence_id"].startswith(
+        "cast-career-search-v1-"
+    )
+    assert "company_name" not in second.text
+    assert "company_code" not in second.text
+
+
+def test_chat_request_accepts_the_extension_read_only_capability_set() -> None:
+    names: list[ChatToolName] = [
+        "scombz_page_summary",
+        "scombz_read",
+        "google_calendar_availability",
+        "syllabus_search",
+        "browser_read_url",
+        "sitrus_read",
+        "moodle_read",
+        "my_library_read",
+        "cast_read",
+        "cast_alumni_read",
+        "cast_search",
+        "cast_career_search",
+        "library_catalog_search",
+        "library_item_read",
+        "library_catalog_browse",
+        "library_discovery_search",
+        "library_action_options",
+    ]
+    request = ChatRunRequest(
+        conversation_id="capability-set",
+        message="質問",
+        client_tools=[ChatClientTool(name=name, version=1) for name in names],
+    )
+    assert len(request.client_tools) == len(names)
+
+
+def test_cast_career_search_result_rejects_detail_and_small_cells() -> None:
+    result = cast_career_search_fixture_result()
+    assert "company_name" not in result.model_dump_json()
+    with pytest.raises(ValueError):
+        CastCareerSearchResult.model_validate(
+            {
+                **result.model_dump(mode="json"),
+                "company_name": "must stay local",
+            }
+        )
+    with pytest.raises(ValueError):
+        CastCareerSearchResult.model_validate(
+            {
+                **result.model_dump(mode="json"),
+                "anonymous_aggregates": [
+                    {"dimension": "industry", "value": "small", "count": 4}
+                ],
+            }
+        )
 
 
 def test_fixture_chat_route_runs_cast_alumni_aggregate_loop(monkeypatch) -> None:
@@ -1872,3 +2007,128 @@ async def test_function_model_deferred_cast_search_accepts_semantic_filters_only
     assert completed.draft.evidence_ids == ["cast-search-v1-server1234567890abcd"]
     assert "cast-search-v1-local1234567890" not in captured[-1]
     assert "個人名は外部へ出さない" not in captured[-1]
+
+
+@pytest.mark.asyncio
+async def test_function_model_runs_one_cast_career_search_across_six_surfaces() -> None:
+    """The high-level CAST tool is one deferred call, even for many surfaces."""
+
+    calls = [0]
+    captured: list[str] = []
+
+    surfaces: list[CastCareerSurface] = [
+        "job",
+        "hiring_record",
+        "selection_report",
+        "recording",
+        "career_event",
+        "counseling",
+    ]
+
+    def model_function(messages, _info):
+        calls[0] += 1
+        captured.append(str(messages))
+        if calls[0] == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        CAST_CAREER_SEARCH_TOOL_NAME,
+                        {
+                            "query": "締切が近い機械系求人と先輩の選考記録、関連する録画と相談枠",
+                            "surfaces": surfaces,
+                            "filters": {
+                                "locations": ["豊洲"],
+                                "technical_domains": ["機械工学", "プログラミング"],
+                                "graduation_years": [2026, 2025, 2024, 2023, 2022],
+                                "obog_required": True,
+                                "recording_required": True,
+                            },
+                            "limit": 10,
+                            "exhaustive": False,
+                        },
+                        tool_call_id="cast-career-call-1",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "CASTの複数面を順番に確認しました。",
+                        "evidence_ids": [
+                            "cast-career-search-v1-server1234567890abcd"
+                        ],
+                    },
+                    tool_call_id="cast-career-final-1",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="cast-career-cross-search-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[cast_career_search],
+    )
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    advertised = {CAST_CAREER_SEARCH_TOOL_NAME}
+    first = await backend.start_chat(
+        conversation_id="conversation-cast-career-cross-search-function-model",
+        message="求人、選考記録、録画、相談枠を一度に確認して",
+        history=[],
+        advertised_tools=advertised,
+    )
+    assert first.deferred is not None
+    assert first.deferred.tool_name == CAST_CAREER_SEARCH_TOOL_NAME
+    assert first.deferred.arguments["surfaces"] == surfaces
+    assert first.deferred.arguments["filters"]["obog_required"] is True
+
+    evidence = EvidenceLink(
+        evidence_id="cast-career-search-v1-server1234567890abcd",
+        title="CAST横断検索から導出した匿名集計",
+        source_type="career",
+        locator="orbit-cast://career-search/1234567890abcdef",
+        data_classification="personal",
+    )
+    completed = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=CastCareerSearchResult(
+            status="partial",
+            searched_surfaces=surfaces,
+            surface_coverage=[
+                CastCareerSurfaceCoverage(
+                    surface=surface,
+                    status="known" if surface != "recording" else "unavailable",
+                    total_count=8 if surface != "recording" else None,
+                    returned_count=8 if surface != "recording" else 0,
+                    fetched_pages=1,
+                    page_size=10,
+                    reason_code=None if surface != "recording" else "support_read_pending",
+                )
+                for surface in surfaces
+            ],
+            total_count=40,
+            returned_count=40,
+            anonymous_aggregates=[
+                CastCareerAggregate(dimension="surface", value="job", count=8),
+                CastCareerAggregate(dimension="industry", value="情報通信", count=8),
+            ],
+            evidence_ids=[],
+            reason_codes=["support_read_pending"],
+        ),
+        context=[evidence],
+        advertised_tools=advertised,
+    )
+    assert completed.draft is not None
+    assert completed.draft.evidence_ids == [evidence.evidence_id]
+    serialized = "\n".join(captured)
+    assert "cast_career_search" in serialized
+    assert "company_code" not in serialized
+    assert "source_url" not in serialized
+    assert "CAST横断検索から導出した匿名集計" not in serialized

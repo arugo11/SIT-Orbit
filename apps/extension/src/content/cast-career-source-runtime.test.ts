@@ -3,9 +3,13 @@ import { fileURLToPath } from "node:url";
 import { parseHTML } from "linkedom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CAST_COMPANY_EXAM_REPORT_URL,
+  type CastCareerLocalResult,
   type CastCareerSearchRequest,
+  type CastCareerSourceItem,
   isCastCareerSearchRequest,
   mergeCastCareerSupportLocalResult,
+  projectCastCareerForAgent,
   runCastCareerSourceSearch,
 } from "./cast-career-source-runtime";
 import {
@@ -60,6 +64,7 @@ const companyDetail = `<!doctype html><html><body>
 </body></html>`;
 const employmentFragment = `<!doctype html><html><body><section id="employment"><table><thead><tr><th>卒業年月</th><th>学問系統</th><th>学部学科</th><th>職種</th></tr></thead><tbody><tr><td>2024-03-20</td><td>理系</td><td>工学部 情報工学科</td><td>組込み開発</td></tr></tbody></table></section></body></html>`;
 const examFragment = `<!doctype html><html><body><section id="company_exam_entry"><table><thead><tr><th>卒業年月</th><th>学問系統</th><th>学部学科</th><th>性別</th><th>応募方法</th><th>採用職種</th><th>参考ES</th></tr></thead><tbody><tr><td>2024-03-20</td><td>理系</td><td>工学部 情報工学科</td><td>回答しない</td><td>自由応募</td><td>組込み開発</td><td>有</td></tr></tbody></table></section></body></html>`;
+const publishedExamReport = `<!doctype html><html><body><section id="company_exam_entry"><table><thead><tr><th>卒業年月</th><th>学問系統</th><th>学部学科</th><th>性別</th><th>応募方法</th><th>採用職種</th><th>参考ES</th></tr></thead><tbody><tr><td>2025-03-20</td><td>理系</td><td>工学部 機械工学科</td><td>回答しない</td><td>自由応募</td><td>設計</td><td>有</td></tr></tbody></table></section></body></html>`;
 
 function installDom() {
   vi.stubGlobal(
@@ -80,6 +85,100 @@ afterEach(() => {
 });
 
 describe("CAST career source runtime", () => {
+  it("projects nine-surface details into aggregate-only agent data", () => {
+    const item = (index: number): CastCareerSourceItem => ({
+      result_ref: `orbit-cast-result-${index}`,
+      surface: "job",
+      title: `企業${index}`,
+      company_name: `企業${index}`,
+      dates: ["2026-08-20"],
+      deadline: "2026-09-30",
+      locations: ["豊洲"],
+      industries: ["情報通信"],
+      occupations: ["組込み開発"],
+      academic_programs: ["機械工学"],
+      graduation_years: [2026],
+      relation_flags: ["obog"],
+      local_summary: "個人名 山田太郎、連絡先 test@example.com",
+      source_url:
+        "https://shibaura.pita.services/career/job_offer_search/search",
+    });
+    const local: CastCareerLocalResult = {
+      schema_version: "v1",
+      status: "known",
+      query: "機械系の求人",
+      surfaces: ["job", "recording", "counseling"],
+      surface_results: [
+        {
+          surface: "job",
+          status: "known",
+          total_count: 8,
+          returned_count: 8,
+          coverage: { mode: "page", fetched_pages: 1, page_size: 10 },
+          items: Array.from({ length: 8 }, (_, index) => item(index)),
+          reason_code: null,
+          evidence_ids: ["local-only-evidence"],
+        },
+        {
+          surface: "recording",
+          status: "unavailable",
+          total_count: null,
+          returned_count: 0,
+          coverage: null,
+          items: [],
+          reason_code: "support_read_pending",
+          evidence_ids: [],
+        },
+        {
+          surface: "counseling",
+          status: "known",
+          total_count: 2,
+          returned_count: 2,
+          coverage: { mode: "page", fetched_pages: 1, page_size: 10 },
+          items: [],
+          reason_code: null,
+          evidence_ids: [],
+        },
+      ],
+      items: Array.from({ length: 8 }, (_, index) => item(index)),
+      local_evidence: [
+        {
+          evidence_id: "local-only-evidence",
+          title: "個人名を含むローカル根拠",
+          locator: "orbit-cast://career/local-only",
+        },
+      ],
+      discovered_support_links: [],
+      reason_codes: ["support_read_pending"],
+    };
+
+    const projection = projectCastCareerForAgent(local);
+    expect(projection.status).toBe("known");
+    expect(projection.searched_surfaces).toEqual([
+      "job",
+      "recording",
+      "counseling",
+    ]);
+    expect(projection.evidence_ids).toEqual([]);
+    expect(JSON.stringify(projection)).not.toContain("企業0");
+    expect(JSON.stringify(projection)).not.toContain("山田太郎");
+    expect(JSON.stringify(projection)).not.toContain("example.com");
+    expect(JSON.stringify(projection)).not.toContain("shibaura.pita.services");
+    expect(projection.anonymous_aggregates).toEqual(
+      expect.arrayContaining([
+        { dimension: "industry", value: "情報通信", count: 8 },
+        { dimension: "location", value: "豊洲", count: 8 },
+        { dimension: "relation", value: "obog", count: 8 },
+      ]),
+    );
+    expect(
+      projection.anonymous_aggregates.some(
+        (aggregate) =>
+          aggregate.dimension === "surface" && aggregate.value === "counseling",
+      ),
+    ).toBe(false);
+  });
+
   it("accepts semantic surfaces only and rejects arbitrary transport fields", () => {
     const valid: CastCareerSearchRequest = {
       query: "機械とプログラミング",
@@ -106,6 +205,7 @@ describe("CAST career source runtime", () => {
         filters: { ...valid.filters, company_code: "9500711" },
       }),
     ).toBe(false);
+    expect(isCastCareerSearchRequest({ ...valid, limit: 21 })).toBe(false);
   });
 
   it("runs direct CAST search and counseling sequentially without returning hidden fields", async () => {
@@ -279,5 +379,53 @@ describe("CAST career source runtime", () => {
       ]),
     );
     expect(JSON.stringify(merged)).not.toContain("zoom");
+  });
+
+  it("follows the published exam route only when the detail DOM exposes it", async () => {
+    installDom();
+    const detailWithObservedReport = companyDetail.replace(
+      "</body>",
+      `<a href="${CAST_COMPANY_EXAM_REPORT_URL}">入社試験情報の報告</a></body>`,
+    );
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (
+          url.includes("/career/company_search") &&
+          (init?.method ?? "GET") === "GET"
+        )
+          return response(companyForm, url);
+        if (url.includes("/career/company_search") && init?.method === "POST")
+          return response(
+            companyResult,
+            "https://shibaura.pita.services/career/company_search/search",
+          );
+        if (url.endsWith("/career/company_detail_view"))
+          return response(detailWithObservedReport, url);
+        if (url.endsWith("/career/get/employmentSub"))
+          return response(employmentFragment, url);
+        if (url === CAST_COMPANY_EXAM_REPORT_URL)
+          return response(publishedExamReport, url);
+        throw new Error(`unexpected URL ${url}`);
+      }),
+    );
+    const result = await runCastCareerSourceSearch({
+      query: "選考記録",
+      surfaces: ["company", "selection_report"],
+      filters: {},
+      limit: 5,
+    });
+    expect(
+      result.surface_results.find(
+        (surface) => surface.surface === "selection_report",
+      ),
+    ).toEqual(expect.objectContaining({ status: "known", returned_count: 1 }));
+    expect(calls).toContain(`GET ${CAST_COMPANY_EXAM_REPORT_URL}`);
+    expect(calls).not.toContain(
+      "POST https://shibaura.pita.services/career/get/companyExamSub",
+    );
   });
 });

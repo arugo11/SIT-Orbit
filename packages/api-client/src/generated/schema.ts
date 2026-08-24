@@ -573,6 +573,81 @@ export interface components {
             reason_code?: string | null;
         };
         /**
+         * CastCareerAggregate
+         * @description Anonymized cell from the local nine-surface CAST result.
+         *
+         *     Values are intentionally category labels only.  A minimum cell size keeps
+         *     the projection from becoming a proxy for an individual record.
+         */
+        CastCareerAggregate: {
+            /**
+             * Dimension
+             * @enum {string}
+             */
+            dimension: "surface" | "industry" | "location" | "graduation_year" | "occupation" | "technical_domain" | "relation";
+            /** Value */
+            value: string;
+            /** Count */
+            count: number;
+        };
+        /**
+         * CastCareerSearchResult
+         * @description Aggregate-only projection for one bounded CAST career search.
+         *
+         *     Detailed cards remain in the extension.  This model deliberately has no
+         *     query, company, person, date, URL, internal-id, or raw-HTML fields.
+         */
+        CastCareerSearchResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "form_changed" | "rate_limited" | "local_model_unavailable" | "unavailable";
+            /** Searched Surfaces */
+            searched_surfaces: ("job" | "internship" | "company_session" | "company" | "hiring_record" | "selection_report" | "recording" | "career_event" | "counseling")[];
+            /** Surface Coverage */
+            surface_coverage: components["schemas"]["CastCareerSurfaceCoverage"][];
+            /** Total Count */
+            total_count: number;
+            /** Returned Count */
+            returned_count: number;
+            /** Anonymous Aggregates */
+            anonymous_aggregates?: components["schemas"]["CastCareerAggregate"][];
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /** Reason Codes */
+            reason_codes?: string[];
+        };
+        /** CastCareerSurfaceCoverage */
+        CastCareerSurfaceCoverage: {
+            /**
+             * Surface
+             * @enum {string}
+             */
+            surface: "job" | "internship" | "company_session" | "company" | "hiring_record" | "selection_report" | "recording" | "career_event" | "counseling";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "form_changed" | "rate_limited" | "local_model_unavailable" | "unavailable";
+            /** Total Count */
+            total_count?: number | null;
+            /** Returned Count */
+            returned_count: number;
+            /** Fetched Pages */
+            fetched_pages: number;
+            /** Page Size */
+            page_size: number;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
          * CastReadResult
          * @description Derived CAST dashboard counts safe for an explicitly confirmed run.
          *
@@ -748,7 +823,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "cast_career_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -862,7 +937,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "cast_career_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -881,14 +956,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "cast_career_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["ScombzCourseListResult"] | components["schemas"]["ScombzPortalReadResult"] | components["schemas"]["ScombzCourseReadResult"] | components["schemas"]["ScombzMaterialSearchResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["SyllabusReadResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["CastSearchResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["ScombzCourseListResult"] | components["schemas"]["ScombzPortalReadResult"] | components["schemas"]["ScombzCourseReadResult"] | components["schemas"]["ScombzMaterialSearchResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["SyllabusReadResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["CastSearchResult"] | components["schemas"]["CastCareerSearchResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
         };
         /**
          * ClientTool

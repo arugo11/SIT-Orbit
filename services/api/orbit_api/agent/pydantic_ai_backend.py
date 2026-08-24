@@ -30,6 +30,7 @@ from orbit_api.models import (
     BrowserReadResult,
     CalendarAvailabilityResult,
     CastAlumniReadResult,
+    CastCareerSearchResult,
     CastReadResult,
     CastSearchResult,
     ChatHistoryMessage,
@@ -97,6 +98,8 @@ CAST_ALUMNI_TOOL_NAME = "cast_alumni_read"
 CAST_ALUMNI_LOCATOR_PREFIX = "orbit-cast://alumni/"
 CAST_SEARCH_TOOL_NAME = "cast_search"
 CAST_SEARCH_LOCATOR_PREFIX = "orbit-cast://search/"
+CAST_CAREER_SEARCH_TOOL_NAME = "cast_career_search"
+CAST_CAREER_SEARCH_LOCATOR_PREFIX = "orbit-cast://career-search/"
 LIBRARY_CATALOG_SEARCH_TOOL_NAME = "library_catalog_search"
 LIBRARY_ITEM_READ_TOOL_NAME = "library_item_read"
 LIBRARY_CATALOG_BROWSE_TOOL_NAME = "library_catalog_browse"
@@ -130,6 +133,7 @@ SUPPORTED_TOOL_NAMES = frozenset(
         CAST_TOOL_NAME,
         CAST_ALUMNI_TOOL_NAME,
         CAST_SEARCH_TOOL_NAME,
+        CAST_CAREER_SEARCH_TOOL_NAME,
         LIBRARY_CATALOG_SEARCH_TOOL_NAME,
         LIBRARY_ITEM_READ_TOOL_NAME,
         LIBRARY_CATALOG_BROWSE_TOOL_NAME,
@@ -154,6 +158,7 @@ ToolName = Literal[
     "cast_read",
     "cast_alumni_read",
     "cast_search",
+    "cast_career_search",
     "library_catalog_search",
     "library_item_read",
     "library_catalog_browse",
@@ -178,6 +183,7 @@ ToolResult = (
     | CastReadResult
     | CastAlumniReadResult
     | CastSearchResult
+    | CastCareerSearchResult
     | LibraryCatalogSearchResult
     | LibraryItemReadResult
     | LibraryCatalogBrowseResult
@@ -757,6 +763,17 @@ def is_derived_cast_search_evidence(evidence: EvidenceLink) -> bool:
     )
 
 
+def is_derived_cast_career_search_evidence(evidence: EvidenceLink) -> bool:
+    """Accept only server-issued evidence for a nine-surface CAST projection."""
+
+    return (
+        evidence.source_type == "career"
+        and evidence.data_classification == "personal"
+        and _is_opaque_locator(evidence.locator, CAST_CAREER_SEARCH_LOCATOR_PREFIX)
+        and evidence.evidence_id.startswith("cast-career-search-v1-")
+    )
+
+
 def _cast_search_provider_payload(result: CastSearchResult) -> dict[str, Any]:
     """Build the aggregate-only payload sent to an external provider."""
 
@@ -769,6 +786,12 @@ def _cast_search_provider_payload(result: CastSearchResult) -> dict[str, Any]:
             # local CAST form resolver, but never needs to cross this boundary.
             filters.pop("advisor", None)
     return payload
+
+
+def _cast_career_search_provider_payload(result: CastCareerSearchResult) -> dict[str, Any]:
+    """Build the aggregate-only payload sent to an external provider."""
+
+    return result.model_dump(mode="json", exclude={"evidence_ids"})
 
 
 def is_derived_library_evidence(evidence: EvidenceLink) -> bool:
@@ -808,6 +831,7 @@ def validate_agent_data(
     allow_cast_read: bool = False,
     allow_cast_alumni_read: bool = False,
     allow_cast_search: bool = False,
+    allow_cast_career_search: bool = False,
     allow_library_read: bool = False,
 ) -> None:
     if event.data_classification not in SAFE_CLASSIFICATIONS:
@@ -836,6 +860,8 @@ def validate_agent_data(
         if allow_cast_alumni_read and is_derived_cast_alumni_evidence(evidence):
             continue
         if allow_cast_search and is_derived_cast_search_evidence(evidence):
+            continue
+        if allow_cast_career_search and is_derived_cast_career_search_evidence(evidence):
             continue
         if allow_library_read and is_derived_library_evidence(evidence):
             continue
@@ -1023,6 +1049,31 @@ async def cast_search(
     """
 
     del kind, filters, sort, cursor, exhaustive
+    raise CallDeferred()
+
+
+async def cast_career_search(
+    query: str,
+    surfaces: list[
+        Literal[
+            "job",
+            "internship",
+            "company_session",
+            "company",
+            "hiring_record",
+            "selection_report",
+            "recording",
+            "career_event",
+            "counseling",
+        ]
+    ],
+    filters: dict[str, Any],
+    limit: int = 10,
+    exhaustive: bool = False,
+) -> CastCareerSearchResult:
+    """Deferred bounded search over all selected CAST career surfaces."""
+
+    del query, surfaces, filters, limit, exhaustive
     raise CallDeferred()
 
 
@@ -1378,6 +1429,115 @@ def _validate_cast_search_arguments(arguments: dict[str, Any]) -> None:
         raise RuntimeError("cast_search exhaustive must be a boolean.")
 
 
+def _validate_cast_career_search_arguments(arguments: dict[str, Any]) -> None:
+    """Validate the semantic, high-level nine-surface CAST request."""
+
+    allowed = {"query", "surfaces", "filters", "limit", "exhaustive"}
+    if set(arguments) - allowed:
+        raise RuntimeError("cast_career_search received unsupported arguments.")
+    query = arguments.get("query")
+    if not isinstance(query, str) or not 1 <= len(query.strip()) <= 1000:
+        raise RuntimeError("cast_career_search query is outside the allowed range.")
+    if re.search(
+        r"(?:https?://|www\.|[\w.+-]+@[\w.-]+|(?:shibaura\.pita\.services|scombz\.shibaura-it\.ac\.jp|sitrus\.sic\.shibaura-it\.ac\.jp)|orbit-|csrf|(?:access|id|refresh)[_-]?token|oauth|bearer|cookie|session|company[_-]?code|sortColumn|formAction|\b\d{8,}\b)",
+        query,
+        re.IGNORECASE,
+    ):
+        raise RuntimeError("cast_career_search query contains a non-semantic value.")
+    surfaces = arguments.get("surfaces")
+    allowed_surfaces = {
+        "job",
+        "internship",
+        "company_session",
+        "company",
+        "hiring_record",
+        "selection_report",
+        "recording",
+        "career_event",
+        "counseling",
+    }
+    if (
+        not isinstance(surfaces, list)
+        or not 1 <= len(surfaces) <= 9
+        or len(set(surfaces)) != len(surfaces)
+        or any(
+            not isinstance(surface, str) or surface not in allowed_surfaces
+            for surface in surfaces
+        )
+    ):
+        raise RuntimeError("cast_career_search surfaces are invalid.")
+    filters = arguments.get("filters")
+    if filters is None:
+        filters = {}
+    if not isinstance(filters, dict):
+        raise RuntimeError("cast_career_search filters must be an object.")
+    allowed_filters = {
+        "company_name",
+        "locations",
+        "industries",
+        "technical_domains",
+        "occupations",
+        "academic_programs",
+        "graduation_years",
+        "deadline_before",
+        "target_grades",
+        "obog_required",
+        "career_supporter_required",
+        "recording_required",
+    }
+    if set(filters) - allowed_filters:
+        raise RuntimeError("cast_career_search filters contain an unsupported key.")
+    string_filters = {"company_name", "deadline_before"}
+    list_string_filters = {
+        "locations",
+        "industries",
+        "technical_domains",
+        "occupations",
+        "academic_programs",
+        "target_grades",
+    }
+    boolean_filters = {"obog_required", "career_supporter_required", "recording_required"}
+    for key, value in filters.items():
+        if key in string_filters:
+            if not isinstance(value, str) or not value.strip() or len(value) > 200:
+                raise RuntimeError(f"cast_career_search filter {key} is invalid.")
+            if key == "deadline_before" and not re.fullmatch(r"20\d{2}-\d{2}-\d{2}", value):
+                raise RuntimeError("cast_career_search deadline_before is invalid.")
+        elif key in list_string_filters:
+            if (
+                not isinstance(value, list)
+                or not 1 <= len(value) <= 20
+                or any(
+                    not isinstance(item, str) or not item.strip() or len(item) > 200
+                    for item in value
+                )
+            ):
+                raise RuntimeError(f"cast_career_search filter {key} is invalid.")
+        elif key == "graduation_years":
+            if (
+                not isinstance(value, list)
+                or not 1 <= len(value) <= 20
+                or any(
+                    isinstance(item, bool)
+                    or not isinstance(item, int)
+                    or not 1995 <= item <= 2100
+                    for item in value
+                )
+            ):
+                raise RuntimeError("cast_career_search graduation_years is invalid.")
+        elif key in boolean_filters:
+            if not isinstance(value, bool):
+                raise RuntimeError(f"cast_career_search filter {key} is invalid.")
+        else:
+            raise RuntimeError(f"cast_career_search filter {key} is invalid.")
+    limit = arguments.get("limit", 10)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
+        raise RuntimeError("cast_career_search limit is invalid.")
+    exhaustive = arguments.get("exhaustive", False)
+    if not isinstance(exhaustive, bool):
+        raise RuntimeError("cast_career_search exhaustive must be a boolean.")
+
+
 class PydanticAIAgentBackend(AgentBackend):
     """Shared Agent adapter used by both OpenAI and Azure OpenAI providers."""
 
@@ -1723,6 +1883,8 @@ class PydanticAIAgentBackend(AgentBackend):
             tools.append(cast_alumni_read)
         if CAST_SEARCH_TOOL_NAME in advertised:
             tools.append(cast_search)
+        if CAST_CAREER_SEARCH_TOOL_NAME in advertised:
+            tools.append(cast_career_search)
         if LIBRARY_CATALOG_SEARCH_TOOL_NAME in advertised:
             tools.append(
                 opac_state.search_tool() if opac_state is not None else library_catalog_search
@@ -1768,14 +1930,16 @@ class PydanticAIAgentBackend(AgentBackend):
                 "only the public title, author, ISBN, and the student's explicit reading "
                 "goal. Never include loan status, due dates, reservations, history, or "
                 "the fact that the student borrowed the book. "
-                "When cast_search is advertised and the student asks about CAST, use "
-                "semantic filters only. For alumni employment questions prefer a "
-                "hiring_record search with the latest five completed graduation years "
-                "unless the student specifies another range. For a cross-CAST request, "
-                "call cast_search sequentially for the relevant surfaces and keep the "
-                "coverage and applied filters explicit; never claim an exhaustive "
-                "ranking from a single page. CAST result detail stays local, so cite "
-                "the server-issued CAST evidence ID and summarize only aggregate data. "
+                "When cast_career_search is advertised and the student asks about CAST, "
+                "prefer one high-level call with semantic filters and all relevant "
+                "surfaces instead of multiple low-level calls. For alumni employment "
+                "questions default to hiring_record plus the latest five completed "
+                "graduation years unless the student specifies another range. Keep "
+                "surface coverage and applied conditions explicit; never claim an "
+                "exhaustive ranking from a bounded page read. CAST result detail stays "
+                "local, so cite the server-issued CAST career evidence ID and summarize "
+                "only aggregate data. When only cast_search is advertised, retain its "
+                "single-surface semantic behavior. "
                 "If the student's goal includes finding books in the SIT library, "
                 "verify promising candidates with library_catalog_search and "
                 "keep each holding's available, unavailable, or unknown status as "
@@ -1988,6 +2152,8 @@ class PydanticAIAgentBackend(AgentBackend):
                 raise RuntimeError("syllabus_read requires syllabus_ref only.")
         if call.tool_name == CAST_SEARCH_TOOL_NAME:
             _validate_cast_search_arguments(arguments)
+        if call.tool_name == CAST_CAREER_SEARCH_TOOL_NAME:
+            _validate_cast_career_search_arguments(arguments)
         # Accept the pre-scope v1 empty call emitted by older local clients as
         # the safe default page. New model-generated calls still require the
         # scope argument through the tool signature and validator.
@@ -2051,6 +2217,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_cast_read=True,
             allow_cast_alumni_read=True,
             allow_cast_search=True,
+            allow_cast_career_search=True,
             allow_library_read=True,
         )
         advertised = set(advertised_tools or set()) & set(SUPPORTED_TOOL_NAMES)
@@ -2308,6 +2475,28 @@ class PydanticAIAgentBackend(AgentBackend):
                 # server evidence link instead.
                 "cast_search": _cast_search_provider_payload(tool_result),
             }
+        elif deferred.tool_name == CAST_CAREER_SEARCH_TOOL_NAME:
+            if not isinstance(tool_result, CastCareerSearchResult):
+                raise ValueError("CAST career search calls require a CastCareerSearchResult.")
+            if tool_result.status not in {"known", "partial"}:
+                raise ValueError("CAST career search errors cannot resume a chat run.")
+            requested_surfaces = deferred.arguments.get("surfaces")
+            if not isinstance(requested_surfaces, list) or set(
+                tool_result.searched_surfaces
+            ) != set(requested_surfaces):
+                raise ValueError("CAST career search coverage does not match the request.")
+            evidence = next(
+                (
+                    item
+                    for item in reversed(context)
+                    if is_derived_cast_career_search_evidence(item)
+                ),
+                None,
+            )
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "cast_career_search": _cast_career_search_provider_payload(tool_result),
+            }
         elif deferred.tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME:
             if not isinstance(tool_result, LibraryCatalogSearchResult):
                 raise ValueError("Library catalog calls require a LibraryCatalogSearchResult.")
@@ -2434,6 +2623,7 @@ class PydanticAIAgentBackend(AgentBackend):
             allow_cast_read=True,
             allow_cast_alumni_read=True,
             allow_cast_search=True,
+            allow_cast_career_search=True,
             allow_library_read=True,
         )
         budget = ChatToolBudget(count=deferred.tool_call_count)
@@ -2530,6 +2720,8 @@ __all__ = [
     "CAST_ALUMNI_LOCATOR_PREFIX",
     "CAST_SEARCH_TOOL_NAME",
     "CAST_SEARCH_LOCATOR_PREFIX",
+    "CAST_CAREER_SEARCH_TOOL_NAME",
+    "CAST_CAREER_SEARCH_LOCATOR_PREFIX",
     "LIBRARY_CATALOG_SEARCH_TOOL_NAME",
     "LIBRARY_ITEM_READ_TOOL_NAME",
     "LIBRARY_CATALOG_BROWSE_TOOL_NAME",
@@ -2556,6 +2748,7 @@ __all__ = [
     "is_derived_cast_evidence",
     "is_derived_cast_alumni_evidence",
     "is_derived_cast_search_evidence",
+    "is_derived_cast_career_search_evidence",
     "is_derived_library_evidence",
     "browser_read_url",
     "sitrus_read",
@@ -2563,6 +2756,7 @@ __all__ = [
     "my_library_read",
     "cast_alumni_read",
     "cast_search",
+    "cast_career_search",
     "library_catalog_search",
     "library_item_read",
     "library_catalog_browse",

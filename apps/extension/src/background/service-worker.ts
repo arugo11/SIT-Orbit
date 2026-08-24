@@ -71,6 +71,7 @@ import {
   type CastCareerLocalResult,
   type CastCareerSupportRuntimeResult,
   mergeCastCareerSupportLocalResult,
+  projectCastCareerForAgent,
 } from "../content/cast-career-source-runtime";
 import {
   CAST_ENTRY_URL,
@@ -6291,6 +6292,40 @@ async function readCastCareerPage(
   };
 }
 
+function castCareerUnavailable(
+  message: CastCareerSearchMessage,
+  reasonCode: string,
+  status: "reauth_required" | "unavailable" = "unavailable",
+): CastCareerSearchResponse {
+  const local: CastCareerLocalResult = {
+    schema_version: "v1",
+    status,
+    query: message.query,
+    surfaces: message.surfaces,
+    surface_results: message.surfaces.map((surface) => ({
+      surface,
+      status,
+      total_count: null,
+      returned_count: 0,
+      coverage: null,
+      items: [],
+      reason_code: reasonCode,
+      evidence_ids: [],
+    })),
+    items: [],
+    local_evidence: [],
+    discovered_support_links: [],
+    reason_codes: [reasonCode],
+  };
+  return { ...local, projection: projectCastCareerForAgent(local) };
+}
+
+function withCastCareerProjection(
+  local: CastCareerLocalResult,
+): CastCareerSearchResponse {
+  return { ...local, projection: projectCastCareerForAgent(local) };
+}
+
 async function readCastSupportPage(
   kind: CastSupportPageKind,
   url: string,
@@ -6338,55 +6373,22 @@ async function handleCastCareerSearch(
   message: CastCareerSearchMessage,
 ): Promise<CastCareerSearchResponse> {
   if (!(await hasBrowserPermission(CAST_PERMISSION_PATTERN, CAST_ORIGIN))) {
-    return {
-      schema_version: "v1",
-      status: "unavailable",
-      query: message.query,
-      surfaces: message.surfaces,
-      surface_results: message.surfaces.map((surface) => ({
-        surface,
-        status: "unavailable",
-        total_count: null,
-        returned_count: 0,
-        coverage: null,
-        items: [],
-        reason_code: "permission_required",
-        evidence_ids: [],
-      })),
-      items: [],
-      local_evidence: [],
-      discovered_support_links: [],
-      reason_codes: ["permission_required"],
-    };
+    return castCareerUnavailable(message, "permission_required");
   }
   try {
     const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
     const tab = tabs.find(isCastSearchCandidateTab);
     if (tab?.id === undefined) {
       await openCastEntry();
-      return {
-        schema_version: "v1",
-        status: "reauth_required",
-        query: message.query,
-        surfaces: message.surfaces,
-        surface_results: message.surfaces.map((surface) => ({
-          surface,
-          status: "reauth_required",
-          total_count: null,
-          returned_count: 0,
-          coverage: null,
-          items: [],
-          reason_code: "cast_page_not_open",
-          evidence_ids: [],
-        })),
-        items: [],
-        local_evidence: [],
-        discovered_support_links: [],
-        reason_codes: ["cast_page_not_open"],
-      };
+      return castCareerUnavailable(
+        message,
+        "cast_page_not_open",
+        "reauth_required",
+      );
     }
     const local = await readCastCareerPage(tab.id, message);
-    if (local.discovered_support_links.length === 0) return local;
+    if (local.discovered_support_links.length === 0)
+      return withCastCareerProjection(local);
     const supportResults: CastCareerSupportRuntimeResult[] = [];
     for (const link of local.discovered_support_links) {
       supportResults.push({
@@ -6394,32 +6396,11 @@ async function handleCastCareerSearch(
         result: await readCastSupportPage(link.kind, link.url),
       });
     }
-    return mergeCastCareerSupportLocalResult(
-      local,
-      supportResults,
-      message.limit,
+    return withCastCareerProjection(
+      mergeCastCareerSupportLocalResult(local, supportResults, message.limit),
     );
   } catch {
-    return {
-      schema_version: "v1",
-      status: "unavailable",
-      query: message.query,
-      surfaces: message.surfaces,
-      surface_results: message.surfaces.map((surface) => ({
-        surface,
-        status: "unavailable",
-        total_count: null,
-        returned_count: 0,
-        coverage: null,
-        items: [],
-        reason_code: "cast_career_search_failed",
-        evidence_ids: [],
-      })),
-      items: [],
-      local_evidence: [],
-      discovered_support_links: [],
-      reason_codes: ["cast_career_search_failed"],
-    };
+    return castCareerUnavailable(message, "cast_career_search_failed");
   }
 }
 
@@ -7633,42 +7614,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (isCastCareerSearchMessage(message)) {
     if (!isTrustedExtensionPageSender(sender)) {
-      sendResponse({
-        schema_version: "v1",
-        status: "unavailable",
-        query: message.query,
-        surfaces: message.surfaces,
-        surface_results: message.surfaces.map((surface) => ({
-          surface,
-          status: "unavailable",
-          total_count: null,
-          returned_count: 0,
-          coverage: null,
-          items: [],
-          reason_code: "untrusted_sender",
-          evidence_ids: [],
-        })),
-        items: [],
-        local_evidence: [],
-        discovered_support_links: [],
-        reason_codes: ["untrusted_sender"],
-      });
+      sendResponse(castCareerUnavailable(message, "untrusted_sender"));
       return true;
     }
     void handleCastCareerSearch(message)
       .then(sendResponse)
       .catch(() =>
-        sendResponse({
-          schema_version: "v1",
-          status: "unavailable",
-          query: message.query,
-          surfaces: message.surfaces,
-          surface_results: [],
-          items: [],
-          local_evidence: [],
-          discovered_support_links: [],
-          reason_codes: ["cast_career_search_failed"],
-        }),
+        sendResponse(
+          castCareerUnavailable(message, "cast_career_search_failed"),
+        ),
       );
     return true;
   }

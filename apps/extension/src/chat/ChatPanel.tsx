@@ -8,6 +8,7 @@ import {
   classifyAgentApiError,
   isBrowserReadResult,
   isCastAlumniReadResult,
+  isCastCareerSearchResult,
   isCastReadResult,
   isCastSearchResult,
   isLibraryActionOptionsResult,
@@ -40,6 +41,12 @@ import {
 } from "../connectors/library-floor-maps";
 import { parseSyllabusDetailHtml } from "../connectors/syllabus-search";
 import type { CastAlumniLocalSnapshot } from "../content/cast-alumni-reader";
+import {
+  type CastCareerFilters,
+  type CastCareerLocalResult,
+  isCastCareerSearchRequest,
+} from "../content/cast-career-source-runtime";
+import { rankCastCareerItems } from "../content/cast-cross-search";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
   type CastSearchLocalKnownResult,
@@ -64,6 +71,7 @@ import { ConversationPseudonymizationGateway } from "../privacy/conversation-pse
 import type {
   BrowserReadResponse,
   CastAlumniReadResponse,
+  CastCareerSearchResponse,
   CastReadResponse,
   CastSearchResponse,
   LibraryActionOptionsResponse,
@@ -148,7 +156,9 @@ function mergeProcessingScope(
     ? "personal/scombz_student"
     : toolName === "syllabus_search" || toolName === "syllabus_read"
       ? "public/syllabus"
-      : toolName === "cast_alumni_read" && dataClassification === "restricted"
+      : (toolName === "cast_alumni_read" &&
+            dataClassification === "restricted") ||
+          toolName === "cast_career_search"
         ? "restricted/cast_career"
         : null;
   if (!nextScope || conversation.processing_scope === nextScope) {
@@ -421,6 +431,7 @@ function toolResultRequest(
     | "cast_read"
     | "cast_alumni_read"
     | "cast_search"
+    | "cast_career_search"
     | "library_catalog_search"
     | "library_item_read"
     | "library_catalog_browse"
@@ -509,6 +520,9 @@ export function ChatPanel({
   >({});
   const [localCastSearchDetails, setLocalCastSearchDetails] = useState<
     Record<string, CastSearchLocalKnownResult>
+  >({});
+  const [localCastCareerDetails, setLocalCastCareerDetails] = useState<
+    Record<string, CastCareerLocalResult>
   >({});
   type LocalLibraryRecord = NonNullable<
     LibraryCatalogSearchResult["items"]
@@ -656,6 +670,7 @@ export function ChatPanel({
         | "cast_read"
         | "cast_alumni_read"
         | "cast_search"
+        | "cast_career_search"
         | "library_catalog_search"
         | "library_item_read"
         | "library_catalog_browse"
@@ -699,6 +714,8 @@ export function ChatPanel({
     if (allows("cast_alumni_read"))
       tools.push({ name: "cast_alumni_read", version: 1 });
     if (allows("cast_search")) tools.push({ name: "cast_search", version: 1 });
+    if (allows("cast_career_search"))
+      tools.push({ name: "cast_career_search", version: 1 });
     // OPAC/SIT Search reads are public and read-only. Advertise them on every
     // turn so the Agent can resolve elliptical follow-ups such as
     // 「どこに配架されてる？」 from the conversation context instead of
@@ -764,6 +781,12 @@ export function ChatPanel({
     }
     if (call.name === "cast_search" && !isCastSearchRequest(argumentsObject)) {
       throw new Error("CAST検索の意味フィルターを検証できません。");
+    }
+    if (
+      call.name === "cast_career_search" &&
+      !isCastCareerSearchRequest(argumentsObject)
+    ) {
+      throw new Error("CAST横断検索の意味フィルターを検証できません。");
     }
     if (
       call.name === "syllabus_search" &&
@@ -1700,6 +1723,50 @@ export function ChatPanel({
       setLocalCastSearchDetails((items) => ({
         ...items,
         [activity.id]: cast.local,
+      }));
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        cast.projection,
+      );
+    } else if (call.name === "cast_career_search") {
+      const cast = await sendExtensionMessage<CastCareerSearchResponse>({
+        type: MESSAGE_TYPES.castCareerSearch,
+        tool_call_id: call.tool_call_id,
+        ...argumentsObject,
+      });
+      if (!isCastCareerSearchResult(cast.projection)) {
+        throw new Error("CAST横断検索結果を検証できませんでした。");
+      }
+      if (cast.status !== "known" && cast.status !== "partial") {
+        const message =
+          cast.status === "reauth_required"
+            ? "CASTのログインが必要です。開いた公式ページでログイン後、もう一度検索してください。"
+            : cast.status === "form_changed"
+              ? "CASTの検索フォームが変更されました。検索を中断しました。"
+              : cast.status === "rate_limited"
+                ? "CASTの検索が一時的に制限されました。時間を置いて再試行してください。"
+                : `CAST横断検索を利用できませんでした（${cast.reason_codes.join(", ")}）。`;
+        throw new Error(message);
+      }
+      const rankedItems = rankCastCareerItems(
+        cast.items,
+        cast.query,
+        argumentsObject.limit as number,
+        argumentsObject.filters as CastCareerFilters,
+      );
+      const rankedRefs = new Set(
+        rankedItems.map((entry) => entry.item.result_ref),
+      );
+      setLocalCastCareerDetails((items) => ({
+        ...items,
+        [activity.id]: {
+          ...cast,
+          items: [
+            ...rankedItems.map((entry) => entry.item),
+            ...cast.items.filter((item) => !rankedRefs.has(item.result_ref)),
+          ].slice(0, argumentsObject.limit as number),
+        },
       }));
       request = toolResultRequest(
         call.tool_call_id,
@@ -2894,6 +2961,55 @@ export function ChatPanel({
                   {localCastSearchDetails[message.id]?.next_cursor ? (
                     <p>続きの結果は、追加の検索が必要な場合だけ取得します。</p>
                   ) : null}
+                </details>
+              ) : null}
+              {message.role === "tool" && localCastCareerDetails[message.id] ? (
+                <details className="chat-local-detail" open>
+                  <summary>CAST横断検索の端末内詳細</summary>
+                  <p>
+                    検索面:{" "}
+                    {localCastCareerDetails[message.id]?.surfaces.join("、")}
+                    <br />
+                    条件: {localCastCareerDetails[message.id]?.query}
+                  </p>
+                  <ul>
+                    {localCastCareerDetails[message.id]?.surface_results.map(
+                      (surface) => (
+                        <li key={surface.surface}>
+                          <strong>{surface.surface}</strong>：{surface.status} /{" "}
+                          {surface.total_count ?? surface.returned_count}件
+                          {surface.reason_code
+                            ? `（${surface.reason_code}）`
+                            : ""}
+                        </li>
+                      ),
+                    )}
+                  </ul>
+                  {localCastCareerDetails[message.id]?.items.length ? (
+                    <ul>
+                      {localCastCareerDetails[message.id]?.items.map((item) => (
+                        <li key={item.result_ref}>
+                          <strong>{item.title}</strong>
+                          {item.company_name ? ` / ${item.company_name}` : ""}
+                          {item.deadline ? ` / 締切: ${item.deadline}` : ""}
+                          {item.relation_flags.length > 0
+                            ? ` / ${item.relation_flags.join("、")}`
+                            : ""}
+                          {item.source_url ? (
+                            <a
+                              href={item.source_url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              公式画面を開く
+                            </a>
+                          ) : null}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>端末内で表示できる詳細項目はありません。</p>
+                  )}
                 </details>
               ) : null}
               {message.evidence && message.evidence.length > 0 ? (

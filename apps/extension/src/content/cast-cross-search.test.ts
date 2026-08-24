@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { CastCareerSourceItem } from "./cast-career-source-runtime";
 import {
   buildCastCareerDocuments,
   type CastCareerSearchDocument,
@@ -6,6 +7,7 @@ import {
   createCareerQueryPromptRequest,
   emptyCareerQuery,
   parseCareerQueryResponse,
+  rankCastCareerItems,
   searchCastCareer,
   structureCareerQuery,
 } from "./cast-cross-search";
@@ -72,6 +74,91 @@ const documents: CastCareerSearchDocument[] = [
 ];
 
 describe("CAST cross search", () => {
+  it("ranks live items from all nine surfaces without exposing transport IDs", () => {
+    const surfaces: CastCareerSourceItem["surface"][] = [
+      "job",
+      "internship",
+      "company_session",
+      "company",
+      "hiring_record",
+      "selection_report",
+      "recording",
+      "career_event",
+      "counseling",
+    ];
+    const items: CastCareerSourceItem[] = surfaces.map((surface, index) => ({
+      result_ref: `opaque-result-${index}`,
+      surface,
+      title: surface === "job" ? "豊洲の機械系求人" : `${surface}の関連情報`,
+      company_name: surface === "job" ? "合成企業" : null,
+      dates: [],
+      deadline: surface === "job" ? "2026-09-30" : null,
+      locations: surface === "job" ? ["豊洲"] : [],
+      industries: surface === "job" ? ["情報通信"] : [],
+      occupations: surface === "job" ? ["組込み開発"] : [],
+      academic_programs:
+        surface === "job" ? ["機械工学", "プログラミング"] : [],
+      graduation_years: surface === "hiring_record" ? [2026] : [],
+      relation_flags: surface === "hiring_record" ? ["obog"] : [],
+      local_summary: "端末内だけの詳細",
+      source_url: null,
+    }));
+    const ranked = rankCastCareerItems(items, "豊洲 機械 プログラミング", 20);
+    expect(ranked[0]?.item.surface).toBe("job");
+    expect(ranked.map((entry) => entry.item.result_ref)).not.toContain(
+      "9500711",
+    );
+    expect(ranked.length).toBeGreaterThan(0);
+  });
+
+  it("applies semantic filters before ranking the local detail cards", () => {
+    const ranked = rankCastCareerItems(
+      [
+        {
+          result_ref: "opaque-matching-result",
+          surface: "job",
+          title: "機械制御求人",
+          company_name: "合成企業",
+          dates: [],
+          deadline: "2026-09-01",
+          locations: ["豊洲"],
+          industries: ["製造"],
+          occupations: ["組込み開発"],
+          academic_programs: ["機械工学", "プログラミング"],
+          graduation_years: [2026],
+          relation_flags: ["obog"],
+          local_summary: null,
+          source_url: null,
+        },
+        {
+          result_ref: "opaque-nonmatching-result",
+          surface: "job",
+          title: "別地域求人",
+          company_name: "別企業",
+          dates: [],
+          deadline: "2026-09-01",
+          locations: ["大宮"],
+          industries: ["製造"],
+          occupations: ["設計"],
+          academic_programs: ["機械工学"],
+          graduation_years: [2026],
+          relation_flags: [],
+          local_summary: null,
+          source_url: null,
+        },
+      ],
+      "機械 プログラミング",
+      20,
+      {
+        locations: ["豊洲"],
+        technical_domains: ["プログラミング"],
+        obog_required: true,
+      },
+    );
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]?.item.result_ref).toBe("opaque-matching-result");
+  });
+
   it("sends only the user's question to the local Prompt API", () => {
     const request = createCareerQueryPromptRequest(
       "豊洲から通いやすく、機械系とプログラミングを使う仕事を探して",

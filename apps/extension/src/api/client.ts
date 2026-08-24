@@ -73,6 +73,8 @@ export type CastReadResult = components["schemas"]["CastReadResult"];
 export type CastAlumniReadResult =
   components["schemas"]["CastAlumniReadResult"];
 export type CastSearchResult = components["schemas"]["CastSearchResult"];
+export type CastCareerSearchResult =
+  components["schemas"]["CastCareerSearchResult"];
 export type LibraryHoldingSummary =
   components["schemas"]["LibraryHoldingSummary"];
 export type LibraryRelatedRecordRef =
@@ -1964,6 +1966,145 @@ export function isCastSearchResult(value: unknown): value is CastSearchResult {
     value.returned_count === 0 &&
     value.anonymous_aggregates.length === 0 &&
     value.evidence_ids.length === 0
+  );
+}
+
+export function isCastCareerSearchResult(
+  value: unknown,
+): value is CastCareerSearchResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "searched_surfaces",
+      "surface_coverage",
+      "total_count",
+      "returned_count",
+      "anonymous_aggregates",
+      "evidence_ids",
+      "reason_codes",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isOneOf(value.status, [
+      "known",
+      "partial",
+      "reauth_required",
+      "form_changed",
+      "rate_limited",
+      "local_model_unavailable",
+      "unavailable",
+    ]) ||
+    !Array.isArray(value.searched_surfaces) ||
+    value.searched_surfaces.length < 1 ||
+    value.searched_surfaces.length > 9 ||
+    new Set(value.searched_surfaces).size !== value.searched_surfaces.length ||
+    !value.searched_surfaces.every((item) =>
+      isOneOf(item, [
+        "job",
+        "internship",
+        "company_session",
+        "company",
+        "hiring_record",
+        "selection_report",
+        "recording",
+        "career_event",
+        "counseling",
+      ]),
+    ) ||
+    !Array.isArray(value.surface_coverage) ||
+    value.surface_coverage.length !== value.searched_surfaces.length ||
+    !value.surface_coverage.every((item) => {
+      if (
+        !isRecord(item) ||
+        !hasExactlyKeys(item, [
+          "surface",
+          "status",
+          "total_count",
+          "returned_count",
+          "fetched_pages",
+          "page_size",
+          "reason_code",
+        ]) ||
+        !isOneOf(item.surface, value.searched_surfaces as string[]) ||
+        !isOneOf(item.status, [
+          "known",
+          "partial",
+          "reauth_required",
+          "form_changed",
+          "rate_limited",
+          "local_model_unavailable",
+          "unavailable",
+        ]) ||
+        (item.total_count !== null &&
+          !isIntegerInRange(item.total_count, 0, 100_000)) ||
+        !isIntegerInRange(item.returned_count, 0, 1_000) ||
+        !isIntegerInRange(item.fetched_pages, 0, 100) ||
+        !isIntegerInRange(item.page_size, 0, 50) ||
+        (item.reason_code !== null && typeof item.reason_code !== "string")
+      ) {
+        return false;
+      }
+      return (
+        item.total_count === null || item.returned_count <= item.total_count
+      );
+    }) ||
+    new Set(
+      value.surface_coverage.map((item) =>
+        isRecord(item) ? String(item.surface) : "",
+      ),
+    ).size !== value.surface_coverage.length ||
+    new Set(value.surface_coverage.map((item) => String(item.surface))).size !==
+      value.searched_surfaces.length ||
+    !isIntegerInRange(value.total_count, 0, 900_000) ||
+    !isIntegerInRange(value.returned_count, 0, 9_000) ||
+    value.returned_count > value.total_count ||
+    !Array.isArray(value.anonymous_aggregates) ||
+    value.anonymous_aggregates.length > 200 ||
+    !value.anonymous_aggregates.every((item) => {
+      return (
+        isRecord(item) &&
+        hasExactlyKeys(item, ["dimension", "value", "count"]) &&
+        isOneOf(item.dimension, [
+          "surface",
+          "industry",
+          "location",
+          "graduation_year",
+          "occupation",
+          "technical_domain",
+          "relation",
+        ]) &&
+        isNonEmptyString(item.value) &&
+        isIntegerInRange(item.count, 5, 100_000)
+      );
+    }) ||
+    !Array.isArray(value.evidence_ids) ||
+    value.evidence_ids.length > 32 ||
+    new Set(value.evidence_ids).size !== value.evidence_ids.length ||
+    !value.evidence_ids.every(
+      (item) =>
+        typeof item === "string" &&
+        /^cast-career-search-v1-[A-Za-z0-9_-]{16,200}$/u.test(item),
+    ) ||
+    !Array.isArray(value.reason_codes) ||
+    value.reason_codes.length > 32 ||
+    !value.reason_codes.every(
+      (item) =>
+        typeof item === "string" && item.length > 0 && item.length <= 100,
+    )
+  ) {
+    return false;
+  }
+  if (value.status === "known") {
+    return value.surface_coverage.every((item) => item.status === "known");
+  }
+  if (value.status === "partial") {
+    return value.surface_coverage.some((item) => item.status === "known");
+  }
+  return (
+    value.total_count === 0 &&
+    value.returned_count === 0 &&
+    value.anonymous_aggregates.length === 0
   );
 }
 

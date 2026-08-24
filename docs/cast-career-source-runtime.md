@@ -13,7 +13,7 @@ content-script boundary; the service worker receives typed local cards only.
 | 会社説明会 | `/career/company_session_search` | none |
 | 企業 | `/career/company_search` → `/career/company_search/search` | observed company-detail form |
 | 採用実績 | `/career/adopters_search` → `/career/adopters_search/search` | company detail → `/career/get/employmentSub` |
-| 選考記録 | company-detail relation link | company detail → `/career/get/companyExamSub` |
+| 選考記録 | company-detail relation link | company detail → exact observed `/career/published_company_exam_view`, otherwise `/career/get/companyExamSub` |
 | 相談枠 | `https://shibaura.pita.services/career/consultation_reservation` | read-only slot grid |
 | 録画 | CAST top → fixed CAST-linked Notion root | temporary inactive tab |
 | キャリアイベント | CAST top → fixed CAST-linked Notion root | temporary inactive tab |
@@ -21,6 +21,11 @@ content-script boundary; the service worker receives typed local cards only.
 The exact Notion roots are discovered from the authenticated CAST top page and
 then checked against a fixed allowlist. An agent cannot supply a URL, form
 action, field name, company code, hidden value, or POST body.
+
+The published exam route is followed only when the authenticated company-detail
+DOM exposes the exact query-free same-origin link. The runtime never constructs
+it from a company code or a model argument; an absent or unexpected link is
+reported as a structure/path failure rather than guessed.
 
 ## Bounds and failure handling
 

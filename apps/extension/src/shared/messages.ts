@@ -19,6 +19,7 @@ import type {
 import { isLibraryResourceRef } from "../connectors/library-discovery";
 import type { OpacDiagnosticSnapshot } from "../connectors/opac-diagnostics";
 import {
+  type CastCareerAgentProjection,
   type CastCareerLocalResult,
   type CastCareerSearchRequest,
   isCastCareerSearchRequest,
@@ -476,7 +477,9 @@ export interface CastCareerSearchMessage extends CastCareerSearchRequest {
   tool_call_id: string;
 }
 
-export type CastCareerSearchResponse = CastCareerLocalResult;
+export interface CastCareerSearchResponse extends CastCareerLocalResult {
+  projection: CastCareerAgentProjection;
+}
 
 export type CastSearchResponse =
   | {

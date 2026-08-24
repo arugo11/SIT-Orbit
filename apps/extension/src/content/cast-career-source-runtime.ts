@@ -1,7 +1,9 @@
 import {
+  CAST_COMPANY_EXAM_REPORT_URL,
   type CastHistoryLocalSnapshot,
   extractCastHistory,
   isCastCompanyDetailUrl,
+  isCastCompanyExamReportUrl,
 } from "./cast-history-reports-reader";
 import {
   type CastSearchFilters,
@@ -25,6 +27,8 @@ import {
   CAST_TOP_URL,
   extractCastSupportResources,
 } from "./cast-support-resources-reader";
+
+export { CAST_COMPANY_EXAM_REPORT_URL } from "./cast-history-reports-reader";
 
 /** Message handled by the CAST page content script. */
 export const CAST_CAREER_INTERNAL_MESSAGE = "orbit-cast-career-search" as const;
@@ -134,6 +138,49 @@ export interface CastCareerLocalResult {
   reason_codes: string[];
 }
 
+/** Aggregate-only contract sent from the extension to the Chat API. */
+export interface CastCareerAgentSurfaceCoverage {
+  surface: CastCareerSurface;
+  status: CastCareerSourceStatus;
+  total_count: number | null;
+  returned_count: number;
+  fetched_pages: number;
+  page_size: number;
+  reason_code: string | null;
+}
+
+export interface CastCareerAgentAggregate {
+  dimension:
+    | "surface"
+    | "industry"
+    | "location"
+    | "graduation_year"
+    | "occupation"
+    | "technical_domain"
+    | "relation";
+  value: string;
+  count: number;
+}
+
+export interface CastCareerAgentProjection {
+  schema_version: "v1";
+  status:
+    | "known"
+    | "partial"
+    | "reauth_required"
+    | "form_changed"
+    | "rate_limited"
+    | "unavailable";
+  searched_surfaces: CastCareerSurface[];
+  surface_coverage: CastCareerAgentSurfaceCoverage[];
+  total_count: number;
+  returned_count: number;
+  anonymous_aggregates: CastCareerAgentAggregate[];
+  /** Always empty: the API creates its own server evidence ID. */
+  evidence_ids: string[];
+  reason_codes: string[];
+}
+
 export interface CastCareerSupportRuntimeResult {
   kind: Extract<CastCareerSurface, "recording" | "career_event">;
   result: CastSupportPageReadResult;
@@ -163,7 +210,10 @@ const DIRECT_SURFACE_KIND: Readonly<
 };
 const PAGE_SIZE = 10;
 const COMPANY_DETAIL_LIMIT = 5;
-const MAX_ITEMS = 20;
+const MAX_REQUEST_LIMIT = 20;
+// Keep enough bounded local rows for the cross-surface ranker to compare
+// surfaces before it applies the user's final 1..20 display limit.
+const MAX_ITEMS = 200;
 const MAX_SUPPORT_ITEMS = 100;
 const SAFE_DATE = /^20\d{2}-\d{2}-\d{2}$/u;
 
@@ -225,6 +275,99 @@ function integerArray(value: unknown, limit = 20): value is number[] {
   );
 }
 
+/**
+ * Remove local item detail before the CAST result crosses the extension/API
+ * boundary.  Company names, person aliases, URLs, dates and raw HTML are not
+ * represented in this projection.
+ */
+export function projectCastCareerForAgent(
+  local: CastCareerLocalResult,
+): CastCareerAgentProjection {
+  const surfaces: CastCareerSurface[] =
+    local.surfaces.length > 0 ? local.surfaces : ["company"];
+  const surfaceResults = new Map(
+    local.surface_results.map((result) => [result.surface, result]),
+  );
+  const surface_coverage: CastCareerAgentSurfaceCoverage[] = surfaces.map(
+    (surface) => {
+      const result = surfaceResults.get(surface);
+      return {
+        surface,
+        status: result?.status ?? "unavailable",
+        total_count: result?.total_count ?? null,
+        returned_count: result?.returned_count ?? 0,
+        fetched_pages: result?.coverage?.fetched_pages ?? 0,
+        page_size: result?.coverage?.page_size ?? 0,
+        reason_code: result?.reason_code ?? null,
+      };
+    },
+  );
+  const known = surface_coverage.filter((item) => item.status === "known");
+  const total_count = known.reduce(
+    (sum, item) => sum + (item.total_count ?? item.returned_count),
+    0,
+  );
+  const returned_count = known.reduce(
+    (sum, item) => sum + item.returned_count,
+    0,
+  );
+  const counts = new Map<
+    string,
+    { dimension: CastCareerAgentAggregate["dimension"]; count: number }
+  >();
+  const addCount = (
+    dimension: CastCareerAgentAggregate["dimension"],
+    value: string,
+    count = 1,
+  ): void => {
+    const normalized = compact(value, 120);
+    if (!normalized) return;
+    const key = `${dimension}:${normalized}`;
+    const current = counts.get(key);
+    counts.set(key, {
+      dimension,
+      count: (current?.count ?? 0) + count,
+    });
+  };
+  for (const coverage of known) {
+    const total = coverage.total_count ?? coverage.returned_count;
+    if (total >= 5) addCount("surface", coverage.surface, total);
+    const result = surfaceResults.get(coverage.surface);
+    for (const item of result?.items ?? []) {
+      for (const value of item.industries) addCount("industry", value);
+      for (const value of item.locations) addCount("location", value);
+      for (const value of item.occupations) addCount("occupation", value);
+      for (const value of item.academic_programs) {
+        addCount("technical_domain", value);
+      }
+      for (const value of item.relation_flags) addCount("relation", value);
+      for (const value of item.graduation_years) {
+        addCount("graduation_year", String(value));
+      }
+    }
+  }
+  const anonymous_aggregates = Array.from(counts.entries())
+    .filter(([, item]) => item.count >= 5)
+    .slice(0, 200)
+    .map(([key, item]) => ({
+      dimension: item.dimension,
+      value: key.slice(item.dimension.length + 1),
+      count: item.count,
+    }));
+  const reason_codes = Array.from(new Set(local.reason_codes)).slice(0, 32);
+  return {
+    schema_version: "v1",
+    status: local.status,
+    searched_surfaces: surfaces,
+    surface_coverage,
+    total_count,
+    returned_count,
+    anonymous_aggregates,
+    evidence_ids: [],
+    reason_codes,
+  };
+}
+
 function isSurface(value: unknown): value is CastCareerSurface {
   return (
     typeof value === "string" && SURFACES.includes(value as CastCareerSurface)
@@ -257,7 +400,7 @@ export function isCastCareerSearchRequest(
     typeof candidate.limit !== "number" ||
     !Number.isInteger(candidate.limit) ||
     candidate.limit < 1 ||
-    candidate.limit > MAX_ITEMS
+    candidate.limit > MAX_REQUEST_LIMIT
   )
     return false;
   if (
@@ -335,8 +478,18 @@ function safeSearchFilters(filters: CastCareerFilters): CastSearchFilters {
     next.deadline_before = filters.deadline_before;
   if (filters.target_grades !== undefined)
     next.target_grades = filters.target_grades;
-  if (filters.obog_required === true) next.relation = "obog";
-  else if (filters.career_supporter_required === true)
+  // The CAST form exposes one relation selector.  When both relations are
+  // requested, keep the form broad and apply both predicates locally instead
+  // of silently dropping one requirement.
+  if (
+    filters.obog_required === true &&
+    filters.career_supporter_required !== true
+  )
+    next.relation = "obog";
+  else if (
+    filters.career_supporter_required === true &&
+    filters.obog_required !== true
+  )
     next.relation = "career_supporter";
   return next;
 }
@@ -487,6 +640,25 @@ function formDataFromForm(form: HTMLFormElement): FormData {
       }
     });
   return data;
+}
+
+/**
+ * Return a published-exam route only when the authenticated detail DOM
+ * exposes that exact same-origin link.  The runtime never constructs this
+ * route from a company code or model argument.
+ */
+function observedExamReportUrl(document: Document): string | null {
+  for (const anchor of Array.from(document.querySelectorAll("a[href]"))) {
+    const href = anchor.getAttribute("href");
+    if (!href) continue;
+    try {
+      const url = new URL(href, CAST_ORIGIN).toString();
+      if (isCastCompanyExamReportUrl(url)) return url;
+    } catch {
+      // Ignore malformed links; the source page remains untrusted content.
+    }
+  }
+  return null;
 }
 
 function responseFailure(
@@ -664,19 +836,37 @@ async function readCompanyHistory(
   const fragmentData = formDataFromForm(detailForm);
   setKnownField(fragmentData, detailForm, "companyCode", reference.companyCode);
   const fragments: Document[] = [];
-  for (const path of [
-    "/career/get/employmentSub",
-    "/career/get/companyExamSub",
-  ]) {
-    const fragment = await fetchCastDocument(CAST_ORIGIN + path, {
-      method: "POST",
-      body: fragmentData,
+  const examReportUrl = observedExamReportUrl(detail.document);
+  const fragmentRequests: Array<
+    | { kind: "fragment"; path: "/career/get/employmentSub" }
+    | { kind: "report"; url: string }
+    | { kind: "fragment"; path: "/career/get/companyExamSub" }
+  > = [
+    { kind: "fragment", path: "/career/get/employmentSub" },
+    examReportUrl
+      ? { kind: "report", url: examReportUrl }
+      : { kind: "fragment", path: "/career/get/companyExamSub" },
+  ];
+  for (const request of fragmentRequests) {
+    const requestUrl =
+      request.kind === "report" ? request.url : CAST_ORIGIN + request.path;
+    const fragment = await fetchCastDocument(requestUrl, {
+      method: request.kind === "report" ? "GET" : "POST",
+      ...(request.kind === "report" ? {} : { body: fragmentData }),
     });
     if ("error" in fragment) return fragment.error;
-    if (!strictCastUrl(fragment.url, path)) {
+    const pathMatches =
+      request.kind === "report"
+        ? isCastCompanyExamReportUrl(fragment.url) &&
+          fragment.url === CAST_COMPANY_EXAM_REPORT_URL
+        : strictCastUrl(fragment.url, request.path);
+    if (!pathMatches) {
       return {
         status: "form_changed",
-        reason_code: "company_fragment_unexpected_path",
+        reason_code:
+          request.kind === "report"
+            ? "company_exam_report_unexpected_path"
+            : "company_fragment_unexpected_path",
       };
     }
     fragments.push(fragment.document);

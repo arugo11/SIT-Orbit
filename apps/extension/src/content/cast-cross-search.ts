@@ -1,5 +1,6 @@
 import MiniSearch from "minisearch";
 import { runLocalPrompt } from "../privacy/career-prompt";
+import type { CastCareerSourceItem } from "./cast-career-source-runtime";
 import type {
   CastHistoryLocalSnapshot,
   CastHistoryPerson,
@@ -16,8 +17,13 @@ import type {
 export type CastCareerDocumentKind =
   | "job"
   | "internship"
+  | "company_session"
+  | "company"
   | "hiring_record"
   | "selection_report"
+  | "recording"
+  | "career_event"
+  | "counseling"
   | "support_resource"
   | "notice";
 
@@ -106,8 +112,13 @@ const QUERY_RESPONSE_CONSTRAINT: Record<string, unknown> = {
         enum: [
           "job",
           "internship",
+          "company_session",
+          "company",
           "hiring_record",
           "selection_report",
+          "recording",
+          "career_event",
+          "counseling",
           "support_resource",
           "notice",
         ],
@@ -160,8 +171,13 @@ function integerOrNull(value: unknown): number | null {
 const DOCUMENT_KINDS: CastCareerDocumentKind[] = [
   "job",
   "internship",
+  "company_session",
+  "company",
   "hiring_record",
   "selection_report",
+  "recording",
+  "career_event",
+  "counseling",
   "support_resource",
   "notice",
 ];
@@ -582,4 +598,182 @@ export function emptyCareerQuery(message: string): CastSearchQuery {
     year_to: null,
     obog_required: false,
   };
+}
+
+export interface CastCareerRankedItem {
+  item: CastCareerSourceItem;
+  score: number;
+  matched_terms: string[];
+}
+
+export interface CastCareerLocalFilters {
+  company_name?: string;
+  locations?: string[];
+  industries?: string[];
+  technical_domains?: string[];
+  occupations?: string[];
+  academic_programs?: string[];
+  graduation_years?: number[];
+  deadline_before?: string;
+  obog_required?: boolean;
+  career_supporter_required?: boolean;
+  recording_required?: boolean;
+}
+
+function containsAny(
+  values: readonly string[],
+  needles: readonly string[],
+): boolean {
+  return needles.some((needle) =>
+    values.some((value) =>
+      normalizeForSearch(value).includes(normalizeForSearch(needle)),
+    ),
+  );
+}
+
+function passesLocalFilters(
+  item: CastCareerSourceItem,
+  filters: CastCareerLocalFilters,
+): boolean {
+  if (
+    filters.company_name &&
+    !normalizeForSearch(item.company_name ?? item.title).includes(
+      normalizeForSearch(filters.company_name),
+    )
+  ) {
+    return false;
+  }
+  if (
+    filters.locations?.length &&
+    !containsAny(item.locations, filters.locations)
+  ) {
+    return false;
+  }
+  if (
+    filters.industries?.length &&
+    !containsAny(item.industries, filters.industries)
+  ) {
+    return false;
+  }
+  if (
+    filters.technical_domains?.length &&
+    !containsAny(item.academic_programs, filters.technical_domains)
+  ) {
+    return false;
+  }
+  if (
+    filters.academic_programs?.length &&
+    !containsAny(item.academic_programs, filters.academic_programs)
+  ) {
+    return false;
+  }
+  if (
+    filters.occupations?.length &&
+    !containsAny(item.occupations, filters.occupations)
+  ) {
+    return false;
+  }
+  if (
+    filters.graduation_years?.length &&
+    !filters.graduation_years.some((year) =>
+      item.graduation_years.includes(year),
+    )
+  ) {
+    return false;
+  }
+  if (
+    filters.deadline_before &&
+    (!item.deadline || item.deadline > filters.deadline_before)
+  ) {
+    return false;
+  }
+  if (filters.obog_required && !item.relation_flags.includes("obog")) {
+    return false;
+  }
+  if (
+    filters.career_supporter_required &&
+    !item.relation_flags.includes("career_supporter")
+  ) {
+    return false;
+  }
+  if (
+    filters.recording_required &&
+    item.surface !== "recording" &&
+    !item.relation_flags.includes("recording")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** Rank live nine-surface results locally; no document is sent to a model. */
+export function rankCastCareerItems(
+  items: readonly CastCareerSourceItem[],
+  query: string,
+  limit = 20,
+  filters: CastCareerLocalFilters = {},
+): CastCareerRankedItem[] {
+  const boundedLimit = Math.max(1, Math.min(limit, MAX_RESULTS));
+  const documents: CastCareerSearchDocument[] = items
+    .filter((item) => passesLocalFilters(item, filters))
+    .map((item) => ({
+      id: item.result_ref,
+      kind: item.surface,
+      title: item.title,
+      text: join([
+        item.title,
+        item.company_name,
+        item.local_summary,
+        ...item.locations,
+        ...item.industries,
+        ...item.occupations,
+        ...item.academic_programs,
+        ...item.relation_flags,
+      ]),
+      company: item.company_name,
+      locations: item.locations,
+      technical_domains: item.academic_programs,
+      occupations: item.occupations,
+      years: item.graduation_years,
+      deadline: item.deadline,
+      source_url: item.source_url,
+      local_payload: item,
+    }));
+  const search = new MiniSearch<CastCareerSearchDocument>({
+    fields: [
+      "title",
+      "text",
+      "company",
+      "locations",
+      "technical_domains",
+      "occupations",
+    ],
+    storeFields: ["id"],
+    tokenize,
+    processTerm: (term) => normalizeForSearch(term),
+  });
+  search.addAll(documents);
+  const byId = new Map(documents.map((document) => [document.id, document]));
+  const queryText = compact(query, MAX_QUERY_LENGTH);
+  const ranked = queryText
+    ? search.search(queryText, {
+        prefix: true,
+        fuzzy: 0.2,
+        combineWith: "OR",
+        boost: { title: 3, company: 2, technical_domains: 2 },
+        weights: { fuzzy: 0.25, prefix: 0.65 },
+      })
+    : documents.map((document) => ({ id: document.id, score: 0, terms: [] }));
+  return ranked
+    .map((match) => {
+      const document = byId.get(String(match.id));
+      if (!document?.local_payload) return null;
+      return {
+        item: document.local_payload as CastCareerSourceItem,
+        score: Number(match.score.toFixed(4)),
+        matched_terms: match.terms.slice(0, MAX_TERMS),
+      };
+    })
+    .filter((item): item is CastCareerRankedItem => item !== null)
+    .slice(0, boundedLimit);
 }
