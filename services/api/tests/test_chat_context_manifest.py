@@ -138,3 +138,40 @@ def test_manifest_round_trip_request_accepts_old_client_shape() -> None:
         client_tools=[],
     )
     assert request.context_manifest is None
+
+
+@pytest.mark.asyncio
+async def test_fixture_recognizes_natural_book_discovery_request() -> None:
+    service = ChatRunService(backend_factory=FixtureChatBackend)
+    response = await service.start(
+        ChatRunRequest(
+            conversation_id="natural-book-search",
+            message="ロボットに関する本を探して",
+            history=[],
+            client_tools=[ChatClientTool(name="library_catalog_search", version=1)],
+        )
+    )
+
+    assert response.status == "tool_required"
+    assert response.calls[0].name == "library_catalog_search"
+    assert response.calls[0].arguments["query"] == "ロボットに関する本を探して"
+
+
+@pytest.mark.asyncio
+async def test_fixture_keeps_loan_question_on_my_library() -> None:
+    service = ChatRunService(backend_factory=FixtureChatBackend)
+    response = await service.start(
+        ChatRunRequest(
+            conversation_id="loan-question-priority",
+            message="図書館で借りている本は？",
+            history=[],
+            client_tools=[
+                ChatClientTool(name="library_catalog_search", version=1),
+                ChatClientTool(name="my_library_read", version=1),
+            ],
+        )
+    )
+
+    assert response.status == "tool_required"
+    assert response.calls[0].name == "my_library_read"
+    assert response.calls[0].arguments["scope"] == "current_loans"

@@ -100,7 +100,11 @@ _FIXTURE_CAST_ALUMNI_QUERY = re.compile(
     re.IGNORECASE,
 )
 _FIXTURE_LIBRARY_CATALOG_QUERY = re.compile(
-    r"(?:opac|蔵書|図書館|書籍|本を?検索|資料を?検索|catalog|isbn)", re.IGNORECASE
+    r"(?:opac|蔵書|図書館の所蔵|書籍|"
+    r"本[^。!?\n]{0,24}(?:探|検索|見つけ|おすすめ|どんな|ある)|"
+    r"資料[^。!?\n]{0,24}(?:探|検索|見つけ|おすすめ|どんな|ある)|"
+    r"本を?検索|資料を?検索|catalog|isbn)",
+    re.IGNORECASE,
 )
 _FIXTURE_LIBRARY_BROWSE_QUERY = re.compile(
     r"(?:新着図書|新着本|貸出ランキング|ランキング|loan\s*ranking)", re.IGNORECASE
