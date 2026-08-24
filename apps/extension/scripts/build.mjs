@@ -99,6 +99,11 @@ await Promise.all([
   }),
   build({
     ...bundleOptions,
+    entryPoints: [resolve(packageRoot, "src/content/cast-support-reader.ts")],
+    outfile: resolve(outputDirectory, "cast-support-reader.js"),
+  }),
+  build({
+    ...bundleOptions,
     entryPoints: [resolve(packageRoot, "src/sidepanel/index.tsx")],
     outfile: resolve(outputDirectory, "sidepanel.js"),
   }),
@@ -196,6 +201,7 @@ const requiredFiles = [
   "service-worker.js",
   "content-script.js",
   "browser-reader.js",
+  "cast-support-reader.js",
   "sidepanel.html",
   "sidepanel.js",
   "workspace.html",

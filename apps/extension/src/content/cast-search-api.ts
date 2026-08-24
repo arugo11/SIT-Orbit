@@ -1183,6 +1183,13 @@ function statusForFetch(response: Response): CastSearchErrorResult | null {
 export interface CastSearchTransportOptions {
   fetcher?: typeof fetch;
   parseHtml?: (html: string) => Document;
+  /** Maximum number of pages for a bounded exhaustive read. */
+  maxPages?: number;
+  /**
+   * Content-script-only observation hook.  The parsed document stays in the
+   * CAST origin and is never returned through an extension message.
+   */
+  onDocument?: (document: Document, url: string) => void;
 }
 
 function defaultParseHtml(html: string): Document {
@@ -1216,6 +1223,7 @@ async function fetchDocument(
         response,
         error: { status: "reauth_required", reason_code: "login_required" },
       };
+    options.onDocument?.(document, finalUrl);
     return { document, response };
   } catch {
     return {
@@ -1347,8 +1355,12 @@ export async function runCastSearch(
   const allItems = [...first.result.typed_items];
   let currentPage = cursor.page + 1;
   let last = first.result;
+  const maxPages = Math.max(
+    1,
+    Math.min(MAX_PAGE_COUNT, options.maxPages ?? MAX_PAGE_COUNT),
+  );
   while (
-    currentPage <= MAX_PAGE_COUNT &&
+    currentPage <= maxPages &&
     allItems.length < Math.min(first.result.total_count, MAX_ITEMS)
   ) {
     const next = await runOnePage(request, catalog, currentPage, options);

@@ -1,4 +1,5 @@
 import {
+  isCastCareerSearchMessage,
   isCastSearchMessage,
   isRequestPageContextMessage,
   isScombzSourceIdentityMessage,
@@ -9,6 +10,7 @@ import {
   CAST_ALUMNI_INTERNAL_MESSAGE,
   extractCastAlumniPage,
 } from "./cast-alumni-reader";
+import { handleCastCareerInternalMessage } from "./cast-career-source-runtime";
 import { runCastSearch } from "./cast-search-api";
 import { parseScombzPageContext } from "./page-context";
 import {
@@ -79,6 +81,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (isScombzStudentReadMessage(message)) {
     void readScombzStudent(message).then(sendResponse);
+    return true;
+  }
+  if (isCastCareerSearchMessage(message)) {
+    const { type: _type, tool_call_id: _toolCallId, ...request } = message;
+    void handleCastCareerInternalMessage(request).then(sendResponse);
     return true;
   }
   if (!isRequestPageContextMessage(message)) {

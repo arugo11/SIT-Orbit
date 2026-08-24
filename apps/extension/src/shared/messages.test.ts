@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isCastAlumniReadMessage,
+  isCastCareerSearchMessage,
   isCastOpenMessage,
   isCastReadMessage,
   isCastSearchMessage,
@@ -174,6 +175,27 @@ describe("page context message validation", () => {
         kind: "job",
         filters: {},
         form_action: "/career/evil",
+      }),
+    ).toBe(false);
+    expect(
+      isCastCareerSearchMessage({
+        type: "cast-career-search",
+        tool_call_id: "career-1",
+        query: "情報系の就職先",
+        surfaces: ["company", "hiring_record", "selection_report"],
+        filters: { obog_required: true },
+        limit: 10,
+      }),
+    ).toBe(true);
+    expect(
+      isCastCareerSearchMessage({
+        type: "cast-career-search",
+        tool_call_id: "career-2",
+        query: "情報系の就職先",
+        surfaces: ["company"],
+        filters: {},
+        limit: 10,
+        url: "https://evil.example.invalid",
       }),
     ).toBe(false);
   });

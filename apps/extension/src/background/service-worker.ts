@@ -68,6 +68,11 @@ import {
   projectCastAlumniForAgent,
 } from "../content/cast-alumni-reader";
 import {
+  type CastCareerLocalResult,
+  type CastCareerSupportRuntimeResult,
+  mergeCastCareerSupportLocalResult,
+} from "../content/cast-career-source-runtime";
+import {
   CAST_ENTRY_URL,
   CAST_ORIGIN,
   CAST_TOP_URL,
@@ -78,6 +83,12 @@ import {
   type CastSearchLocalResult,
   projectCastSearchForAgent,
 } from "../content/cast-search-api";
+import {
+  CAST_SUPPORT_INTERNAL_MESSAGE,
+  type CastSupportPageKind,
+  type CastSupportPageReadResult,
+  isCastSupportPageUrl,
+} from "../content/cast-support-reader";
 import {
   MOODLE_DASHBOARD_URL,
   MOODLE_LOGIN_URL,
@@ -112,6 +123,8 @@ import {
   type BrowserReadResponse,
   type CalendarCommandMessage,
   type CastAlumniReadResponse,
+  type CastCareerSearchMessage,
+  type CastCareerSearchResponse,
   type CastReadResponse,
   type CastSearchMessage,
   type CastSearchResponse,
@@ -119,6 +132,7 @@ import {
   isBrowserReadMessage,
   isCalendarCommandMessage,
   isCastAlumniReadMessage,
+  isCastCareerSearchMessage,
   isCastOpenMessage,
   isCastReadMessage,
   isCastSearchMessage,
@@ -6232,6 +6246,183 @@ async function handleCastSearch(
   }
 }
 
+async function readCastCareerPage(
+  tabId: number,
+  message: CastCareerSearchMessage,
+): Promise<CastCareerLocalResult> {
+  const send = async (): Promise<unknown> =>
+    chrome.tabs.sendMessage(tabId, message);
+  try {
+    const first = await send();
+    if (first && typeof first === "object")
+      return first as CastCareerLocalResult;
+  } catch {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content-script.js"],
+      });
+      const second = await send();
+      if (second && typeof second === "object")
+        return second as CastCareerLocalResult;
+    } catch {
+      // handled below
+    }
+  }
+  return {
+    schema_version: "v1",
+    status: "unavailable",
+    query: message.query,
+    surfaces: message.surfaces,
+    surface_results: message.surfaces.map((surface) => ({
+      surface,
+      status: "unavailable",
+      total_count: null,
+      returned_count: 0,
+      coverage: null,
+      items: [],
+      reason_code: "cast_content_script_unavailable",
+      evidence_ids: [],
+    })),
+    items: [],
+    local_evidence: [],
+    discovered_support_links: [],
+    reason_codes: ["cast_content_script_unavailable"],
+  };
+}
+
+async function readCastSupportPage(
+  kind: CastSupportPageKind,
+  url: string,
+): Promise<CastSupportPageReadResult> {
+  if (!isCastSupportPageUrl(url, kind)) {
+    return {
+      status: "unavailable",
+      reason_code: "support_url_not_allowlisted",
+    };
+  }
+  let tabId: number | undefined;
+  try {
+    const tab = await chrome.tabs.create({ url, active: false });
+    tabId = tab.id;
+    if (tabId === undefined)
+      return {
+        status: "unavailable",
+        reason_code: "support_tab_create_failed",
+      };
+    await waitForTabReady(tabId);
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["cast-support-reader.js"],
+    });
+    const value = await chrome.tabs.sendMessage(tabId, {
+      type: CAST_SUPPORT_INTERNAL_MESSAGE,
+      kind,
+    });
+    if (!value || typeof value !== "object") {
+      return {
+        status: "unavailable",
+        reason_code: "support_invalid_projection",
+      };
+    }
+    return value as CastSupportPageReadResult;
+  } catch {
+    return { status: "unavailable", reason_code: "support_read_failed" };
+  } finally {
+    if (tabId !== undefined)
+      await chrome.tabs.remove(tabId).catch(() => undefined);
+  }
+}
+
+async function handleCastCareerSearch(
+  message: CastCareerSearchMessage,
+): Promise<CastCareerSearchResponse> {
+  if (!(await hasBrowserPermission(CAST_PERMISSION_PATTERN, CAST_ORIGIN))) {
+    return {
+      schema_version: "v1",
+      status: "unavailable",
+      query: message.query,
+      surfaces: message.surfaces,
+      surface_results: message.surfaces.map((surface) => ({
+        surface,
+        status: "unavailable",
+        total_count: null,
+        returned_count: 0,
+        coverage: null,
+        items: [],
+        reason_code: "permission_required",
+        evidence_ids: [],
+      })),
+      items: [],
+      local_evidence: [],
+      discovered_support_links: [],
+      reason_codes: ["permission_required"],
+    };
+  }
+  try {
+    const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
+    const tab = tabs.find(isCastSearchCandidateTab);
+    if (tab?.id === undefined) {
+      await openCastEntry();
+      return {
+        schema_version: "v1",
+        status: "reauth_required",
+        query: message.query,
+        surfaces: message.surfaces,
+        surface_results: message.surfaces.map((surface) => ({
+          surface,
+          status: "reauth_required",
+          total_count: null,
+          returned_count: 0,
+          coverage: null,
+          items: [],
+          reason_code: "cast_page_not_open",
+          evidence_ids: [],
+        })),
+        items: [],
+        local_evidence: [],
+        discovered_support_links: [],
+        reason_codes: ["cast_page_not_open"],
+      };
+    }
+    const local = await readCastCareerPage(tab.id, message);
+    if (local.discovered_support_links.length === 0) return local;
+    const supportResults: CastCareerSupportRuntimeResult[] = [];
+    for (const link of local.discovered_support_links) {
+      supportResults.push({
+        kind: link.kind,
+        result: await readCastSupportPage(link.kind, link.url),
+      });
+    }
+    return mergeCastCareerSupportLocalResult(
+      local,
+      supportResults,
+      message.limit,
+    );
+  } catch {
+    return {
+      schema_version: "v1",
+      status: "unavailable",
+      query: message.query,
+      surfaces: message.surfaces,
+      surface_results: message.surfaces.map((surface) => ({
+        surface,
+        status: "unavailable",
+        total_count: null,
+        returned_count: 0,
+        coverage: null,
+        items: [],
+        reason_code: "cast_career_search_failed",
+        evidence_ids: [],
+      })),
+      items: [],
+      local_evidence: [],
+      discovered_support_links: [],
+      reason_codes: ["cast_career_search_failed"],
+    };
+  }
+}
+
 function isTrustedExtensionPageSender(sender: chrome.runtime.MessageSender) {
   if (sender.id !== undefined && sender.id !== chrome.runtime.id) {
     return false;
@@ -7435,6 +7626,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({
           status: "unavailable",
           reason_code: "cast_search_failed",
+        }),
+      );
+    return true;
+  }
+
+  if (isCastCareerSearchMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({
+        schema_version: "v1",
+        status: "unavailable",
+        query: message.query,
+        surfaces: message.surfaces,
+        surface_results: message.surfaces.map((surface) => ({
+          surface,
+          status: "unavailable",
+          total_count: null,
+          returned_count: 0,
+          coverage: null,
+          items: [],
+          reason_code: "untrusted_sender",
+          evidence_ids: [],
+        })),
+        items: [],
+        local_evidence: [],
+        discovered_support_links: [],
+        reason_codes: ["untrusted_sender"],
+      });
+      return true;
+    }
+    void handleCastCareerSearch(message)
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse({
+          schema_version: "v1",
+          status: "unavailable",
+          query: message.query,
+          surfaces: message.surfaces,
+          surface_results: [],
+          items: [],
+          local_evidence: [],
+          discovered_support_links: [],
+          reason_codes: ["cast_career_search_failed"],
         }),
       );
     return true;

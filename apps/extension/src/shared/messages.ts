@@ -19,6 +19,11 @@ import type {
 import { isLibraryResourceRef } from "../connectors/library-discovery";
 import type { OpacDiagnosticSnapshot } from "../connectors/opac-diagnostics";
 import {
+  type CastCareerLocalResult,
+  type CastCareerSearchRequest,
+  isCastCareerSearchRequest,
+} from "../content/cast-career-source-runtime";
+import {
   type CastSearchAgentProjection,
   type CastSearchLocalKnownResult,
   type CastSearchLocalResult,
@@ -75,6 +80,7 @@ export const MESSAGE_TYPES = {
   castOpen: "cast-open",
   castAlumniRead: "cast-alumni-read",
   castSearch: "cast-search",
+  castCareerSearch: "cast-career-search",
   libraryCatalogSearch: "library-catalog-search",
   libraryItemRead: "library-item-read",
   libraryCatalogBrowse: "library-catalog-browse",
@@ -465,6 +471,13 @@ export interface CastSearchMessage extends CastSearchRequest {
   tool_call_id: string;
 }
 
+export interface CastCareerSearchMessage extends CastCareerSearchRequest {
+  type: typeof MESSAGE_TYPES.castCareerSearch;
+  tool_call_id: string;
+}
+
+export type CastCareerSearchResponse = CastCareerLocalResult;
+
 export type CastSearchResponse =
   | {
       status: "known";
@@ -677,6 +690,7 @@ export type ExtensionMessage =
   | CastOpenMessage
   | CastAlumniReadMessage
   | CastSearchMessage
+  | CastCareerSearchMessage
   | LibraryCatalogSearchMessage
   | LibraryItemReadMessage
   | LibraryCatalogBrowseMessage
@@ -880,6 +894,39 @@ export function isCastSearchMessage(
     exhaustive: message.exhaustive,
   };
   return isCastSearchRequest(request);
+}
+
+export function isCastCareerSearchMessage(
+  message: unknown,
+): message is CastCareerSearchMessage {
+  if (!isRecord(message) || message.type !== MESSAGE_TYPES.castCareerSearch) {
+    return false;
+  }
+  if (
+    typeof message.tool_call_id !== "string" ||
+    message.tool_call_id.length === 0
+  ) {
+    return false;
+  }
+  const request = {
+    query: message.query,
+    surfaces: message.surfaces,
+    filters: message.filters,
+    limit: message.limit,
+    exhaustive: message.exhaustive,
+  };
+  if (!isCastCareerSearchRequest(request)) return false;
+  return Object.keys(message).every((key) =>
+    [
+      "type",
+      "tool_call_id",
+      "query",
+      "surfaces",
+      "filters",
+      "limit",
+      "exhaustive",
+    ].includes(key),
+  );
 }
 
 export function isLibraryCatalogSearchMessage(
