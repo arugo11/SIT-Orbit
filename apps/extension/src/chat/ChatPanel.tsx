@@ -2385,18 +2385,34 @@ export function ChatPanel({
       isRecord(call.arguments) ? call.arguments : {},
       error,
     );
+    const activityId = `tool-${call.tool_call_id}`;
+    const failureContent = `${toolLabel(call.name)}（${statusLabel(projection.status)}）`;
+    const failureMessages = current.messages.some(
+      (item) => item.id === activityId,
+    )
+      ? current.messages.map((item) =>
+          item.id === activityId
+            ? {
+                ...item,
+                content: failureContent,
+                toolState: "failed" as const,
+              }
+            : item,
+        )
+      : [
+          ...current.messages,
+          {
+            id: activityId,
+            role: "tool" as const,
+            content: failureContent,
+            toolName: call.name,
+            toolState: "failed" as const,
+          },
+        ];
     const failureConversation: ChatConversation = {
       ...current,
       updatedAt: new Date().toISOString(),
-      messages: current.messages.map((item) =>
-        item.id === `tool-${call.tool_call_id}`
-          ? {
-              ...item,
-              content: `${toolLabel(call.name)}（${statusLabel(projection.status)}）`,
-              toolState: "failed" as const,
-            }
-          : item,
-      ),
+      messages: failureMessages,
     };
     await persist(failureConversation);
     setChatProgress(
