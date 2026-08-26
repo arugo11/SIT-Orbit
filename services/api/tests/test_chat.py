@@ -2010,14 +2010,17 @@ async def test_function_model_deferred_cast_search_accepts_semantic_filters_only
 
 
 @pytest.mark.asyncio
-async def test_function_model_runs_one_cast_career_search_across_six_surfaces() -> None:
-    """The high-level CAST tool is one deferred call, even for many surfaces."""
+async def test_function_model_runs_one_cast_career_search_across_nine_surfaces() -> None:
+    """The high-level CAST tool is one deferred call for every career surface."""
 
     calls = [0]
     captured: list[str] = []
 
     surfaces: list[CastCareerSurface] = [
         "job",
+        "internship",
+        "company_session",
+        "company",
         "hiring_record",
         "selection_report",
         "recording",
@@ -2034,7 +2037,10 @@ async def test_function_model_runs_one_cast_career_search_across_six_surfaces() 
                     ToolCallPart(
                         CAST_CAREER_SEARCH_TOOL_NAME,
                         {
-                            "query": "締切が近い機械系求人と先輩の選考記録、関連する録画と相談枠",
+                            "query": (
+                                "求人、インターン、説明会、企業、採用実績、選考記録、"
+                                "録画、イベント、相談枠を一度に確認して"
+                            ),
                             "surfaces": surfaces,
                             "filters": {
                                 "locations": ["豊洲"],
@@ -2080,7 +2086,7 @@ async def test_function_model_runs_one_cast_career_search_across_six_surfaces() 
     advertised = {CAST_CAREER_SEARCH_TOOL_NAME}
     first = await backend.start_chat(
         conversation_id="conversation-cast-career-cross-search-function-model",
-        message="求人、選考記録、録画、相談枠を一度に確認して",
+        message="求人、インターン、説明会、企業、採用実績、選考記録、録画、イベント、相談枠を一度に確認して",
         history=[],
         advertised_tools=advertised,
     )

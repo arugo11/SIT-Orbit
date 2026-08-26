@@ -2521,6 +2521,96 @@ describe("service worker side panel contract", () => {
     expect(payload.projection.evidence_ids).toEqual(["cast-search-v1-test"]);
   });
 
+  it("runs the high-level CAST search once across all nine surfaces", async () => {
+    permissionsContains.mockResolvedValue(true);
+    queryTabs.mockResolvedValue([
+      {
+        id: 79,
+        url: "https://shibaura.pita.services/career/top/student",
+      },
+    ] as chrome.tabs.Tab[]);
+    const surfaces = [
+      "job",
+      "internship",
+      "company_session",
+      "company",
+      "hiring_record",
+      "selection_report",
+      "recording",
+      "career_event",
+      "counseling",
+    ] as const;
+    const localItems = surfaces.map((surface, index) => ({
+      result_ref: `opaque-result-${index}`,
+      surface,
+      title: `${surface}の端末内結果`,
+      company_name: "合成企業",
+      dates: [],
+      deadline: null,
+      locations: ["豊洲"],
+      industries: ["情報通信"],
+      occupations: ["組込み開発"],
+      academic_programs: ["機械工学"],
+      graduation_years: [2026],
+      relation_flags: [],
+      local_summary: "学生 太郎の詳細は端末内だけに保持",
+      source_url: "https://shibaura.pita.services/career/local-detail",
+    }));
+    tabSendMessage.mockResolvedValue({
+      schema_version: "v1",
+      status: "known",
+      query: "九面を一度に確認",
+      surfaces: [...surfaces],
+      surface_results: surfaces.map((surface, index) => ({
+        surface,
+        status: "known",
+        total_count: 8,
+        returned_count: 1,
+        coverage: { mode: "page", fetched_pages: 1, page_size: 10 },
+        items: [localItems[index]],
+        reason_code: null,
+        evidence_ids: [],
+      })),
+      items: localItems,
+      local_evidence: [],
+      discovered_support_links: [],
+      reason_codes: [],
+    });
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.castCareerSearch,
+        tool_call_id: "cast-career-call-9-surfaces",
+        query: "九面を一度に確認",
+        surfaces: [...surfaces],
+        filters: { locations: ["豊洲"] },
+        limit: 10,
+        exhaustive: false,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(tabSendMessage).toHaveBeenCalledTimes(1);
+    expect(tabSendMessage).toHaveBeenCalledWith(
+      79,
+      expect.objectContaining({
+        type: MESSAGE_TYPES.castCareerSearch,
+        surfaces: [...surfaces],
+        filters: { locations: ["豊洲"] },
+      }),
+    );
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload.status).toBe("known");
+    expect(payload.projection.searched_surfaces).toEqual([...surfaces]);
+    expect(payload.projection.surface_coverage).toHaveLength(9);
+    const serializedProjection = JSON.stringify(payload.projection);
+    expect(serializedProjection).not.toContain("合成企業");
+    expect(serializedProjection).not.toContain("学生 太郎");
+    expect(serializedProjection).not.toContain("shibaura.pita.services");
+    expect(JSON.stringify(payload)).toContain("合成企業");
+  });
+
   it("does not rebroadcast a background tab context to the visible panel", async () => {
     queryTabs.mockResolvedValueOnce([
       {

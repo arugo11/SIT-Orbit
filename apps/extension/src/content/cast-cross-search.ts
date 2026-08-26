@@ -1,6 +1,9 @@
 import MiniSearch from "minisearch";
 import { runLocalPrompt } from "../privacy/career-prompt";
-import type { CastCareerSourceItem } from "./cast-career-source-runtime";
+import type {
+  CastCareerSourceItem,
+  CastCareerSurface,
+} from "./cast-career-source-runtime";
 import type {
   CastHistoryLocalSnapshot,
   CastHistoryPerson,
@@ -261,11 +264,19 @@ function join(values: readonly (string | null | undefined)[]): string {
   return values.filter((value): value is string => Boolean(value)).join(" ");
 }
 
+function localDocumentId(kind: CastCareerDocumentKind): string {
+  const entropy =
+    typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID().replaceAll("-", "").slice(0, 20)
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+  return `orbit-cast-document-${kind}-${entropy}`;
+}
+
 function opportunityDocument(
   opportunity: CastOpportunity,
 ): CastCareerSearchDocument {
   return {
-    id: `opportunity:${opportunity.kind}:${opportunity.local_id}`,
+    id: localDocumentId(opportunity.kind),
     kind: opportunity.kind,
     title: opportunity.company_name,
     text: join([
@@ -315,8 +326,8 @@ function historyDocuments(
     .filter((value): value is number => value !== null);
   const peopleText = snapshot.people.map(historyPersonText);
   const records = snapshot.hiring_records.map(
-    (record, index): CastCareerSearchDocument => ({
-      id: `history:hiring:${snapshot.company_code ?? "local"}:${index}`,
+    (record): CastCareerSearchDocument => ({
+      id: localDocumentId("hiring_record"),
       kind: "hiring_record",
       title: `${snapshot.company_name} 採用実績`,
       text: join([
@@ -342,8 +353,8 @@ function historyDocuments(
     }),
   );
   const reports = snapshot.selection_reports.map(
-    (report, index): CastCareerSearchDocument => ({
-      id: `history:report:${snapshot.company_code ?? "local"}:${index}`,
+    (report): CastCareerSearchDocument => ({
+      id: localDocumentId("selection_report"),
       kind: "selection_report",
       title: `${snapshot.company_name} 選考記録`,
       text: join([
@@ -379,7 +390,7 @@ function supportDocument(
   resource: CastSupportResource,
 ): CastCareerSearchDocument {
   return {
-    id: `support:${resource.kind}:${resource.url}`,
+    id: localDocumentId("support_resource"),
     kind: "support_resource",
     title: resource.title,
     text: `${resource.title} ${resource.kind}`,
@@ -606,6 +617,22 @@ export interface CastCareerRankedItem {
   matched_terms: string[];
 }
 
+export interface CastCareerMatchReason {
+  label: string;
+  detail: string;
+}
+
+/** Local-only company/content group used by the cross-surface result cards. */
+export interface CastCareerResultGroup {
+  group_ref: string;
+  company_name: string | null;
+  items: CastCareerRankedItem[];
+  score: number;
+  matched_surfaces: CastCareerSurface[];
+  match_reasons: CastCareerMatchReason[];
+  missing_requirements: string[];
+}
+
 export interface CastCareerLocalFilters {
   company_name?: string;
   locations?: string[];
@@ -613,6 +640,7 @@ export interface CastCareerLocalFilters {
   technical_domains?: string[];
   occupations?: string[];
   academic_programs?: string[];
+  target_grades?: string[];
   graduation_years?: number[];
   deadline_before?: string;
   obog_required?: boolean;
@@ -643,67 +671,296 @@ function passesLocalFilters(
   ) {
     return false;
   }
+  // Cross-surface filters are evaluated on the complete company group below.
+  // Keeping a row without (for example) a location lets a hiring record join
+  // a job row that carries the location condition.
+  // Relation requirements are evaluated after grouping. A job row can be
+  // related to a history/report row for the same company, so filtering each
+  // row independently would discard valid cross-surface hits.
+  return true;
+}
+
+function normalizedCompany(item: CastCareerSourceItem): string | null {
+  const value =
+    item.company_name ?? (item.surface === "company" ? item.title : "");
+  const normalized = normalizeForSearch(value);
+  return normalized || null;
+}
+
+function groupKey(item: CastCareerSourceItem): string {
+  const company = normalizedCompany(item);
+  return company
+    ? `company:${company}`
+    : `surface:${item.surface}:${normalizeForSearch(item.title)}`;
+}
+
+function hasRelation(
+  group: readonly CastCareerRankedItem[],
+  relation: string,
+): boolean {
+  return group.some((entry) => entry.item.relation_flags.includes(relation));
+}
+
+function uniqueSurfaceValues(
+  values: readonly CastCareerSurface[],
+): CastCareerSurface[] {
+  return Array.from(new Set(values));
+}
+
+function matchingValues(
+  values: readonly string[],
+  needles: readonly string[] | undefined,
+): string[] {
+  if (!needles?.length) return [];
+  return values.filter((value) =>
+    needles.some((needle) =>
+      normalizeForSearch(value).includes(normalizeForSearch(needle)),
+    ),
+  );
+}
+
+function buildMatchReasons(
+  group: readonly CastCareerRankedItem[],
+  filters: CastCareerLocalFilters,
+): CastCareerMatchReason[] {
+  const reasons: CastCareerMatchReason[] = [];
+  const allItems = group.map((entry) => entry.item);
+  const locations = matchingValues(
+    allItems.flatMap((item) => item.locations),
+    filters.locations,
+  );
+  const domains = matchingValues(
+    allItems.flatMap((item) => [...item.academic_programs, ...item.industries]),
+    filters.technical_domains,
+  );
+  const occupations = matchingValues(
+    allItems.flatMap((item) => item.occupations),
+    filters.occupations,
+  );
+  const targetGrades = matchingValues(
+    allItems.flatMap((item) => item.target_grades ?? []),
+    filters.target_grades,
+  );
+  const years = (filters.graduation_years ?? []).filter((year) =>
+    allItems.some((item) => item.graduation_years.includes(year)),
+  );
+  const deadlines = allItems
+    .map((item) => item.deadline)
+    .filter((value): value is string => value !== null)
+    .filter(
+      (value) => !filters.deadline_before || value <= filters.deadline_before,
+    )
+    .sort();
+  if (locations.length) {
+    reasons.push({
+      label: "勤務地",
+      detail: Array.from(new Set(locations)).join("、"),
+    });
+  }
+  if (domains.length) {
+    reasons.push({
+      label: "技術領域・業種",
+      detail: Array.from(new Set(domains)).join("、"),
+    });
+  }
+  if (occupations.length) {
+    reasons.push({
+      label: "職種",
+      detail: Array.from(new Set(occupations)).join("、"),
+    });
+  }
+  if (targetGrades.length) {
+    reasons.push({
+      label: "対象学年",
+      detail: Array.from(new Set(targetGrades)).join("、"),
+    });
+  }
+  if (years.length) {
+    reasons.push({ label: "採用実績年度", detail: years.join("、") });
+  }
+  if (deadlines.length && filters.deadline_before) {
+    reasons.push({ label: "締切", detail: `${deadlines[0]}以前` });
+  }
+  if (filters.obog_required && hasRelation(group, "obog")) {
+    reasons.push({ label: "OB・OG", detail: "CAST上で関連情報あり" });
+  }
+  if (
+    filters.career_supporter_required &&
+    hasRelation(group, "career_supporter")
+  ) {
+    reasons.push({ label: "就活サポーター", detail: "CAST上で関連情報あり" });
+  }
+  if (
+    filters.recording_required &&
+    (group.some((entry) => entry.item.surface === "recording") ||
+      hasRelation(group, "recording"))
+  ) {
+    reasons.push({ label: "録画", detail: "関連する公式録画あり" });
+  }
+  return reasons.slice(0, 12);
+}
+
+function missingRequirements(
+  group: readonly CastCareerRankedItem[],
+  filters: CastCareerLocalFilters,
+): string[] {
+  const missing: string[] = [];
+  const allItems = group.map((entry) => entry.item);
   if (
     filters.locations?.length &&
-    !containsAny(item.locations, filters.locations)
+    !containsAny(
+      allItems.flatMap((item) => item.locations),
+      filters.locations,
+    )
   ) {
-    return false;
+    missing.push("勤務地");
   }
   if (
     filters.industries?.length &&
-    !containsAny(item.industries, filters.industries)
+    !containsAny(
+      allItems.flatMap((item) => item.industries),
+      filters.industries,
+    )
   ) {
-    return false;
+    missing.push("業種");
   }
   if (
     filters.technical_domains?.length &&
-    !containsAny(item.academic_programs, filters.technical_domains)
+    !containsAny(
+      allItems.flatMap((item) => [
+        ...item.academic_programs,
+        ...item.industries,
+      ]),
+      filters.technical_domains,
+    )
   ) {
-    return false;
+    missing.push("技術領域");
   }
   if (
     filters.academic_programs?.length &&
-    !containsAny(item.academic_programs, filters.academic_programs)
+    !containsAny(
+      allItems.flatMap((item) => item.academic_programs),
+      filters.academic_programs,
+    )
   ) {
-    return false;
+    missing.push("学部・学科");
   }
   if (
     filters.occupations?.length &&
-    !containsAny(item.occupations, filters.occupations)
+    !containsAny(
+      allItems.flatMap((item) => item.occupations),
+      filters.occupations,
+    )
   ) {
-    return false;
+    missing.push("職種");
+  }
+  if (
+    filters.target_grades?.length &&
+    !containsAny(
+      allItems.flatMap((item) => item.target_grades ?? []),
+      filters.target_grades,
+    )
+  ) {
+    missing.push("対象学年");
   }
   if (
     filters.graduation_years?.length &&
     !filters.graduation_years.some((year) =>
-      item.graduation_years.includes(year),
+      allItems.some((item) => item.graduation_years.includes(year)),
     )
   ) {
-    return false;
+    missing.push("採用実績年度");
   }
   if (
     filters.deadline_before &&
-    (!item.deadline || item.deadline > filters.deadline_before)
+    !allItems.some(
+      (item) =>
+        item.deadline !== null &&
+        item.deadline <= (filters.deadline_before ?? "9999-12-31"),
+    )
   ) {
-    return false;
+    missing.push("締切");
   }
-  if (filters.obog_required && !item.relation_flags.includes("obog")) {
-    return false;
+  if (filters.obog_required && !hasRelation(group, "obog")) {
+    missing.push("OB・OG情報");
   }
   if (
     filters.career_supporter_required &&
-    !item.relation_flags.includes("career_supporter")
+    !hasRelation(group, "career_supporter")
   ) {
-    return false;
+    missing.push("就活サポーター情報");
   }
   if (
     filters.recording_required &&
-    item.surface !== "recording" &&
-    !item.relation_flags.includes("recording")
+    !group.some(
+      (entry) =>
+        entry.item.surface === "recording" ||
+        entry.item.relation_flags.includes("recording"),
+    )
   ) {
-    return false;
+    missing.push("関連録画");
   }
-  return true;
+  return missing;
+}
+
+/** Group and explain ranked local results without persisting an index. */
+export function groupCastCareerItems(
+  rankedItems: readonly CastCareerRankedItem[],
+  filters: CastCareerLocalFilters = {},
+): CastCareerResultGroup[] {
+  const groups = new Map<string, CastCareerRankedItem[]>();
+  for (const item of rankedItems) {
+    const key = groupKey(item.item);
+    const current = groups.get(key) ?? [];
+    current.push(item);
+    groups.set(key, current);
+  }
+  return (
+    Array.from(groups.entries())
+      .map(([, items], groupIndex) => {
+        const surfaces = uniqueSurfaceValues(
+          items.map((entry) => entry.item.surface),
+        );
+        const score = Number(
+          (
+            Math.max(...items.map((entry) => entry.score), 0) +
+            Math.min(0.5, Math.max(0, surfaces.length - 1) * 0.08)
+          ).toFixed(4),
+        );
+        return {
+          // The group key is used only for the in-memory map. Keep the UI ref
+          // run-local and opaque so a company name can never become an ID.
+          group_ref: `orbit-cast-group-${groupIndex}-${randomLocalRef()}`,
+          company_name:
+            items.find((entry) => entry.item.company_name)?.item.company_name ??
+            (items[0]?.item.surface === "company" ? items[0].item.title : null),
+          items: [...items].sort((left, right) => right.score - left.score),
+          score,
+          matched_surfaces: surfaces,
+          match_reasons: buildMatchReasons(items, filters),
+          missing_requirements: missingRequirements(items, filters),
+        };
+      })
+      // A recording is a separate support surface, not a company relation. Keep
+      // the job/company cards visible when the recording card is separate or
+      // unavailable, and expose that gap through `missing_requirements`.
+      .filter(
+        (group) =>
+          group.missing_requirements.length === 0 ||
+          group.missing_requirements.every((item) => item === "関連録画"),
+      )
+      .sort((left, right) => right.score - left.score)
+  );
+}
+
+function randomLocalRef(): string {
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /** Rank live nine-surface results locally; no document is sent to a model. */
@@ -728,6 +985,7 @@ export function rankCastCareerItems(
         ...item.industries,
         ...item.occupations,
         ...item.academic_programs,
+        ...(item.target_grades ?? []),
         ...item.relation_flags,
       ]),
       company: item.company_name,
@@ -764,7 +1022,7 @@ export function rankCastCareerItems(
         weights: { fuzzy: 0.25, prefix: 0.65 },
       })
     : documents.map((document) => ({ id: document.id, score: 0, terms: [] }));
-  return ranked
+  const rankedItems = ranked
     .map((match) => {
       const document = byId.get(String(match.id));
       if (!document?.local_payload) return null;
@@ -775,5 +1033,23 @@ export function rankCastCareerItems(
       };
     })
     .filter((item): item is CastCareerRankedItem => item !== null)
+    .slice(0, MAX_RESULTS);
+  const rankedIds = new Set(rankedItems.map((entry) => entry.item.result_ref));
+  // Semantic filters are authoritative for the selected CAST surfaces. Keep
+  // eligible zero-score cards so a query can return a related recording or
+  // counseling slot even when its title does not repeat the user's wording.
+  for (const document of documents) {
+    const item = document.local_payload as CastCareerSourceItem;
+    if (!rankedIds.has(item.result_ref)) {
+      rankedItems.push({ item, score: 0, matched_terms: [] });
+    }
+  }
+  const eligibleRefs = new Set(
+    groupCastCareerItems(rankedItems, filters).flatMap((group) =>
+      group.items.map((entry) => entry.item.result_ref),
+    ),
+  );
+  return rankedItems
+    .filter((entry) => eligibleRefs.has(entry.item.result_ref))
     .slice(0, boundedLimit);
 }

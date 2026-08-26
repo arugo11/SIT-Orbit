@@ -92,6 +92,8 @@ export interface CastCareerSourceItem {
   industries: string[];
   occupations: string[];
   academic_programs: string[];
+  /** Local-only eligibility metadata when supplied by an opportunity page. */
+  target_grades?: string[];
   graduation_years: number[];
   relation_flags: string[];
   /** Local-only text used by the deterministic card / Prompt API. */
@@ -302,12 +304,19 @@ export function projectCastCareerForAgent(
       };
     },
   );
-  const known = surface_coverage.filter((item) => item.status === "known");
-  const total_count = known.reduce(
+  // A partial surface with returned rows is still useful to the local user.
+  // Keep it in the aggregate calculation while preserving the partial
+  // coverage marker so the API never presents an incomplete read as complete.
+  const readable = surface_coverage.filter(
+    (item) =>
+      item.status === "known" ||
+      (item.status === "partial" && item.returned_count > 0),
+  );
+  const total_count = readable.reduce(
     (sum, item) => sum + (item.total_count ?? item.returned_count),
     0,
   );
-  const returned_count = known.reduce(
+  const returned_count = readable.reduce(
     (sum, item) => sum + item.returned_count,
     0,
   );
@@ -329,7 +338,7 @@ export function projectCastCareerForAgent(
       count: (current?.count ?? 0) + count,
     });
   };
-  for (const coverage of known) {
+  for (const coverage of readable) {
     const total = coverage.total_count ?? coverage.returned_count;
     if (total >= 5) addCount("surface", coverage.surface, total);
     const result = surfaceResults.get(coverage.surface);
@@ -355,9 +364,24 @@ export function projectCastCareerForAgent(
       count: item.count,
     }));
   const reason_codes = Array.from(new Set(local.reason_codes)).slice(0, 32);
+  const failed = surface_coverage.filter((item) => item.status !== "known");
+  const readableCount = readable.length;
+  const hasPartial = surface_coverage.some((item) => item.status === "partial");
+  const status: CastCareerAgentProjection["status"] =
+    hasPartial && readableCount > 0
+      ? "partial"
+      : failed.length > 0 && readableCount > 0
+        ? "partial"
+        : failed.length > 0
+          ? failed[0]?.status === "partial"
+            ? "unavailable"
+            : (failed[0]?.status ?? local.status)
+          : local.status === "partial"
+            ? "partial"
+            : "known";
   return {
     schema_version: "v1",
-    status: local.status,
+    status,
     searched_surfaces: surfaces,
     surface_coverage,
     total_count,
@@ -463,7 +487,10 @@ export function isCastCareerSearchRequest(
   return true;
 }
 
-function safeSearchFilters(filters: CastCareerFilters): CastSearchFilters {
+function safeSearchFilters(
+  filters: CastCareerFilters,
+  surface?: CastCareerSurface,
+): CastSearchFilters {
   const next: CastSearchFilters = {};
   if (filters.company_name !== undefined)
     next.company_name = filters.company_name;
@@ -476,21 +503,13 @@ function safeSearchFilters(filters: CastCareerFilters): CastSearchFilters {
     next.graduation_years = filters.graduation_years;
   if (filters.deadline_before !== undefined)
     next.deadline_before = filters.deadline_before;
-  if (filters.target_grades !== undefined)
+  // Target-grade selectors are present on the internship opportunity form.
+  // Do not submit an internship-only field to company/session/history forms: a
+  // missing unrelated selector is a structural error, not an empty result.
+  if (filters.target_grades !== undefined && surface === "internship")
     next.target_grades = filters.target_grades;
-  // The CAST form exposes one relation selector.  When both relations are
-  // requested, keep the form broad and apply both predicates locally instead
-  // of silently dropping one requirement.
-  if (
-    filters.obog_required === true &&
-    filters.career_supporter_required !== true
-  )
-    next.relation = "obog";
-  else if (
-    filters.career_supporter_required === true &&
-    filters.obog_required !== true
-  )
-    next.relation = "career_supporter";
+  // OB/OG and career-supporter requirements are group-level predicates. Keep
+  // the form broad so a job row can join a relation row from the same company.
   return next;
 }
 
@@ -502,7 +521,7 @@ function directRequest(
   if (!kind) throw new Error("direct surface is unavailable");
   return {
     kind,
-    filters: safeSearchFilters(request.filters),
+    filters: safeSearchFilters(request.filters, surface),
     exhaustive: request.exhaustive === true,
   };
 }
@@ -523,6 +542,7 @@ function toSourceItem(
     industries: unique(item.industry),
     occupations: unique(item.occupations),
     academic_programs: unique(item.academic_programs),
+    target_grades: unique(item.target_grades ?? []),
     graduation_years:
       item.graduation_year === null ? [] : [item.graduation_year],
     relation_flags: unique(item.relation_flags),
@@ -769,6 +789,7 @@ function setKnownField(
 async function readCompanyHistory(
   reference: CompanyReference,
   companyDocument: Document,
+  sections: { employment: boolean; selection: boolean },
 ): Promise<
   | { status: "known"; history: CastHistoryLocalSnapshot; detailUrl: string }
   | { status: CastCareerSourceStatus; reason_code: string }
@@ -835,19 +856,33 @@ async function readCompanyHistory(
     };
   const fragmentData = formDataFromForm(detailForm);
   setKnownField(fragmentData, detailForm, "companyCode", reference.companyCode);
-  const fragments: Document[] = [];
+  const fragments: Array<{
+    section: "employment" | "company_exam_entry";
+    document: Document;
+  }> = [];
   const examReportUrl = observedExamReportUrl(detail.document);
-  const fragmentRequests: Array<
-    | { kind: "fragment"; path: "/career/get/employmentSub" }
-    | { kind: "report"; url: string }
-    | { kind: "fragment"; path: "/career/get/companyExamSub" }
-  > = [
-    { kind: "fragment", path: "/career/get/employmentSub" },
-    examReportUrl
-      ? { kind: "report", url: examReportUrl }
-      : { kind: "fragment", path: "/career/get/companyExamSub" },
-  ];
-  for (const request of fragmentRequests) {
+  const fragmentRequests: Array<{
+    section: "employment" | "company_exam_entry";
+    request:
+      | { kind: "fragment"; path: "/career/get/employmentSub" }
+      | { kind: "report"; url: string }
+      | { kind: "fragment"; path: "/career/get/companyExamSub" };
+  }> = [];
+  if (sections.employment) {
+    fragmentRequests.push({
+      section: "employment",
+      request: { kind: "fragment", path: "/career/get/employmentSub" },
+    });
+  }
+  if (sections.selection) {
+    fragmentRequests.push({
+      section: "company_exam_entry",
+      request: examReportUrl
+        ? { kind: "report", url: examReportUrl }
+        : { kind: "fragment", path: "/career/get/companyExamSub" },
+    });
+  }
+  for (const { section, request } of fragmentRequests) {
     const requestUrl =
       request.kind === "report" ? request.url : CAST_ORIGIN + request.path;
     const fragment = await fetchCastDocument(requestUrl, {
@@ -869,17 +904,26 @@ async function readCompanyHistory(
             : "company_fragment_unexpected_path",
       };
     }
-    fragments.push(fragment.document);
+    fragments.push({ section, document: fragment.document });
   }
   const merged = new DOMParser().parseFromString(
     `<!doctype html><html><body>${detail.document.body.innerHTML}</body></html>`,
     "text/html",
   );
-  const sections = ["employment", "company_exam_entry"];
-  fragments.forEach((fragment, index) => {
-    const section = fragment.querySelector(`#${sections[index]}`);
+  for (const { section: sectionId, document: fragment } of fragments) {
+    const section = fragment.querySelector(`#${sectionId}`);
     if (section) merged.body.appendChild(merged.importNode(section, true));
-  });
+  }
+  // The history parser requires both section roots, but an individual query
+  // should fetch only the requested surface. An empty placeholder preserves
+  // that parser contract without making an unrelated network request.
+  for (const sectionId of ["employment", "company_exam_entry"] as const) {
+    if (!merged.querySelector(`#${sectionId}`)) {
+      const placeholder = merged.createElement("section");
+      placeholder.id = sectionId;
+      merged.body.appendChild(placeholder);
+    }
+  }
   const history = extractCastHistory(
     merged,
     `${CAST_ORIGIN}/career/company_detail_view`,
@@ -1268,7 +1312,7 @@ export async function runCastCareerSourceSearch(
         {
           kind: "company",
           filters: {
-            ...safeSearchFilters(request.filters),
+            ...safeSearchFilters(request.filters, "company"),
             relation: request.surfaces.includes("selection_report")
               ? "entrance_exam"
               : "hiring_record",
@@ -1309,6 +1353,7 @@ export async function runCastCareerSourceSearch(
       ? companyReferences(companyDocument)
       : [];
     if (
+      companyDocument &&
       references.length === 0 &&
       request.surfaces.some(
         (surface) =>
@@ -1316,11 +1361,8 @@ export async function runCastCareerSourceSearch(
       )
     ) {
       for (const surface of ["hiring_record", "selection_report"] as const) {
-        if (
-          request.surfaces.includes(surface) &&
-          !results.some((result) => result.surface === surface)
-        ) {
-          results.push({
+        if (request.surfaces.includes(surface)) {
+          replaceSurfaceResult(results, {
             surface,
             status: "form_changed",
             total_count: null,
@@ -1331,6 +1373,23 @@ export async function runCastCareerSourceSearch(
             evidence_ids: [],
           });
         }
+      }
+    }
+    if (!companyDocument) {
+      for (const surface of ["hiring_record", "selection_report"] as const) {
+        if (!request.surfaces.includes(surface)) continue;
+        const current = results.find((result) => result.surface === surface);
+        if (current?.status !== "known") continue;
+        replaceSurfaceResult(results, {
+          surface,
+          status: "unavailable",
+          total_count: null,
+          returned_count: 0,
+          coverage: null,
+          items: [],
+          reason_code: "company_detail_unavailable",
+          evidence_ids: [],
+        });
       }
     }
     if (
@@ -1352,17 +1411,53 @@ export async function runCastCareerSourceSearch(
         ]),
       }));
     }
-    for (const surface of ["hiring_record", "selection_report"] as const) {
-      if (!request.surfaces.includes(surface) || !companyDocument) continue;
+    const requestedHistorySurfaces = [
+      "hiring_record",
+      "selection_report",
+    ] as const;
+    const historyByCompany = new Map<
+      string,
+      Awaited<ReturnType<typeof readCompanyHistory>>
+    >();
+    if (
+      companyDocument &&
+      request.surfaces.some((surface) =>
+        requestedHistorySurfaces.includes(
+          surface as (typeof requestedHistorySurfaces)[number],
+        ),
+      )
+    ) {
+      const requiredSections = {
+        employment: request.surfaces.includes("hiring_record"),
+        selection: request.surfaces.includes("selection_report"),
+      };
+      for (const reference of references) {
+        historyByCompany.set(
+          reference.companyCode,
+          await readCompanyHistory(
+            reference,
+            companyDocument,
+            requiredSections,
+          ),
+        );
+      }
+    }
+    for (const surface of requestedHistorySurfaces) {
+      if (
+        !request.surfaces.includes(surface) ||
+        !companyDocument ||
+        references.length === 0
+      )
+        continue;
       const detailItems: CastCareerSourceItem[] = [];
       let failure: {
         status: CastCareerSourceStatus;
         reason_code: string;
       } | null = null;
       for (const reference of references) {
-        const history = await readCompanyHistory(reference, companyDocument);
-        if (!("history" in history)) {
-          failure = history;
+        const history = historyByCompany.get(reference.companyCode);
+        if (!history || !("history" in history)) {
+          if (history && !("history" in history)) failure = history;
           continue;
         }
         detailItems.push(
@@ -1384,15 +1479,24 @@ export async function runCastCareerSourceSearch(
           reason_code: failure?.reason_code ?? null,
           evidence_ids: [randomRef("evidence")],
         });
-      } else if (!results.some((result) => result.surface === surface)) {
-        results.push({
+      } else {
+        const current = results.find((result) => result.surface === surface);
+        const fallbackStatus =
+          failure?.status ??
+          (current && current.status !== "known"
+            ? current.status
+            : "unavailable");
+        replaceSurfaceResult(results, {
           surface,
-          status: failure?.status ?? "unavailable",
+          status: fallbackStatus,
           total_count: null,
           returned_count: 0,
           coverage: null,
           items: [],
-          reason_code: failure?.reason_code ?? "company_detail_unavailable",
+          reason_code:
+            failure?.reason_code ??
+            current?.reason_code ??
+            "company_detail_unavailable",
           evidence_ids: [],
         });
       }
@@ -1462,10 +1566,7 @@ export function mergeCastCareerSupportLocalResult(
       if (index >= 0) {
         const current = nextResults[index];
         if (current) {
-          current.status =
-            page.status === "reauth_required"
-              ? "reauth_required"
-              : "unavailable";
+          current.status = page.status;
           current.reason_code = page.reason_code;
         }
       }

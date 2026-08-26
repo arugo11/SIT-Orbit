@@ -13,6 +13,7 @@ import {
   runCastCareerSourceSearch,
 } from "./cast-career-source-runtime";
 import {
+  CAST_NOTION_EVENT_URL,
   CAST_NOTION_RECORDING_URL,
   type CastSupportPageSnapshot,
 } from "./cast-support-reader";
@@ -24,6 +25,12 @@ const topFixture = readFileSync(
 const jobFixture = readFileSync(
   fileURLToPath(
     new URL("./fixtures/cast-opportunities-job.html", import.meta.url),
+  ),
+  "utf8",
+);
+const internshipFixture = readFileSync(
+  fileURLToPath(
+    new URL("./fixtures/cast-opportunities-internship.html", import.meta.url),
   ),
   "utf8",
 );
@@ -41,6 +48,23 @@ const jobForm = `
   <form action="/career/job_offer_search"><h1>求人情報検索</h1>
     <label>業種<select name="industry"><option value="software">情報通信（ソフトウェア）</option></select></label>
   </form>`;
+const internshipForm = `<!doctype html><html><body>
+  <form action="/career/internship_search"><h1>インターンシップ検索</h1><p>実施時期・対象学年</p>
+    <label>実施地<select name="location"><option value="toyosu">豊洲</option></select></label>
+    <label>対象学年<select name="grade"><option value="third">学部3年</option></select></label>
+  </form>
+</body></html>`;
+const companySessionForm = `<!doctype html><html><body>
+  <form action="/career/company_session_search"><h1>会社説明会検索</h1><p>開催日・開催地</p>
+    <label>開催地<select name="location"><option value="toyosu">豊洲</option></select></label>
+  </form>
+</body></html>`;
+const companySessionResult = `<!doctype html><html><body>
+  <h1>会社説明会 開催</h1><p>該当数：1件</p>
+  <table><thead><tr><th>企業名</th><th>開催日</th></tr></thead><tbody>
+    <tr><td>合成説明会企業</td><td>2026-09-10</td></tr>
+  </tbody></table>
+</body></html>`;
 const counseling = `<!doctype html><html><body>
   <h1>キャリア相談予約</h1><table><tbody>
     <tr><td>2026-09-01</td><td>10:00〜10:40</td><td>○</td></tr>
@@ -153,7 +177,7 @@ describe("CAST career source runtime", () => {
     };
 
     const projection = projectCastCareerForAgent(local);
-    expect(projection.status).toBe("known");
+    expect(projection.status).toBe("partial");
     expect(projection.searched_surfaces).toEqual([
       "job",
       "recording",
@@ -177,6 +201,91 @@ describe("CAST career source runtime", () => {
           aggregate.dimension === "surface" && aggregate.value === "counseling",
       ),
     ).toBe(false);
+  });
+
+  it("does not label an all-failed run as partial", () => {
+    const local: CastCareerLocalResult = {
+      schema_version: "v1",
+      status: "partial",
+      query: "CAST検索",
+      surfaces: ["job", "recording"],
+      surface_results: [
+        {
+          surface: "job",
+          status: "unavailable",
+          total_count: null,
+          returned_count: 0,
+          coverage: null,
+          items: [],
+          reason_code: "cast_server_error",
+          evidence_ids: [],
+        },
+        {
+          surface: "recording",
+          status: "partial",
+          total_count: null,
+          returned_count: 0,
+          coverage: null,
+          items: [],
+          reason_code: "support_read_pending",
+          evidence_ids: [],
+        },
+      ],
+      items: [],
+      local_evidence: [],
+      discovered_support_links: [],
+      reason_codes: ["cast_server_error", "support_read_pending"],
+    };
+    const projection = projectCastCareerForAgent(local);
+    expect(projection.status).toBe("unavailable");
+    expect(projection.total_count).toBe(0);
+    expect(projection.returned_count).toBe(0);
+    expect(projection.anonymous_aggregates).toEqual([]);
+  });
+
+  it("keeps partial surfaces with returned rows usable", () => {
+    const local: CastCareerLocalResult = {
+      schema_version: "v1",
+      status: "partial",
+      query: "採用実績",
+      surfaces: ["hiring_record"],
+      surface_results: [
+        {
+          surface: "hiring_record",
+          status: "partial",
+          total_count: null,
+          returned_count: 1,
+          coverage: { mode: "partial", fetched_pages: 1, page_size: 10 },
+          items: [
+            {
+              result_ref: "orbit-cast-result-local",
+              surface: "hiring_record",
+              title: "採用実績",
+              company_name: "合成企業",
+              dates: ["2026"],
+              deadline: null,
+              locations: [],
+              industries: ["情報通信"],
+              occupations: [],
+              academic_programs: [],
+              graduation_years: [2026],
+              relation_flags: [],
+              local_summary: null,
+              source_url: null,
+            },
+          ],
+          reason_code: "company_detail_partial",
+          evidence_ids: [],
+        },
+      ],
+      items: [],
+      local_evidence: [],
+      discovered_support_links: [],
+      reason_codes: ["company_detail_partial"],
+    };
+    const projection = projectCastCareerForAgent(local);
+    expect(projection.status).toBe("partial");
+    expect(projection.returned_count).toBe(1);
   });
 
   it("accepts semantic surfaces only and rejects arbitrary transport fields", () => {
@@ -263,6 +372,76 @@ describe("CAST career source runtime", () => {
     expect(JSON.stringify(result)).not.toContain("csrf");
   });
 
+  it("runs internship and company-session surfaces through their observed forms", async () => {
+    installDom();
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (
+          url.endsWith("/career/internship_search") &&
+          (init?.method ?? "GET") === "GET"
+        )
+          return response(internshipForm, url);
+        if (
+          url.endsWith("/career/internship_search") &&
+          init?.method === "POST"
+        )
+          return response(
+            internshipFixture,
+            "https://shibaura.pita.services/career/internship_search",
+          );
+        if (
+          url.endsWith("/career/company_session_search") &&
+          (init?.method ?? "GET") === "GET"
+        )
+          return response(companySessionForm, url);
+        if (
+          url.endsWith("/career/company_session_search") &&
+          init?.method === "POST"
+        )
+          return response(
+            companySessionResult,
+            "https://shibaura.pita.services/career/company_session_search",
+          );
+        throw new Error(`unexpected URL ${url}`);
+      }),
+    );
+    const result = await runCastCareerSourceSearch({
+      query: "インターンと会社説明会",
+      surfaces: ["internship", "company_session"],
+      filters: { target_grades: ["学部3年"] },
+      limit: 5,
+    });
+    expect(result.status).toBe("known");
+    expect(result.surface_results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          surface: "internship",
+          status: "known",
+          returned_count: 1,
+        }),
+        expect.objectContaining({
+          surface: "company_session",
+          status: "known",
+          returned_count: 1,
+        }),
+      ]),
+    );
+    expect(result.items.map((item) => item.surface)).toEqual([
+      "internship",
+      "company_session",
+    ]);
+    expect(calls).toEqual([
+      "GET https://shibaura.pita.services/career/internship_search",
+      "POST https://shibaura.pita.services/career/internship_search",
+      "GET https://shibaura.pita.services/career/company_session_search",
+      "POST https://shibaura.pita.services/career/company_session_search",
+    ]);
+  });
+
   it("follows only the observed company detail and history fragment paths", async () => {
     installDom();
     vi.stubGlobal(
@@ -321,7 +500,7 @@ describe("CAST career source runtime", () => {
     expect(JSON.stringify(result)).not.toContain("山田");
   });
 
-  it("discovers only CAST-linked support roots and merges a local Notion snapshot", async () => {
+  it("discovers both CAST-linked support roots and merges local Notion snapshots", async () => {
     installDom();
     vi.stubGlobal(
       "fetch",
@@ -343,13 +522,14 @@ describe("CAST career source runtime", () => {
       }),
     );
     const local = await runCastCareerSourceSearch({
-      query: "見るべき録画",
-      surfaces: ["job", "recording"],
+      query: "見るべき録画とイベント",
+      surfaces: ["job", "recording", "career_event"],
       filters: {},
       limit: 5,
     });
     expect(local.discovered_support_links).toEqual([
       { kind: "recording", url: CAST_NOTION_RECORDING_URL },
+      { kind: "career_event", url: CAST_NOTION_EVENT_URL },
     ]);
     expect(
       local.surface_results.find((item) => item.surface === "recording")
@@ -369,13 +549,31 @@ describe("CAST career source runtime", () => {
         },
       ],
     };
+    const eventSnapshot: CastSupportPageSnapshot = {
+      ...snapshot,
+      kind: "career_event",
+      source_url: CAST_NOTION_EVENT_URL,
+      items: [
+        {
+          title: "会社説明会スケジュール",
+          date: "2026-08-21",
+          target: "学部生",
+          summary: "公開イベント",
+        },
+      ],
+    };
     const merged = mergeCastCareerSupportLocalResult(local, [
       { kind: "recording", result: snapshot },
+      { kind: "career_event", result: eventSnapshot },
     ]);
     expect(merged.status).toBe("known");
     expect(merged.items).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ surface: "recording", title: "ES講座録画" }),
+        expect.objectContaining({
+          surface: "career_event",
+          title: "会社説明会スケジュール",
+        }),
       ]),
     );
     expect(JSON.stringify(merged)).not.toContain("zoom");
@@ -424,6 +622,50 @@ describe("CAST career source runtime", () => {
       ),
     ).toEqual(expect.objectContaining({ status: "known", returned_count: 1 }));
     expect(calls).toContain(`GET ${CAST_COMPANY_EXAM_REPORT_URL}`);
+    expect(calls).not.toContain(
+      "POST https://shibaura.pita.services/career/get/companyExamSub",
+    );
+  });
+
+  it("does not fetch an unrelated selection fragment for hiring-only searches", async () => {
+    installDom();
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (
+          url.includes("/career/company_search") &&
+          (init?.method ?? "GET") === "GET"
+        )
+          return response(companyForm, url);
+        if (url.includes("/career/company_search") && init?.method === "POST")
+          return response(
+            companyResult,
+            "https://shibaura.pita.services/career/company_search/search",
+          );
+        if (url.endsWith("/career/company_detail_view"))
+          return response(companyDetail, url);
+        if (url.endsWith("/career/get/employmentSub"))
+          return response(employmentFragment, url);
+        throw new Error(`unexpected URL ${url}`);
+      }),
+    );
+    const result = await runCastCareerSourceSearch({
+      query: "採用実績だけ",
+      surfaces: ["company", "hiring_record"],
+      filters: {},
+      limit: 5,
+    });
+    expect(
+      result.surface_results.find(
+        (surface) => surface.surface === "hiring_record",
+      ),
+    ).toEqual(expect.objectContaining({ status: "known", returned_count: 1 }));
+    expect(calls).toContain(
+      "POST https://shibaura.pita.services/career/get/employmentSub",
+    );
     expect(calls).not.toContain(
       "POST https://shibaura.pita.services/career/get/companyExamSub",
     );

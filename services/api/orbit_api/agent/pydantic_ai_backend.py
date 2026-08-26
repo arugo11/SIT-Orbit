@@ -1071,7 +1071,14 @@ async def cast_career_search(
     limit: int = 10,
     exhaustive: bool = False,
 ) -> CastCareerSearchResult:
-    """Deferred bounded search over all selected CAST career surfaces."""
+    """Deferred bounded search over all selected CAST career surfaces.
+
+    Use one call for a natural-language CAST question and include every
+    relevant surface (jobs, internships, sessions, companies, hiring records,
+    selection reports, recordings, events, and counseling slots).  The client
+    performs the ordered same-origin reads and keeps detailed cards local;
+    this result contains only coverage and anonymous aggregate cells.
+    """
 
     del query, surfaces, filters, limit, exhaustive
     raise CallDeferred()

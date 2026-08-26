@@ -46,7 +46,12 @@ import {
   type CastCareerLocalResult,
   isCastCareerSearchRequest,
 } from "../content/cast-career-source-runtime";
-import { rankCastCareerItems } from "../content/cast-cross-search";
+import {
+  type CastCareerRankedItem,
+  type CastCareerResultGroup,
+  groupCastCareerItems,
+  rankCastCareerItems,
+} from "../content/cast-cross-search";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
   type CastSearchLocalKnownResult,
@@ -115,6 +120,36 @@ import {
 const CHAT_FAILURE_MESSAGE =
   "今は応答できませんでした。もう一度お試しください。";
 
+interface LocalCastCareerDetail {
+  result: CastCareerLocalResult;
+  ranked_items: CastCareerRankedItem[];
+  groups: CastCareerResultGroup[];
+  filters: CastCareerFilters;
+}
+
+function formatCastCareerFilters(filters: CastCareerFilters): string {
+  const labels: Record<string, string> = {
+    company_name: "企業",
+    locations: "勤務地",
+    industries: "業種",
+    technical_domains: "技術領域",
+    occupations: "職種",
+    academic_programs: "学部・学科",
+    target_grades: "対象学年",
+    graduation_years: "採用実績年度",
+    deadline_before: "締切",
+    obog_required: "OB・OG",
+    career_supporter_required: "就活サポーター",
+    recording_required: "録画",
+  };
+  return Object.entries(filters)
+    .filter(([, value]) => value !== undefined && value !== false)
+    .map(([key, value]) => {
+      const rendered = Array.isArray(value) ? value.join("、") : String(value);
+      return `${labels[key] ?? key}: ${rendered}`;
+    })
+    .join(" / ");
+}
 export interface ChatPanelProps {
   apiClient: AgentApiClient;
   pageContext: PageContext | null;
@@ -522,7 +557,7 @@ export function ChatPanel({
     Record<string, CastSearchLocalKnownResult>
   >({});
   const [localCastCareerDetails, setLocalCastCareerDetails] = useState<
-    Record<string, CastCareerLocalResult>
+    Record<string, LocalCastCareerDetail>
   >({});
   type LocalLibraryRecord = NonNullable<
     LibraryCatalogSearchResult["items"]
@@ -1738,15 +1773,20 @@ export function ChatPanel({
       if (!isCastCareerSearchResult(cast.projection)) {
         throw new Error("CAST横断検索結果を検証できませんでした。");
       }
-      if (cast.status !== "known" && cast.status !== "partial") {
+      if (
+        cast.projection.status !== "known" &&
+        cast.projection.status !== "partial"
+      ) {
         const message =
-          cast.status === "reauth_required"
+          cast.projection.status === "reauth_required"
             ? "CASTのログインが必要です。開いた公式ページでログイン後、もう一度検索してください。"
-            : cast.status === "form_changed"
+            : cast.projection.status === "form_changed"
               ? "CASTの検索フォームが変更されました。検索を中断しました。"
-              : cast.status === "rate_limited"
+              : cast.projection.status === "rate_limited"
                 ? "CASTの検索が一時的に制限されました。時間を置いて再試行してください。"
-                : `CAST横断検索を利用できませんでした（${cast.reason_codes.join(", ")}）。`;
+                : cast.projection.reason_codes.includes("cast_server_error")
+                  ? "CASTサーバーで一時的なエラーが発生しました。時間を置いて再試行してください。"
+                  : `CAST横断検索を利用できませんでした（${cast.projection.reason_codes.join(", ")}）。`;
         throw new Error(message);
       }
       const rankedItems = rankCastCareerItems(
@@ -1755,17 +1795,17 @@ export function ChatPanel({
         argumentsObject.limit as number,
         argumentsObject.filters as CastCareerFilters,
       );
-      const rankedRefs = new Set(
-        rankedItems.map((entry) => entry.item.result_ref),
+      const groups = groupCastCareerItems(
+        rankedItems,
+        argumentsObject.filters as CastCareerFilters,
       );
       setLocalCastCareerDetails((items) => ({
         ...items,
         [activity.id]: {
-          ...cast,
-          items: [
-            ...rankedItems.map((entry) => entry.item),
-            ...cast.items.filter((item) => !rankedRefs.has(item.result_ref)),
-          ].slice(0, argumentsObject.limit as number),
+          result: cast,
+          ranked_items: rankedItems,
+          groups,
+          filters: argumentsObject.filters as CastCareerFilters,
         },
       }));
       request = toolResultRequest(
@@ -2968,45 +3008,85 @@ export function ChatPanel({
                   <summary>CAST横断検索の端末内詳細</summary>
                   <p>
                     検索面:{" "}
-                    {localCastCareerDetails[message.id]?.surfaces.join("、")}
+                    {localCastCareerDetails[message.id]?.result.surfaces.join(
+                      "、",
+                    )}
                     <br />
-                    条件: {localCastCareerDetails[message.id]?.query}
+                    条件: {localCastCareerDetails[message.id]?.result.query}
+                    <br />
+                    適用条件:{" "}
+                    {formatCastCareerFilters(
+                      localCastCareerDetails[message.id]?.filters ?? {},
+                    ) || "指定なし"}
                   </p>
                   <ul>
-                    {localCastCareerDetails[message.id]?.surface_results.map(
-                      (surface) => (
-                        <li key={surface.surface}>
-                          <strong>{surface.surface}</strong>：{surface.status} /{" "}
-                          {surface.total_count ?? surface.returned_count}件
-                          {surface.reason_code
-                            ? `（${surface.reason_code}）`
-                            : ""}
-                        </li>
-                      ),
-                    )}
+                    {localCastCareerDetails[
+                      message.id
+                    ]?.result.surface_results.map((surface) => (
+                      <li key={surface.surface}>
+                        <strong>{surface.surface}</strong>：{surface.status} /{" "}
+                        {surface.total_count ?? surface.returned_count}件
+                        {surface.coverage
+                          ? ` / ${surface.coverage.fetched_pages}ページ`
+                          : ""}
+                        {surface.reason_code
+                          ? `（${surface.reason_code}）`
+                          : ""}
+                      </li>
+                    ))}
                   </ul>
-                  {localCastCareerDetails[message.id]?.items.length ? (
-                    <ul>
-                      {localCastCareerDetails[message.id]?.items.map((item) => (
-                        <li key={item.result_ref}>
-                          <strong>{item.title}</strong>
-                          {item.company_name ? ` / ${item.company_name}` : ""}
-                          {item.deadline ? ` / 締切: ${item.deadline}` : ""}
-                          {item.relation_flags.length > 0
-                            ? ` / ${item.relation_flags.join("、")}`
-                            : ""}
-                          {item.source_url ? (
-                            <a
-                              href={item.source_url}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              公式画面を開く
-                            </a>
-                          ) : null}
-                        </li>
-                      ))}
-                    </ul>
+                  {localCastCareerDetails[message.id]?.result.status ===
+                  "partial" ? (
+                    <p>一部の検索面を取得できないため、結果はpartialです。</p>
+                  ) : null}
+                  {localCastCareerDetails[message.id]?.groups.length ? (
+                    <ol>
+                      {localCastCareerDetails[message.id]?.groups.map(
+                        (group) => (
+                          <li key={group.group_ref}>
+                            <strong>{group.company_name ?? "関連情報"}</strong>
+                            <span>{` / ${group.matched_surfaces.join("、")}`}</span>
+                            {group.match_reasons.length > 0 ? (
+                              <ul>
+                                {group.match_reasons.map((reason) => (
+                                  <li key={`${reason.label}-${reason.detail}`}>
+                                    {reason.label}: {reason.detail}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                            {group.missing_requirements.length > 0 ? (
+                              <p>
+                                情報不足:{" "}
+                                {group.missing_requirements.join("、")}
+                              </p>
+                            ) : null}
+                            <ul>
+                              {group.items.map(({ item }) => (
+                                <li key={item.result_ref}>
+                                  <strong>{item.title}</strong>
+                                  {item.deadline
+                                    ? ` / 締切: ${item.deadline}`
+                                    : ""}
+                                  {item.relation_flags.length > 0
+                                    ? ` / ${item.relation_flags.join("、")}`
+                                    : ""}
+                                  {item.source_url ? (
+                                    <a
+                                      href={item.source_url}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                    >
+                                      公式画面を開く
+                                    </a>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
+                          </li>
+                        ),
+                      )}
+                    </ol>
                   ) : (
                     <p>端末内で表示できる詳細項目はありません。</p>
                   )}

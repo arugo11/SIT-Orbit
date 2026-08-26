@@ -6,6 +6,7 @@ import {
   type CastSearchQuery,
   createCareerQueryPromptRequest,
   emptyCareerQuery,
+  groupCastCareerItems,
   parseCareerQueryResponse,
   rankCastCareerItems,
   searchCastCareer,
@@ -157,6 +158,105 @@ describe("CAST cross search", () => {
     );
     expect(ranked).toHaveLength(1);
     expect(ranked[0]?.item.result_ref).toBe("opaque-matching-result");
+  });
+
+  it("joins relation requirements across rows for the same company", () => {
+    const items: CastCareerSourceItem[] = [
+      {
+        result_ref: "job-company-a",
+        surface: "job",
+        title: "機械制御求人",
+        company_name: "合成企業",
+        dates: [],
+        deadline: "2026-09-01",
+        locations: ["豊洲"],
+        industries: ["製造"],
+        occupations: ["組込み開発"],
+        academic_programs: ["機械工学"],
+        graduation_years: [],
+        relation_flags: [],
+        local_summary: null,
+        source_url: null,
+      },
+      {
+        result_ref: "history-company-a",
+        surface: "hiring_record",
+        title: "合成企業 採用実績",
+        company_name: "合成企業",
+        dates: ["2024-03-20"],
+        deadline: null,
+        locations: [],
+        industries: [],
+        occupations: ["組込み開発"],
+        academic_programs: ["機械工学"],
+        graduation_years: [2024],
+        relation_flags: ["obog"],
+        local_summary: null,
+        source_url: null,
+      },
+    ];
+    const ranked = rankCastCareerItems(items, "機械", 20, {
+      locations: ["豊洲"],
+      obog_required: true,
+    });
+    const groups = groupCastCareerItems(ranked, {
+      locations: ["豊洲"],
+      obog_required: true,
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.company_name).toBe("合成企業");
+    expect(groups[0]?.matched_surfaces).toEqual(["job", "hiring_record"]);
+    expect(groups[0]?.group_ref).toMatch(/^orbit-cast-group-0-[A-Za-z0-9]+$/u);
+    expect(groups[0]?.group_ref).not.toContain("合成企業");
+    expect(groups[0]?.match_reasons).toEqual(
+      expect.arrayContaining([
+        { label: "勤務地", detail: "豊洲" },
+        { label: "OB・OG", detail: "CAST上で関連情報あり" },
+      ]),
+    );
+  });
+
+  it("keeps job and recording cards when the recording is a separate surface", () => {
+    const items: CastCareerSourceItem[] = [
+      {
+        result_ref: "job-with-recording",
+        surface: "job",
+        title: "情報系インターン",
+        company_name: "合成企業",
+        dates: [],
+        deadline: "2026-09-01",
+        locations: [],
+        industries: ["情報通信"],
+        occupations: ["ソフトウェア開発"],
+        academic_programs: ["情報工学"],
+        graduation_years: [],
+        relation_flags: [],
+        local_summary: null,
+        source_url: null,
+      },
+      {
+        result_ref: "recording-card",
+        surface: "recording",
+        title: "情報系就活講座録画",
+        company_name: null,
+        dates: ["2026-08-20"],
+        deadline: null,
+        locations: [],
+        industries: ["情報通信"],
+        occupations: ["ソフトウェア開発"],
+        academic_programs: ["情報工学"],
+        graduation_years: [],
+        relation_flags: [],
+        local_summary: null,
+        source_url: null,
+      },
+    ];
+    const ranked = rankCastCareerItems(items, "情報系", 20, {
+      recording_required: true,
+    });
+    expect(ranked.map((entry) => entry.item.result_ref)).toEqual(
+      expect.arrayContaining(["job-with-recording", "recording-card"]),
+    );
   });
 
   it("sends only the user's question to the local Prompt API", () => {

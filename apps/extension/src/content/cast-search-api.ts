@@ -85,6 +85,8 @@ export interface CastSearchItem {
   locations: string[];
   occupations: string[];
   academic_programs: string[];
+  /** Present on opportunity results when the CAST form exposes eligibility. */
+  target_grades?: string[];
   deadline: string | null;
   graduation_year: number | null;
   hiring_count: number | null;
@@ -1034,6 +1036,7 @@ function itemFromOpportunity(
     locations: unique(opportunity.locations),
     occupations: unique(opportunity.occupations),
     academic_programs: unique(opportunity.eligible_programs),
+    target_grades: unique(opportunity.target_grades),
     deadline: opportunity.application_deadline,
     graduation_year: null,
     hiring_count: null,
@@ -1072,6 +1075,7 @@ function genericItems(
         academic_programs: splitValues(
           firstField(values, [/学部/u, /学科/u, /学問系統/u]),
         ),
+        target_grades: splitValues(firstField(values, [/対象学年|学年/u])),
         deadline: dateFromText(
           firstField(values, [/締切/u, /期限/u, /開催日/u]),
         ),
@@ -1105,6 +1109,9 @@ function genericItems(
       ),
       academic_programs: splitValues(
         body.match(/(?:募集学部学科|学部学科)\s*([^\n]+)/u)?.[1] ?? "",
+      ),
+      target_grades: splitValues(
+        body.match(/(?:対象学年|学年)\s*([^\n]+)/u)?.[1] ?? "",
       ),
       deadline: dateFromText(
         heading.match(
