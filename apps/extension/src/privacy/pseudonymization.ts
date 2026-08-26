@@ -653,7 +653,7 @@ function scanReasoningForLeakage(
   }
   if (
     prohibitedValues.some((value) => {
-      if (value.length <= 2) return false;
+      if (!value) return false;
       const normalized = normalizeIdentifier(value);
       return serialized.includes(value) || serialized.includes(normalized);
     })
