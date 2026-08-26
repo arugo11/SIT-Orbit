@@ -68,6 +68,7 @@ import {
   projectCastAlumniForAgent,
 } from "../content/cast-alumni-reader";
 import {
+  buildCastCareerLocalReasoningProjection,
   type CastCareerLocalResult,
   type CastCareerSupportRuntimeResult,
   mergeCastCareerSupportLocalResult,
@@ -120,6 +121,8 @@ import {
   type SitrusTableRow,
 } from "../content/sitrus-reader";
 import { ConversationPseudonymizationGateway } from "../privacy/conversation-pseudonymization";
+import { CareerVault } from "../privacy/career-vault";
+import { PseudonymizationGateway } from "../privacy/pseudonymization";
 import {
   type BrowserReadResponse,
   type CalendarCommandMessage,
@@ -202,6 +205,11 @@ import {
 
 const googleCalendarConnector = new GoogleCalendarConnector();
 const googleDriveConnector = new GoogleDriveConnector();
+// CAST detail is kept on-device.  The vault only restores an already-unlocked
+// session key; the worker never creates a vault or asks for a passphrase.
+const castCareerVault = new CareerVault();
+const castCareerPseudonymization = new PseudonymizationGateway(castCareerVault);
+let castCareerVaultRestore: Promise<boolean> | null = null;
 
 const BUILT_IN_ORIGINS = new Set([
   "https://scombz.shibaura-it.ac.jp",
@@ -6322,8 +6330,64 @@ function castCareerUnavailable(
 
 function withCastCareerProjection(
   local: CastCareerLocalResult,
-): CastCareerSearchResponse {
-  return { ...local, projection: projectCastCareerForAgent(local) };
+  missionId: string,
+): Promise<CastCareerSearchResponse> {
+  const response: CastCareerSearchResponse = {
+    ...local,
+    // This is the only projection accepted by the Agent API.  Detailed CAST
+    // rows must never be included in this object sent to the API.
+    projection: projectCastCareerForAgent(local),
+  };
+
+  // No rows means there is no local detail to reason over.  Omitting the
+  // optional projection also lets fixture/service-worker tests run without a
+  // Career Vault or an IndexedDB implementation.
+  if (local.items.length === 0) return Promise.resolve(response);
+
+  return buildCastCareerLocalReasoningProjectionIfAvailable(
+    local,
+    missionId,
+  ).then((reasoning_projection) =>
+    reasoning_projection ? { ...response, reasoning_projection } : response,
+  );
+}
+
+async function restoreCastCareerVault(): Promise<boolean> {
+  if (castCareerVault.isUnlocked) return true;
+  if (!castCareerVaultRestore) {
+    castCareerVaultRestore = (async () => {
+      try {
+        await castCareerVault.initialize();
+        return (
+          castCareerVault.isUnlocked || (await castCareerVault.restoreSession())
+        );
+      } catch {
+        // A locked/unavailable vault is a local-only omission, never an API
+        // fallback.  The normal aggregate projection remains usable.
+        return false;
+      } finally {
+        castCareerVaultRestore = null;
+      }
+    })();
+  }
+  return castCareerVaultRestore;
+}
+
+async function buildCastCareerLocalReasoningProjectionIfAvailable(
+  local: CastCareerLocalResult,
+  missionId: string,
+) {
+  if (!(await restoreCastCareerVault())) return undefined;
+  try {
+    const mission = await castCareerPseudonymization.startMission(
+      `cast-career:${missionId}`,
+    );
+    return await buildCastCareerLocalReasoningProjection(local, mission);
+  } catch {
+    // Do not expose raw rows or a pseudonymization failure to the API.  The
+    // deterministic local cards and aggregate projection remain available.
+    return undefined;
+  }
 }
 
 async function readCastSupportPage(
@@ -6388,7 +6452,7 @@ async function handleCastCareerSearch(
     }
     const local = await readCastCareerPage(tab.id, message);
     if (local.discovered_support_links.length === 0)
-      return withCastCareerProjection(local);
+      return withCastCareerProjection(local, message.tool_call_id);
     const supportResults: CastCareerSupportRuntimeResult[] = [];
     for (const link of local.discovered_support_links) {
       supportResults.push({
@@ -6398,6 +6462,7 @@ async function handleCastCareerSearch(
     }
     return withCastCareerProjection(
       mergeCastCareerSupportLocalResult(local, supportResults, message.limit),
+      message.tool_call_id,
     );
   } catch {
     return castCareerUnavailable(message, "cast_career_search_failed");

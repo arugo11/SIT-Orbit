@@ -3,6 +3,14 @@ import { fileURLToPath } from "node:url";
 import { parseHTML } from "linkedom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CareerVault,
+  MemorySessionKeyStore,
+  MemoryVaultStore,
+} from "../privacy/career-vault";
+import { PseudonymizationGateway } from "../privacy/pseudonymization";
+import {
+  buildCastCareerLocalReasoningProjection,
+  buildCastCareerReasoningSnapshot,
   CAST_COMPANY_EXAM_REPORT_URL,
   type CastCareerLocalResult,
   type CastCareerSearchRequest,
@@ -109,6 +117,111 @@ afterEach(() => {
 });
 
 describe("CAST career source runtime", () => {
+  it("builds a local reasoning snapshot without URLs or local summaries", () => {
+    const local: CastCareerLocalResult = {
+      schema_version: "v1",
+      status: "known",
+      query: "MLエンジニア",
+      surfaces: ["hiring_record", "selection_report"],
+      surface_results: [],
+      items: [
+        {
+          result_ref: "orbit-cast-hiring_record-12345678",
+          surface: "hiring_record",
+          title: "サンプル技研 採用実績",
+          company_name: "サンプル技研",
+          dates: ["2024-03-20"],
+          deadline: null,
+          locations: [],
+          industries: ["情報通信"],
+          occupations: ["MLエンジニア"],
+          academic_programs: ["機械学習"],
+          employment_types: ["正社員"],
+          graduation_years: [2024],
+          relation_flags: ["obog", "hiring_record"],
+          local_summary: "内部の詳細説明は送らない",
+          source_url:
+            "https://shibaura.pita.services/career/company_detail_view",
+        },
+      ],
+      local_evidence: [],
+      discovered_support_links: [],
+      reason_codes: [],
+    };
+    const snapshot = buildCastCareerReasoningSnapshot(local);
+    expect(snapshot).toEqual({
+      schema_version: "v2",
+      records: [
+        expect.objectContaining({
+          surface: "hiring_record",
+          title: "サンプル技研 採用実績",
+          company_name: "サンプル技研",
+          result_ref: "orbit-cast-hiring_record-12345678",
+        }),
+      ],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("local_summary");
+    expect(JSON.stringify(snapshot)).not.toContain("source_url");
+  });
+
+  it("creates a local-only pseudonymized reasoning projection from typed CAST rows", async () => {
+    const vault = new CareerVault({
+      store: new MemoryVaultStore(),
+      sessionKeyStore: new MemorySessionKeyStore(),
+    });
+    await vault.create("career-runtime-test-passphrase");
+    try {
+      const mission = await new PseudonymizationGateway(vault).startMission(
+        "cast-career-runtime-test",
+      );
+      const local: CastCareerLocalResult = {
+        schema_version: "v1",
+        status: "known",
+        query: "選考記録",
+        surfaces: ["selection_report"],
+        surface_results: [],
+        items: [
+          {
+            result_ref: "orbit-cast-selection_report-12345678",
+            surface: "selection_report",
+            title: "選考記録",
+            company_name: "サンプル技研",
+            dates: ["2026-08-20"],
+            deadline: null,
+            locations: ["東京都"],
+            industries: [],
+            occupations: ["MLエンジニア"],
+            academic_programs: ["情報工学"],
+            graduation_years: [2024],
+            relation_flags: ["selection_report"],
+            local_summary: "非公開の選考本文",
+            source_url: null,
+          },
+        ],
+        local_evidence: [],
+        discovered_support_links: [],
+        reason_codes: [],
+      };
+      const result = await buildCastCareerLocalReasoningProjection(
+        local,
+        mission,
+      );
+      expect(result.payload.destination).toBe("local");
+      expect(result.payload.records).toHaveLength(1);
+      expect(result.payload.records[0]).toEqual(
+        expect.objectContaining({
+          surface: "selection_report",
+          company_name: "サンプル技研",
+          graduation_year_buckets: ["2020-2024"],
+        }),
+      );
+      expect(result.manifest.destination).toBe("local");
+      expect(JSON.stringify(result)).not.toContain("非公開");
+    } finally {
+      await vault.lock();
+    }
+  });
+
   it("projects nine-surface details into aggregate-only agent data", () => {
     const item = (index: number): CastCareerSourceItem => ({
       result_ref: `orbit-cast-result-${index}`,

@@ -1,3 +1,8 @@
+import type {
+  CastReasoningSnapshot,
+  PseudonymizationMission,
+  PseudonymizedReasoningResult,
+} from "../privacy/pseudonymization";
 import {
   CAST_COMPANY_EXAM_REPORT_URL,
   type CastHistoryLocalSnapshot,
@@ -33,6 +38,8 @@ export { CAST_COMPANY_EXAM_REPORT_URL } from "./cast-history-reports-reader";
 /** Message handled by the CAST page content script. */
 export const CAST_CAREER_INTERNAL_MESSAGE = "orbit-cast-career-search" as const;
 export const CAST_CAREER_SOURCE_SCHEMA_VERSION = "v1" as const;
+/** Version of the local-only, pseudonymized Prompt API reasoning contract. */
+export const CAST_CAREER_REASONING_SCHEMA_VERSION = "v2" as const;
 export const CAST_CAREER_SUPPORT_LINKS = {
   recording: CAST_NOTION_RECORDING_URL,
   career_event: CAST_NOTION_EVENT_URL,
@@ -91,6 +98,8 @@ export interface CastCareerSourceItem {
   locations: string[];
   industries: string[];
   occupations: string[];
+  /** Employment type is a local-only reasoning field. */
+  employment_types?: string[];
   academic_programs: string[];
   /** Local-only eligibility metadata when supplied by an opportunity page. */
   target_grades?: string[];
@@ -138,6 +147,45 @@ export interface CastCareerLocalResult {
   local_evidence: CastCareerLocalEvidence[];
   discovered_support_links: CastCareerSupportLink[];
   reason_codes: string[];
+}
+
+/**
+ * Build the local-only reasoning input from already typed CAST rows.  This
+ * helper intentionally omits `local_summary` and `source_url`; neither is
+ * suitable for a model context and both can contain untrusted page content.
+ */
+export function buildCastCareerReasoningSnapshot(
+  local: CastCareerLocalResult,
+): CastReasoningSnapshot {
+  return {
+    schema_version: CAST_CAREER_REASONING_SCHEMA_VERSION,
+    records: local.items.slice(0, 20).map((item) => ({
+      surface: item.surface,
+      title: item.title,
+      company_name: item.company_name ?? undefined,
+      dates: item.dates,
+      deadline: item.deadline,
+      locations: item.locations,
+      technical_domains: item.academic_programs,
+      occupations: item.occupations,
+      employment_types: item.employment_types,
+      graduation_years: item.graduation_years,
+      relation_flags: item.relation_flags,
+      result_ref: item.result_ref,
+    })),
+  };
+}
+
+/**
+ * Pseudonymize CAST detail for on-device reasoning.  The returned object is
+ * explicitly destination=local; the v1 aggregate projection remains the only
+ * projection accepted by the Agent API.
+ */
+export function buildCastCareerLocalReasoningProjection(
+  local: CastCareerLocalResult,
+  mission: PseudonymizationMission,
+): Promise<PseudonymizedReasoningResult> {
+  return mission.transformReasoning(buildCastCareerReasoningSnapshot(local));
 }
 
 /** Aggregate-only contract sent from the extension to the Chat API. */
@@ -975,6 +1023,13 @@ function historyItems(
       industries: [],
       occupations: unique(occupations),
       academic_programs: unique(academic),
+      employment_types: unique(
+        records
+          .map((record) =>
+            "employment_type" in record ? record.employment_type : null,
+          )
+          .filter((value): value is string => Boolean(value)),
+      ),
       graduation_years: unique(graduationYears.map(String)).map(Number),
       relation_flags: unique([
         ...relationFlags,

@@ -44,6 +44,7 @@ import {
   type ScombzTask,
   type ScombzTimetableItem,
 } from "../content/page-context";
+import type { PseudonymizedReasoningResult } from "../privacy/pseudonymization";
 import type { StableAgentLoopSnapshot } from "../sidepanel/loop-state";
 import type { WorkspaceSession, WorkspaceStatus } from "./workspace-session";
 
@@ -479,6 +480,12 @@ export interface CastCareerSearchMessage extends CastCareerSearchRequest {
 
 export interface CastCareerSearchResponse extends CastCareerLocalResult {
   projection: CastCareerAgentProjection;
+  /**
+   * Detailed CAST context for the on-device Prompt API only.  Service Worker
+   * callers must never forward this field to the Agent API or persist it in
+   * chat history.
+   */
+  reasoning_projection?: PseudonymizedReasoningResult;
 }
 
 export type CastSearchResponse =

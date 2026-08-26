@@ -2609,6 +2609,10 @@ describe("service worker side panel contract", () => {
     expect(serializedProjection).not.toContain("学生 太郎");
     expect(serializedProjection).not.toContain("shibaura.pita.services");
     expect(JSON.stringify(payload)).toContain("合成企業");
+    // The test fixture has no person records and no unlocked Career Vault;
+    // detailed reasoning is therefore omitted instead of crossing the API
+    // boundary or entering chat history.
+    expect(payload.reasoning_projection).toBeUndefined();
   });
 
   it("does not rebroadcast a background tab context to the visible panel", async () => {
