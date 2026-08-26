@@ -6194,6 +6194,26 @@ function isCastSearchCandidateTab(tab: chrome.tabs.Tab): boolean {
   }
 }
 
+async function findCastSearchTab(): Promise<chrome.tabs.Tab | undefined> {
+  const queryCandidate = async (): Promise<chrome.tabs.Tab | undefined> => {
+    const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
+    return tabs.find(isCastSearchCandidateTab);
+  };
+  const existing = await queryCandidate();
+  if (existing?.id !== undefined) return existing;
+
+  // Opening CAST is a read-only recovery step.  The previous implementation
+  // returned immediately after opening the entry page, so a logged-in user
+  // was reported as `cast_page_not_open` even though the page became ready a
+  // moment later.  Wait for the verified entry tab and retry once; a login or
+  // timeout page still fails closed as `reauth_required` below.
+  await openCastEntry();
+  const entryTabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
+  const entry = entryTabs.find(isCastEntryTab);
+  if (entry?.id !== undefined) await waitForTabReady(entry.id);
+  return queryCandidate();
+}
+
 async function readCastSearchPage(
   tabId: number,
   message: CastSearchMessage,
@@ -6237,10 +6257,8 @@ async function handleCastSearch(
     };
   }
   try {
-    const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
-    const tab = tabs.find(isCastSearchCandidateTab);
+    const tab = await findCastSearchTab();
     if (tab?.id === undefined) {
-      await openCastEntry();
       return { status: "reauth_required", reason_code: "cast_page_not_open" };
     }
     const local = await readCastSearchPage(tab.id, message);
@@ -6440,10 +6458,8 @@ async function handleCastCareerSearch(
     return castCareerUnavailable(message, "permission_required");
   }
   try {
-    const tabs = await chrome.tabs.query({ url: `${CAST_ORIGIN}/*` });
-    const tab = tabs.find(isCastSearchCandidateTab);
+    const tab = await findCastSearchTab();
     if (tab?.id === undefined) {
-      await openCastEntry();
       return castCareerUnavailable(
         message,
         "cast_page_not_open",

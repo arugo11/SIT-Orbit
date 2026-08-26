@@ -4,7 +4,8 @@ import {
   AgentApiClient,
   type AgentRunResponse,
   type AgentToolResultRequest,
-  AZURE_DEMO_AGENT_API_BASE,
+  DEFAULT_AGENT_API_BASE,
+  isLocalAgentApiBase,
   type OrbitEvent,
 } from "../api/client";
 import {
@@ -960,22 +961,29 @@ export function App({
   const settingsCloseButtonRef = useRef<HTMLButtonElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsDrawerRef = useRef<HTMLElement>(null);
+  const agentApiBase = DEFAULT_AGENT_API_BASE;
+  const useManagedAgentAuth = !isLocalAgentApiBase(agentApiBase);
   const agentSessionProvider = useMemo(
     () =>
-      createManagedAgentSessionProvider({
-        baseUrl: AZURE_DEMO_AGENT_API_BASE,
-      }),
-    [],
+      useManagedAgentAuth
+        ? createManagedAgentSessionProvider({
+            baseUrl: agentApiBase,
+          })
+        : async () => null,
+    [useManagedAgentAuth],
   );
   const agentApiClient = useMemo(
     () =>
       new AgentApiClient({
-        baseUrl: AZURE_DEMO_AGENT_API_BASE,
-        sessionProvider: agentSessionProvider,
+        baseUrl: agentApiBase,
+        ...(useManagedAgentAuth
+          ? { sessionProvider: agentSessionProvider }
+          : {}),
       }),
-    [agentSessionProvider],
+    [agentSessionProvider, useManagedAgentAuth],
   );
-  const requiresFirstUseSetup = managedIdentityAvailable();
+  const requiresFirstUseSetup =
+    useManagedAgentAuth && managedIdentityAvailable();
   const [firstUseSetupState, setFirstUseSetupState] =
     useState<FirstUseSetupState>(requiresFirstUseSetup ? "checking" : "ready");
   const [firstUseSetupBusy, setFirstUseSetupBusy] = useState(false);
@@ -1888,7 +1896,9 @@ export function App({
           >
             <h3 id="agent-settings-title">Agent接続</h3>
             <p className="settings-message">
-              SITアカウントで管理されたAgentを利用します。
+              {useManagedAgentAuth
+                ? "SITアカウントで管理されたAgentを利用します。"
+                : "ローカルAgent（開発用）へ直接接続しています。OAuthは使用しません。"}
             </p>
             {requiresFirstUseSetup ? (
               <button

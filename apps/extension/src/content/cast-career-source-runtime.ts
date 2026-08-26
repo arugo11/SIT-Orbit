@@ -542,15 +542,25 @@ function safeSearchFilters(
   const next: CastSearchFilters = {};
   if (filters.company_name !== undefined)
     next.company_name = filters.company_name;
+  // The company form is a relation directory. It exposes company name,
+  // industry, location, and relation checkboxes, but it has no semantic
+  // controls for occupation, academic programme, or graduation year. Passing
+  // those unrelated filters would make the transport report a structural
+  // error before the broad company result can be joined with history rows.
+  // Keep unsupported conditions in the typed request for the local join and
+  // only submit controls observed on the corresponding CAST form.
   if (filters.locations !== undefined) next.locations = filters.locations;
   if (filters.industries !== undefined) next.industries = filters.industries;
-  if (filters.occupations !== undefined) next.occupations = filters.occupations;
-  if (filters.academic_programs !== undefined)
-    next.academic_programs = filters.academic_programs;
-  if (filters.graduation_years !== undefined)
-    next.graduation_years = filters.graduation_years;
-  if (filters.deadline_before !== undefined)
-    next.deadline_before = filters.deadline_before;
+  if (surface !== "company") {
+    if (filters.occupations !== undefined)
+      next.occupations = filters.occupations;
+    if (filters.academic_programs !== undefined)
+      next.academic_programs = filters.academic_programs;
+    if (filters.graduation_years !== undefined)
+      next.graduation_years = filters.graduation_years;
+    if (filters.deadline_before !== undefined)
+      next.deadline_before = filters.deadline_before;
+  }
   // Target-grade selectors are present on the internship opportunity form.
   // Do not submit an internship-only field to company/session/history forms: a
   // missing unrelated selector is a structural error, not an empty result.
@@ -845,13 +855,19 @@ async function readCompanyHistory(
   const form = Array.from(
     companyDocument.querySelectorAll<HTMLFormElement>("form"),
   ).find((candidate) => {
+    const hasCompanyCode = Boolean(
+      candidate.querySelector('[name="companyCode"]'),
+    );
     try {
-      return isCastCompanyDetailUrl(
-        new URL(
-          candidate.getAttribute("action") || CAST_ORIGIN,
-          CAST_ORIGIN,
-        ).toString(),
-      );
+      const action = candidate.getAttribute("action");
+      // CAST's verified company-result/detail forms leave action blank and
+      // let the page script call pita.submit('/career/company_detail_view').
+      // The document itself is already restricted to the observed search
+      // result/detail route, so accepting this exact form shape does not
+      // introduce an agent-controlled endpoint.
+      return action
+        ? isCastCompanyDetailUrl(new URL(action, CAST_ORIGIN).toString())
+        : hasCompanyCode;
     } catch {
       return false;
     }

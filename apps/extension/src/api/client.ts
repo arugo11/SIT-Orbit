@@ -95,7 +95,31 @@ export type LibraryActionOption = components["schemas"]["LibraryActionOption"];
 
 export const AZURE_DEMO_AGENT_API_BASE =
   "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io";
-export const DEFAULT_AGENT_API_BASE = AZURE_DEMO_AGENT_API_BASE;
+const compiledAgentApiBase =
+  typeof __ORBIT_AGENT_API_BASE__ === "undefined"
+    ? ""
+    : __ORBIT_AGENT_API_BASE__.trim();
+/**
+ * Production uses the managed Azure endpoint.  A local endpoint is selected
+ * only by an explicit build-time override so acceptance can exercise the
+ * extension against a local Agent without starting an OAuth flow.
+ */
+export const DEFAULT_AGENT_API_BASE =
+  compiledAgentApiBase || AZURE_DEMO_AGENT_API_BASE;
+
+export function isLocalAgentApiBase(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    return (
+      url.protocol === "http:" &&
+      (url.hostname === "localhost" ||
+        url.hostname === "127.0.0.1" ||
+        url.hostname === "[::1]")
+    );
+  } catch {
+    return false;
+  }
+}
 
 export type Fetcher = (
   input: RequestInfo | URL,

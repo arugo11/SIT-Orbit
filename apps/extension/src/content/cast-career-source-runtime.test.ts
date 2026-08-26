@@ -83,6 +83,12 @@ const companyForm = `<!doctype html><html><body>
   <form action="/career/company_search"><h1>企業検索 OB・OG 就活サポーター</h1>
     <input name="companyCode" value="" /><input name="employmentTabActive" value="" /><input name="companyExamTabActive" value="" />
   </form></body></html>`;
+const companyRelationForm = `<!doctype html><html><body>
+  <form action="/career/company_search"><h1>企業検索 OB・OG 就活サポーター</h1>
+    <label>入社試験情報あり<input type="checkbox" name="companyExamCondition.selectedValue" value="6" /></label>
+    <label>東京都<input type="checkbox" name="selectedValues" value="tokyo" /></label>
+    <input name="companyCode" value="" />
+  </form></body></html>`;
 const companyResult = `<!doctype html><html><body>
   <p>該当数：1件</p>
   <form action="/career/company_detail_view"><input name="companyCode" value="" /><input name="employmentTabActive" value="" /><input name="companyExamTabActive" value="" /></form>
@@ -611,6 +617,58 @@ describe("CAST career source runtime", () => {
     ).toEqual(expect.objectContaining({ status: "known", returned_count: 1 }));
     expect(JSON.stringify(result)).not.toContain("9500711");
     expect(JSON.stringify(result)).not.toContain("山田");
+  });
+
+  it("keeps company-directory filters form-safe while retaining semantic history filters locally", async () => {
+    installDom();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (
+          url.includes("/career/company_search") &&
+          (init?.method ?? "GET") === "GET"
+        )
+          return response(companyRelationForm, url);
+        if (url.includes("/career/company_search") && init?.method === "POST")
+          return response(
+            companyResult,
+            "https://shibaura.pita.services/career/company_search/search",
+          );
+        if (url.endsWith("/career/company_detail_view"))
+          return response(companyDetail, url);
+        if (url.endsWith("/career/get/employmentSub"))
+          return response(employmentFragment, url);
+        if (url.endsWith("/career/get/companyExamSub"))
+          return response(examFragment, url);
+        throw new Error(`unexpected URL ${url}`);
+      }),
+    );
+    const result = await runCastCareerSourceSearch({
+      query: "MLエンジニアの採用実績",
+      surfaces: ["hiring_record", "selection_report"],
+      filters: {
+        occupations: ["MLエンジニア"],
+        academic_programs: ["情報工学"],
+        graduation_years: [2026, 2025, 2024, 2023, 2022],
+      },
+      limit: 5,
+    });
+    expect(result.surface_results).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          surface: "hiring_record",
+          status: "known",
+          returned_count: 1,
+        }),
+        expect.objectContaining({
+          surface: "selection_report",
+          status: "known",
+          returned_count: 1,
+        }),
+      ]),
+    );
+    expect(JSON.stringify(result)).not.toContain("9500711");
   });
 
   it("discovers both CAST-linked support roots and merges local Notion snapshots", async () => {

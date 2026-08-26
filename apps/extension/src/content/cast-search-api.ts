@@ -150,6 +150,8 @@ interface SearchDefinition {
   entryPath: string;
   entryQuery: string;
   actionPath: string;
+  /** HTML form action(s) observed before the JavaScript submit endpoint. */
+  formPaths?: readonly string[];
   resultPath: string;
   markers: RegExp[];
 }
@@ -185,7 +187,11 @@ export const CAST_SEARCH_DEFINITIONS: Readonly<
     kind: "company",
     entryPath: "/career/company_search",
     entryQuery: "common_header=on",
-    actionPath: "/career/company_search",
+    // The live CAST form is populated without an HTML action. Its verified
+    // submit handler posts to the `/search` endpoint; posting to the entry
+    // page returns the form again and makes history joins look empty.
+    actionPath: "/career/company_search/search",
+    formPaths: ["/career/company_search", "/career/company_search/search"],
     resultPath: "/career/company_search/search",
     markers: [/企業検索/u, /OB.?OG/u, /就活サポーター/u],
   },
@@ -538,9 +544,10 @@ export function collectCastSearchFormCatalog(
     document.querySelectorAll<HTMLFormElement>("form"),
   ).filter((form) => {
     const action = formAction(form, pageUrl);
+    const formPaths = definition.formPaths ?? [definition.actionPath];
     return (
       action?.origin === CAST_SEARCH_ORIGIN &&
-      action.pathname === definition.actionPath
+      formPaths.includes(action.pathname)
     );
   });
   if (forms.length !== 1) return null;

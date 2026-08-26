@@ -60,6 +60,9 @@ try {
 const agentOAuthClientId =
   process.env.ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID?.trim() ||
   parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID");
+const agentApiBase =
+  process.env.ORBIT_AGENT_API_BASE?.trim() ||
+  parseLocalEnvValue(localEnv, "ORBIT_AGENT_API_BASE");
 const extensionOAuthClientId =
   process.env.ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID?.trim() ||
   parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID");
@@ -78,6 +81,7 @@ const bundleOptions = {
     __ORBIT_AUDIT_BUILD__: JSON.stringify(auditBuild),
     __ORBIT_AUDIT_BRIDGE_PORT__: JSON.stringify(auditBuild ? auditPort : 0),
     __ORBIT_AUDIT_BRIDGE_SECRET__: JSON.stringify(auditSecret),
+    __ORBIT_AGENT_API_BASE__: JSON.stringify(agentApiBase ?? ""),
   },
 };
 
