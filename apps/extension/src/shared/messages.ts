@@ -17,6 +17,7 @@ import type {
   LibraryDiscoverySearchArguments,
 } from "../connectors/library-discovery";
 import { isLibraryResourceRef } from "../connectors/library-discovery";
+import type { OpacDiagnosticSnapshot } from "../connectors/opac-diagnostics";
 import {
   type CastSearchAgentProjection,
   type CastSearchLocalKnownResult,
@@ -77,6 +78,8 @@ export const MESSAGE_TYPES = {
   libraryActionOptions: "library-action-options",
   libraryActionPreview: "library-action-preview",
   libraryActionSubmit: "library-action-submit",
+  opacDiagnosticsGet: "opac-diagnostics-get",
+  opacDiagnosticsClear: "opac-diagnostics-clear",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -235,6 +238,7 @@ export interface LibraryItemReadMessage {
   type: typeof MESSAGE_TYPES.libraryItemRead;
   tool_call_id: string;
   resource_ref: string;
+  presentation?: "summary" | "location";
   /**
    * Public OPAC record URL carried by the local Context Manifest.  It lets a
    * restarted service worker re-derive and verify the opaque reference
@@ -259,12 +263,18 @@ export interface LibraryActionOptionsMessage {
   type: typeof MESSAGE_TYPES.libraryActionOptions;
   tool_call_id: string;
   resource_ref: string;
+  /** Public OPAC record URL used only to re-establish a ref after SW restart. */
+  record_url?: string;
 }
 
 export interface LibraryActionPreviewMessage {
   type: typeof MESSAGE_TYPES.libraryActionPreview;
   tool_call_id: string;
   operation: LibraryOperation;
+  /** Required for reserve previews after the user selects a pickup campus. */
+  inputs?: LibraryActionEditableInputs;
+  /** Local manifest URL used only to re-establish an opaque ref after SW restart. */
+  record_url?: string;
 }
 
 export interface LibraryActionSubmitMessage {
@@ -274,6 +284,17 @@ export interface LibraryActionSubmitMessage {
   inputs: LibraryActionEditableInputs;
   confirmation_label: "この内容で送信" | "公式ページを開く";
 }
+
+export interface OpacDiagnosticsGetMessage {
+  type: typeof MESSAGE_TYPES.opacDiagnosticsGet;
+}
+
+export interface OpacDiagnosticsClearMessage {
+  type: typeof MESSAGE_TYPES.opacDiagnosticsClear;
+}
+
+export type OpacDiagnosticsGetResponse = OpacDiagnosticSnapshot;
+export type OpacDiagnosticsClearResponse = { ok: boolean };
 
 export type LibraryCatalogSearchResponse =
   | { status: "known"; projection: LibraryCatalogSearchResult }
@@ -410,6 +431,8 @@ export type ExtensionMessage =
   | LibraryItemReadMessage
   | LibraryCatalogBrowseMessage
   | LibraryDiscoverySearchMessage
+  | OpacDiagnosticsGetMessage
+  | OpacDiagnosticsClearMessage
   | LibraryActionOptionsMessage
   | LibraryActionPreviewMessage
   | LibraryActionSubmitMessage;
@@ -686,6 +709,13 @@ export function isLibraryItemReadMessage(
     message.tool_call_id.length > 0 &&
     isLibraryResourceRef(message.resource_ref)
   ) {
+    if (
+      message.presentation !== undefined &&
+      message.presentation !== "summary" &&
+      message.presentation !== "location"
+    ) {
+      return false;
+    }
     if (message.record_url === undefined) return true;
     if (typeof message.record_url !== "string") return false;
     try {
@@ -750,13 +780,46 @@ export function isLibraryDiscoverySearchMessage(
 export function isLibraryActionOptionsMessage(
   message: unknown,
 ): message is LibraryActionOptionsMessage {
-  return (
-    isRecord(message) &&
-    message.type === MESSAGE_TYPES.libraryActionOptions &&
-    typeof message.tool_call_id === "string" &&
-    message.tool_call_id.length > 0 &&
-    isLibraryResourceRef(message.resource_ref)
-  );
+  if (
+    !(
+      isRecord(message) &&
+      message.type === MESSAGE_TYPES.libraryActionOptions &&
+      typeof message.tool_call_id === "string" &&
+      message.tool_call_id.length > 0 &&
+      isLibraryResourceRef(message.resource_ref)
+    )
+  ) {
+    return false;
+  }
+  if (message.record_url === undefined) return true;
+  if (typeof message.record_url !== "string") return false;
+  try {
+    const url = new URL(message.record_url);
+    return (
+      url.protocol === "https:" &&
+      url.origin === "https://library.shibaura-it.ac.jp" &&
+      url.pathname.startsWith("/opc/recordID/catalog.bib/") &&
+      url.pathname.slice("/opc/recordID/catalog.bib/".length).length > 0 &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.username === "" &&
+      url.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isOpacDiagnosticsGetMessage(
+  message: unknown,
+): message is OpacDiagnosticsGetMessage {
+  return isMessageType(message, MESSAGE_TYPES.opacDiagnosticsGet);
+}
+
+export function isOpacDiagnosticsClearMessage(
+  message: unknown,
+): message is OpacDiagnosticsClearMessage {
+  return isMessageType(message, MESSAGE_TYPES.opacDiagnosticsClear);
 }
 
 const LIBRARY_PREVIEW_ID_PATTERN =
@@ -765,17 +828,47 @@ const LIBRARY_PREVIEW_ID_PATTERN =
 export function isLibraryActionPreviewMessage(
   message: unknown,
 ): message is LibraryActionPreviewMessage {
-  return (
-    isRecord(message) &&
-    Object.keys(message).length === 3 &&
-    Object.keys(message).every((key) =>
-      ["type", "tool_call_id", "operation"].includes(key),
-    ) &&
-    message.type === MESSAGE_TYPES.libraryActionPreview &&
-    typeof message.tool_call_id === "string" &&
-    message.tool_call_id.length > 0 &&
-    isLibraryOperation(message.operation)
-  );
+  if (
+    !(
+      isRecord(message) &&
+      Object.keys(message).length >= 3 &&
+      Object.keys(message).every((key) =>
+        ["type", "tool_call_id", "operation", "inputs", "record_url"].includes(
+          key,
+        ),
+      ) &&
+      message.type === MESSAGE_TYPES.libraryActionPreview &&
+      typeof message.tool_call_id === "string" &&
+      message.tool_call_id.length > 0 &&
+      isLibraryOperation(message.operation) &&
+      (message.inputs === undefined ||
+        (isRecord(message.inputs) &&
+          typeof message.inputs.action_type === "string" &&
+          isLibraryActionEditableInputs(
+            message.inputs.action_type as LibraryOperation["action_type"],
+            message.inputs,
+          )))
+    )
+  ) {
+    return false;
+  }
+  if (message.record_url === undefined) return true;
+  if (typeof message.record_url !== "string") return false;
+  try {
+    const url = new URL(message.record_url);
+    return (
+      url.protocol === "https:" &&
+      url.origin === "https://library.shibaura-it.ac.jp" &&
+      url.pathname.startsWith("/opc/recordID/catalog.bib/") &&
+      url.pathname.slice("/opc/recordID/catalog.bib/".length).length > 0 &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.username === "" &&
+      url.password === ""
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function isLibraryActionSubmitMessage(

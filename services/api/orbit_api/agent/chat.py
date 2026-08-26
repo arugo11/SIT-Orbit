@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import re
 import threading
@@ -20,11 +22,15 @@ from orbit_api.models import (
     CastSearchResult,
     ChatAssistantMessage,
     ChatClientTool,
+    ChatContextManifest,
     ChatHistoryMessage,
     ChatLibraryContextRecord,
+    ChatRunBackground,
     ChatRunCompleted,
+    ChatRunProgressEvent,
     ChatRunRequest,
     ChatRunResponse,
+    ChatRunStatusResponse,
     ChatRunToolRequired,
     ChatToolCall,
     ChatToolResultRequest,
@@ -38,6 +44,7 @@ from orbit_api.models import (
     MyLibraryReadResult,
     MyLibraryScope,
     RelatedBookCandidate,
+    ReserveOperation,
     ScombzPageSummaryResult,
     ScombzReadResult,
     ScopedMyLibraryReadResult,
@@ -66,6 +73,7 @@ from .pydantic_ai_backend import (
     SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX,
     SCOMBZ_READ_TOOL_NAME,
     SYLLABUS_SEARCH_TOOL_NAME,
+    ActionDraft,
     ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
@@ -81,6 +89,9 @@ from .pydantic_ai_backend import (
     validate_library_operation_evidence,
     validate_my_library_result_page,
 )
+
+logger = logging.getLogger("uvicorn.error")
+logger.setLevel(logging.INFO)
 
 CHAT_RUN_TTL_SECONDS = 600
 CHAT_MAX_TOOL_CALLS = 8
@@ -130,6 +141,8 @@ class ChatBackend(Protocol):
         message: str,
         history: list[ChatHistoryMessage],
         context: list[EvidenceLink] | None = None,
+        library_context: list[ChatLibraryContextRecord] | None = None,
+        related_book_context: list[RelatedBookCandidate] | None = None,
         advertised_tools: set[str] | None = None,
     ) -> ChatAgentExecution: ...
 
@@ -346,11 +359,19 @@ class FixtureChatBackend:
         message: str,
         history: Sequence[ChatHistoryMessage],
         advertised_tools: set[str],
+        library_context: Sequence[ChatLibraryContextRecord] = (),
     ) -> bool:
         if LIBRARY_ACTION_OPTIONS_TOOL_NAME not in advertised_tools:
             return False
-        del history
-        return bool(re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message))
+        conversation_text = "\n".join(
+            [item.content for item in history[-20:]] + [message]
+        )
+        return bool(
+            re.search(
+                r"(?:orbit-library://record/[A-Za-z0-9_-]{16,128}|予約|予約したい|取寄|取り寄せ)",
+                conversation_text,
+            )
+        ) and bool(library_context)
 
     async def start_chat(
         self,
@@ -365,8 +386,29 @@ class FixtureChatBackend:
     ) -> ChatAgentExecution:
         del context, related_book_context
         advertised = set(advertised_tools or set())
-        if self._requests_library_action_options(message, history, advertised):
-            match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
+        library_context = library_context or []
+        if self._requests_library_action_options(
+            message, history, advertised, library_context
+        ):
+            conversation_text = "\n".join(
+                [item.content for item in history[-20:]] + [message]
+            )
+            match = re.search(
+                r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message
+            )
+            if match is None:
+                selected = next(
+                    (
+                        item
+                        for item in library_context
+                        if item.record.title and item.record.title in conversation_text
+                    ),
+                    library_context[0],
+                )
+                match = re.search(
+                    r"orbit-library://record/[A-Za-z0-9_-]{16,128}",
+                    selected.resource_ref,
+                )
             if match is not None:
                 return ChatAgentExecution(
                     deferred=DeferredChatRun(
@@ -381,7 +423,7 @@ class FixtureChatBackend:
             message,
             history,
             advertised,
-            library_context or (),
+            library_context,
         ):
             match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
             if match is None and library_context:
@@ -586,6 +628,41 @@ class FixtureChatBackend:
                 for option in tool_result.options:
                     state = "利用可能" if option.available else "利用不可"
                     lines.append(f"- {option.action_type}: {state}")
+                reserve = next(
+                    (
+                        option
+                        for option in tool_result.options
+                        if option.action_type == "reserve"
+                    ),
+                    None,
+                )
+                if (
+                    reserve is not None
+                    and reserve.available
+                    and reserve.verification_level == "entry_visible"
+                ):
+                    operation = ReserveOperation(
+                        action_type="reserve",
+                        resource_ref=tool_result.resource_ref,
+                    )
+                    return ChatAgentExecution(
+                        draft=ChatDraft(
+                            content_markdown=(
+                                "公式OPACで予約・取寄の入口を確認しました。"
+                                "受取キャンパスを選ぶと、公式フォームの内容を確認できます。"
+                            ),
+                            evidence_ids=[evidence.evidence_id],
+                            action=ActionDraft(
+                                title="図書を予約する",
+                                reason="公式OPACの予約導線が確認できたため、受取場所を選んで予約内容を確認します。",
+                                duration_minutes=5,
+                                external_action="library_write",
+                                requires_confirmation=True,
+                                evidence_ids=[evidence.evidence_id],
+                                operation=operation,
+                            ),
+                        )
+                    )
             elif deferred.tool_name == LIBRARY_ITEM_READ_TOOL_NAME:
                 if not isinstance(tool_result, LibraryItemReadResult):
                     raise ValueError("The fixture item call requires a LibraryItemReadResult.")
@@ -1233,8 +1310,10 @@ def _canonical_response(
     action_id_prefix: str,
     library_action_options: Mapping[str, LibraryActionOptionsResult] | None = None,
     related_books: Sequence[RelatedBookCandidate] = (),
+    library_context: Sequence[ChatLibraryContextRecord] = (),
 ) -> ChatRunCompleted:
-    evidence_by_id = {item.evidence_id: item for item in context}
+    canonical_context = _merge_evidence(context)
+    evidence_by_id = {item.evidence_id: item for item in canonical_context}
     if len(set(draft.evidence_ids)) != len(draft.evidence_ids):
         raise ValueError("ChatDraft contains duplicate evidence IDs.")
     unknown = [item for item in draft.evidence_ids if item not in evidence_by_id]
@@ -1277,7 +1356,14 @@ def _canonical_response(
                 ),
                 None,
             )
-            if matching_option is None or not matching_option.available:
+            if (
+                matching_option is None
+                or not matching_option.available
+                or (
+                    draft.action.operation.action_type == "reserve"
+                    and matching_option.verification_level != "entry_visible"
+                )
+            ):
                 raise ValueError("The proposed library operation is not currently available.")
         proposal = ActionProposal(
             action_id=f"{action_id_prefix}-{uuid4()}",
@@ -1293,6 +1379,17 @@ def _canonical_response(
         for item in proposal.evidence:
             if item not in selected:
                 selected.append(item)
+    manifest_evidence = [
+        item
+        for item in canonical_context
+        if item.data_classification in {"public", "synthetic"}
+    ]
+    manifest_evidence_ids = {item.evidence_id for item in manifest_evidence}
+    manifest_related_books = [
+        item
+        for item in selected_related_books
+        if all(evidence_id in manifest_evidence_ids for evidence_id in item.evidence_ids)
+    ]
     return ChatRunCompleted(
         status="completed",
         message=ChatAssistantMessage(
@@ -1302,17 +1399,80 @@ def _canonical_response(
             related_books=selected_related_books,
         ),
         proposal=proposal,
+        context_manifest=(
+            ChatContextManifest(
+                evidence=manifest_evidence,
+                library_records=list(library_context),
+                related_books=manifest_related_books,
+            )
+            if manifest_evidence or library_context or manifest_related_books
+            else None
+        ),
+    )
+
+
+class ChatEvidenceConflictError(ValueError):
+    """Evidence IDs may repeat only when their public metadata is identical."""
+
+
+def _evidence_metadata(item: EvidenceLink) -> tuple[object, ...]:
+    return (
+        item.title,
+        item.source_type,
+        item.locator,
+        item.data_classification,
     )
 
 
 def _merge_evidence(*groups: Sequence[EvidenceLink]) -> list[EvidenceLink]:
-    """Keep one metadata link per evidence ID while preserving encounter order."""
+    """Deduplicate evidence in encounter order and fail on conflicting IDs."""
 
     merged: dict[str, EvidenceLink] = {}
     for group in groups:
         for item in group:
-            merged.setdefault(item.evidence_id, item)
+            previous = merged.get(item.evidence_id)
+            if previous is None:
+                merged[item.evidence_id] = item
+                continue
+            if _evidence_metadata(previous) != _evidence_metadata(item):
+                raise ChatEvidenceConflictError(
+                    "Chat completion contains conflicting evidence metadata."
+                )
     return list(merged.values())
+
+
+@dataclass
+class _BackgroundChatRun:
+    run_id: str
+    started_at: float = field(default_factory=time.monotonic)
+    events: list[ChatRunProgressEvent] = field(default_factory=list)
+    wake: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Task[Any] | None = None
+    result: ChatRunResponse | None = None
+    error: str | None = None
+    done: bool = False
+
+    def emit(
+        self,
+        stage: str,
+        title: str,
+        completed: int,
+        total: int | None,
+    ) -> None:
+        if len(self.events) >= 1000:
+            return
+        elapsed_ms = min(int((time.monotonic() - self.started_at) * 1000), 600_000)
+        self.events.append(
+            ChatRunProgressEvent(
+                sequence=len(self.events) + 1,
+                stage=cast(Any, stage),
+                title=title[:80],
+                completed=completed,
+                total=total,
+                elapsed_ms=elapsed_ms,
+            )
+        )
+        self.wake.set()
 
 
 class ChatRunService:
@@ -1324,6 +1484,36 @@ class ChatRunService:
     ) -> None:
         self.store = store or ChatRunStore()
         self.backend_factory = backend_factory
+        self._background: dict[str, _BackgroundChatRun] = {}
+        self._background_expired: dict[str, float] = {}
+
+    @staticmethod
+    def _progress_title(tool_name: str) -> str:
+        return {
+            LIBRARY_CATALOG_SEARCH_TOOL_NAME: "OPACで書誌候補を確認中",
+            LIBRARY_ITEM_READ_TOOL_NAME: "OPACで所蔵詳細を確認中",
+            LIBRARY_CATALOG_BROWSE_TOOL_NAME: "OPACの一覧を確認中",
+            LIBRARY_DISCOVERY_SEARCH_TOOL_NAME: "図書館の関連資料を確認中",
+            LIBRARY_ACTION_OPTIONS_TOOL_NAME: "図書館の操作可否を確認中",
+            "general_web_search": "公開情報を検索中",
+        }.get(tool_name, "参照結果を整理中")
+
+    def _cleanup_background(self) -> None:
+        now = time.monotonic()
+        for run_id, state in list(self._background.items()):
+            if now - state.started_at <= CHAT_RUN_TTL_SECONDS:
+                continue
+            if state.task is not None and not state.task.done():
+                state.task.cancel()
+            del self._background[run_id]
+            self._background_expired[run_id] = now
+        for run_id, expired_at in list(self._background_expired.items()):
+            if now - expired_at > CHAT_RUN_TTL_SECONDS:
+                del self._background_expired[run_id]
+        # Keep the tombstone map bounded even if a process receives a burst of
+        # abandoned background runs. Dict insertion order is stable on Python 3.13.
+        while len(self._background_expired) > 256:
+            self._background_expired.pop(next(iter(self._background_expired)))
 
     @staticmethod
     def _tool_required(run_id: str, deferred: DeferredChatRun) -> ChatRunToolRequired:
@@ -1340,51 +1530,151 @@ class ChatRunService:
             ],
         )
 
-    async def start(self, request: ChatRunRequest) -> ChatRunResponse:
-        advertised = set(tool.name for tool in request.client_tools)
+    async def _start_sync(
+        self,
+        request: ChatRunRequest,
+        *,
+        emit: Callable[[str, str, int, int | None], None] | None = None,
+    ) -> ChatRunResponse:
+        if emit is not None:
+            emit("planning", "会話文脈を整理中", 0, None)
         backend = self.backend_factory()
+        if hasattr(backend, "progress_callback"):
+            cast(Any, backend).progress_callback = emit
+        advertised = set(tool.name for tool in request.client_tools)
+        advertised.update(getattr(backend, "server_tool_names", frozenset()))
         manifest = request.context_manifest
-        if manifest is not None and (manifest.library_records or manifest.related_books):
-            execution = await cast(Any, backend).start_chat(
-                conversation_id=request.conversation_id,
-                message=request.message,
-                history=list(request.history),
-                context=list(manifest.evidence),
-                library_context=list(manifest.library_records),
-                related_book_context=list(manifest.related_books),
-                advertised_tools=advertised,
-            )
-        else:
-            execution = await backend.start_chat(
-                conversation_id=request.conversation_id,
-                message=request.message,
-                history=list(request.history),
-                context=list(manifest.evidence) if manifest is not None else [],
-                advertised_tools=advertised,
+        logger.info(
+            "chat_start backend=%s advertised_tools=%s context_evidence=%d library_records=%d",
+            type(backend).__name__,
+            ",".join(sorted(advertised)),
+            len(manifest.evidence) if manifest is not None else 0,
+            len(manifest.library_records) if manifest is not None else 0,
+        )
+        execution = await cast(Any, backend).start_chat(
+            conversation_id=request.conversation_id,
+            message=request.message,
+            history=list(request.history),
+            context=list(manifest.evidence) if manifest is not None else [],
+            library_context=list(manifest.library_records) if manifest is not None else [],
+            related_book_context=list(manifest.related_books) if manifest is not None else [],
+            advertised_tools=advertised,
+        )
+        logger.info(
+            "chat_execution draft=%s deferred_tool=%s tool_count=%d "
+            "generated_evidence=%d library_records=%d",
+            execution.draft is not None,
+            execution.deferred.tool_name if execution.deferred is not None else "none",
+            execution.deferred.tool_call_count if execution.deferred is not None else 0,
+            len(execution.generated_evidence),
+            len(execution.library_context),
+        )
+        if emit is not None and execution.generated_evidence:
+            emit(
+                "tool_result",
+                "参照結果を受け取りました",
+                min(len(execution.generated_evidence), 8),
+                8,
             )
         context = _merge_evidence(
             manifest.evidence if manifest is not None else [],
             execution.generated_evidence,
         )
         if execution.draft is not None:
+            if emit is not None:
+                emit("synthesizing", "回答をまとめています", 0, None)
             return _canonical_response(
                 execution.draft,
                 context,
                 action_id_prefix="act-chat",
                 related_books=execution.generated_related_books,
+                library_context=execution.library_context,
             )
         if execution.deferred is None:
             raise RuntimeError("The chat agent returned neither a response nor a tool request.")
+        if emit is not None:
+            emit(
+                "tool_call",
+                self._progress_title(execution.deferred.tool_name),
+                max(execution.deferred.tool_call_count - 1, 0),
+                8,
+            )
         run_id = self.store.put(
             backend_name=os.getenv("ORBIT_AGENT_BACKEND", "fixture"),
             conversation_id=request.conversation_id,
             deferred=execution.deferred,
             context=context,
-            advertised_tools=request.client_tools,
-            library_context=(manifest.library_records if manifest is not None else ()),
+            advertised_tools=[
+                ChatClientTool(name=cast(Any, name), version=1) for name in advertised
+            ],
+            library_context=execution.library_context
+            or (manifest.library_records if manifest is not None else ()),
             related_books=execution.generated_related_books,
         )
         return self._tool_required(run_id, execution.deferred)
+
+    async def start(self, request: ChatRunRequest) -> ChatRunResponse | ChatRunBackground:
+        self._cleanup_background()
+        if request.execution_mode != "background":
+            return await self._start_sync(request)
+        run_id = f"chat-bg-{uuid4()}"
+        state = _BackgroundChatRun(run_id=run_id)
+        self._background[run_id] = state
+        state.task = asyncio.create_task(self._run_background(state, request))
+        return ChatRunBackground(status="background", run_id=run_id)
+
+    async def _run_background(
+        self,
+        state: _BackgroundChatRun,
+        request: ChatRunRequest,
+    ) -> None:
+        try:
+            state.result = await self._start_sync(request, emit=state.emit)
+        except Exception:
+            # Keep the external response deliberately generic. Detailed
+            # upstream reasons stay in local diagnostics, never in SSE.
+            state.error = "background_run_failed"
+        finally:
+            state.done = True
+            state.wake.set()
+
+    def background_status(self, run_id: str) -> ChatRunStatusResponse:
+        self._cleanup_background()
+        state = self._background.get(run_id)
+        if state is None:
+            if run_id in self._background_expired:
+                raise ChatRunExpiredError(run_id)
+            raise ChatRunUnknownError(run_id)
+        if state.error is not None:
+            raise RuntimeError(state.error)
+        if state.result is None:
+            return ChatRunBackground(status="background", run_id=run_id)
+        return state.result
+
+    async def background_events(self, run_id: str):
+        self._cleanup_background()
+        state = self._background.get(run_id)
+        if state is None:
+            if run_id in self._background_expired:
+                raise ChatRunExpiredError(run_id)
+            raise ChatRunUnknownError(run_id)
+        index = 0
+        while True:
+            while index < len(state.events):
+                event = state.events[index]
+                index += 1
+                yield event
+            if state.done:
+                break
+            state.wake.clear()
+            await state.wake.wait()
+
+    def clear_background(self) -> None:
+        for state in self._background.values():
+            if state.task is not None and not state.task.done():
+                state.task.cancel()
+        self._background.clear()
+        self._background_expired.clear()
 
     async def submit_tool_result(
         self,
@@ -1463,6 +1753,7 @@ class ChatRunService:
                     action_id_prefix="act-chat",
                     library_action_options=library_action_options,
                     related_books=execution.generated_related_books,
+                    library_context=execution.library_context,
                 )
                 self.store.complete(run_id, generation=claimed.generation)
                 return response
@@ -1475,7 +1766,7 @@ class ChatRunService:
                 generation=claimed.generation,
                 claimed_call_id=claimed.deferred.tool_call_id,
                 library_action_options=library_action_options,
-                library_context=claimed.library_context,
+                library_context=execution.library_context or claimed.library_context,
                 related_books=execution.generated_related_books,
             )
             return self._tool_required(run_id, execution.deferred)
@@ -1488,6 +1779,7 @@ __all__ = [
     "CHAT_MAX_TOOL_CALLS",
     "CHAT_RUN_TTL_SECONDS",
     "ChatBackend",
+    "ChatEvidenceConflictError",
     "ChatRunConsumedError",
     "ChatRunExpiredError",
     "ChatRunService",

@@ -51,6 +51,19 @@ const STORE_NAME = "conversations";
 
 const fallbackStore = new Map<string, ChatConversation>();
 
+/**
+ * Raised when one evidence ID is associated with incompatible public
+ * metadata.  The caller must not guess which representation is correct.
+ */
+export class ContextEvidenceConflictError extends Error {
+  readonly code = "context_evidence_conflict" as const;
+
+  constructor() {
+    super("Chat context contains conflicting evidence metadata.");
+    this.name = "ContextEvidenceConflictError";
+  }
+}
+
 function sanitizeStoredText(value: string): string {
   return value.replace(/<[^>]*>/g, "").slice(0, 12000);
 }
@@ -97,6 +110,38 @@ function sanitizeEvidence(item: EvidenceLink): EvidenceLink | null {
     locator: sanitizeStoredText(item.locator).slice(0, 500),
     data_classification: item.data_classification,
   };
+}
+
+function evidenceMetadataEqual(
+  left: EvidenceLink,
+  right: EvidenceLink,
+): boolean {
+  return (
+    left.evidence_id === right.evidence_id &&
+    left.title === right.title &&
+    left.source_type === right.source_type &&
+    left.locator === right.locator &&
+    left.data_classification === right.data_classification
+  );
+}
+
+function mergeEvidenceById(
+  groups: readonly (readonly EvidenceLink[])[],
+): EvidenceLink[] {
+  const byId = new Map<string, EvidenceLink>();
+  for (const group of groups) {
+    for (const item of group) {
+      const previous = byId.get(item.evidence_id);
+      if (previous === undefined) {
+        byId.set(item.evidence_id, item);
+        continue;
+      }
+      if (!evidenceMetadataEqual(previous, item)) {
+        throw new ContextEvidenceConflictError();
+      }
+    }
+  }
+  return [...byId.values()];
 }
 
 function sanitizeLibraryRecord(
@@ -172,10 +217,10 @@ function sanitizeLibraryRecord(
 function sanitizeContextManifest(
   value: Partial<ChatContextManifest> | undefined,
 ): ChatContextManifest {
-  const evidence = (value?.evidence ?? [])
+  const sanitizedEvidence = (value?.evidence ?? [])
     .map(sanitizeEvidence)
-    .filter((item): item is EvidenceLink => item !== null)
-    .slice(0, 100);
+    .filter((item): item is EvidenceLink => item !== null);
+  const evidence = mergeEvidenceById([sanitizedEvidence]).slice(0, 100);
   const evidenceIds = new Set(evidence.map((item) => item.evidence_id));
   const records = (value?.library_records ?? [])
     .map((item) => {
@@ -288,10 +333,16 @@ function sanitizeMessage(
   const relatedByRef = new Map(
     context.related_books.map((item) => [item.candidate_ref, item]),
   );
+  const messageEvidence = message.evidence
+    ? mergeEvidenceById([message.evidence.map((item) => ({ ...item }))]).slice(
+        0,
+        100,
+      )
+    : undefined;
   return {
     ...message,
     content: sanitizeStoredText(message.content),
-    evidence: message.evidence?.map((item) => ({ ...item })),
+    evidence: messageEvidence,
     proposal: message.proposal ? { ...message.proposal } : message.proposal,
     relatedBooks: message.relatedBooks
       ?.map((item) => relatedByRef.get(item.candidate_ref))
@@ -312,6 +363,19 @@ function sanitizeConversation(
     ),
     contextManifest,
   };
+}
+
+function safeSanitizeConversation(
+  conversation: ChatConversation,
+): ChatConversation | null {
+  try {
+    return sanitizeConversation(conversation);
+  } catch (error) {
+    // Conflicting evidence cannot be repaired without choosing a source. Do
+    // not surface the corrupt conversation as if it were trustworthy.
+    if (error instanceof ContextEvidenceConflictError) return null;
+    throw error;
+  }
 }
 
 function openDatabase(): Promise<IDBDatabase | null> {
@@ -355,7 +419,8 @@ export async function loadConversation(
 ): Promise<ChatConversation | null> {
   const database = await openDatabase();
   if (!database) {
-    return fallbackStore.get(conversationId) ?? null;
+    const stored = fallbackStore.get(conversationId);
+    return stored ? safeSanitizeConversation(stored) : null;
   }
   const result = await new Promise<ChatConversation | undefined>(
     (resolve, reject) => {
@@ -370,15 +435,16 @@ export async function loadConversation(
     },
   );
   database.close();
-  return result ? sanitizeConversation(result) : null;
+  return result ? safeSanitizeConversation(result) : null;
 }
 
 export async function listConversations(): Promise<ChatConversation[]> {
   const database = await openDatabase();
   if (!database) {
-    return [...fallbackStore.values()].sort((a, b) =>
-      b.updatedAt.localeCompare(a.updatedAt),
-    );
+    return [...fallbackStore.values()]
+      .map(safeSanitizeConversation)
+      .filter((item): item is ChatConversation => item !== null)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
   const result = await new Promise<ChatConversation[]>((resolve, reject) => {
     const request = database
@@ -386,7 +452,11 @@ export async function listConversations(): Promise<ChatConversation[]> {
       .objectStore(STORE_NAME)
       .getAll();
     request.onsuccess = () =>
-      resolve((request.result as ChatConversation[]).map(sanitizeConversation));
+      resolve(
+        (request.result as ChatConversation[])
+          .map(safeSanitizeConversation)
+          .filter((item): item is ChatConversation => item !== null),
+      );
     request.onerror = () =>
       reject(request.error ?? new Error("IndexedDB list error"));
   });
@@ -439,7 +509,10 @@ export function toChatHistory(
         message.role === "user" || message.role === "assistant",
     )
     .slice(-20)
-    .map((message) => ({ role: message.role, content: message.content }));
+    .map((message) => ({
+      role: message.role,
+      content: sanitizeStoredText(message.content),
+    }));
 }
 
 export function toChatContextManifest(
@@ -467,15 +540,13 @@ export function mergeLibraryContext(
   evidence: readonly EvidenceLink[] = [],
 ): ChatConversation {
   const current = sanitizeContextManifest(conversation.contextManifest);
-  const nextEvidence = [
-    ...current.evidence,
-    ...evidence
-      .map(sanitizeEvidence)
-      .filter((item): item is EvidenceLink => item !== null),
-  ];
-  const normalizedEvidence = sanitizeContextManifest({
-    evidence: nextEvidence,
-  }).evidence;
+  const incomingEvidence = evidence
+    .map(sanitizeEvidence)
+    .filter((item): item is EvidenceLink => item !== null);
+  const normalizedEvidence = mergeEvidenceById([
+    current.evidence,
+    incomingEvidence,
+  ]).slice(0, 100);
   const evidenceIds = new Set(
     normalizedEvidence.map((item) => item.evidence_id),
   );
@@ -547,6 +618,74 @@ export function mergeRelatedBookContext(
     contextManifest: sanitizeContextManifest({
       ...current,
       related_books: [...byRef.values()].slice(-20),
+    }),
+  };
+}
+
+/**
+ * Merge one completed API response into a conversation at a single durable
+ * boundary.  The response intentionally repeats public evidence in the
+ * assistant message and context manifest; both representations are folded by
+ * evidence_id before records or candidates are persisted.
+ */
+export function mergeCompletedChatContext(
+  conversation: ChatConversation,
+  responseManifest: ApiChatContextManifest | null | undefined,
+  assistant: Pick<ChatTimelineMessage, "evidence" | "relatedBooks">,
+): ChatConversation {
+  const current = sanitizeContextManifest(conversation.contextManifest);
+  const incomingEvidence = (responseManifest?.evidence ?? [])
+    .map(sanitizeEvidence)
+    .filter((item): item is EvidenceLink => item !== null);
+  const assistantEvidence = (assistant.evidence ?? [])
+    .map(sanitizeEvidence)
+    .filter((item): item is EvidenceLink => item !== null);
+  const evidence = mergeEvidenceById([
+    current.evidence,
+    incomingEvidence,
+    assistantEvidence,
+  ]).slice(0, 100);
+
+  // Preserve records from earlier turns and merge their evidence references
+  // with the completed response before validating the combined manifest.
+  const recordsByRef = new Map(
+    current.library_records.map((item) => [item.resource_ref, item]),
+  );
+  for (const item of responseManifest?.library_records ?? []) {
+    const record = sanitizeLibraryRecord(item.record);
+    if (!record) continue;
+    const observed = new Date(item.observed_at);
+    if (Number.isNaN(observed.getTime())) continue;
+    const previous = recordsByRef.get(record.resource_ref);
+    recordsByRef.set(record.resource_ref, {
+      resource_ref: record.resource_ref,
+      record,
+      evidence_ids: [
+        ...new Set([
+          ...(previous?.evidence_ids ?? []),
+          ...(item.evidence_ids ?? []),
+        ]),
+      ],
+      observed_at: observed.toISOString(),
+    });
+  }
+  const evidenceIds = new Set(evidence.map((item) => item.evidence_id));
+  const records = [...recordsByRef.values()].map((item) => ({
+    ...item,
+    evidence_ids: item.evidence_ids.filter((id) => evidenceIds.has(id)),
+  }));
+
+  return {
+    ...conversation,
+    contextManifest: sanitizeContextManifest({
+      schema_version: "v1",
+      evidence,
+      library_records: records.slice(0, 20),
+      related_books: [
+        ...current.related_books,
+        ...(responseManifest?.related_books ?? []),
+        ...(assistant.relatedBooks ?? []),
+      ],
     }),
   };
 }

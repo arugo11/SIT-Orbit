@@ -139,6 +139,11 @@ if current_environment_id="$(az containerapp show \
     --set-env-vars \
       ORBIT_AGENT_BACKEND=fixture \
       ORBIT_BOOK_DISCOVERY=off \
+      ORBIT_OPAC_TRANSPORT=off \
+      ORBIT_OPAC_BASE_URL=https://library.shibaura-it.ac.jp \
+      ORBIT_OPAC_MIN_INTERVAL_MS=10000 \
+      ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS=300 \
+      ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS=30 \
       ORBIT_OBSERVABILITY=off \
     --min-replicas 0 \
     --max-replicas 1 \
@@ -158,6 +163,11 @@ else
     --env-vars \
       ORBIT_AGENT_BACKEND=fixture \
       ORBIT_BOOK_DISCOVERY=off \
+      ORBIT_OPAC_TRANSPORT=off \
+      ORBIT_OPAC_BASE_URL=https://library.shibaura-it.ac.jp \
+      ORBIT_OPAC_MIN_INTERVAL_MS=10000 \
+      ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS=300 \
+      ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS=30 \
       ORBIT_OBSERVABILITY=off \
     --min-replicas 0 \
     --max-replicas 1 \
@@ -165,14 +175,14 @@ else
     --output none
 fi
 
-IFS='|' read -r deployed_image min_replicas max_replicas fqdn deployed_backend deployed_book_discovery <<< "$(az containerapp show \
+IFS='|' read -r deployed_image min_replicas max_replicas fqdn deployed_backend deployed_book_discovery deployed_opac_transport deployed_opac_base_url deployed_opac_min_interval deployed_opac_search_ttl deployed_opac_detail_ttl <<< "$(az containerapp show \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   "${subscription_args[@]}" \
-  --query "join('|',[properties.template.containers[0].image,to_string(properties.template.scale.minReplicas),to_string(properties.template.scale.maxReplicas),properties.configuration.ingress.fqdn,properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0]])" \
+  --query "join('|',[properties.template.containers[0].image,to_string(properties.template.scale.minReplicas),to_string(properties.template.scale.maxReplicas),properties.configuration.ingress.fqdn,properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_TRANSPORT'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_BASE_URL'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_MIN_INTERVAL_MS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS'].value | [0]])" \
   --output tsv)"
 
-if [[ "${deployed_image}" != "${image}" || "${min_replicas}" != "0" || "${max_replicas}" != "1" || "${deployed_backend}" != "fixture" || "${deployed_book_discovery}" != "off" ]]; then
+if [[ "${deployed_image}" != "${image}" || "${min_replicas}" != "0" || "${max_replicas}" != "1" || "${deployed_backend}" != "fixture" || "${deployed_book_discovery}" != "off" || "${deployed_opac_transport}" != "off" || "${deployed_opac_base_url}" != "https://library.shibaura-it.ac.jp" || "${deployed_opac_min_interval}" != "10000" || "${deployed_opac_search_ttl}" != "300" || "${deployed_opac_detail_ttl}" != "30" ]]; then
   printf 'Container App deployment verification failed.\n' >&2
   exit 1
 fi

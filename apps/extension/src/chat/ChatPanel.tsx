@@ -2,9 +2,9 @@ import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   type ActionProposal,
   type AgentApiClient,
-  AgentApiError,
   type ChatRunResponse,
   type ChatToolResultRequest,
+  classifyAgentApiError,
   isBrowserReadResult,
   isCastAlumniReadResult,
   isCastReadResult,
@@ -72,12 +72,13 @@ import { hostAccessRequest } from "./access-policy";
 import {
   type ChatConversation,
   type ChatTimelineMessage,
+  ContextEvidenceConflictError,
   deleteAllConversations,
   deleteConversation,
   listConversations,
   loadConversation,
+  mergeCompletedChatContext,
   mergeLibraryContext,
-  mergeRelatedBookContext,
   newConversation,
   saveConversation,
   toChatContextManifest,
@@ -86,25 +87,6 @@ import {
 
 const CHAT_FAILURE_MESSAGE =
   "今は応答できませんでした。もう一度お試しください。";
-
-function chatFailureMessage(error: unknown): string {
-  if (error instanceof AgentApiError) {
-    if (error.status === 0) {
-      return "Agent APIに接続できませんでした（agent_api_error）。接続設定を確認してください。";
-    }
-    if (error.status === 401 || error.status === 403) {
-      return "Agent APIの認証に失敗しました（agent_api_error）。接続設定を確認してください。";
-    }
-    if (error.status === 422) {
-      return "Agent APIが検索要求を受け付けませんでした（request_rejected）。条件を見直してください。";
-    }
-    return `Agent APIで処理できませんでした（agent_api_error: HTTP ${error.status}）。`;
-  }
-  if (error instanceof Error && error.message.startsWith("CAST")) {
-    return error.message;
-  }
-  return CHAT_FAILURE_MESSAGE;
-}
 
 export interface ChatPanelProps {
   apiClient: AgentApiClient;
@@ -121,6 +103,10 @@ export interface ChatPanelProps {
   disabled?: boolean;
 }
 
+// Progress copy is derived from an observed client boundary or tool contract.
+// It must never imply hidden model reasoning; an optional title summarizer can
+// be added later only as presentation, with this deterministic text as the
+// fail-closed fallback.
 function toolLabel(name: string): string {
   switch (name) {
     case "scombz_page_summary":
@@ -146,11 +132,11 @@ function toolLabel(name: string): string {
     case "cast_search":
       return "CASTを検索中";
     case "library_catalog_search":
-      return "OPACを検索中";
+      return "書籍ごとにOPACを確認中";
     case "library_item_read":
-      return "OPACの書誌詳細を確認中";
+      return "所蔵詳細を確認中";
     case "library_catalog_browse":
-      return "OPACの新着・ランキングを確認中";
+      return "書誌情報を確認中";
     case "library_discovery_search":
       return "SIT Searchを検索中";
     case "library_action_options":
@@ -158,6 +144,147 @@ function toolLabel(name: string): string {
     default:
       return "情報を確認中";
   }
+}
+
+function explicitBookCount(messages: ChatTimelineMessage[]): number | null {
+  const latestUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user")?.content;
+  if (!latestUserMessage) return null;
+  const match = latestUserMessage.match(
+    /([1-8１２３４５６７８一二三四五六七八])冊/u,
+  );
+  if (!match?.[1]) return null;
+  const countByText: Record<string, number> = {
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "１": 1,
+    "２": 2,
+    "３": 3,
+    "４": 4,
+    "５": 5,
+    "６": 6,
+    "７": 7,
+    "８": 8,
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+  };
+  return countByText[match[1]] ?? null;
+}
+
+function libraryFailureDetail(reasonCode: string): string {
+  switch (reasonCode) {
+    case "search_navigation_timeout":
+      return "OPAC検索ページの読み込みが完了しませんでした。所蔵なしとは判定していません。";
+    case "search_navigation_mismatch":
+    case "record_navigation_mismatch":
+      return "公式OPACの対象ページへ遷移できませんでした。所蔵なしとは判定していません。";
+    case "availability_loading_timeout":
+      return "OPACの所蔵状況の反映を待ちましたが完了しませんでした。";
+    case "record_navigation_timeout":
+      return "書誌詳細ページの読み込みが完了しませんでした。";
+    case "record_structure_not_found":
+    case "result_structure_not_found":
+      return "OPACの表示形式を確認できませんでした。";
+    default:
+      return "今回のOPAC再確認を完了できませんでした。所蔵なしとは判定していません。";
+  }
+}
+
+function libraryActionFailureDetail(reasonCode: string): string {
+  switch (reasonCode) {
+    case "write_form_not_verified":
+    case "reservation_entry_not_visible":
+    case "reservation_form_not_verified":
+      return "公式ページで予約フォームを確認できないため、送信を止めました。";
+    case "reservation_login_required":
+    case "reservation_readback_login_required":
+    case "login_required":
+      return "図書館のログインが必要です。公式ページでログインしてから、もう一度お試しください。";
+    case "csrf_missing":
+    case "reservation_form_csrf_missing":
+      return "公式フォームの安全確認情報を取得できないため、送信を止めました。";
+    case "official_state_changed":
+    case "reservation_form_changed":
+      return "公式ページの内容が変わったため、予約内容を作り直してください。";
+    case "reservation_preview_expired":
+    case "preview_expired":
+      return "予約内容の確認期限が切れました。もう一度公式ページで確認してください。";
+    case "reservation_in_progress":
+      return "予約処理を確認中です。二重送信は行っていません。";
+    case "reservation_confirmation_unverified":
+    case "reservation_readback_failed":
+    case "reservation_submit_failed":
+      return "予約後の公式画面で完了を確認できなかったため、成功扱いにしていません。";
+    case "official_tab_create_failed":
+    case "record_tab_create_failed":
+      return "公式図書館ページを開けませんでした。";
+    case "invalid_inputs":
+    case "pickup_campus_required":
+      return "受取キャンパスを選択してから、公式プレビューを確認してください。";
+    default:
+      return "公式ページの予約状態を確認できないため、送信を止めました。";
+  }
+}
+
+function userFacingChatFailure(error: unknown): string {
+  if (error instanceof ContextEvidenceConflictError) {
+    return "会話の文脈に矛盾する参照情報があるため、今回の送信を止めました。もう一度お試しください。";
+  }
+  const status =
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    typeof (error as { status?: unknown }).status === "number"
+      ? (error as { status: number }).status
+      : null;
+  if (status === 401 || status === 403) {
+    return "Agentの認証が切れています。設定から再接続して、もう一度お試しください。";
+  }
+  if (status === 409) {
+    return "会話の更新が競合したため、外部操作は実行していません。もう一度お試しください。";
+  }
+  if (status === 422) {
+    switch (classifyAgentApiError(error)) {
+      case "context_invalid":
+        return "会話の文脈に矛盾があるため、今回の送信を止めました。もう一度お試しください。";
+      case "history_invalid":
+        return "会話履歴を安全に送信できないため、今回の送信を止めました。新しいChatでお試しください。";
+      case "tools_invalid":
+        return "利用できる参照先を確認できないため、外部操作は実行していません。もう一度お試しください。";
+      case "tool_result_invalid":
+        return "参照結果を検証できないため、外部操作は実行していません。もう一度お試しください。";
+      case "agent_output_invalid":
+        return "Agentの回答形式を確認できないため、外部操作は実行していません。もう一度お試しください。";
+      case "run_invalid":
+        return "会話の実行状態を確認できないため、外部操作は実行していません。もう一度お試しください。";
+      default:
+        break;
+    }
+    return "Agentとの接続仕様を確認できなかったため、外部操作は実行していません。拡張機能を再読み込みして、もう一度お試しください。";
+  }
+  if (status !== null && status >= 500) {
+    return "Agentの応答を取得できませんでした。外部操作は実行していません。しばらくしてからもう一度お試しください。";
+  }
+  if (
+    error instanceof Error &&
+    /予約|フォーム|確認|認証|ログイン/u.test(error.message)
+  ) {
+    return error.message.slice(0, 240);
+  }
+  return CHAT_FAILURE_MESSAGE;
 }
 
 function libraryCampusLabel(campus: string): string {
@@ -213,6 +340,29 @@ function editableInputValue(
   return typeof value === "string" ? value : "";
 }
 
+function reserveCampusChoices(
+  conversation: ChatConversation,
+  resourceRef: string,
+): Array<{ value: "omiya" | "toyosu"; label: string }> {
+  const record = conversation.contextManifest.library_records.find(
+    (item) => item.resource_ref === resourceRef,
+  );
+  const campuses = new Set<"omiya" | "toyosu">(
+    (record?.record.holdings ?? [])
+      .map((holding) => holding.campus)
+      .filter(
+        (campus): campus is "omiya" | "toyosu" =>
+          campus === "omiya" || campus === "toyosu",
+      ),
+  );
+  const values: Array<"omiya" | "toyosu"> =
+    campuses.size > 0 ? [...campuses] : ["omiya", "toyosu"];
+  return values.map((value) => ({
+    value,
+    label: value === "omiya" ? "大宮図書館" : "豊洲図書館",
+  }));
+}
+
 function messageFromResponse(response: ChatRunResponse): ChatTimelineMessage {
   if (response.status !== "completed") {
     throw new Error("Chat response is not complete.");
@@ -223,7 +373,15 @@ function messageFromResponse(response: ChatRunResponse): ChatTimelineMessage {
     content: response.message.content_markdown,
     evidence: response.message.evidence,
     proposal: response.proposal,
-    proposalState: response.proposal ? "pending" : undefined,
+    // A reservation request has already passed the read-only action-options
+    // check. It still requires campus selection and a final confirmation, but
+    // an extra generic "approve proposal" click would add no safety.
+    proposalState:
+      response.proposal?.operation?.action_type === "reserve"
+        ? "approved"
+        : response.proposal
+          ? "pending"
+          : undefined,
     relatedBooks: response.message.related_books ?? [],
   };
 }
@@ -289,6 +447,8 @@ interface ChatProgress {
   phase: ChatProgressPhase;
   label: string;
   detail: string;
+  detailBase: string;
+  startedAt: number;
 }
 
 export function ChatPanel({
@@ -335,6 +495,9 @@ export function ChatPanel({
   const [localLibraryDetails, setLocalLibraryDetails] = useState<
     Record<string, LocalLibraryRecord[]>
   >({});
+  const [localLibraryPresentations, setLocalLibraryPresentations] = useState<
+    Record<string, "summary" | "location">
+  >({});
   const [libraryPreviews, setLibraryPreviews] = useState<
     Record<string, Extract<LibraryActionPreviewResponse, { status: "ready" }>>
   >({});
@@ -347,15 +510,59 @@ export function ChatPanel({
   const [libraryPreviewErrors, setLibraryPreviewErrors] = useState<
     Record<string, string>
   >({});
+  const [libraryChoiceFreeform, setLibraryChoiceFreeform] = useState<
+    Record<string, string>
+  >({});
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // Loading the history is asynchronous.  If a user starts a new chat (or
+  // sends the first message) before that read completes, the late result must
+  // not replace the conversation they are actively editing with an older one.
+  const conversationInteractionRef = useRef(false);
 
   function setChatProgress(
     phase: ChatProgressPhase,
     label: string,
     detail: string,
   ): void {
-    setProgress({ phase, label, detail });
+    setProgress((current) => {
+      const sameBoundary =
+        current?.phase === phase &&
+        current.label === label &&
+        current.detailBase === detail;
+      return {
+        phase,
+        label,
+        detail: sameBoundary ? current.detail : detail,
+        detailBase: detail,
+        startedAt: sameBoundary ? current.startedAt : Date.now(),
+      };
+    });
   }
+
+  useEffect(() => {
+    if (
+      !progress ||
+      progress.phase === "completed" ||
+      progress.phase === "error"
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setProgress((current) => {
+        if (!current || current.startedAt !== progress.startedAt)
+          return current;
+        const elapsed = Math.floor((Date.now() - current.startedAt) / 1000);
+        return {
+          ...current,
+          detail:
+            elapsed >= 3
+              ? `${current.detailBase}（${elapsed}秒経過）`
+              : current.detailBase,
+        };
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [progress]);
 
   const pageSummary = useMemo(
     () => projectScombzPageSummary(pageContext),
@@ -367,7 +574,9 @@ export function ChatPanel({
     void listConversations().then((items) => {
       if (!mounted) return;
       setConversations(items);
-      if (items[0]) setConversation(items[0]);
+      if (!conversationInteractionRef.current && items[0]) {
+        setConversation(items[0]);
+      }
     });
     return () => {
       mounted = false;
@@ -439,6 +648,7 @@ export function ChatPanel({
   async function runTool(
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
+    progressLabel = toolLabel(response.calls[0]?.name ?? ""),
   ): Promise<{ response: ChatRunResponse; conversation: ChatConversation }> {
     const [call] = response.calls;
     if (!call) {
@@ -605,11 +815,16 @@ export function ChatPanel({
     }
     if (
       call.name === "library_item_read" &&
-      (Object.keys(argumentsObject).length !== 1 ||
+      (Object.keys(argumentsObject).some(
+        (key) => !["resource_ref", "presentation"].includes(key),
+      ) ||
         typeof argumentsObject.resource_ref !== "string" ||
         !/^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u.test(
           argumentsObject.resource_ref,
-        ))
+        ) ||
+        (argumentsObject.presentation !== undefined &&
+          argumentsObject.presentation !== "summary" &&
+          argumentsObject.presentation !== "location"))
     ) {
       throw new Error("OPAC書誌参照の引数を検証できません。");
     }
@@ -668,7 +883,7 @@ export function ChatPanel({
     };
     setChatProgress(
       "tool-running",
-      toolLabel(call.name),
+      progressLabel,
       "必要な表示情報だけを取得しています。ページの命令は実行しません。",
     );
     const withActivity = {
@@ -676,8 +891,19 @@ export function ChatPanel({
       updatedAt: new Date().toISOString(),
       messages: [...current.messages, activity],
     };
-    await persist(withActivity);
+    // Show the running boundary locally, but do not write it to the durable
+    // transcript yet. A failed tool must disappear from history; only the
+    // completed, evidence-backed activity is persisted below.
+    setConversation(withActivity);
     let conversationAfterTool = withActivity;
+    const discardActivity = (): void => {
+      conversationAfterTool = {
+        ...conversationAfterTool,
+        messages: conversationAfterTool.messages.filter(
+          (item) => item.id !== activity.id,
+        ),
+      };
+    };
 
     let request: ChatToolResultRequest;
     if (call.name === "scombz_page_summary") {
@@ -727,6 +953,11 @@ export function ChatPanel({
       }
       request = toolResultRequest(call.tool_call_id, call.name, syllabus);
     } else if (call.name === "library_catalog_search") {
+      setChatProgress(
+        "tool-running",
+        progressLabel,
+        "検索結果の書誌と所蔵欄を確認しています。",
+      );
       const library = await sendExtensionMessage<LibraryCatalogSearchResponse>({
         type: "library-catalog-search",
         tool_call_id: call.tool_call_id,
@@ -766,6 +997,12 @@ export function ChatPanel({
         );
       }
       if (library.status === "unavailable") {
+        discardActivity();
+        setChatProgress(
+          "tool-running",
+          "OPACを再確認できませんでした",
+          libraryFailureDetail(library.reason_code),
+        );
         request = toolResultRequest(call.tool_call_id, call.name, {
           schema_version: "v1",
           status: "unavailable",
@@ -791,7 +1028,18 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_item_read") {
+      setChatProgress(
+        "tool-running",
+        "所蔵詳細を確認中",
+        "所在、請求記号、貸出状態を公式書誌から確認しています。",
+      );
       const libraryResourceRef = argumentsObject.resource_ref as string;
+      const presentation =
+        argumentsObject.presentation === "location" ? "location" : "summary";
+      setLocalLibraryPresentations((items) => ({
+        ...items,
+        [activity.id]: presentation,
+      }));
       const manifestRecord =
         conversationAfterTool.contextManifest.library_records.find(
           (item) => item.resource_ref === libraryResourceRef,
@@ -800,6 +1048,7 @@ export function ChatPanel({
         type: "library-item-read",
         tool_call_id: call.tool_call_id,
         resource_ref: libraryResourceRef,
+        presentation,
         ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
       });
       if (library.status === "permission_required") {
@@ -808,6 +1057,12 @@ export function ChatPanel({
         );
       }
       if (library.status === "unavailable") {
+        discardActivity();
+        setChatProgress(
+          "tool-running",
+          "所蔵詳細を再確認できませんでした",
+          libraryFailureDetail(library.reason_code),
+        );
         request = toolResultRequest(call.tool_call_id, call.name, {
           schema_version: "v1",
           status: "unavailable",
@@ -835,10 +1090,18 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_action_options") {
+      const actionResourceRef = argumentsObject.resource_ref as string;
+      const actionManifestRecord =
+        conversationAfterTool.contextManifest.library_records.find(
+          (item) => item.resource_ref === actionResourceRef,
+        );
       const library = await sendExtensionMessage<LibraryActionOptionsResponse>({
         type: MESSAGE_TYPES.libraryActionOptions,
         tool_call_id: call.tool_call_id,
-        resource_ref: argumentsObject.resource_ref as string,
+        resource_ref: actionResourceRef,
+        ...(actionManifestRecord
+          ? { record_url: actionManifestRecord.record.url }
+          : {}),
       });
       if (library.status === "permission_required") {
         throw new Error(
@@ -853,6 +1116,9 @@ export function ChatPanel({
       const projection = library.status === "known" ? library.projection : null;
       if (!projection || !isLibraryActionOptionsResult(projection)) {
         throw new Error("図書館の操作可否を検証できませんでした。");
+      }
+      if (projection.status === "unavailable") {
+        discardActivity();
       }
       if (projection.data_classification === "personal") {
         const capabilities = await apiClient.capabilities();
@@ -886,6 +1152,7 @@ export function ChatPanel({
         );
       }
       if (library.status === "unavailable") {
+        discardActivity();
         request = toolResultRequest(call.tool_call_id, call.name, {
           schema_version: "v1",
           status: "unavailable",
@@ -927,6 +1194,7 @@ export function ChatPanel({
         );
       }
       if (library.status === "unavailable") {
+        discardActivity();
         request = toolResultRequest(call.tool_call_id, call.name, {
           schema_version: "v1",
           status: "unavailable",
@@ -1204,7 +1472,7 @@ export function ChatPanel({
     );
     const completedConversation = {
       ...conversationAfterTool,
-      messages: withActivity.messages.map((item) =>
+      messages: conversationAfterTool.messages.map((item) =>
         item.id === activity.id
           ? { ...item, toolState: "completed" as const }
           : item,
@@ -1222,6 +1490,9 @@ export function ChatPanel({
     let response = initialResponse;
     let current = initialConversation;
     const seenCallIds = initialSeenCallIds;
+    const requestedBookCount = explicitBookCount(initialConversation.messages);
+    let librarySearchIndex = 0;
+    let previousCompleteCatalogQuery: string | null = null;
     for (let index = 0; response.status === "tool_required"; index += 1) {
       if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
       const call = response.calls[0];
@@ -1229,21 +1500,44 @@ export function ChatPanel({
         throw new Error("重複したTool呼び出しを受け取りました。");
       }
       seenCallIds.add(call.tool_call_id);
+      const catalogQuery =
+        call.name === "library_catalog_search" &&
+        typeof call.arguments?.query === "string"
+          ? call.arguments.query.replace(/\s+/gu, " ").trim()
+          : null;
+      const isShortenedCatalogRetry = Boolean(
+        catalogQuery &&
+          previousCompleteCatalogQuery &&
+          catalogQuery !== previousCompleteCatalogQuery &&
+          previousCompleteCatalogQuery.includes(catalogQuery),
+      );
+      if (catalogQuery && !isShortenedCatalogRetry) {
+        librarySearchIndex += 1;
+        previousCompleteCatalogQuery = catalogQuery;
+      }
+      const progressLabel =
+        call.name === "library_catalog_search" && requestedBookCount
+          ? isShortenedCatalogRetry
+            ? `${librarySearchIndex}/${requestedBookCount}冊目を短い書名で再確認中`
+            : `${librarySearchIndex}/${requestedBookCount}冊目を確認中`
+          : toolLabel(call.name);
       setChatProgress(
         "planning",
         "Agentが次の参照先を判断中",
-        `${toolLabel(call.name)}を実行する必要があるか確認しています。`,
+        `${progressLabel}です。`,
       );
-      const next = await runTool(response, current);
+      const next = await runTool(response, current, progressLabel);
       response = next.response;
       current = next.conversation;
     }
     const assistant = messageFromResponse(response);
     setChatProgress("completed", "完了", "回答と参照元を表示しました。");
-    const withEvidence = mergeRelatedBookContext(
+    const responseManifest =
+      response.status === "completed" ? response.context_manifest : null;
+    const withEvidence = mergeCompletedChatContext(
       current,
-      assistant.relatedBooks ?? [],
-      assistant.evidence ?? [],
+      responseManifest,
+      assistant,
     );
     await persist({
       ...withEvidence,
@@ -1255,12 +1549,13 @@ export function ChatPanel({
   async function send(): Promise<void> {
     const message = composer.trim();
     if (!message || busy || disabled) return;
+    conversationInteractionRef.current = true;
     setRetryText(null);
     setComposer("");
     setBusy(true);
     setChatProgress(
-      "sending",
-      "Agentに質問を送信中",
+      "planning",
+      "会話文脈を整理中",
       "会話の履歴と現在のページ概要を確認しています。",
     );
     const userMessage: ChatTimelineMessage = {
@@ -1281,21 +1576,25 @@ export function ChatPanel({
     await persist(withUser);
     const current = withUser;
     try {
+      setChatProgress(
+        "planning",
+        "Agentが回答方針を検討中",
+        "利用できる参照先と会話の文脈から、次の確認方法を選んでいます。",
+      );
       const response = await apiClient.startChat({
         conversation_id: withUser.conversationId,
         message,
+        // `sync` is the server default.  Omitting the optional field keeps
+        // this read-only path compatible with deployed API images from before
+        // background execution was introduced (their strict request model
+        // rejects unknown fields with HTTP 422).
         history: toChatHistory(beforeSend.messages),
         client_tools: clientTools(),
         context_manifest: toChatContextManifest(beforeSend.contextManifest),
       });
-      setChatProgress(
-        "planning",
-        "Agentが回答方針を組み立て中",
-        "必要なToolがある場合だけ、ここから順番に実行します。",
-      );
       await finishResponse(response, current);
     } catch (error) {
-      const failureMessage = chatFailureMessage(error);
+      const failureMessage = userFacingChatFailure(error);
       setRetryText(message);
       setProgress(null);
       await persist({
@@ -1316,6 +1615,7 @@ export function ChatPanel({
   }
 
   async function selectConversation(id: string): Promise<void> {
+    conversationInteractionRef.current = true;
     const selected = await loadConversation(id);
     if (selected) {
       setConversation(selected);
@@ -1325,6 +1625,7 @@ export function ChatPanel({
   }
 
   async function createConversation(): Promise<void> {
+    conversationInteractionRef.current = true;
     const next = newConversation();
     await persist(next);
     setRetryText(null);
@@ -1350,9 +1651,14 @@ export function ChatPanel({
   async function requestLibraryActionPreview(
     messageId: string,
     proposal: ActionProposal,
+    inputs?: LibraryActionEditableInputs,
   ): Promise<void> {
     const operation = proposal.operation;
     if (!operation) return;
+    const manifestRecord = conversation.contextManifest.library_records.find(
+      (item) => item.resource_ref === operation.resource_ref,
+    );
+    const isReservation = operation.action_type === "reserve";
     setLibraryPreviewStates((states) => ({
       ...states,
       [messageId]: "previewing",
@@ -1362,11 +1668,20 @@ export function ChatPanel({
       delete next[messageId];
       return next;
     });
+    setChatProgress(
+      "tool-running",
+      isReservation ? "予約可否を確認中" : "公式ページを確認中",
+      isReservation
+        ? "公式OPACの予約導線と入力条件を確認しています。"
+        : "対象資料の公式ページと現在の状態を確認しています。",
+    );
     try {
       const result = await sendExtensionMessage<LibraryActionPreviewResponse>({
         type: MESSAGE_TYPES.libraryActionPreview,
         tool_call_id: `proposal-${messageId}`,
         operation,
+        ...(inputs ? { inputs } : {}),
+        ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
       });
       if (result.status !== "ready") {
         setLibraryPreviewStates((states) => ({
@@ -1378,8 +1693,15 @@ export function ChatPanel({
           [messageId]:
             result.status === "permission_required"
               ? "公式ページの権限が必要です。"
-              : result.reason_code,
+              : libraryActionFailureDetail(result.reason_code),
         }));
+        setChatProgress(
+          "error",
+          isReservation
+            ? "予約可否を確認できませんでした"
+            : "公式ページを確認できませんでした",
+          "公式ページの内容を確認できないため、次の操作へ進んでいません。",
+        );
         return;
       }
       setLibraryPreviews((previews) => ({ ...previews, [messageId]: result }));
@@ -1391,6 +1713,15 @@ export function ChatPanel({
         ...states,
         [messageId]: "previewing",
       }));
+      setChatProgress(
+        "completed",
+        isReservation
+          ? "公式ページで予約内容を確認しました"
+          : "公式ページを確認しました",
+        isReservation
+          ? "受取場所を含む内容を確認しました。最後のボタンで送信できます。"
+          : "公式ページの対象資料と状態を確認しました。",
+      );
     } catch {
       setLibraryPreviewStates((states) => ({
         ...states,
@@ -1400,6 +1731,11 @@ export function ChatPanel({
         ...errors,
         [messageId]: "公式ページを再確認できませんでした。",
       }));
+      setChatProgress(
+        "error",
+        "予約可否を確認できませんでした",
+        "公式ページの内容を確認できないため、送信していません。",
+      );
     }
   }
 
@@ -1483,10 +1819,18 @@ export function ChatPanel({
   ): Promise<void> {
     if (libraryPreviewStates[messageId] === "submitting") return;
     const inputs = libraryPreviewInputs[messageId] ?? preview.inputs;
+    const isReservation = preview.action_type === "reserve";
     setLibraryPreviewStates((states) => ({
       ...states,
       [messageId]: "submitting",
     }));
+    setChatProgress(
+      "tool-running",
+      isReservation ? "予約結果を確認中" : "公式ページを開いて確認中",
+      isReservation
+        ? "公式ページの完了画面と予約一覧を確認しています。"
+        : "対象資料の公式ページを開き、内容を確認しています。",
+    );
     try {
       const result = await sendExtensionMessage<LibraryActionSubmitResponse>({
         type: MESSAGE_TYPES.libraryActionSubmit,
@@ -1506,14 +1850,30 @@ export function ChatPanel({
         }));
         setLibraryPreviewErrors((errors) => ({
           ...errors,
-          [messageId]: result.reason_code,
+          [messageId]: libraryActionFailureDetail(result.reason_code),
         }));
+        setChatProgress(
+          "error",
+          isReservation
+            ? "予約結果を確認できませんでした"
+            : "公式ページを確認できませんでした",
+          isReservation
+            ? "完了を確認できないため、成功扱いにしていません。"
+            : "公式ページを確認できないため、操作完了とは扱っていません。",
+        );
         return;
       }
       setLibraryPreviewStates((states) => ({
         ...states,
         [messageId]: "verified",
       }));
+      setChatProgress(
+        "completed",
+        isReservation ? "予約結果を確認しました" : "公式ページを確認しました",
+        isReservation
+          ? "公式ページと予約一覧で対象資料の予約を確認しました。"
+          : "公式ページで対象資料を確認しました。",
+      );
     } catch {
       setLibraryPreviewStates((states) => ({
         ...states,
@@ -1523,6 +1883,15 @@ export function ChatPanel({
         ...errors,
         [messageId]: "公式ページの状態を再確認できませんでした。",
       }));
+      setChatProgress(
+        "error",
+        isReservation
+          ? "予約結果を確認できませんでした"
+          : "公式ページを確認できませんでした",
+        isReservation
+          ? "公式ページの状態を確認できないため、成功扱いにしていません。"
+          : "公式ページの状態を確認できないため、操作完了とは扱っていません。",
+      );
     }
   }
 
@@ -1814,7 +2183,10 @@ export function ChatPanel({
               {message.role === "tool" && localLibraryDetails[message.id] ? (
                 <details
                   className="chat-local-detail"
-                  open={message.toolName === "library_item_read"}
+                  open={
+                    message.toolName === "library_item_read" &&
+                    localLibraryPresentations[message.id] === "location"
+                  }
                 >
                   <summary>
                     {message.toolName === "library_item_read"
@@ -1863,6 +2235,8 @@ export function ChatPanel({
                               ))}
                             </ul>
                             {message.toolName === "library_item_read" &&
+                            localLibraryPresentations[message.id] ===
+                              "location" &&
                             floorMaps.length > 0 ? (
                               <div className="library-floor-map-list">
                                 {floorMaps.map((map) => (
@@ -2004,8 +2378,8 @@ export function ChatPanel({
                 </details>
               ) : null}
               {message.role === "assistant" &&
-              message.content === CHAT_FAILURE_MESSAGE &&
-              retryText ? (
+              retryText &&
+              message.id === conversation.messages.at(-1)?.id ? (
                 <button
                   type="button"
                   className="chat-retry-button"
@@ -2031,6 +2405,75 @@ export function ChatPanel({
                   {message.proposalState === "approved" &&
                   message.proposal.operation ? (
                     <div className="library-action-confirmation">
+                      {message.proposal.operation.action_type === "reserve" &&
+                      !libraryPreviews[message.id] &&
+                      libraryPreviewStates[message.id] !== "previewing" ? (
+                        <div
+                          className="library-choice-popover"
+                          role="dialog"
+                          aria-label="予約の受取キャンパスを選択"
+                        >
+                          <strong>受取キャンパスを選択してください</strong>
+                          <p>
+                            公式フォームで選択した内容を確認してから送信します。
+                          </p>
+                          <div className="button-row">
+                            {reserveCampusChoices(
+                              conversation,
+                              message.proposal.operation.resource_ref,
+                            ).map((choice) => (
+                              <button
+                                key={choice.value}
+                                type="button"
+                                className="primary-button"
+                                onClick={() =>
+                                  void requestLibraryActionPreview(
+                                    message.id,
+                                    message.proposal as ActionProposal,
+                                    {
+                                      action_type: "reserve",
+                                      values: { pickup_campus: choice.value },
+                                    },
+                                  )
+                                }
+                              >
+                                {choice.label}
+                              </button>
+                            ))}
+                          </div>
+                          <label>
+                            その他の希望（自由記述）
+                            <input
+                              maxLength={200}
+                              value={libraryChoiceFreeform[message.id] ?? ""}
+                              onChange={(event) =>
+                                setLibraryChoiceFreeform((values) => ({
+                                  ...values,
+                                  [message.id]: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={
+                              !(libraryChoiceFreeform[message.id] ?? "").trim()
+                            }
+                            onClick={() => {
+                              const value =
+                                libraryChoiceFreeform[message.id]?.trim();
+                              if (!value) return;
+                              setComposer(
+                                `予約の受取場所について確認したいです：${value}`,
+                              );
+                              composerRef.current?.focus();
+                            }}
+                          >
+                            Agentに希望を確認する
+                          </button>
+                        </div>
+                      ) : null}
                       {libraryPreviewStates[message.id] === "previewing" &&
                       !libraryPreviews[message.id] ? (
                         <p className="state-message">

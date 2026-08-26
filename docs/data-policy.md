@@ -96,9 +96,13 @@ ScombZへのログイン状態を、Google Drive、Google Calendar、Microsoft G
 
 図書館の`ActionProposal`は承認しても送信を開始しない。Chromeは公式origin/path、対象の現在状態、form/CSRFの形を再検証した短命previewだけをService Workerメモリに保持し、表示可能な公式書誌・所蔵・入力候補だけをChatへ投影する。入力は操作別のbounded allowlistに限定し、再読込でstate fingerprintが変わった場合、previewが期限切れの場合、または別操作のIDが渡された場合はfail closedとする。write providerの確認・submit DOMが未検証の間は`write_form_not_verified`を返し、`この内容で送信`ボタンを表示せず、実送信や成功報告を行わない。fixture専用のsubmit→read-back state machineはlive providerの代替ではない。
 
+Azure本番の公開OPAC検索・書誌詳細は認証済みServer ToolのOPAC Gatewayで処理する。接続先は公式originへ固定し、検索一覧または単一書誌302、ページに埋め込まれた短命token、許可済みNCIP path、可視書誌との一致を順に検証する。Gatewayの単一キュー、10秒間隔、検索5分・詳細30秒の非永続cache、限定再試行により、同時検索や一時的な上流失敗を制御する。検索語、書誌ID、token、cookie、raw HTML、NCIP応答はログ・Evidence・会話・IndexedDBへ出さず、`opac_timeout`、`opac_contract_changed`、`opac_availability_failed`などの理由コードだけを返す。`unavailable`を未所蔵へ変換せず、0件の正常結果と区別する。`ORBIT_OPAC_TRANSPORT=server`を明示したAzureだけで有効化し、fixtureとChromeの旧一時タブ経路では`off`を明示する。
+
 Agent APIへ送るのは、厳格な公開書誌メタデータ、表示されたholdingのcampus/location/call number/status/due date/reservation count、公式リンク、検索結果の短い表示スニペットだけである。material ID、copy ID、内部AJAXの応答、Cookie、session token、認証情報、個人の貸出・予約情報は送らない。`resource_ref`は公開レコードIDから導出したopaque値で、元IDはService Workerの短命な対応表にのみ保持し、再起動後や衝突時は解決しない。SIT Searchでは契約本文の全文取得、ダウンロード、保存、一般Web検索へのfallbackを行わない。
 
 公開図書館ディスカバリーのEvidenceは`source_type=library`、`data_classification=public`、検証済みの`library-*` IDと`orbit-library://public/` locatorだけを許可する。Branch 3のaction-options Evidenceはopaque `resource_ref`をlocatorにした専用IDへ分離し、公開OPACはpublic、My Library由来はpersonalとして扱う。raw HTMLとTool生レスポンスはChat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存しない。
+
+OPACの遷移・抽出障害を利用者自身が確認できるよう、検索語、処理段階、遷移先の種別、件数、所要時間、成否、理由コードだけを`chrome.storage.session`へ最大200件保存する。この診断ログはブラウザ終了時に消え、設定画面からコピー・消去できる。URL、query/fragment、書誌ID、opaque ref、所蔵内容、raw HTML、Cookie、token、利用者情報は記録せず、Chat履歴、IndexedDB、Agent API、Azure、W&Bへ送信しない。コピー内容には検索語が含まれることを設定画面で明示する。
 
 Connectorは、`not_connected`、`connected`、`reauth_required`、`unavailable`の状態を表示する。
 

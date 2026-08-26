@@ -3,6 +3,7 @@ import { B1_OMIYA_CONTEXT, B1_OMIYA_EVENT } from "../sidepanel/b1-fixture";
 import {
   AgentApiClient,
   AgentApiError,
+  classifyAgentApiError,
   type Fetcher,
   isActionProposal,
   isCastAlumniReadResult,
@@ -57,6 +58,31 @@ function createFetcher(response: Response): Fetcher & ReturnType<typeof vi.fn> {
 }
 
 describe("AgentApiClient", () => {
+  it("classifies value-free chat 422 responses by safe reason code", () => {
+    expect(
+      classifyAgentApiError(
+        new AgentApiError("unused", 422, {
+          detail: {
+            reason_code: "chat_context_invalid",
+            field: "context_manifest",
+          },
+        }),
+      ),
+    ).toBe("context_invalid");
+    expect(
+      classifyAgentApiError(
+        new AgentApiError("unused", 422, {
+          detail: { reason_code: "agent_output_invalid" },
+        }),
+      ),
+    ).toBe("agent_output_invalid");
+    expect(
+      classifyAgentApiError(
+        new AgentApiError("unused", 422, { detail: "legacy" }),
+      ),
+    ).toBe("contract_invalid");
+  });
+
   it("validates grounded related-book cards in completed Chat responses", () => {
     expect(
       isChatRunResponse({
@@ -643,6 +669,77 @@ describe("AgentApiClient", () => {
         headers: { Authorization: "Bearer demo-token" },
       },
     );
+  });
+
+  it("omits the default sync mode for strict pre-background Chat APIs", async () => {
+    const response = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-compatibility",
+        content_markdown: "確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body.execution_mode).toBeUndefined();
+        return jsonResponse(response);
+      },
+    ) as unknown as Fetcher;
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      fetcher,
+    });
+
+    await expect(
+      client.startChat({
+        conversation_id: "compatibility-chat",
+        message: "LLMに関するおすすめの本はある？",
+        execution_mode: "sync",
+      }),
+    ).resolves.toEqual(response);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://agent.example.test/v1/chat/runs",
+      expect.objectContaining({
+        body: JSON.stringify({
+          conversation_id: "compatibility-chat",
+          message: "LLMに関するおすすめの本はある？",
+        }),
+      }),
+    );
+  });
+
+  it("keeps an explicitly requested background mode", async () => {
+    const response = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-background",
+        content_markdown: "バックグラウンドで確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body.execution_mode).toBe("background");
+        return jsonResponse(response);
+      },
+    ) as unknown as Fetcher;
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      fetcher,
+    });
+
+    await expect(
+      client.startChat({
+        conversation_id: "background-chat",
+        message: "進捗を確認して",
+        execution_mode: "background",
+      }),
+    ).resolves.toEqual(response);
   });
 
   it("accepts a google_drive EvidenceLink with an opaque locator", async () => {

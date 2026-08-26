@@ -227,6 +227,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ChatRunToolRequired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatRunBackground"
                     }
                   ],
                   "title": "Response Start Chat Run V1 Chat Runs Post",
@@ -234,9 +237,179 @@
                     "propertyName": "status",
                     "mapping": {
                       "completed": "#/components/schemas/ChatRunCompleted",
-                      "tool_required": "#/components/schemas/ChatRunToolRequired"
+                      "tool_required": "#/components/schemas/ChatRunToolRequired",
+                      "background": "#/components/schemas/ChatRunBackground"
                     }
                   }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/chat/runs/{run_id}": {
+      "get": {
+        "summary": "Get Chat Run",
+        "operationId": "get_chat_run_v1_chat_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ChatRunCompleted"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatRunToolRequired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ChatRunBackground"
+                    }
+                  ],
+                  "discriminator": {
+                    "propertyName": "status",
+                    "mapping": {
+                      "completed": "#/components/schemas/ChatRunCompleted",
+                      "tool_required": "#/components/schemas/ChatRunToolRequired",
+                      "background": "#/components/schemas/ChatRunBackground"
+                    }
+                  },
+                  "title": "Response Get Chat Run V1 Chat Runs  Run Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/chat/runs/{run_id}/events": {
+      "get": {
+        "summary": "Get Chat Run Events",
+        "operationId": "get_chat_run_events_v1_chat_runs__run_id__events_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Server-sent progress events.",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/library/catalog/search": {
+      "post": {
+        "summary": "Search Library Catalog",
+        "operationId": "search_library_catalog_v1_library_catalog_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryCatalogSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryCatalogSearchResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/library/items/read": {
+      "post": {
+        "summary": "Read Library Item",
+        "operationId": "read_library_item_v1_library_items_read_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryItemReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryItemReadResult"
                 }
               }
             }
@@ -1529,7 +1702,7 @@
           },
           "content": {
             "type": "string",
-            "maxLength": 8000,
+            "maxLength": 12000,
             "minLength": 1,
             "title": "Content"
           }
@@ -1579,6 +1752,29 @@
         "title": "ChatLibraryContextRecord",
         "description": "A bounded public OPAC record carried between Chat turns.\n\nThis is deliberately separate from the transcript.  It contains only\nthe structured, public projection that the next model turn may use to\nresolve elliptical follow-ups such as ``\"どこにある？\"``."
       },
+      "ChatRunBackground": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "background",
+            "title": "Status"
+          },
+          "run_id": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Run Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "run_id"
+        ],
+        "title": "ChatRunBackground",
+        "description": "Acknowledgement for a bounded in-memory background chat run."
+      },
       "ChatRunCompleted": {
         "properties": {
           "status": {
@@ -1593,6 +1789,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ActionProposal"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context_manifest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChatContextManifest"
               },
               {
                 "type": "null"
@@ -1622,6 +1828,15 @@
             "minLength": 1,
             "title": "Message"
           },
+          "execution_mode": {
+            "type": "string",
+            "enum": [
+              "sync",
+              "background"
+            ],
+            "title": "Execution Mode",
+            "default": "sync"
+          },
           "history": {
             "items": {
               "$ref": "#/components/schemas/ChatHistoryMessage"
@@ -1635,7 +1850,7 @@
               "$ref": "#/components/schemas/ChatClientTool"
             },
             "type": "array",
-            "maxItems": 12,
+            "maxItems": 15,
             "title": "Client Tools"
           },
           "context_manifest": {
@@ -2124,6 +2339,15 @@
             "type": "array",
             "maxItems": 8,
             "title": "Required Inputs"
+          },
+          "verification_level": {
+            "type": "string",
+            "enum": [
+              "none",
+              "entry_visible"
+            ],
+            "title": "Verification Level",
+            "default": "none"
           }
         },
         "additionalProperties": false,
@@ -2386,6 +2610,100 @@
         "title": "LibraryCatalogBrowseResult",
         "description": "Public new-book or loan-ranking rows from the official catalog pages."
       },
+      "LibraryCatalogSearchRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "isbn": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 32
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Isbn"
+          },
+          "pub_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 1000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pub Year"
+          },
+          "campus": {
+            "type": "string",
+            "enum": [
+              "toyosu",
+              "omiya",
+              "any"
+            ],
+            "title": "Campus",
+            "default": "any"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "book",
+              "journal",
+              "ebook",
+              "any"
+            ],
+            "title": "Format",
+            "default": "any"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 10.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 10
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "LibraryCatalogSearchRequest",
+        "description": "Authenticated server-side OPAC search request."
+      },
       "LibraryCatalogSearchResult": {
         "properties": {
           "schema_version": {
@@ -2637,6 +2955,41 @@
         ],
         "title": "LibraryHoldingSummary",
         "description": "Public holding status rendered by the official OPAC.\n\nInternal material, copy, and holding identifiers deliberately have no\nrepresentation in this model."
+      },
+      "LibraryItemReadRequest": {
+        "properties": {
+          "resource_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+            "title": "Resource Ref"
+          },
+          "presentation": {
+            "type": "string",
+            "enum": [
+              "summary",
+              "location"
+            ],
+            "title": "Presentation",
+            "default": "summary"
+          },
+          "records": {
+            "items": {
+              "$ref": "#/components/schemas/ChatLibraryContextRecord"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Records"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "resource_ref"
+        ],
+        "title": "LibraryItemReadRequest",
+        "description": "Authenticated server-side OPAC detail request."
       },
       "LibraryItemReadResult": {
         "properties": {

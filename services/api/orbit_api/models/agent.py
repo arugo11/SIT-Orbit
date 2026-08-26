@@ -396,6 +396,19 @@ class LibraryCatalogSearchResult(StrictApiModel):
         return self
 
 
+class LibraryCatalogSearchRequest(StrictApiModel):
+    """Authenticated server-side OPAC search request."""
+
+    query: StrictStr = Field(min_length=1, max_length=200)
+    author: StrictStr | None = Field(default=None, max_length=200)
+    subject: StrictStr | None = Field(default=None, max_length=200)
+    isbn: StrictStr | None = Field(default=None, max_length=32)
+    pub_year: StrictInt | None = Field(default=None, ge=1000, le=2100)
+    campus: LibrarySearchCampus = "any"
+    format: LibrarySearchFormat = "any"
+    limit: StrictInt = Field(default=10, ge=1, le=10)
+
+
 class LibraryItemReadResult(StrictApiModel):
     """Detailed public OPAC record resolved from an opaque resource reference."""
 
@@ -1108,7 +1121,7 @@ ChatToolName = Literal[
 
 class ChatHistoryMessage(StrictApiModel):
     role: ChatRole
-    content: StrictStr = Field(min_length=1, max_length=8000)
+    content: StrictStr = Field(min_length=1, max_length=12000)
 
 
 class ChatLibraryContextRecord(StrictApiModel):
@@ -1256,9 +1269,35 @@ class ChatContextManifest(StrictApiModel):
 
     @model_validator(mode="after")
     def validates_manifest(self) -> "ChatContextManifest":
-        evidence_ids = {item.evidence_id for item in self.evidence}
-        if len(evidence_ids) != len(self.evidence):
-            raise ValueError("Context manifest evidence IDs must be unique.")
+        # Older clients may have persisted the same completion evidence from
+        # both ``message.evidence`` and ``context_manifest.evidence``.  Treat
+        # byte-for-byte equivalent public links as one stable entry so a
+        # session upgrade repairs that legacy state at the API boundary.  A
+        # reused ID with different metadata is ambiguous and remains a hard
+        # failure; silently choosing one would risk carrying evidence from a
+        # different source into the next turn.
+        merged_evidence: list[EvidenceLink] = []
+        evidence_by_id: dict[str, EvidenceLink] = {}
+        for item in self.evidence:
+            previous = evidence_by_id.get(item.evidence_id)
+            if previous is None:
+                evidence_by_id[item.evidence_id] = item
+                merged_evidence.append(item)
+                continue
+            if (
+                previous.title,
+                previous.source_type,
+                previous.locator,
+                previous.data_classification,
+            ) != (
+                item.title,
+                item.source_type,
+                item.locator,
+                item.data_classification,
+            ):
+                raise ValueError("Context manifest contains conflicting evidence metadata.")
+        self.evidence = merged_evidence
+        evidence_ids = set(evidence_by_id)
         for item in self.evidence:
             if item.data_classification not in {"public", "synthetic"}:
                 raise ValueError("Personal evidence cannot be included in a context manifest.")
@@ -1287,6 +1326,18 @@ class ChatContextManifest(StrictApiModel):
         return self
 
 
+class LibraryItemReadRequest(StrictApiModel):
+    """Authenticated server-side OPAC detail request."""
+
+    resource_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    presentation: Literal["summary", "location"] = "summary"
+    records: list[ChatLibraryContextRecord] = Field(default_factory=list, max_length=20)
+
+
 class ChatClientTool(StrictApiModel):
     name: ChatToolName
     version: Literal[1]
@@ -1295,8 +1346,14 @@ class ChatClientTool(StrictApiModel):
 class ChatRunRequest(StrictApiModel):
     conversation_id: StrictStr = Field(min_length=1, max_length=200)
     message: StrictStr = Field(min_length=1, max_length=8000)
+    execution_mode: Literal["sync", "background"] = "sync"
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
-    client_tools: list[ChatClientTool] = Field(default_factory=list, max_length=12)
+    # The extension may advertise every supported client capability on a run.
+    # There are currently fifteen distinct Chat tools; keeping this bound in
+    # sync with ChatToolName prevents a valid connected page (for example one
+    # with Calendar and SCombZ tools enabled) from being rejected at the HTTP
+    # boundary with a misleading 422.
+    client_tools: list[ChatClientTool] = Field(default_factory=list, max_length=15)
     context_manifest: ChatContextManifest | None = None
 
     @model_validator(mode="after")
@@ -1397,6 +1454,8 @@ class ChatAssistantMessage(StrictApiModel):
     @model_validator(mode="after")
     def validates_related_book_evidence(self) -> "ChatAssistantMessage":
         evidence_ids = {item.evidence_id for item in self.evidence}
+        if len(evidence_ids) != len(self.evidence):
+            raise ValueError("Assistant evidence IDs must be unique.")
         candidate_refs = {item.candidate_ref for item in self.related_books}
         if len(candidate_refs) != len(self.related_books):
             raise ValueError("Assistant related-book refs must be unique.")
@@ -1410,6 +1469,60 @@ class ChatRunCompleted(StrictApiModel):
     status: Literal["completed"]
     message: ChatAssistantMessage
     proposal: ActionProposal | None = None
+    context_manifest: ChatContextManifest | None = None
+
+    @model_validator(mode="after")
+    def validates_overlapping_evidence(self) -> "ChatRunCompleted":
+        """Allow mirrored evidence, but never conflicting metadata.
+
+        The assistant message and the context manifest intentionally carry the
+        same public evidence so older clients can render either projection.
+        Their overlap must represent one canonical link; otherwise the next
+        turn could not safely merge it.
+        """
+
+        if self.context_manifest is None:
+            return self
+        manifest_by_id = {
+            item.evidence_id: item for item in self.context_manifest.evidence
+        }
+        for item in self.message.evidence:
+            previous = manifest_by_id.get(item.evidence_id)
+            if previous is None:
+                continue
+            if (
+                previous.title,
+                previous.source_type,
+                previous.locator,
+                previous.data_classification,
+            ) != (
+                item.title,
+                item.source_type,
+                item.locator,
+                item.data_classification,
+            ):
+                raise ValueError(
+                    "Chat completion contains conflicting evidence metadata."
+                )
+        return self
+
+
+class ChatRunBackground(StrictApiModel):
+    """Acknowledgement for a bounded in-memory background chat run."""
+
+    status: Literal["background"]
+    run_id: StrictStr = Field(min_length=1, max_length=200)
+
+
+class ChatRunProgressEvent(StrictApiModel):
+    """Safe user-facing progress metadata; no prompts or tool arguments."""
+
+    sequence: StrictInt = Field(ge=1, le=1000)
+    stage: Literal["planning", "tool_call", "tool_result", "synthesizing"]
+    title: StrictStr = Field(min_length=1, max_length=80)
+    completed: StrictInt = Field(ge=0, le=8)
+    total: StrictInt | None = Field(default=None, ge=1, le=8)
+    elapsed_ms: StrictInt = Field(ge=0, le=600_000)
 
 
 class ChatRunToolRequired(StrictApiModel):
@@ -1420,6 +1533,12 @@ class ChatRunToolRequired(StrictApiModel):
 
 ChatRunResponse = Annotated[
     ChatRunCompleted | ChatRunToolRequired,
+    Field(discriminator="status"),
+]
+
+
+ChatRunStatusResponse = Annotated[
+    ChatRunCompleted | ChatRunToolRequired | ChatRunBackground,
     Field(discriminator="status"),
 ]
 

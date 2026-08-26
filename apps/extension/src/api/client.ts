@@ -15,7 +15,17 @@ export type AgentRunResponse =
   | components["schemas"]["AgentRunToolRequired"];
 export type AgentToolResultRequest =
   components["schemas"]["AgentToolResultRequest"];
-export type ChatRunRequest = components["schemas"]["ChatRunRequest"];
+type GeneratedChatRunRequest = components["schemas"]["ChatRunRequest"];
+/**
+ * The API defaults to a synchronous run when execution_mode is omitted.
+ * Keep that field optional at the client boundary so a newly built extension
+ * can still talk to an older API image whose strict request model predates
+ * background runs.  Callers that explicitly use background execution may
+ * continue to provide the field.
+ */
+export type ChatRunRequest = Omit<GeneratedChatRunRequest, "execution_mode"> & {
+  execution_mode?: GeneratedChatRunRequest["execution_mode"];
+};
 export type ChatRunResponse =
   | components["schemas"]["ChatRunCompleted"]
   | components["schemas"]["ChatRunToolRequired"];
@@ -85,6 +95,57 @@ export class AgentApiError extends Error {
     this.name = "AgentApiError";
     this.status = status;
     this.body = body;
+  }
+}
+
+export type AgentApiErrorReason =
+  | "network"
+  | "auth"
+  | "context_invalid"
+  | "history_invalid"
+  | "tools_invalid"
+  | "tool_result_invalid"
+  | "agent_output_invalid"
+  | "run_invalid"
+  | "contract_invalid"
+  | "upstream";
+
+function errorReasonCode(body: unknown): string | null {
+  if (!isRecord(body)) return null;
+  if (typeof body.category === "string") return body.category;
+  const detail = body.detail;
+  if (typeof detail === "string") return detail;
+  if (isRecord(detail) && typeof detail.reason_code === "string") {
+    return detail.reason_code;
+  }
+  return null;
+}
+
+/** Classify an API failure without exposing response values to the UI. */
+export function classifyAgentApiError(error: unknown): AgentApiErrorReason {
+  if (!(error instanceof AgentApiError)) return "contract_invalid";
+  if (error.status === 0) return "network";
+  if (error.status === 401 || error.status === 403) return "auth";
+  if (error.status >= 500) return "upstream";
+  if (error.status !== 422) return "contract_invalid";
+  const reason = errorReasonCode(error.body);
+  switch (reason) {
+    case "chat_context_invalid":
+      return "context_invalid";
+    case "chat_history_invalid":
+      return "history_invalid";
+    case "chat_tools_invalid":
+      return "tools_invalid";
+    case "tool_result_invalid":
+      return "tool_result_invalid";
+    case "agent_output_invalid":
+      return "agent_output_invalid";
+    case "chat_run_invalid":
+      return "run_invalid";
+    case "context_evidence_conflict":
+      return "context_invalid";
+    default:
+      return "contract_invalid";
   }
 }
 
@@ -714,14 +775,21 @@ function isLibraryActionOption(value: unknown): boolean {
       "available",
       "reason_code",
       "required_inputs",
+      "verification_level",
     ]) &&
     isOneOf(value.action_type, libraryActionTypes) &&
     typeof value.available === "boolean" &&
     typeof value.reason_code === "string" &&
     /^[a-z][a-z0-9_]*$/u.test(value.reason_code) &&
+    isOneOf(value.verification_level, ["none", "entry_visible"]) &&
     Array.isArray(value.required_inputs) &&
     value.required_inputs.length <= 8 &&
-    value.required_inputs.every((item) => isOneOf(item, libraryActionInputs))
+    value.required_inputs.every((item) => isOneOf(item, libraryActionInputs)) &&
+    (value.available
+      ? value.reason_code === "available" &&
+        value.verification_level === "entry_visible"
+      : value.reason_code !== "available" &&
+        value.verification_level === "none")
   );
 }
 
@@ -1496,6 +1564,9 @@ function isChatEvidenceMessage(value: unknown): boolean {
   const messageEvidenceIds = new Set(
     (value.evidence as EvidenceLink[]).map((item) => item.evidence_id),
   );
+  if (messageEvidenceIds.size !== (value.evidence as unknown[]).length) {
+    return false;
+  }
   const relatedBooks = Array.isArray(value.related_books)
     ? (value.related_books as RelatedBookCandidate[])
     : [];
@@ -1569,15 +1640,90 @@ function isRelatedBookCandidate(value: unknown): value is RelatedBookCandidate {
   );
 }
 
+export function isChatContextManifest(
+  value: unknown,
+): value is ChatContextManifest {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "evidence",
+      "library_records",
+      "related_books",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !Array.isArray(value.evidence) ||
+    !value.evidence.every(isEvidenceLink) ||
+    value.evidence.length > 100 ||
+    !Array.isArray(value.library_records) ||
+    value.library_records.length > 20 ||
+    !Array.isArray(value.related_books) ||
+    value.related_books.length > 20 ||
+    !value.related_books.every(isRelatedBookCandidate)
+  ) {
+    return false;
+  }
+  const evidenceIds = new Set(
+    (value.evidence as EvidenceLink[]).map((item) => item.evidence_id),
+  );
+  if (evidenceIds.size !== value.evidence.length) return false;
+  const resourceRefs = new Set<string>();
+  for (const item of value.library_records) {
+    if (
+      !isRecord(item) ||
+      !hasExactlyKeys(item, [
+        "resource_ref",
+        "record",
+        "evidence_ids",
+        "observed_at",
+      ]) ||
+      !isOpaqueLibraryResourceRef(item.resource_ref) ||
+      !isLibraryBibliographicRecord(item.record) ||
+      !Array.isArray(item.evidence_ids) ||
+      !item.evidence_ids.every(
+        (evidenceId) =>
+          typeof evidenceId === "string" && evidenceIds.has(evidenceId),
+      ) ||
+      !isNonEmptyString(item.observed_at)
+    ) {
+      return false;
+    }
+    const record = item.record as unknown as LibraryBibliographicRecord;
+    if (record.resource_ref !== item.resource_ref) return false;
+    resourceRefs.add(item.resource_ref);
+  }
+  return value.related_books.every((candidate) => {
+    if (!candidate.evidence_ids.every((id) => evidenceIds.has(id))) {
+      return false;
+    }
+    const verification = candidate.catalog_verification;
+    if (!verification) return false;
+    return (
+      verification.status !== "verified" ||
+      (typeof verification.resource_ref === "string" &&
+        resourceRefs.has(verification.resource_ref))
+    );
+  });
+}
+
 export function isChatRunResponse(value: unknown): value is ChatRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
   }
   if (value.status === "completed") {
     return (
-      hasExactlyKeys(value, ["status", "message", "proposal"]) &&
+      (hasExactlyKeys(value, ["status", "message", "proposal"]) ||
+        hasExactlyKeys(value, [
+          "status",
+          "message",
+          "proposal",
+          "context_manifest",
+        ])) &&
       isChatEvidenceMessage(value.message) &&
-      (value.proposal === null || isActionProposal(value.proposal))
+      (value.proposal === null || isActionProposal(value.proposal)) &&
+      (value.context_manifest === undefined ||
+        value.context_manifest === null ||
+        isChatContextManifest(value.context_manifest))
     );
   }
   if (value.status !== "tool_required") {
@@ -1782,7 +1928,13 @@ export class AgentApiClient {
   }
 
   startChat(request: ChatRunRequest): Promise<ChatRunResponse> {
-    return this.post("/v1/chat/runs", request, isChatRunResponse, "chat run");
+    // The server defaults to a synchronous run.  Do not send the default
+    // value to older strict API images that predate `execution_mode`; an
+    // explicitly requested background run still carries the field.
+    const { execution_mode, ...requestWithoutExecutionMode } = request;
+    const body =
+      execution_mode === "sync" ? requestWithoutExecutionMode : request;
+    return this.post("/v1/chat/runs", body, isChatRunResponse, "chat run");
   }
 
   submitChatToolResult(

@@ -7,6 +7,12 @@ set -euo pipefail
 : "${ORBIT_AZURE_OPENAI_DEPLOYMENT:?Set ORBIT_AZURE_OPENAI_DEPLOYMENT to the model deployment name.}"
 : "${ORBIT_AZURE_BOOK_DISCOVERY_MODE:?Set ORBIT_AZURE_BOOK_DISCOVERY_MODE to off, multi_query, or semantic.}"
 
+opac_transport="${ORBIT_OPAC_TRANSPORT:-server}"
+opac_base_url="${ORBIT_OPAC_BASE_URL:-https://library.shibaura-it.ac.jp}"
+opac_min_interval_ms="${ORBIT_OPAC_MIN_INTERVAL_MS:-10000}"
+opac_search_cache_ttl="${ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS:-300}"
+opac_detail_cache_ttl="${ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS:-30}"
+
 case "${ORBIT_AZURE_BOOK_DISCOVERY_MODE}" in
   off|multi_query|semantic)
     ;;
@@ -15,6 +21,15 @@ case "${ORBIT_AZURE_BOOK_DISCOVERY_MODE}" in
     exit 1
     ;;
 esac
+
+if [[ "${opac_transport}" != "server" || "${opac_base_url}" != "https://library.shibaura-it.ac.jp" ]]; then
+  printf 'Azure OpenAI configuration requires the official server OPAC transport and base URL.\n' >&2
+  exit 1
+fi
+if [[ ! "${opac_min_interval_ms}" =~ ^[0-9]+$ || ! "${opac_search_cache_ttl}" =~ ^[0-9]+$ || ! "${opac_detail_cache_ttl}" =~ ^[0-9]+$ ]]; then
+  printf 'OPAC interval and cache TTL settings must be non-negative integers.\n' >&2
+  exit 1
+fi
 
 subscription_args=()
 if [[ -n "${ORBIT_AZURE_SUBSCRIPTION:-}" ]]; then
@@ -67,6 +82,11 @@ az containerapp update \
     ORBIT_AGENT_BACKEND=azure_openai \
     ORBIT_WEB_SEARCH=azure \
     ORBIT_BOOK_DISCOVERY="${ORBIT_AZURE_BOOK_DISCOVERY_MODE}" \
+    ORBIT_OPAC_TRANSPORT="${opac_transport}" \
+    ORBIT_OPAC_BASE_URL="${opac_base_url}" \
+    ORBIT_OPAC_MIN_INTERVAL_MS="${opac_min_interval_ms}" \
+    ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS="${opac_search_cache_ttl}" \
+    ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS="${opac_detail_cache_ttl}" \
     ORBIT_OBSERVABILITY=off \
     "AZURE_OPENAI_ENDPOINT=${endpoint%/}" \
     "AZURE_OPENAI_MODEL=${ORBIT_AZURE_OPENAI_DEPLOYMENT}" \
@@ -81,9 +101,9 @@ readback="$(az containerapp show \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   "${subscription_args[@]}" \
-  --query "join('|',[properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_WEB_SEARCH'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OBSERVABILITY'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_MODEL'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_API_KEY'].secretRef | [0]])" \
-  --output tsv)"
-expected="azure_openai|azure|${ORBIT_AZURE_BOOK_DISCOVERY_MODE}|off|${ORBIT_AZURE_OPENAI_DEPLOYMENT}|${secret_name}"
+ --query "join('|',[properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_WEB_SEARCH'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_TRANSPORT'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_BASE_URL'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_MIN_INTERVAL_MS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OBSERVABILITY'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_MODEL'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_API_KEY'].secretRef | [0]])" \
+ --output tsv)"
+ expected="azure_openai|azure|${ORBIT_AZURE_BOOK_DISCOVERY_MODE}|${opac_transport}|${opac_base_url}|${opac_min_interval_ms}|${opac_search_cache_ttl}|${opac_detail_cache_ttl}|off|${ORBIT_AZURE_OPENAI_DEPLOYMENT}|${secret_name}"
 if [[ "${readback}" != "${expected}" ]]; then
   printf 'Container App model configuration verification failed.\n' >&2
   exit 1

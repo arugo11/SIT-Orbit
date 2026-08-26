@@ -1,0 +1,59 @@
+{
+  "completed_response": {
+    "status": "completed",
+    "message": {
+      "message_id": "message-roundtrip",
+      "content_markdown": "公開書誌を確認しました。",
+      "evidence": [
+        {
+          "evidence_id": "web-roundtrip-evidence",
+          "title": "公開書誌",
+          "source_type": "web",
+          "locator": "https://example.com/book",
+          "data_classification": "public"
+        }
+      ],
+      "related_books": []
+    },
+    "proposal": null,
+    "context_manifest": {
+      "schema_version": "v1",
+      "evidence": [
+        {
+          "evidence_id": "web-roundtrip-evidence",
+          "title": "公開書誌",
+          "source_type": "web",
+          "locator": "https://example.com/book",
+          "data_classification": "public"
+        }
+      ],
+      "library_records": [],
+      "related_books": []
+    }
+  },
+  "next_request": {
+    "conversation_id": "conversation-roundtrip",
+    "message": "次の質問",
+    "history": [
+      {
+        "role": "assistant",
+        "content": "公開書誌を確認しました。"
+      }
+    ],
+    "client_tools": [],
+    "context_manifest": {
+      "schema_version": "v1",
+      "evidence": [
+        {
+          "evidence_id": "web-roundtrip-evidence",
+          "title": "公開書誌",
+          "source_type": "web",
+          "locator": "https://example.com/book",
+          "data_classification": "public"
+        }
+      ],
+      "library_records": [],
+      "related_books": []
+    }
+  }
+}

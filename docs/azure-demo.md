@@ -90,6 +90,11 @@ Azure OpenAIの設定は、次の3つがすべて揃った場合だけ有効で�
 ORBIT_AGENT_BACKEND=azure_openai
 ORBIT_WEB_SEARCH=azure
 ORBIT_BOOK_DISCOVERY=multi_query
+ORBIT_OPAC_TRANSPORT=server
+ORBIT_OPAC_BASE_URL=https://library.shibaura-it.ac.jp
+ORBIT_OPAC_MIN_INTERVAL_MS=10000
+ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS=300
+ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS=30
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
 AZURE_OPENAI_MODEL=<deployment-name>
 AZURE_OPENAI_API_KEY=<secret>
@@ -140,7 +145,7 @@ scripts/azure/health.sh
 ```
 
 `configure-openai.sh`はAzure OpenAI accountとdeploymentが`Succeeded`であることを確認し、API keyをContainer Apps Secretへ登録する。
-その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_BOOK_DISCOVERY`、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。`deploy.sh`で配置したイメージのSHAと、公開OpenAPIの`ChatContextManifest.related_books`も確認してから、拡張機能でChatを送信する。
+その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_BOOK_DISCOVERY`、OPAC Gatewayのserver transport・公式base URL・間隔・cache TTL、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。`deploy.sh`で配置したイメージのSHAと、公開OpenAPIの`ChatContextManifest.related_books`、OPAC検索・詳細エンドポイントを確認してから、拡張機能でChatを送信する。Azure本番ではOPAC検索用Chromeタブを作成せず、上流の構造変更や通信障害を未所蔵へ変換しない。
 
 ### Chrome拡張機能から接続する
 

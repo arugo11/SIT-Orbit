@@ -106,6 +106,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/chat/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Chat Run */
+        get: operations["get_chat_run_v1_chat_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/chat/runs/{run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Chat Run Events */
+        get: operations["get_chat_run_events_v1_chat_runs__run_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/library/catalog/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Search Library Catalog */
+        post: operations["search_library_catalog_v1_library_catalog_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/library/items/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read Library Item */
+        post: operations["read_library_item_v1_library_items_read_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/chat/runs/{run_id}/tool-results": {
         parameters: {
             query?: never;
@@ -642,6 +710,19 @@ export interface components {
             /** Observed At */
             observed_at: string;
         };
+        /**
+         * ChatRunBackground
+         * @description Acknowledgement for a bounded in-memory background chat run.
+         */
+        ChatRunBackground: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "background";
+            /** Run Id */
+            run_id: string;
+        };
         /** ChatRunCompleted */
         ChatRunCompleted: {
             /**
@@ -651,6 +732,7 @@ export interface components {
             status: "completed";
             message: components["schemas"]["ChatAssistantMessage"];
             proposal?: components["schemas"]["ActionProposal"] | null;
+            context_manifest?: components["schemas"]["ChatContextManifest"] | null;
         };
         /** ChatRunRequest */
         ChatRunRequest: {
@@ -658,6 +740,12 @@ export interface components {
             conversation_id: string;
             /** Message */
             message: string;
+            /**
+             * Execution Mode
+             * @default sync
+             * @enum {string}
+             */
+            execution_mode: "sync" | "background";
             /** History */
             history?: components["schemas"]["ChatHistoryMessage"][];
             /** Client Tools */
@@ -831,6 +919,12 @@ export interface components {
             reason_code: string;
             /** Required Inputs */
             required_inputs?: ("pickup_campus" | "reason" | "receiver" | "payment" | "fee" | "page_range")[];
+            /**
+             * Verification Level
+             * @default none
+             * @enum {string}
+             */
+            verification_level: "none" | "entry_visible";
         };
         /**
          * LibraryActionOptionsResult
@@ -932,6 +1026,39 @@ export interface components {
             reason_code?: string | null;
         };
         /**
+         * LibraryCatalogSearchRequest
+         * @description Authenticated server-side OPAC search request.
+         */
+        LibraryCatalogSearchRequest: {
+            /** Query */
+            query: string;
+            /** Author */
+            author?: string | null;
+            /** Subject */
+            subject?: string | null;
+            /** Isbn */
+            isbn?: string | null;
+            /** Pub Year */
+            pub_year?: number | null;
+            /**
+             * Campus
+             * @default any
+             * @enum {string}
+             */
+            campus: "toyosu" | "omiya" | "any";
+            /**
+             * Format
+             * @default any
+             * @enum {string}
+             */
+            format: "book" | "journal" | "ebook" | "any";
+            /**
+             * Limit
+             * @default 10
+             */
+            limit: number;
+        };
+        /**
          * LibraryCatalogSearchResult
          * @description Bounded public results from the official OPAC search form.
          */
@@ -1023,6 +1150,22 @@ export interface components {
             due_date?: string | null;
             /** Reservation Count */
             reservation_count?: number | null;
+        };
+        /**
+         * LibraryItemReadRequest
+         * @description Authenticated server-side OPAC detail request.
+         */
+        LibraryItemReadRequest: {
+            /** Resource Ref */
+            resource_ref: string;
+            /**
+             * Presentation
+             * @default summary
+             * @enum {string}
+             */
+            presentation: "summary" | "location";
+            /** Records */
+            records?: components["schemas"]["ChatLibraryContextRecord"][];
         };
         /**
          * LibraryItemReadResult
@@ -1706,7 +1849,135 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChatRunCompleted"] | components["schemas"]["ChatRunToolRequired"];
+                    "application/json": components["schemas"]["ChatRunCompleted"] | components["schemas"]["ChatRunToolRequired"] | components["schemas"]["ChatRunBackground"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chat_run_v1_chat_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatRunCompleted"] | components["schemas"]["ChatRunToolRequired"] | components["schemas"]["ChatRunBackground"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chat_run_events_v1_chat_runs__run_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-sent progress events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_library_catalog_v1_library_catalog_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryCatalogSearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryCatalogSearchResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_library_item_v1_library_items_read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryItemReadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryItemReadResult"];
                 };
             };
             /** @description Validation Error */

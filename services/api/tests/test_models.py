@@ -45,6 +45,9 @@ def test_library_action_options_are_typed_and_personal_classified() -> None:
                     "reason_code": (
                         "available" if action == "open_online" else "not_available"
                     ),
+                    "verification_level": (
+                        "entry_visible" if action == "open_online" else "none"
+                    ),
                     "required_inputs": {
                         "reserve": ["pickup_campus"],
                         "intercampus_transfer": ["pickup_campus"],

@@ -29,6 +29,16 @@ import {
   LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
 } from "../connectors/library-discovery";
 import {
+  appendOpacDiagnosticEvent,
+  clearOpacDiagnosticEvents,
+  normalizeOpacDiagnosticQuery,
+  OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+  type OpacDiagnosticOperationKind,
+  type OpacDiagnosticPhase,
+  type OpacDiagnosticRouteKind,
+  readOpacDiagnosticEvents,
+} from "../connectors/opac-diagnostics";
+import {
   SYLLABUS_SEARCH_ORIGIN,
   searchOfficialSyllabus,
 } from "../connectors/syllabus-search";
@@ -107,6 +117,8 @@ import {
   isMyLibraryDisconnectMessage,
   isMyLibraryOpenMessage,
   isMyLibraryReadMessage,
+  isOpacDiagnosticsClearMessage,
+  isOpacDiagnosticsGetMessage,
   isOpenWorkspaceMessage,
   isPageContext,
   isPageContextUpdatedMessage,
@@ -159,9 +171,9 @@ const MOODLE_PERMISSION_PATTERN = `${MOODLE_ORIGIN}/*`;
 const MY_LIBRARY_PERMISSION_PATTERN = `${MY_LIBRARY_ORIGIN}/*`;
 const CAST_PERMISSION_PATTERN = `${CAST_ORIGIN}/*`;
 
-// The public record ID is retained only while the service worker is alive so
-// an opaque resource_ref can be resolved for the next item-read call. A
-// worker restart therefore fails closed instead of guessing a record URL.
+// The public record ID is retained only while the service worker is alive.
+// Context Manifest record URLs may re-establish the ref after a worker
+// restart, but only after exact origin/path and opaque-ref validation.
 const libraryRecordRefs = new Map<string, string>();
 const libraryRecordSnapshots = new Map<string, LibraryMaterializedRecord>();
 const libraryActionRefExpiry = new Map<string, number>();
@@ -212,6 +224,29 @@ function isLiveLibraryActionRef(resourceRef: string): boolean {
   return true;
 }
 
+function publicRecordIdFromRecordUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== "https:" ||
+      url.origin !== LIBRARY_OPAC_ORIGIN ||
+      !url.pathname.startsWith(LIBRARY_RECORD_PATH_PREFIX) ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      url.username !== "" ||
+      url.password !== ""
+    ) {
+      return null;
+    }
+    const encodedId = url.pathname.slice(LIBRARY_RECORD_PATH_PREFIX.length);
+    if (!encodedId || encodedId.includes("/")) return null;
+    const recordId = decodeURIComponent(encodedId);
+    return /^[^/?#\s]{1,200}$/u.test(recordId) ? recordId : null;
+  } catch {
+    return null;
+  }
+}
+
 function browserOrigin(
   value: string,
 ): { origin: string; pattern: string } | null {
@@ -247,7 +282,10 @@ function unavailableBrowser(reason_code: string): BrowserReadResponse {
   return { status: "unavailable", reason_code };
 }
 
-async function waitForTabReady(tabId: number): Promise<void> {
+async function waitForTabReady(
+  tabId: number,
+  timeoutMs = 8_000,
+): Promise<void> {
   try {
     const current = await chrome.tabs.get(tabId);
     const status = (current as chrome.tabs.Tab & { status?: string }).status;
@@ -272,7 +310,196 @@ async function waitForTabReady(tabId: number): Promise<void> {
       if (updatedTabId === tabId && changeInfo.status === "complete") finish();
     };
     chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(finish, 8000);
+    setTimeout(finish, timeoutMs);
+  });
+}
+
+const LIBRARY_NAVIGATION_TIMEOUT_MS = 15_000;
+const LIBRARY_NAVIGATION_POLL_MS = 100;
+
+type LibraryNavigationResult =
+  | { status: "ready" }
+  | { status: "unavailable"; reason_code: string };
+
+function sameNavigationUrl(left: string | undefined, right: string): boolean {
+  if (!left) return false;
+  try {
+    const actual = new URL(left);
+    const expected = new URL(right);
+    return (
+      actual.origin === expected.origin &&
+      actual.pathname === expected.pathname &&
+      actual.search === expected.search &&
+      actual.hash === expected.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function sameSearchNavigationUrl(
+  actualUrl: string | undefined,
+  expectedUrl: string,
+): boolean {
+  if (!actualUrl) return false;
+  try {
+    const actual = new URL(actualUrl);
+    const expected = new URL(expectedUrl);
+    if (
+      actual.origin !== expected.origin ||
+      decodeURIComponent(actual.pathname) !==
+        decodeURIComponent(expected.pathname) ||
+      actual.hash !== expected.hash
+    ) {
+      return false;
+    }
+    const entries = (url: URL): string[] =>
+      Array.from(url.searchParams.entries())
+        .map(([key, value]) => `${key}\u0000${value}`)
+        .sort();
+    const actualEntries = entries(actual);
+    const expectedEntries = entries(expected);
+    return (
+      actualEntries.length === expectedEntries.length &&
+      actualEntries.every((entry, index) => entry === expectedEntries[index])
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalLibrarySearchRecordRedirect(
+  actualUrl: string | undefined,
+): boolean {
+  if (!actualUrl) return false;
+  try {
+    const actual = new URL(actualUrl);
+    return (
+      actual.origin === LIBRARY_OPAC_ORIGIN &&
+      /^\/opc\/recordID\/catalog\.bib\/[A-Za-z0-9._-]{1,128}$/u.test(
+        actual.pathname,
+      ) &&
+      actual.searchParams.get("caller") === "xc-search" &&
+      Array.from(actual.searchParams.keys()).every(
+        (key) => key === "caller" || key === "hit",
+      ) &&
+      !actual.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function classifyLibraryNavigationUrl(
+  actualUrl: string | undefined,
+): OpacDiagnosticRouteKind {
+  if (!actualUrl) return "unknown";
+  try {
+    const url = new URL(actualUrl);
+    if (url.origin !== LIBRARY_OPAC_ORIGIN) return "unknown";
+    if (url.pathname.startsWith("/opc/xc/search/")) return "search_results";
+    if (url.pathname.startsWith("/opc/recordID/catalog.bib/")) {
+      return "single_record";
+    }
+    if (/login|selectLogin/iu.test(url.pathname)) return "login";
+    if (/error/iu.test(url.pathname)) return "error";
+    if (url.pathname === "/opc/" || url.pathname === "/opc") return "entry";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function isAllowedLibraryNavigationUrl(
+  actualUrl: string | undefined,
+  expectedUrl: string,
+  allowSearchRecordRedirect: boolean,
+): boolean {
+  return (
+    sameNavigationUrl(actualUrl, expectedUrl) ||
+    sameSearchNavigationUrl(actualUrl, expectedUrl) ||
+    (allowSearchRecordRedirect &&
+      isCanonicalLibrarySearchRecordRedirect(actualUrl))
+  );
+}
+
+async function waitForLibraryNavigation(
+  tabId: number,
+  expectedUrl: string,
+  timeoutReason: string,
+  mismatchReason: string,
+  initialUrl?: string,
+  allowSearchRecordRedirect = false,
+): Promise<LibraryNavigationResult> {
+  if (!expectedUrl.startsWith(`${LIBRARY_OPAC_ORIGIN}/`)) {
+    return { status: "unavailable", reason_code: "invalid_expected_url" };
+  }
+  return new Promise<LibraryNavigationResult>((resolve) => {
+    let settled = false;
+    let navigationObserved = false;
+    let baselineUrl = initialUrl;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let pollId: ReturnType<typeof setInterval> | undefined;
+    const finish = (result: LibraryNavigationResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (pollId !== undefined) clearInterval(pollId);
+      chrome.tabs.onUpdated.removeListener?.(listener);
+      resolve(result);
+    };
+    const inspect = async (updatedTab?: chrome.tabs.Tab): Promise<void> => {
+      let tab = updatedTab;
+      if (!tab) {
+        try {
+          tab = await chrome.tabs.get(tabId);
+        } catch {
+          return;
+        }
+      }
+      const currentUrl = tab.url;
+      if (!baselineUrl && currentUrl) {
+        baselineUrl = currentUrl;
+      } else if (
+        baselineUrl &&
+        currentUrl &&
+        !sameNavigationUrl(currentUrl, baselineUrl)
+      ) {
+        navigationObserved = true;
+      }
+      if (
+        isAllowedLibraryNavigationUrl(
+          currentUrl,
+          expectedUrl,
+          allowSearchRecordRedirect,
+        )
+      ) {
+        const status = (tab as chrome.tabs.Tab & { status?: string }).status;
+        if (status === "complete") finish({ status: "ready" });
+        return;
+      }
+      const status = (tab as chrome.tabs.Tab & { status?: string }).status;
+      if (navigationObserved && status === "complete") {
+        finish({ status: "unavailable", reason_code: mismatchReason });
+      }
+    };
+    const listener = (
+      updatedTabId: number,
+      changeInfo: { status?: string; url?: string },
+      updatedTab?: chrome.tabs.Tab,
+    ): void => {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.url) navigationObserved = true;
+      void inspect(updatedTab);
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    pollId = setInterval(() => {
+      void inspect();
+    }, LIBRARY_NAVIGATION_POLL_MS);
+    timeoutId = setTimeout(() => {
+      finish({ status: "unavailable", reason_code: timeoutReason });
+    }, LIBRARY_NAVIGATION_TIMEOUT_MS);
+    void inspect();
   });
 }
 
@@ -334,6 +561,7 @@ type LibraryActionPageProjection =
       holding_visible: boolean;
       official_viewer_visible: boolean;
       official_viewer_url: string | null;
+      reserve_entry_visible: boolean;
     }
   | { status: "reauth_required"; reason_code: string }
   | { status: "unavailable"; reason_code: string };
@@ -359,8 +587,12 @@ type LibraryActionPreviewEntry = {
   exact_origin: string;
   exact_path: string;
   state_fingerprint: string;
+  form_state_fingerprint?: string;
+  form_path?: string;
+  expected_title?: string;
+  tab_id?: number;
   created_at: number;
-  state: "pending" | "consumed";
+  state: "pending" | "submitting" | "consumed";
   official_url: string;
 };
 
@@ -368,6 +600,11 @@ const LIBRARY_PREVIEW_TTL_MS = 90_000;
 const libraryActionPreviews = new Map<string, LibraryActionPreviewEntry>();
 
 function clearLibraryActionPreviews(): void {
+  for (const preview of libraryActionPreviews.values()) {
+    if (preview.tab_id !== undefined) {
+      void chrome.tabs.remove(preview.tab_id).catch(() => undefined);
+    }
+  }
   libraryActionPreviews.clear();
 }
 
@@ -420,7 +657,11 @@ function submitLibraryCatalogSearchInPage(filters: {
   pub_year?: number | null;
   campus?: "toyosu" | "omiya" | "any";
   format?: "book" | "journal" | "ebook" | "any";
-}): { status: "submitted" | "unavailable"; reason_code?: string } {
+}): {
+  status: "submitted" | "unavailable";
+  expected_url?: string;
+  reason_code?: string;
+} {
   try {
     const isVisible = (element: Element): boolean => {
       for (
@@ -612,8 +853,9 @@ function submitLibraryCatalogSearchInPage(filters: {
         );
       }
     }
-    location.href = searchUrl.toString();
-    return { status: "submitted" };
+    const expected_url = searchUrl.toString();
+    location.href = expected_url;
+    return { status: "submitted", expected_url };
   } catch {
     return { status: "unavailable", reason_code: "search_submit_failed" };
   }
@@ -832,10 +1074,16 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
             candidate.reservation_count === holding.reservation_count,
         ) === index,
     );
+  const leafAvailabilityCells = (root: ParentNode): Element[] =>
+    Array.from(
+      root.querySelectorAll('td.xc-availability, td[id^="xc-availability-"]'),
+    ).filter(
+      (cell) =>
+        !cell.querySelector('td.xc-availability, td[id^="xc-availability-"]') &&
+        visibleText(cell, 500).length > 0,
+    );
   const parseSearchHoldings = (row: Element): LibraryRawHolding[] => {
-    const availabilityCells = Array.from(
-      row.querySelectorAll("td.xc-availability"),
-    ).filter((cell) => visibleText(cell, 500).length > 0);
+    const availabilityCells = leafAvailabilityCells(row);
     const candidates =
       availabilityCells.length > 0
         ? availabilityCells
@@ -852,9 +1100,7 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     );
   };
   const parseDocumentHoldings = (): LibraryRawHolding[] => {
-    const availabilityCells = Array.from(
-      document.querySelectorAll("td.xc-availability"),
-    ).filter((cell) => visibleText(cell, 500).length > 0);
+    const availabilityCells = leafAvailabilityCells(document);
     const candidates =
       availabilityCells.length > 0
         ? availabilityCells
@@ -881,14 +1127,21 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     const titleElement = Array.from(row.querySelectorAll(".xc-title")).find(
       isVisible,
     );
+    const titleLink = titleElement
+      ? Array.from(titleElement.querySelectorAll<HTMLAnchorElement>("a[href]"))
+          .filter(isVisible)
+          .at(0)
+      : undefined;
     const renderedTitle =
-      titleElement && isVisible(titleElement)
-        ? visibleText(titleElement, 300)
-        : "";
+      titleLink && isVisible(titleLink)
+        ? visibleText(titleLink, 300)
+        : titleElement && isVisible(titleElement)
+          ? visibleText(titleElement, 300)
+          : "";
     const title = clean(
       renderedTitle || link.getAttribute("title") || visibleText(link, 300),
       300,
-    );
+    ).replace(/^\d+[.)]\s*/u, "");
     if (!title) return null;
     const text = visibleText(row, 2_000);
     const visibleValues = (selector: string, limit: number): string[] =>
@@ -943,13 +1196,13 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     ) {
       return { status: "unavailable", reason_code: "unexpected_opac_result" };
     }
+    if (document.readyState && document.readyState !== "complete") {
+      return { status: "loading" };
+    }
     // OPAC loads availability through an AJAX fragment after the document
-    // itself is ready.  Do not use a page-wide `loading` text/selector here:
-    // the live page contains unrelated loading labels in hidden widgets and
-    // that made a valid detail page look perpetually pending.  Only an
-    // explicitly busy page or a visible availability cell with its loader
-    // placeholder keeps the bounded poll alive.
-    const loadingElement = document.querySelector('[aria-busy="true"]');
+    // itself is ready.  Only a visible availability cell with its loader
+    // placeholder keeps the bounded poll alive.  Page-wide aria-busy flags
+    // also cover unrelated widgets and can make a valid record look pending.
     const pendingAvailability = Array.from(
       document.querySelectorAll<HTMLElement>(
         'td.xc-availability, td[id^="xc-availability-"], [data-availability]',
@@ -958,31 +1211,47 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
       .filter(isVisible)
       .some((cell) => {
         const text = visibleText(cell, 200).toLowerCase();
+        if (!text) return true;
         return (
           cell.querySelector('img[alt*="loading" i], .ajax-loader') !== null ||
           /^(?:loading[.…]*|読み込み中)$/iu.test(text)
         );
       });
-    if ((loadingElement && isVisible(loadingElement)) || pendingAvailability) {
+    if (pendingAvailability) {
       return { status: "loading" };
     }
     const resultRows = Array.from(
       document.querySelectorAll<Element>(".result-row"),
     ).filter(isVisible);
-    const searchRecords = resultRows
-      .map((row) => {
-        const canonicalLink = Array.from(
-          row.querySelectorAll<HTMLAnchorElement>(
-            '.xc-title a[href], a[href*="/opc/recordID/catalog.bib/"]',
-          ),
-        ).find(
-          (link) =>
-            recordIdFromUrl(link.href) !== null &&
-            !/cover\s+image|表紙/iu.test(link.getAttribute("title") ?? ""),
-        );
-        return canonicalLink ? parseRecord(canonicalLink, row) : null;
-      })
-      .filter((item): item is LibraryRawRecord => item !== null);
+    const canonicalResultLink = (row: Element): HTMLAnchorElement | null =>
+      Array.from(
+        row.querySelectorAll<HTMLAnchorElement>(
+          '.xc-title a[href], a[href*="/opc/recordID/catalog.bib/"]',
+        ),
+      ).find(
+        (link) =>
+          recordIdFromUrl(link.href) !== null &&
+          !/cover\s+image|表紙/iu.test(link.getAttribute("title") ?? ""),
+      ) ?? null;
+    const canonicalLinks = resultRows.map(canonicalResultLink);
+    if (resultRows.length > 0 && canonicalLinks.some((link) => link === null)) {
+      return {
+        status: "unavailable",
+        reason_code: "result_structure_not_found",
+      };
+    }
+    const parsedSearchRecords = canonicalLinks.map((link, index) =>
+      link ? parseRecord(link, resultRows[index]) : null,
+    );
+    if (parsedSearchRecords.some((record) => record === null)) {
+      return {
+        status: "unavailable",
+        reason_code: "result_structure_not_found",
+      };
+    }
+    const searchRecords = parsedSearchRecords.filter(
+      (item): item is LibraryRawRecord => item !== null,
+    );
     const fallbackRecords =
       resultRows.length > 0
         ? []
@@ -1517,6 +1786,11 @@ function readLibraryActionOptionsInPage(): LibraryActionPageProjection {
         return false;
       }
     });
+    const reserveEntryVisible = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        "button, a, input[type='button'], input[type='submit']",
+      ),
+    ).some((element) => visible(element) && /予約|取寄/iu.test(text(element)));
     return {
       status: "known",
       holding_visible,
@@ -1524,6 +1798,7 @@ function readLibraryActionOptionsInPage(): LibraryActionPageProjection {
       official_viewer_url: viewerLink
         ? new URL(viewerLink.href, current.href).href
         : null,
+      reserve_entry_visible: reserveEntryVisible,
     };
   } catch {
     return { status: "unavailable", reason_code: "action_options_read_failed" };
@@ -1873,6 +2148,7 @@ function publicLibraryActionOptions(
         ? "available"
         : "holding_not_visible",
       required_inputs: [],
+      verification_level: projection.holding_visible ? "entry_visible" : "none",
     },
     {
       action_type: "open_online",
@@ -1881,42 +2157,55 @@ function publicLibraryActionOptions(
         ? "available"
         : "official_viewer_not_visible",
       required_inputs: [],
+      verification_level: projection.official_viewer_visible
+        ? "entry_visible"
+        : "none",
     },
     {
       action_type: "reserve",
-      available: false,
-      reason_code: unavailableWriteReason,
+      available: projection.reserve_entry_visible,
+      reason_code: projection.reserve_entry_visible
+        ? "available"
+        : unavailableWriteReason,
       required_inputs: ["pickup_campus"],
+      verification_level: projection.reserve_entry_visible
+        ? "entry_visible"
+        : "none",
     },
     {
       action_type: "intercampus_transfer",
       available: false,
       reason_code: unavailableWriteReason,
       required_inputs: ["pickup_campus"],
+      verification_level: "none",
     },
     {
       action_type: "renew",
       available: false,
       reason_code: "not_personal_loan",
       required_inputs: [],
+      verification_level: "none",
     },
     {
       action_type: "purchase_request",
       available: false,
       reason_code: unavailableWriteReason,
       required_inputs: ["reason"],
+      verification_level: "none",
     },
     {
       action_type: "ill_loan",
       available: false,
       reason_code: unavailableWriteReason,
       required_inputs: ["receiver", "payment", "fee"],
+      verification_level: "none",
     },
     {
       action_type: "ill_copy",
       available: false,
       reason_code: unavailableWriteReason,
       required_inputs: ["receiver", "payment", "fee", "page_range"],
+      verification_level: "none",
     },
   ];
   return {
@@ -1959,6 +2248,7 @@ function myLibraryActionOptions(
       available: false,
       reason_code: "holding_not_visible",
       required_inputs: [],
+      verification_level: "none",
     },
     {
       action_type: "open_online",
@@ -1968,42 +2258,52 @@ function myLibraryActionOptions(
           ? "available"
           : "official_viewer_not_visible",
       required_inputs: [],
+      verification_level:
+        projection.target_found && projection.viewer_visible
+          ? "entry_visible"
+          : "none",
     },
     {
       action_type: "reserve",
       available: false,
       reason_code: targetReason,
       required_inputs: ["pickup_campus"],
+      verification_level: "none",
     },
     {
       action_type: "intercampus_transfer",
       available: false,
       reason_code: targetReason,
       required_inputs: ["pickup_campus"],
+      verification_level: "none",
     },
     {
       action_type: "renew",
       available: false,
       reason_code: renewable ? "write_form_not_verified" : renewReason,
       required_inputs: [],
+      verification_level: "none",
     },
     {
       action_type: "purchase_request",
       available: false,
       reason_code: "write_form_not_verified",
       required_inputs: ["reason"],
+      verification_level: "none",
     },
     {
       action_type: "ill_loan",
       available: false,
       reason_code: "write_form_not_verified",
       required_inputs: ["receiver", "payment", "fee"],
+      verification_level: "none",
     },
     {
       action_type: "ill_copy",
       available: false,
       reason_code: "write_form_not_verified",
       required_inputs: ["receiver", "payment", "fee", "page_range"],
+      verification_level: "none",
     },
   ];
   return {
@@ -2104,7 +2404,18 @@ async function readLibraryCatalogPage(
   mode: "search" | "record" | "browse",
   expectedRecordId?: string,
 ): Promise<LibraryPageProjection> {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  const deadline = Date.now() + LIBRARY_NAVIGATION_TIMEOUT_MS;
+  let lastProjection: LibraryPageProjection = {
+    status: "loading",
+  };
+  const transientReasons = new Set([
+    "projection_missing",
+    "projection_failed",
+    "record_structure_not_found",
+    "result_structure_not_found",
+    "catalog_projection_failed",
+  ]);
+  while (Date.now() < deadline) {
     try {
       const [injected] = await chrome.scripting.executeScript({
         target: { tabId },
@@ -2112,34 +2423,80 @@ async function readLibraryCatalogPage(
         func: readLibraryCatalogSearchInPage,
       });
       const value = injected?.result as LibraryPageProjection | undefined;
-      if (!value) return libraryUnavailable("projection_missing");
-      if (value.status === "known" && mode === "record" && expectedRecordId) {
+      if (!value) {
+        lastProjection = libraryUnavailable("projection_missing");
+      } else if (
+        value.status === "known" &&
+        mode === "record" &&
+        expectedRecordId
+      ) {
         const matching = value.records.filter(
           (record) => record.record_id === expectedRecordId,
         );
-        if (!matching.length) {
-          return libraryUnavailable("record_structure_not_found");
+        if (matching.length > 0 && matching[0]) {
+          return { status: "known", records: [matching[0]] };
         }
-        const current = matching[0];
-        if (!current) return libraryUnavailable("record_structure_not_found");
-        return { status: "known", records: [current] };
+        lastProjection = libraryUnavailable("record_structure_not_found");
+      } else if (value.status === "known") {
+        return value;
+      } else if (
+        value.status === "unavailable" &&
+        !transientReasons.has(value.reason_code)
+      ) {
+        return value;
+      } else {
+        lastProjection = value;
       }
-      if (value.status !== "loading") return value;
     } catch {
-      return libraryUnavailable("projection_failed");
+      lastProjection = libraryUnavailable("projection_failed");
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(LIBRARY_NAVIGATION_POLL_MS, remaining)),
+    );
   }
+  if (lastProjection.status === "unavailable") return lastProjection;
   return libraryUnavailable("availability_loading_timeout");
 }
 
-async function createLibraryTab(url: string): Promise<number | null> {
+async function createLibraryTab(
+  url: string,
+  expectedUrl?: string,
+  failure?: { reason_code?: string },
+): Promise<number | null> {
+  let tabId: number | undefined;
   try {
     const tab = await chrome.tabs.create({ url, active: false });
-    if (tab.id === undefined) return null;
-    await waitForTabReady(tab.id);
+    if (tab.id === undefined) {
+      if (failure) failure.reason_code = "tab_create_failed";
+      return null;
+    }
+    tabId = tab.id;
+    if (expectedUrl) {
+      const navigation = await waitForLibraryNavigation(
+        tab.id,
+        expectedUrl,
+        "record_navigation_timeout",
+        "record_navigation_mismatch",
+        tab.url,
+      );
+      if (navigation.status !== "ready") {
+        if (failure) failure.reason_code = navigation.reason_code;
+        await chrome.tabs.remove(tab.id).catch(() => undefined);
+        return null;
+      }
+    } else {
+      await waitForTabReady(tab.id, LIBRARY_NAVIGATION_TIMEOUT_MS);
+    }
     return tab.id;
   } catch {
+    if (failure && !failure.reason_code) {
+      failure.reason_code = "tab_create_failed";
+    }
+    if (tabId !== undefined) {
+      await chrome.tabs.remove(tabId).catch(() => undefined);
+    }
     return null;
   }
 }
@@ -2147,12 +2504,56 @@ async function createLibraryTab(url: string): Promise<number | null> {
 async function handleLibraryCatalogSearch(
   message: LibraryCatalogSearchMessage,
 ): Promise<LibraryCatalogSearchResponse> {
+  const operationId = crypto.randomUUID();
+  const query = normalizeOpacDiagnosticQuery(message.query);
+  const startedAt = Date.now();
+  const log = (
+    phase: OpacDiagnosticPhase,
+    options: {
+      routeKind?: OpacDiagnosticRouteKind | null;
+      resultCount?: number | null;
+      status?: "running" | "known" | "unavailable";
+      reasonCode?: string | null;
+    } = {},
+  ): void => {
+    void appendOpacDiagnosticEvent({
+      schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+      occurred_at: new Date().toISOString(),
+      operation_id: operationId,
+      query,
+      phase,
+      route_kind: options.routeKind ?? null,
+      result_count: options.resultCount ?? null,
+      duration_ms:
+        phase === "search_completed" || phase === "search_failed"
+          ? Date.now() - startedAt
+          : null,
+      status: options.status ?? "running",
+      reason_code: options.reasonCode ?? null,
+    });
+  };
+  const unavailable = (
+    reasonCode: string,
+    routeKind: OpacDiagnosticRouteKind | null = null,
+  ): LibraryCatalogSearchResponse => {
+    log("search_failed", {
+      routeKind,
+      status: "unavailable",
+      reasonCode,
+    });
+    return libraryUnavailable(reasonCode);
+  };
+  log("search_started");
   if (
     !(await hasBrowserPermission(
       LIBRARY_OPAC_PERMISSION_PATTERN,
       LIBRARY_OPAC_ORIGIN,
     ))
   ) {
+    log("search_failed", {
+      status: "unavailable",
+      reasonCode: "permission_required",
+    });
     return {
       status: "permission_required",
       origin: LIBRARY_OPAC_ORIGIN,
@@ -2160,8 +2561,9 @@ async function handleLibraryCatalogSearch(
     };
   }
   const tabId = await createLibraryTab(LIBRARY_OPAC_ENTRY_URL);
-  if (tabId === null) return libraryUnavailable("entry_tab_create_failed");
+  if (tabId === null) return unavailable("entry_tab_create_failed");
   try {
+    log("entry_ready", { routeKind: "entry" });
     const submitted = await chrome.scripting.executeScript({
       target: { tabId },
       world: "ISOLATED",
@@ -2178,27 +2580,77 @@ async function handleLibraryCatalogSearch(
         },
       ],
     });
-    if (submitted[0]?.result?.status !== "submitted") {
-      return libraryUnavailable(
-        submitted[0]?.result?.reason_code ?? "search_submit_failed",
-      );
+    const submission = submitted[0]?.result as
+      | {
+          status?: string;
+          expected_url?: string;
+          reason_code?: string;
+        }
+      | undefined;
+    if (submission?.status !== "submitted") {
+      return unavailable(submission?.reason_code ?? "search_submit_failed");
     }
-    await waitForTabReady(tabId);
+    log("search_submitted");
+    if (submission.expected_url) {
+      if (
+        !submission.expected_url.startsWith(
+          `${LIBRARY_OPAC_ORIGIN}/opc/xc/search/`,
+        )
+      ) {
+        return unavailable("search_navigation_mismatch");
+      }
+      const navigation = await waitForLibraryNavigation(
+        tabId,
+        submission.expected_url,
+        "search_navigation_timeout",
+        "search_navigation_mismatch",
+        undefined,
+        true,
+      );
+      if (navigation.status !== "ready") {
+        const failedTab = await chrome.tabs.get(tabId).catch(() => undefined);
+        return unavailable(
+          navigation.reason_code,
+          classifyLibraryNavigationUrl(failedTab?.url),
+        );
+      }
+    } else {
+      // Compatibility for older test/fixture callers.  The current page
+      // submission always returns expected_url, so production never falls
+      // back to the stale-tab readiness check.
+      await waitForTabReady(tabId, LIBRARY_NAVIGATION_TIMEOUT_MS);
+    }
+    const navigatedTab = await chrome.tabs.get(tabId).catch(() => undefined);
+    log("navigation_ready", {
+      routeKind: classifyLibraryNavigationUrl(navigatedTab?.url),
+    });
+    log("projection_started", {
+      routeKind: classifyLibraryNavigationUrl(navigatedTab?.url),
+    });
     const projection = await readLibraryCatalogPage(tabId, "search");
     if (projection.status !== "known") {
-      return libraryUnavailable(
+      return unavailable(
         projection.status === "unavailable"
           ? projection.reason_code
           : "availability_loading_timeout",
+        classifyLibraryNavigationUrl(navigatedTab?.url),
       );
     }
     const materialized = projection.records.map(materializeLibraryRecord);
     if (materialized.some((item) => item === null)) {
-      return libraryUnavailable("record_projection_invalid");
+      return unavailable(
+        "record_projection_invalid",
+        classifyLibraryNavigationUrl(navigatedTab?.url),
+      );
     }
     const items = materialized
       .filter((item): item is LibraryMaterializedRecord => item !== null)
       .slice(0, message.limit ?? 10);
+    log("search_completed", {
+      routeKind: classifyLibraryNavigationUrl(navigatedTab?.url),
+      resultCount: items.length,
+      status: "known",
+    });
     return {
       status: "known",
       projection: {
@@ -2210,7 +2662,7 @@ async function handleLibraryCatalogSearch(
       },
     };
   } catch {
-    return libraryUnavailable("catalog_search_failed");
+    return unavailable("catalog_search_failed");
   } finally {
     await chrome.tabs.remove(tabId).catch(() => undefined);
   }
@@ -2273,10 +2725,14 @@ async function handleLibraryItemRead(
   if (!recordId) return libraryUnavailable("unknown_resource_ref");
   let tabId: number | null = null;
   try {
-    tabId = await createLibraryTab(
-      `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`,
-    );
-    if (tabId === null) return libraryUnavailable("record_tab_create_failed");
+    const recordUrl = `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`;
+    const tabFailure: { reason_code?: string } = {};
+    tabId = await createLibraryTab(recordUrl, recordUrl, tabFailure);
+    if (tabId === null) {
+      return libraryUnavailable(
+        tabFailure.reason_code ?? "record_tab_create_failed",
+      );
+    }
     const projection = await readLibraryCatalogPage(tabId, "record", recordId);
     if (projection.status !== "known") {
       return libraryUnavailable(
@@ -2321,9 +2777,13 @@ async function readPublicLibraryActionSurface(
   recordId: string,
 ): Promise<PublicLibraryActionSurface> {
   const officialUrl = `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`;
-  const tabId = await createLibraryTab(officialUrl);
+  const tabFailure: { reason_code?: string } = {};
+  const tabId = await createLibraryTab(officialUrl, officialUrl, tabFailure);
   if (tabId === null) {
-    return { status: "unavailable", reason_code: "record_tab_create_failed" };
+    return {
+      status: "unavailable",
+      reason_code: tabFailure.reason_code ?? "record_tab_create_failed",
+    };
   }
   try {
     const page = await readLibraryCatalogPage(tabId, "record", recordId);
@@ -2372,6 +2832,595 @@ async function readPublicLibraryActionSurface(
   }
 }
 
+type LibraryReservationEntryProjection =
+  | {
+      status: "clicked";
+      origin: string;
+      path: string;
+    }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
+type LibraryReservationFormProjection =
+  | {
+      status: "ready";
+      origin: string;
+      path: string;
+      form_path: string;
+      state_fingerprint: string;
+      pickup_campus: "omiya" | "toyosu";
+    }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string };
+
+type LibraryReservationConfirmationProjection =
+  | { status: "verified" }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "pending" }
+  | { status: "unavailable"; reason_code: string };
+
+/**
+ * Locate and click the visible, official reservation entry. The function
+ * intentionally returns only route metadata; form values and page markup stay
+ * inside the service-worker-owned tab.
+ */
+function openLibraryReservationEntryInPage(
+  expectedTitle: string,
+): LibraryReservationEntryProjection {
+  try {
+    const current = new URL(location.href);
+    const clean = (value: string | null | undefined): string =>
+      (value ?? "").replace(/\s+/gu, " ").trim();
+    const visible = (element: Element): boolean => {
+      for (
+        let node: Element | null = element;
+        node;
+        node = node.parentElement
+      ) {
+        if (
+          node.hasAttribute("hidden") ||
+          node.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        const style = (node.getAttribute("style") ?? "")
+          .replace(/\s+/gu, "")
+          .toLowerCase();
+        if (
+          /(?:^|;)display:none(?:;|$)/u.test(style) ||
+          /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(style) ||
+          /(?:^|;)opacity:0(?:;|$)/u.test(style)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+    if (current.origin !== "https://library.shibaura-it.ac.jp") {
+      return { status: "unavailable", reason_code: "unexpected_origin" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const title = clean(expectedTitle);
+    if (!title || !clean(document.body?.textContent).includes(title)) {
+      return { status: "unavailable", reason_code: "target_title_not_visible" };
+    }
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        "button, a, input[type='button'], input[type='submit']",
+      ),
+    );
+    const entry = candidates.find((element) => {
+      if (!visible(element)) return false;
+      const label = clean(
+        element instanceof HTMLInputElement
+          ? element.value
+          : element.textContent,
+      );
+      if (!/予約|取寄|取り寄せ/u.test(label)) return false;
+      let row: Element | null = element;
+      for (let depth = 0; depth < 5 && row; depth += 1) {
+        const rowText = clean(row.textContent);
+        if (rowText.includes(title)) return true;
+        row = row.parentElement;
+      }
+      return true;
+    });
+    if (!entry) {
+      return {
+        status: "unavailable",
+        reason_code: "reservation_entry_not_visible",
+      };
+    }
+    entry.click();
+    return {
+      status: "clicked",
+      origin: current.origin,
+      path: current.pathname,
+    };
+  } catch {
+    return {
+      status: "unavailable",
+      reason_code: "reservation_entry_read_failed",
+    };
+  }
+}
+
+function readLibraryReservationFormInPage(
+  expectedTitle: string,
+  pickupCampus: "omiya" | "toyosu",
+): LibraryReservationFormProjection {
+  try {
+    const current = new URL(location.href);
+    const clean = (value: string | null | undefined): string =>
+      (value ?? "").replace(/\s+/gu, " ").trim();
+    const visible = (element: Element): boolean => {
+      for (
+        let node: Element | null = element;
+        node;
+        node = node.parentElement
+      ) {
+        if (
+          node.hasAttribute("hidden") ||
+          node.getAttribute("aria-hidden") === "true"
+        ) {
+          return false;
+        }
+        const style = (node.getAttribute("style") ?? "")
+          .replace(/\s+/gu, "")
+          .toLowerCase();
+        if (
+          /(?:^|;)display:none(?:;|$)/u.test(style) ||
+          /(?:^|;)visibility:(?:hidden|collapse)(?:;|$)/u.test(style) ||
+          /(?:^|;)opacity:0(?:;|$)/u.test(style)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+    if (current.origin !== "https://library.shibaura-it.ac.jp") {
+      return { status: "unavailable", reason_code: "unexpected_origin" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const title = clean(expectedTitle);
+    const bodyText = clean(document.body?.textContent);
+    if (!title || !bodyText.includes(title)) {
+      return { status: "unavailable", reason_code: "target_title_not_visible" };
+    }
+    const form = Array.from(
+      document.querySelectorAll<HTMLFormElement>("form"),
+    ).find(
+      (candidate) =>
+        visible(candidate) && clean(candidate.textContent).includes(title),
+    );
+    if (!form)
+      return { status: "unavailable", reason_code: "reservation_form_missing" };
+    const method = (form.getAttribute("method") ?? "get").toLowerCase();
+    const action = form.getAttribute("action") ?? "";
+    const formUrl = new URL(action || current.pathname, current.href);
+    if (
+      method !== "post" ||
+      formUrl.origin !== current.origin ||
+      formUrl.search !== "" ||
+      formUrl.hash !== "" ||
+      !formUrl.pathname.startsWith("/portal/")
+    ) {
+      return {
+        status: "unavailable",
+        reason_code: "reservation_form_not_verified",
+      };
+    }
+    const csrf = Array.from(
+      form.querySelectorAll<HTMLInputElement>("input[type='hidden']"),
+    ).some((input) =>
+      /csrf|token|authenticity|nonce|ワンタイム|確認/iu.test(
+        `${input.name} ${input.id}`,
+      ),
+    );
+    if (!csrf) return { status: "unavailable", reason_code: "csrf_missing" };
+    const campusText =
+      pickupCampus === "omiya" ? /大宮|omiya/iu : /豊洲|toyosu/iu;
+    const campusControl = Array.from(
+      form.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        "select, input[type='radio'], input[type='checkbox']",
+      ),
+    ).find((control) => {
+      if (!visible(control) || control.disabled) return false;
+      const optionText =
+        control instanceof HTMLSelectElement
+          ? Array.from(control.options)
+              .map((option) => `${option.value} ${option.textContent ?? ""}`)
+              .join(" ")
+          : `${control.value} ${control.name} ${control.id} ${control.parentElement?.textContent ?? ""}`;
+      return campusText.test(optionText);
+    });
+    if (!campusControl) {
+      return {
+        status: "unavailable",
+        reason_code: "pickup_campus_not_visible",
+      };
+    }
+    const submit = Array.from(
+      form.querySelectorAll<HTMLElement>(
+        "button, input[type='submit'], input[type='button']",
+      ),
+    ).some((element) => {
+      if (!visible(element) || (element as HTMLButtonElement).disabled)
+        return false;
+      const label = clean(
+        element instanceof HTMLInputElement
+          ? element.value
+          : element.textContent,
+      );
+      return /予約|取寄|申込|確認|送信/iu.test(label);
+    });
+    if (!submit)
+      return { status: "unavailable", reason_code: "submit_control_missing" };
+    const fingerprint = JSON.stringify({
+      title,
+      method,
+      path: formUrl.pathname,
+      controls: Array.from(
+        form.querySelectorAll<HTMLElement>("input,select,button"),
+      )
+        .filter(visible)
+        .map((element) => ({
+          tag: element.tagName.toLowerCase(),
+          name: element.getAttribute("name") ?? "",
+          type: element.getAttribute("type") ?? "",
+          label: clean(element.textContent).slice(0, 80),
+        }))
+        .slice(0, 100),
+    });
+    return {
+      status: "ready",
+      origin: current.origin,
+      path: current.pathname,
+      form_path: formUrl.pathname,
+      state_fingerprint: fingerprint,
+      pickup_campus: pickupCampus,
+    };
+  } catch {
+    return {
+      status: "unavailable",
+      reason_code: "reservation_form_read_failed",
+    };
+  }
+}
+
+function submitLibraryReservationFormInPage(
+  expectedTitle: string,
+  pickupCampus: "omiya" | "toyosu",
+):
+  | { status: "submitted" }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string } {
+  try {
+    const current = new URL(location.href);
+    if (current.origin !== "https://library.shibaura-it.jp") {
+      return { status: "unavailable", reason_code: "unexpected_origin" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const clean = (value: string | null | undefined): string =>
+      (value ?? "").replace(/\s+/gu, " ").trim();
+    const title = clean(expectedTitle);
+    const form = Array.from(
+      document.querySelectorAll<HTMLFormElement>("form"),
+    ).find((candidate) => clean(candidate.textContent).includes(title));
+    if (!form)
+      return { status: "unavailable", reason_code: "reservation_form_missing" };
+    const method = (form.getAttribute("method") ?? "get").toLowerCase();
+    const action = form.getAttribute("action") ?? "";
+    const formUrl = new URL(action || current.pathname, current.href);
+    if (
+      method !== "post" ||
+      formUrl.origin !== current.origin ||
+      formUrl.search !== "" ||
+      formUrl.hash !== ""
+    ) {
+      return {
+        status: "unavailable",
+        reason_code: "reservation_form_not_verified",
+      };
+    }
+    const csrf = Array.from(
+      form.querySelectorAll<HTMLInputElement>("input[type='hidden']"),
+    ).some((input) =>
+      /csrf|token|authenticity|nonce|ワンタイム|確認/iu.test(
+        `${input.name} ${input.id}`,
+      ),
+    );
+    if (!csrf) return { status: "unavailable", reason_code: "csrf_missing" };
+    const campusText =
+      pickupCampus === "omiya" ? /大宮|omiya/iu : /豊洲|toyosu/iu;
+    const controls = Array.from(
+      form.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        "select, input[type='radio'], input[type='checkbox']",
+      ),
+    ).filter((control) => {
+      const text =
+        control instanceof HTMLSelectElement
+          ? Array.from(control.options)
+              .map((option) => `${option.value} ${option.textContent ?? ""}`)
+              .join(" ")
+          : `${control.value} ${control.name} ${control.id} ${control.parentElement?.textContent ?? ""}`;
+      return campusText.test(text) && !control.disabled;
+    });
+    const control = controls[0];
+    if (!control)
+      return {
+        status: "unavailable",
+        reason_code: "pickup_campus_not_visible",
+      };
+    if (control instanceof HTMLSelectElement) {
+      const option = Array.from(control.options).find((candidate) =>
+        campusText.test(`${candidate.value} ${candidate.textContent ?? ""}`),
+      );
+      if (!option)
+        return {
+          status: "unavailable",
+          reason_code: "pickup_campus_not_visible",
+        };
+      control.value = option.value;
+    } else {
+      control.checked = true;
+    }
+    control.dispatchEvent(new Event("input", { bubbles: true }));
+    control.dispatchEvent(new Event("change", { bubbles: true }));
+    const submit = Array.from(
+      form.querySelectorAll<HTMLElement>(
+        "button, input[type='submit'], input[type='button']",
+      ),
+    ).find((element) => {
+      if ((element as HTMLButtonElement).disabled) return false;
+      const label = clean(
+        element instanceof HTMLInputElement
+          ? element.value
+          : element.textContent,
+      );
+      return /予約|取寄|申込|確認|送信/iu.test(label);
+    });
+    if (!submit)
+      return { status: "unavailable", reason_code: "submit_control_missing" };
+    form.requestSubmit(submit as HTMLButtonElement);
+    return { status: "submitted" };
+  } catch {
+    return { status: "unavailable", reason_code: "reservation_submit_failed" };
+  }
+}
+
+function readLibraryReservationConfirmationInPage(
+  expectedTitle: string,
+): LibraryReservationConfirmationProjection {
+  try {
+    const current = new URL(location.href);
+    if (current.origin !== "https://library.shibaura-it.ac.jp") {
+      return { status: "unavailable", reason_code: "unexpected_origin" };
+    }
+    if (document.querySelector('input[type="password"]')) {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    const clean = (value: string | null | undefined): string =>
+      (value ?? "").replace(/\s+/gu, " ").trim();
+    const text = clean(document.body?.textContent);
+    if (!text.includes(clean(expectedTitle))) return { status: "pending" };
+    if (
+      /予約|取寄|受付|完了/iu.test(text) &&
+      /完了|受付|予約済|取寄せ/iu.test(text)
+    ) {
+      return { status: "verified" };
+    }
+    return { status: "pending" };
+  } catch {
+    return {
+      status: "unavailable",
+      reason_code: "reservation_confirmation_read_failed",
+    };
+  }
+}
+
+type PublicLibraryReservationPreparation =
+  | {
+      status: "known";
+      item: LibraryMaterializedRecord;
+      tab_id: number;
+      form: Extract<LibraryReservationFormProjection, { status: "ready" }>;
+      official_url: string;
+    }
+  | { status: "reauth_required"; reason_code: string; tab_id?: number }
+  | { status: "unavailable"; reason_code: string };
+
+async function waitForLibraryReservationForm(
+  tabId: number,
+  title: string,
+  pickupCampus: "omiya" | "toyosu",
+): Promise<
+  | {
+      status: "known";
+      form: Extract<LibraryReservationFormProjection, { status: "ready" }>;
+    }
+  | { status: "reauth_required"; reason_code: string }
+  | { status: "unavailable"; reason_code: string }
+> {
+  const deadline = Date.now() + LIBRARY_NAVIGATION_TIMEOUT_MS;
+  let lastReason = "reservation_form_timeout";
+  while (Date.now() < deadline) {
+    const current = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (!current) return { status: "unavailable", reason_code: "tab_closed" };
+    const route = classifyLibraryNavigationUrl(current.url);
+    if (route === "login") {
+      return { status: "reauth_required", reason_code: "login_required" };
+    }
+    if (current.url && !current.url.startsWith(`${LIBRARY_OPAC_ORIGIN}/`)) {
+      return {
+        status: "unavailable",
+        reason_code: "reservation_navigation_mismatch",
+      };
+    }
+    if (current.status === "complete") {
+      try {
+        const [injected] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "ISOLATED",
+          func: readLibraryReservationFormInPage,
+          args: [title, pickupCampus],
+        });
+        const projection = injected?.result as
+          | LibraryReservationFormProjection
+          | undefined;
+        if (projection?.status === "ready") {
+          return { status: "known", form: projection };
+        }
+        if (projection?.status === "reauth_required") {
+          return {
+            status: "reauth_required",
+            reason_code: projection.reason_code,
+          };
+        }
+        if (projection?.status === "unavailable")
+          lastReason = projection.reason_code;
+      } catch {
+        lastReason = "reservation_form_read_failed";
+      }
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, LIBRARY_NAVIGATION_POLL_MS),
+    );
+  }
+  return { status: "unavailable", reason_code: lastReason };
+}
+
+async function preparePublicLibraryReservationPreview(
+  resourceRef: string,
+  recordId: string,
+  pickupCampus: "omiya" | "toyosu",
+): Promise<PublicLibraryReservationPreparation> {
+  const officialUrl = `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`;
+  const tabFailure: { reason_code?: string } = {};
+  const tabId = await createLibraryTab(officialUrl, officialUrl, tabFailure);
+  if (tabId === null) {
+    return {
+      status: "unavailable",
+      reason_code: tabFailure.reason_code ?? "record_tab_create_failed",
+    };
+  }
+  let keepTab = false;
+  try {
+    const page = await readLibraryCatalogPage(tabId, "record", recordId);
+    if (page.status !== "known") {
+      return {
+        status: "unavailable",
+        reason_code:
+          page.status === "unavailable"
+            ? page.reason_code
+            : "availability_loading_timeout",
+      };
+    }
+    const raw = page.records[0];
+    const item = raw ? materializeLibraryRecord(raw) : null;
+    if (!item || item.resource_ref !== resourceRef) {
+      return { status: "unavailable", reason_code: "resource_ref_mismatch" };
+    }
+    const [optionsResult] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      func: readLibraryActionOptionsInPage,
+    });
+    const options = optionsResult?.result as
+      | LibraryActionPageProjection
+      | undefined;
+    if (!options || options.status === "unavailable") {
+      return {
+        status: "unavailable",
+        reason_code:
+          options?.reason_code ?? "action_options_projection_invalid",
+      };
+    }
+    if (options.status === "reauth_required") {
+      keepTab = true;
+      await chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
+      return {
+        status: "reauth_required",
+        reason_code: options.reason_code,
+        tab_id: tabId,
+      };
+    }
+    if (!options.reserve_entry_visible) {
+      return {
+        status: "unavailable",
+        reason_code: "reservation_entry_not_visible",
+      };
+    }
+    const [clickedResult] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      func: openLibraryReservationEntryInPage,
+      args: [item.title],
+    });
+    const clicked = clickedResult?.result as
+      | LibraryReservationEntryProjection
+      | undefined;
+    if (!clicked || clicked.status === "unavailable") {
+      return {
+        status: "unavailable",
+        reason_code: clicked?.reason_code ?? "reservation_entry_read_failed",
+      };
+    }
+    if (clicked.status === "reauth_required") {
+      keepTab = true;
+      await chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
+      return {
+        status: "reauth_required",
+        reason_code: clicked.reason_code,
+        tab_id: tabId,
+      };
+    }
+    const form = await waitForLibraryReservationForm(
+      tabId,
+      item.title,
+      pickupCampus,
+    );
+    if (form.status === "reauth_required") {
+      keepTab = true;
+      await chrome.tabs.update(tabId, { active: true }).catch(() => undefined);
+      return {
+        status: "reauth_required",
+        reason_code: form.reason_code,
+        tab_id: tabId,
+      };
+    }
+    if (form.status !== "known") return form;
+    const current = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (!current?.url)
+      return { status: "unavailable", reason_code: "reservation_url_missing" };
+    const currentUrl = new URL(current.url);
+    if (currentUrl.origin !== LIBRARY_OPAC_ORIGIN || currentUrl.hash !== "") {
+      return {
+        status: "unavailable",
+        reason_code: "reservation_navigation_mismatch",
+      };
+    }
+    keepTab = true;
+    return {
+      status: "known",
+      item,
+      tab_id: tabId,
+      form: form.form,
+      official_url: `${currentUrl.origin}${currentUrl.pathname}`,
+    };
+  } catch {
+    return { status: "unavailable", reason_code: "reservation_preview_failed" };
+  } finally {
+    if (!keepTab) await chrome.tabs.remove(tabId).catch(() => undefined);
+  }
+}
+
 function emptyLibraryActionPreviewOfficial(): LibraryActionPreviewOfficial {
   return {
     title: null,
@@ -2384,6 +3433,32 @@ function emptyLibraryActionPreviewOfficial(): LibraryActionPreviewOfficial {
     fee: null,
     page_range: null,
   };
+}
+
+function logLibraryActionDiagnostic(
+  operationId: string,
+  phase: OpacDiagnosticPhase,
+  status: "running" | "known" | "unavailable",
+  startedAt: number,
+  reasonCode: string | null = null,
+): void {
+  const operationKind: OpacDiagnosticOperationKind = "library_action";
+  void appendOpacDiagnosticEvent({
+    schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+    occurred_at: new Date().toISOString(),
+    operation_id: operationId,
+    operation_kind: operationKind,
+    query: "library action",
+    phase,
+    route_kind: null,
+    result_count: null,
+    duration_ms:
+      status === "known" || status === "unavailable"
+        ? Date.now() - startedAt
+        : null,
+    status,
+    reason_code: reasonCode,
+  });
 }
 
 async function readMyLibraryWriteSurface(
@@ -2442,10 +3517,39 @@ async function readMyLibraryWriteSurface(
 async function handleLibraryActionPreview(
   message: LibraryActionPreviewMessage,
 ): Promise<LibraryActionPreviewResponse> {
-  if (!isLiveLibraryActionRef(message.operation.resource_ref)) {
+  const diagnosticOperationId = crypto.randomUUID();
+  const diagnosticStartedAt = Date.now();
+  logLibraryActionDiagnostic(
+    diagnosticOperationId,
+    "entry_opened",
+    "running",
+    diagnosticStartedAt,
+  );
+  const operationResourceRef = message.operation.resource_ref;
+  const mappedRecordIdBeforeExpiry =
+    libraryRecordRefs.get(operationResourceRef);
+  const manifestRecordId =
+    message.record_url === undefined
+      ? null
+      : publicRecordIdFromRecordUrl(message.record_url);
+  if (message.record_url !== undefined && !manifestRecordId) {
+    return { status: "unavailable", reason_code: "invalid_record_url" };
+  }
+  if (
+    manifestRecordId &&
+    mappedRecordIdBeforeExpiry &&
+    mappedRecordIdBeforeExpiry !== manifestRecordId
+  ) {
+    return { status: "unavailable", reason_code: "resource_ref_mismatch" };
+  }
+  if (!isLiveLibraryActionRef(operationResourceRef) && manifestRecordId) {
+    libraryRecordRefs.set(operationResourceRef, manifestRecordId);
+    rememberLibraryActionRef(operationResourceRef);
+  }
+  if (!isLiveLibraryActionRef(operationResourceRef)) {
     return { status: "unavailable", reason_code: "unknown_resource_ref" };
   }
-  const publicRecordId = libraryRecordRefs.get(message.operation.resource_ref);
+  const publicRecordId = libraryRecordRefs.get(operationResourceRef);
   const personalTarget = myLibraryResourceRefs.get(
     message.operation.resource_ref,
   );
@@ -2503,6 +3607,95 @@ async function handleLibraryActionPreview(
   }
   if (!publicRecordId) {
     return { status: "unavailable", reason_code: "unknown_resource_ref" };
+  }
+  if (message.operation.action_type === "reserve") {
+    if (
+      !message.inputs ||
+      !isLibraryActionEditableInputs("reserve", message.inputs) ||
+      message.inputs.action_type !== "reserve"
+    ) {
+      return { status: "unavailable", reason_code: "pickup_campus_required" };
+    }
+    const preparation = await preparePublicLibraryReservationPreview(
+      message.operation.resource_ref,
+      publicRecordId,
+      message.inputs.values.pickup_campus,
+    );
+    if (preparation.status === "reauth_required") {
+      logLibraryActionDiagnostic(
+        diagnosticOperationId,
+        "entry_opened",
+        "unavailable",
+        diagnosticStartedAt,
+        preparation.reason_code,
+      );
+      return {
+        status: "reauth_required",
+        reason_code: preparation.reason_code,
+      };
+    }
+    if (preparation.status === "unavailable") {
+      logLibraryActionDiagnostic(
+        diagnosticOperationId,
+        "entry_opened",
+        "unavailable",
+        diagnosticStartedAt,
+        preparation.reason_code,
+      );
+      return { status: "unavailable", reason_code: preparation.reason_code };
+    }
+    logLibraryActionDiagnostic(
+      diagnosticOperationId,
+      "form_verified",
+      "known",
+      diagnosticStartedAt,
+    );
+    const previewId = newLibraryPreviewId();
+    const fingerprint = libraryActionStateFingerprint({
+      operation: "reserve",
+      title: preparation.item.title,
+      holdings: fingerprintableLibraryHoldings(preparation.item.holdings),
+    });
+    libraryActionPreviews.set(previewId, {
+      tool_call_id: message.tool_call_id,
+      operation: message.operation,
+      inputs: message.inputs,
+      resource_ref: message.operation.resource_ref,
+      action_type: "reserve",
+      exact_origin: preparation.form.origin,
+      exact_path: preparation.form.form_path,
+      state_fingerprint: fingerprint,
+      form_state_fingerprint: preparation.form.state_fingerprint,
+      form_path: preparation.form.form_path,
+      expected_title: preparation.item.title,
+      tab_id: preparation.tab_id,
+      created_at: Date.now(),
+      state: "pending",
+      official_url: preparation.official_url,
+    });
+    return {
+      status: "ready",
+      preview_id: previewId,
+      action_type: "reserve",
+      official: {
+        ...emptyLibraryActionPreviewOfficial(),
+        title: preparation.item.title,
+        pickup_campus: preparation.form.pickup_campus,
+        holdings: preparation.item.holdings
+          .filter(
+            (holding) =>
+              holding.campus !== "unknown" &&
+              Boolean(holding.location) &&
+              Boolean(holding.call_number),
+          )
+          .map((holding) => ({
+            campus: holding.campus,
+            location: holding.location,
+            call_number: holding.call_number,
+          })),
+      },
+      inputs: message.inputs,
+    };
   }
   const surface = await readPublicLibraryActionSurface(
     message.operation.resource_ref,
@@ -2599,10 +3792,18 @@ async function handleLibraryActionPreview(
 async function handleLibraryActionSubmit(
   message: LibraryActionSubmitMessage,
 ): Promise<LibraryActionSubmitResponse> {
+  const diagnosticOperationId = crypto.randomUUID();
+  const diagnosticStartedAt = Date.now();
   const preview = libraryActionPreviews.get(message.preview_id);
   if (!preview || Date.now() - preview.created_at > LIBRARY_PREVIEW_TTL_MS) {
+    if (preview?.tab_id !== undefined) {
+      await chrome.tabs.remove(preview.tab_id).catch(() => undefined);
+    }
     libraryActionPreviews.delete(message.preview_id);
     return { status: "expired", reason_code: "preview_expired" };
+  }
+  if (preview.state === "submitting") {
+    return { status: "unavailable", reason_code: "reservation_in_progress" };
   }
   if (preview.state !== "pending") {
     return { status: "expired", reason_code: "preview_already_consumed" };
@@ -2629,9 +3830,198 @@ async function handleLibraryActionSubmit(
   } else if (message.confirmation_label !== "この内容で送信") {
     return { status: "unavailable", reason_code: "wrong_confirmation_label" };
   }
-  // No live write surface has a verified submit/read-back path yet. A preview
-  // for a write is never created, so this branch is an explicit guard against
-  // forged or stale preview IDs and cannot submit a provider form.
+  if (preview.action_type === "reserve") {
+    const tabId = preview.tab_id;
+    if (
+      tabId === undefined ||
+      !preview.form_path ||
+      !preview.form_state_fingerprint
+    ) {
+      return { status: "unavailable", reason_code: "write_form_not_verified" };
+    }
+    if (
+      !isLibraryActionEditableInputs("reserve", message.inputs) ||
+      message.inputs.action_type !== "reserve"
+    ) {
+      return { status: "unavailable", reason_code: "invalid_editable_inputs" };
+    }
+    preview.state = "submitting";
+    let submitted = false;
+    try {
+      const current = await chrome.tabs.get(tabId).catch(() => undefined);
+      if (!current?.url) {
+        preview.state = "pending";
+        return {
+          status: "unavailable",
+          reason_code: "reservation_tab_missing",
+        };
+      }
+      const currentUrl = new URL(current.url);
+      if (
+        currentUrl.origin !== preview.exact_origin ||
+        currentUrl.hash !== ""
+      ) {
+        preview.state = "pending";
+        return { status: "unavailable", reason_code: "official_state_changed" };
+      }
+      if (currentUrl.pathname !== preview.form_path) {
+        preview.state = "pending";
+        return { status: "unavailable", reason_code: "official_state_changed" };
+      }
+      const [validated] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        func: readLibraryReservationFormInPage,
+        args: [
+          preview.expected_title ?? "",
+          message.inputs.values.pickup_campus,
+        ],
+      });
+      const form = validated?.result as
+        | LibraryReservationFormProjection
+        | undefined;
+      if (!form || form.status === "reauth_required") {
+        preview.state = "pending";
+        return {
+          status: "unavailable",
+          reason_code: form?.reason_code ?? "login_required",
+        };
+      }
+      if (
+        form.status !== "ready" ||
+        form.origin !== preview.exact_origin ||
+        form.form_path !== preview.form_path ||
+        form.state_fingerprint !== preview.form_state_fingerprint ||
+        form.pickup_campus !== message.inputs.values.pickup_campus
+      ) {
+        preview.state = "pending";
+        return { status: "unavailable", reason_code: "official_state_changed" };
+      }
+      const [submittedResult] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: "ISOLATED",
+        func: submitLibraryReservationFormInPage,
+        args: [
+          preview.expected_title ?? "",
+          message.inputs.values.pickup_campus,
+        ],
+      });
+      const submission = submittedResult?.result as
+        | { status: "submitted" }
+        | { status: "reauth_required"; reason_code: string }
+        | { status: "unavailable"; reason_code: string }
+        | undefined;
+      if (submission?.status !== "submitted") {
+        preview.state = "pending";
+        return {
+          status: "unavailable",
+          reason_code: submission?.reason_code ?? "reservation_submit_failed",
+        };
+      }
+      submitted = true;
+      preview.state = "consumed";
+      logLibraryActionDiagnostic(
+        diagnosticOperationId,
+        "submitted",
+        "known",
+        diagnosticStartedAt,
+      );
+      const confirmationDeadline = Date.now() + LIBRARY_NAVIGATION_TIMEOUT_MS;
+      let confirmation = false;
+      while (Date.now() < confirmationDeadline) {
+        const [read] = await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "ISOLATED",
+          func: readLibraryReservationConfirmationInPage,
+          args: [preview.expected_title ?? ""],
+        });
+        const value = read?.result as
+          | LibraryReservationConfirmationProjection
+          | undefined;
+        if (value?.status === "reauth_required") {
+          return { status: "unavailable", reason_code: value.reason_code };
+        }
+        if (value?.status === "verified") {
+          confirmation = true;
+          break;
+        }
+        if (value?.status === "unavailable") {
+          return { status: "unavailable", reason_code: value.reason_code };
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, LIBRARY_NAVIGATION_POLL_MS),
+        );
+      }
+      if (!confirmation) {
+        return {
+          status: "unavailable",
+          reason_code: "reservation_confirmation_unverified",
+        };
+      }
+      const readback = await readMyLibrarySection("reservations");
+      if (readback.status === "reauth_required") {
+        return {
+          status: "unavailable",
+          reason_code: "reservation_readback_login_required",
+        };
+      }
+      if (readback.status !== "known" || !readback.reservations) {
+        return {
+          status: "unavailable",
+          reason_code: "reservation_readback_failed",
+        };
+      }
+      const normalizeTitle = (value: string): string =>
+        value
+          .normalize("NFKC")
+          .replace(/[\s　「」『』【】()（）:：.,，。！？!?]/gu, "")
+          .toLowerCase();
+      const expectedTitle = normalizeTitle(preview.expected_title ?? "");
+      const matched = readback.reservations.some((reservation) => {
+        const actualTitle = normalizeTitle(reservation.title);
+        return (
+          actualTitle.length > 0 &&
+          (actualTitle === expectedTitle ||
+            actualTitle.includes(expectedTitle) ||
+            expectedTitle.includes(actualTitle))
+        );
+      });
+      if (!matched) {
+        logLibraryActionDiagnostic(
+          diagnosticOperationId,
+          "readback_verified",
+          "unavailable",
+          diagnosticStartedAt,
+          "reservation_readback_failed",
+        );
+        return {
+          status: "unavailable",
+          reason_code: "reservation_readback_failed",
+        };
+      }
+      logLibraryActionDiagnostic(
+        diagnosticOperationId,
+        "readback_verified",
+        "known",
+        diagnosticStartedAt,
+      );
+      return { status: "verified", action_type: "reserve" };
+    } catch {
+      if (!submitted) preview.state = "pending";
+      return {
+        status: "unavailable",
+        reason_code: submitted
+          ? "reservation_readback_failed"
+          : "reservation_submit_failed",
+      };
+    } finally {
+      if (preview.state === "consumed" || submitted) {
+        await chrome.tabs.remove(tabId).catch(() => undefined);
+      }
+    }
+  }
+  // Every write other than reserve remains fail-closed. A preview for those
+  // actions is never created, so this guard also rejects forged or stale IDs.
   if (!["visit_shelf", "open_online"].includes(preview.action_type)) {
     return { status: "unavailable", reason_code: "write_form_not_verified" };
   }
@@ -2712,6 +4102,14 @@ async function handleLibraryActionSubmit(
 async function handleLibraryActionOptions(
   message: LibraryActionOptionsMessage,
 ): Promise<LibraryActionOptionsResponse> {
+  const diagnosticOperationId = crypto.randomUUID();
+  const diagnosticStartedAt = Date.now();
+  logLibraryActionDiagnostic(
+    diagnosticOperationId,
+    "action_options",
+    "running",
+    diagnosticStartedAt,
+  );
   if (!isLibraryResourceRef(message.resource_ref)) {
     return {
       status: "known",
@@ -2720,6 +4118,39 @@ async function handleLibraryActionOptions(
         "invalid_resource_ref",
       ),
     };
+  }
+  const mappedRecordIdBeforeExpiry = libraryRecordRefs.get(
+    message.resource_ref,
+  );
+  const manifestRecordId =
+    message.record_url === undefined
+      ? null
+      : publicRecordIdFromRecordUrl(message.record_url);
+  if (message.record_url !== undefined && !manifestRecordId) {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "invalid_record_url",
+      ),
+    };
+  }
+  if (
+    manifestRecordId &&
+    mappedRecordIdBeforeExpiry &&
+    mappedRecordIdBeforeExpiry !== manifestRecordId
+  ) {
+    return {
+      status: "known",
+      projection: unavailableLibraryActionOptions(
+        message.resource_ref,
+        "resource_ref_mismatch",
+      ),
+    };
+  }
+  if (!isLiveLibraryActionRef(message.resource_ref) && manifestRecordId) {
+    libraryRecordRefs.set(message.resource_ref, manifestRecordId);
+    rememberLibraryActionRef(message.resource_ref);
   }
   if (!isLiveLibraryActionRef(message.resource_ref)) {
     return {
@@ -2763,17 +4194,21 @@ async function handleLibraryActionOptions(
         pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
       };
     }
+    const publicRecordUrl = `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(
+      publicRecordId,
+    )}`;
+    const tabFailure: { reason_code?: string } = {};
     const tabId = await createLibraryTab(
-      `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(
-        publicRecordId,
-      )}`,
+      publicRecordUrl,
+      publicRecordUrl,
+      tabFailure,
     );
     if (tabId === null) {
       return {
         status: "known",
         projection: unavailableLibraryActionOptions(
           message.resource_ref,
-          "record_tab_create_failed",
+          tabFailure.reason_code ?? "record_tab_create_failed",
         ),
       };
     }
@@ -2801,7 +4236,17 @@ async function handleLibraryActionOptions(
           reason_code: projection.reason_code,
         };
       }
-      return publicLibraryActionOptions(message.resource_ref, projection);
+      const result = publicLibraryActionOptions(
+        message.resource_ref,
+        projection,
+      );
+      logLibraryActionDiagnostic(
+        diagnosticOperationId,
+        "action_options",
+        "known",
+        diagnosticStartedAt,
+      );
+      return result;
     } catch {
       return {
         status: "known",
@@ -5243,6 +6688,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleLibraryCatalogSearch(message).then(sendResponse);
+    return true;
+  }
+
+  if (isOpacDiagnosticsGetMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({
+        schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+        events: [],
+      });
+      return true;
+    }
+    void readOpacDiagnosticEvents()
+      .then((events) =>
+        sendResponse({
+          schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+          events,
+        }),
+      )
+      .catch(() =>
+        sendResponse({
+          schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+          events: [],
+        }),
+      );
+    return true;
+  }
+
+  if (isOpacDiagnosticsClearMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    void clearOpacDiagnosticEvents()
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 

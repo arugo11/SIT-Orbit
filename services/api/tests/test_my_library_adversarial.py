@@ -269,7 +269,7 @@ def test_fixture_chat_response_rejects_scoped_result_without_page_storage(monkey
             },
         )
     assert second.status_code == 422
-    assert "requires the explicitly consented Azure Agent" in second.text
+    assert second.json() == {"detail": {"reason_code": "chat_contract_invalid"}}
     for marker in FORBIDDEN_VALUES:
         assert marker not in second.text
 
@@ -528,7 +528,7 @@ def test_chat_resume_rejects_scoped_result_before_fixture_page_validation(monkey
         )
 
     assert resumed.status_code == 422
-    assert "requires the explicitly consented Azure Agent" in resumed.text
+    assert resumed.json() == {"detail": {"reason_code": "chat_contract_invalid"}}
 
 
 def test_chat_resume_rejects_legacy_aggregates_for_a_scoped_request(monkeypatch) -> None:
@@ -566,7 +566,7 @@ def test_chat_resume_rejects_legacy_aggregates_for_a_scoped_request(monkeypatch)
         )
 
     assert resumed.status_code == 422
-    assert "cannot satisfy a scoped tool request" in resumed.text
+    assert resumed.json() == {"detail": {"reason_code": "agent_output_invalid"}}
 
 
 @pytest.mark.parametrize(

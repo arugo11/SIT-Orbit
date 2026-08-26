@@ -1,6 +1,7 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentApiClient, ChatRunResponse } from "../api/client";
+import { AgentApiError } from "../api/client";
 import {
   buttonByName,
   type MountedSidePanel,
@@ -198,6 +199,38 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(permissionsRequest).not.toHaveBeenCalled();
   });
 
+  it("does not retain failed OPAC progress rows in the transcript", async () => {
+    const apiClient = createApiClient(
+      toolRequired("library_catalog_search", { query: "対象書籍" }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    mounted.chromeRuntime.sendMessage.mockImplementation(
+      (_request: unknown, callback?: (response: unknown) => void) => {
+        callback?.({
+          status: "unavailable",
+          reason_code: "search_navigation_timeout",
+        });
+      },
+    );
+
+    await sendMessage(mounted, "対象書籍は大学にある？");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes("確認しました。"),
+    );
+
+    expect(
+      mounted.document.querySelectorAll(".chat-message-tool"),
+    ).toHaveLength(0);
+  });
+
   it("renders public OPAC holding location and loan status in the tool timeline", async () => {
     const apiClient = createApiClient(
       toolRequired("library_catalog_search", { query: "ロボット" }),
@@ -280,6 +313,7 @@ describe("ChatPanel read-only execution boundary", () => {
     const apiClient = createApiClient(
       toolRequired("library_item_read", {
         resource_ref: item.resource_ref,
+        presentation: "location",
       }),
     );
     mounted = await mountSidePanel(() => (
@@ -339,7 +373,9 @@ describe("ChatPanel read-only execution boundary", () => {
     );
     const request = apiClient.startChat.mock.calls[0]?.[0] as {
       client_tools?: Array<{ name: string }>;
+      execution_mode?: string;
     };
+    expect(request.execution_mode).toBeUndefined();
     expect(request.client_tools?.map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         "library_catalog_search",
@@ -349,6 +385,63 @@ describe("ChatPanel read-only execution boundary", () => {
       ]),
     );
     expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates evidence mirrored by message and context manifest before the next turn", async () => {
+    const mirroredEvidence = {
+      evidence_id: "web-search-v1-mirrored",
+      title: "公開書誌",
+      source_type: "web" as const,
+      locator: "https://books.example/llm",
+      data_classification: "public" as const,
+    };
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "mirrored-completed",
+        content_markdown: "最初の回答です。",
+        evidence: [mirroredEvidence],
+      },
+      proposal: null,
+      context_manifest: {
+        schema_version: "v1",
+        evidence: [mirroredEvidence],
+        library_records: [],
+        related_books: [],
+      },
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "LLMの本を教えて");
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes("最初の回答です。"),
+    );
+    apiClient.startChat.mockResolvedValueOnce({
+      status: "completed",
+      message: {
+        message_id: "mirrored-follow-up",
+        content_markdown: "続きの回答です。",
+        evidence: [],
+      },
+      proposal: null,
+    });
+
+    await sendMessage(mounted, "その本は大学にある？");
+    await waitFor(() => apiClient.startChat.mock.calls.length === 2);
+    const secondRequest = apiClient.startChat.mock.calls[1]?.[0] as {
+      context_manifest?: { evidence?: Array<{ evidence_id: string }> };
+    };
+    expect(secondRequest.context_manifest?.evidence).toHaveLength(1);
+    expect(secondRequest.context_manifest?.evidence?.[0]?.evidence_id).toBe(
+      mirroredEvidence.evidence_id,
+    );
   });
 
   it("renders compact related-book cards and reuses them in the next turn", async () => {
@@ -487,6 +580,39 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(mounted.document.body.textContent).not.toContain("許可を確認");
   });
 
+  it("does not describe a read-only 422 as a reservation failure", async () => {
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "unused-422",
+        content_markdown: "unused",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    apiClient.startChat.mockRejectedValue(
+      new AgentApiError("Agent API returned HTTP 422.", 422, {
+        detail: "validation failed",
+      }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "LLMに関するおすすめの本はある？");
+    await waitFor(
+      () => mounted?.document.querySelector(".chat-retry-button") !== null,
+    );
+
+    expect(mounted.document.body.textContent).toContain("接続仕様");
+    expect(mounted.document.body.textContent).not.toContain("予約や送信");
+  });
+
   it("shows a concise Agent progress status while the request is pending", async () => {
     let resolveStart: ((value: ChatRunResponse) => void) | undefined;
     const apiClient = createApiClient({
@@ -517,7 +643,7 @@ describe("ChatPanel read-only execution boundary", () => {
     await waitFor(() =>
       (
         mounted?.document.querySelector(".chat-progress")?.textContent ?? ""
-      ).includes("Agentに質問を送信中"),
+      ).includes("Agentが回答方針を検討中"),
     );
     expect(
       mounted.document.querySelector(".chat-progress")?.textContent,

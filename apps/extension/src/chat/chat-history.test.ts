@@ -1,15 +1,23 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type {
+  ChatRunResponse,
   EvidenceLink,
   LibraryBibliographicRecord,
   RelatedBookCandidate,
 } from "../api/client";
 import {
+  ContextEvidenceConflictError,
+  loadConversation,
+  mergeCompletedChatContext,
   mergeConversationEvidence,
   mergeLibraryContext,
   mergeRelatedBookContext,
   newConversation,
+  saveConversation,
   toChatContextManifest,
+  toChatHistory,
 } from "./chat-history";
 
 const evidence: EvidenceLink = {
@@ -58,6 +66,42 @@ const relatedBook: RelatedBookCandidate = {
 };
 
 describe("chat context manifest", () => {
+  it("round-trips the shared completed-response fixture without duplicate evidence", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            "../../../../packages/api-client/fixtures/chat_context_roundtrip.json",
+            import.meta.url,
+          ),
+        ),
+        "utf8",
+      ),
+    ) as {
+      completed_response: Extract<ChatRunResponse, { status: "completed" }>;
+      next_request: {
+        context_manifest: { evidence: EvidenceLink[] };
+      };
+    };
+    const response = fixture.completed_response;
+    const merged = mergeCompletedChatContext(
+      newConversation(),
+      response.context_manifest,
+      {
+        evidence: response.message.evidence,
+        relatedBooks: response.message.related_books,
+      },
+    );
+    const manifest = toChatContextManifest(merged.contextManifest);
+    const manifestEvidence = manifest.evidence ?? [];
+    expect(manifestEvidence).toEqual(
+      fixture.next_request.context_manifest.evidence,
+    );
+    expect(new Set(manifestEvidence.map((item) => item.evidence_id)).size).toBe(
+      manifestEvidence.length,
+    );
+  });
+
   it("keeps a public OPAC record across turns and adds completion evidence", () => {
     let conversation = newConversation();
     conversation = mergeLibraryContext(conversation, [record]);
@@ -110,5 +154,70 @@ describe("chat context manifest", () => {
       },
     ]);
     expect(conversation.contextManifest.related_books).toHaveLength(1);
+  });
+  it("deduplicates mirrored completion evidence in stable order", () => {
+    const conversation = newConversation();
+    const assistant = {
+      evidence: [evidence],
+      relatedBooks: [],
+    };
+    const merged = mergeCompletedChatContext(
+      conversation,
+      {
+        schema_version: "v1",
+        evidence: [evidence],
+        library_records: [],
+        related_books: [],
+      },
+      assistant,
+    );
+    expect(merged.contextManifest.evidence).toEqual([evidence]);
+    expect(toChatContextManifest(merged.contextManifest).evidence).toHaveLength(
+      1,
+    );
+  });
+
+  it("repairs duplicate evidence retained in an older assistant message", async () => {
+    const conversation = newConversation();
+    await saveConversation({
+      ...conversation,
+      messages: [
+        {
+          id: "assistant-legacy",
+          role: "assistant",
+          content: "参照しました。",
+          evidence: [evidence, { ...evidence }],
+        },
+      ],
+    });
+    const loaded = await loadConversation(conversation.conversationId);
+    expect(loaded?.messages[0]?.evidence).toEqual([evidence]);
+  });
+
+  it("fails closed when mirrored evidence metadata conflicts", () => {
+    expect(() =>
+      mergeCompletedChatContext(
+        newConversation(),
+        {
+          schema_version: "v1",
+          evidence: [{ ...evidence, title: "別の書誌" }],
+          library_records: [],
+          related_books: [],
+        },
+        { evidence: [evidence], relatedBooks: [] },
+      ),
+    ).toThrow(ContextEvidenceConflictError);
+  });
+
+  it("accepts a twelve-thousand-character assistant history entry", () => {
+    const history = toChatHistory([
+      {
+        id: "assistant-long",
+        role: "assistant",
+        content: "x".repeat(12_000),
+      },
+    ]);
+    expect(history).toHaveLength(1);
+    expect(history[0]?.content).toHaveLength(12_000);
   });
 });

@@ -51,6 +51,7 @@ from orbit_api.models import (
     ScombzReadResult,
     ScopedMyLibraryReadResult,
 )
+from orbit_api.models.agent import ChatToolName
 from pydantic_ai import Agent, DeferredToolRequests, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -66,9 +67,18 @@ class StubChatBackend:
         message: str,
         history: list[ChatHistoryMessage],
         context: list[EvidenceLink] | None = None,
+        library_context=None,
+        related_book_context=None,
         advertised_tools: set[str] | None = None,
     ) -> ChatAgentExecution:
-        del message, history, context, advertised_tools
+        del (
+            message,
+            history,
+            context,
+            library_context,
+            related_book_context,
+            advertised_tools,
+        )
         return ChatAgentExecution(
             deferred=DeferredChatRun(
                 messages=[],
@@ -120,6 +130,12 @@ def scoped_chat_result() -> ScopedMyLibraryReadResult:
 
 
 def test_chat_request_limits_history() -> None:
+    accepted = ChatRunRequest(
+        conversation_id="conversation-long-history",
+        message="質問",
+        history=[ChatHistoryMessage(role="assistant", content="x" * 12000)],
+    )
+    assert len(accepted.history[0].content) == 12000
     with pytest.raises(ValueError, match="64000"):
         ChatRunRequest(
             conversation_id="conversation-1",
@@ -129,6 +145,34 @@ def test_chat_request_limits_history() -> None:
             ]
             * 9,
         )
+
+
+def test_chat_request_accepts_all_supported_client_tools() -> None:
+    tool_names: list[ChatToolName] = [
+        "scombz_page_summary",
+        "scombz_read",
+        "google_calendar_availability",
+        "syllabus_search",
+        "browser_read_url",
+        "sitrus_read",
+        "moodle_read",
+        "my_library_read",
+        "cast_read",
+        "cast_alumni_read",
+        "library_catalog_search",
+        "library_item_read",
+        "library_catalog_browse",
+        "library_discovery_search",
+        "library_action_options",
+    ]
+
+    request = ChatRunRequest(
+        conversation_id="conversation-all-tools",
+        message="質問",
+        client_tools=[ChatClientTool(name=name, version=1) for name in tool_names],
+    )
+
+    assert len(request.client_tools) == len(tool_names)
 
 
 def test_fixture_chat_route_returns_completed_message(monkeypatch) -> None:
@@ -151,6 +195,38 @@ def test_fixture_chat_route_returns_completed_message(monkeypatch) -> None:
     assert "今日の学習を相談したい" in payload["message"]["content_markdown"]
     assert "接続設定" not in payload["message"]["content_markdown"]
     assert "許可を確認" not in payload["message"]["content_markdown"]
+
+
+def test_fixture_background_chat_exposes_bounded_progress_sse(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        started = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-background",
+                "message": "今日は何を進めればいい？",
+                "execution_mode": "background",
+                "history": [],
+                "client_tools": [],
+            },
+        )
+        assert started.status_code == 200
+        acknowledgement = started.json()
+        assert acknowledgement["status"] == "background"
+        run_id = acknowledgement["run_id"]
+
+        status = client.get(f"/v1/chat/runs/{run_id}")
+        assert status.status_code == 200
+        assert status.json()["status"] == "completed"
+
+        events = client.get(f"/v1/chat/runs/{run_id}/events")
+        assert events.status_code == 200
+        assert events.headers["content-type"].startswith("text/event-stream")
+        assert "event: progress" in events.text
+        assert "会話文脈を整理中" in events.text
+        assert "回答をまとめています" in events.text
+        assert "event: done" in events.text
 
 
 @pytest.mark.asyncio
@@ -465,7 +541,7 @@ def test_fixture_chat_route_rejects_scoped_my_library_result(monkeypatch) -> Non
             },
         )
     assert second.status_code == 422
-    assert "requires the explicitly consented Azure Agent" in second.text
+    assert second.json() == {"detail": {"reason_code": "chat_contract_invalid"}}
 
 
 def test_my_library_projection_rejects_detail_and_unavailable_data() -> None:
@@ -1121,6 +1197,110 @@ async def test_function_model_reads_authoritative_opac_detail_after_catalog_disc
     ]
     assert "豊洲図書館" in completed.draft.content_markdown
     assert "配架場所" in completed.draft.content_markdown
+
+
+@pytest.mark.asyncio
+async def test_function_model_searches_three_named_books_individually(
+    monkeypatch,
+) -> None:
+    """A multi-book holding check must preserve one query per original title."""
+
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    titles = [
+        "ROS2とPythonで作って学ぶAIロボット入門 改訂第2版",
+        "改訂新版 ROS 2ではじめよう 次世代ロボットプログラミング",
+        "機械学習入門 ボルツマン機械学習から深層学習まで",
+    ]
+    model_turn = [0]
+    requested_queries: list[str] = []
+
+    def model_function(_messages, _info):
+        index = model_turn[0]
+        model_turn[0] += 1
+        if index < len(titles):
+            query = titles[index]
+            requested_queries.append(query)
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+                        {"query": query, "limit": 10},
+                        tool_call_id=f"catalog-multi-{index + 1}",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "3冊を個別に確認しました。",
+                        "evidence_ids": [],
+                    },
+                    tool_call_id="final-multi-book",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="multi-book-catalog-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[library_catalog_search],
+    )
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    advertised = {LIBRARY_CATALOG_SEARCH_TOOL_NAME}
+
+    execution = await backend.start_chat(
+        conversation_id="conversation-three-library-books",
+        message="その3冊は大学にある？",
+        history=[
+            ChatHistoryMessage(
+                role="assistant",
+                content="\n".join(f"{index + 1}. {title}" for index, title in enumerate(titles)),
+            )
+        ],
+        advertised_tools=advertised,
+    )
+    seen_call_ids: set[str] = set()
+    evidence_context: list[EvidenceLink] = []
+    for index, title in enumerate(titles):
+        assert execution.deferred is not None
+        assert execution.deferred.tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME
+        assert execution.deferred.arguments["query"] == title
+        current_call_id = execution.deferred.tool_call_id
+        evidence_context.append(
+            EvidenceLink(
+                evidence_id=f"library-catalog-search-v1-{index + 1:016x}",
+                title="芝浦工業大学公式OPACの公開カタログ検索",
+                source_type="library",
+                locator=f"orbit-library://public/{index + 1:032x}",
+                data_classification="public",
+            )
+        )
+        execution = await backend.resume_chat(
+            deferred=execution.deferred,
+            tool_result=LibraryCatalogSearchResult(
+                status="known",
+                query=title,
+                items=[],
+                reason_code=None,
+            ),
+            context=evidence_context,
+            advertised_tools=advertised,
+            seen_tool_call_ids=seen_call_ids,
+        )
+        seen_call_ids.add(current_call_id)
+
+    assert execution.draft is not None
+    assert requested_queries == titles
+    assert all("\n" not in query for query in requested_queries)
+    assert len(set(requested_queries)) == 3
 
 
 @pytest.mark.asyncio
