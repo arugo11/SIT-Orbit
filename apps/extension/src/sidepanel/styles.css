@@ -1426,6 +1426,120 @@ body {
   font-size: 12px;
 }
 
+.chat-source-label {
+  display: inline-flex;
+  align-self: flex-start;
+  margin: 8px 0 2px;
+  border: 1px solid #e2e2e5;
+  border-radius: 999px;
+  padding: 2px 7px;
+  color: #68686e;
+  background: #fafafa;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.chat-message-tool[data-tool-state="failed"] .chat-source-label {
+  border-color: #dfb6b6;
+  color: #9c3030;
+  background: #fff7f7;
+}
+
+.chat-research-trace,
+.chat-context-manifest {
+  flex: 0 0 auto;
+  margin: 8px 16px 0;
+  border: 1px solid #e4e4e7;
+  border-radius: 10px;
+  padding: 8px 10px;
+  color: #68686e;
+  background: #fafafa;
+  font-size: 11px;
+}
+
+.chat-research-trace > summary,
+.chat-context-manifest > summary {
+  cursor: pointer;
+  color: #55555a;
+  font-weight: 600;
+}
+
+.chat-research-trace ol {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-research-trace li {
+  display: grid;
+  grid-template-columns: 18px auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat-trace-index {
+  color: #9a9aa0;
+  text-align: right;
+}
+
+.chat-trace-source {
+  border-radius: 999px;
+  padding: 2px 6px;
+  color: #5f5f65;
+  background: #ededf0;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.chat-trace-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-trace-status {
+  color: #8b8b91;
+  font-size: 10px;
+}
+
+.chat-research-trace li[data-tool-state="failed"] .chat-trace-status {
+  color: #a13838;
+}
+
+.chat-research-trace p {
+  margin: 8px 0 0;
+  color: #89898f;
+  font-size: 10px;
+}
+
+.chat-context-manifest dl {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+}
+
+.chat-context-manifest dl > div {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+}
+
+.chat-context-manifest dt {
+  color: #8a8a90;
+}
+
+.chat-context-manifest dd {
+  margin: 0;
+  color: #5d5d63;
+}
+
+.chat-context-manifest p {
+  margin: 7px 0 0;
+}
+
 .chat-retry-button {
   margin-top: 8px;
   border: 0;

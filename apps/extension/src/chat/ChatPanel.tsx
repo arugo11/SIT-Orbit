@@ -42,8 +42,10 @@ import {
 import { parseSyllabusDetailHtml } from "../connectors/syllabus-search";
 import type { CastAlumniLocalSnapshot } from "../content/cast-alumni-reader";
 import {
+  type CastCareerAgentProjection,
   type CastCareerFilters,
   type CastCareerLocalResult,
+  type CastCareerSurface,
   isCastCareerSearchRequest,
 } from "../content/cast-career-source-runtime";
 import {
@@ -125,6 +127,231 @@ interface LocalCastCareerDetail {
   ranked_items: CastCareerRankedItem[];
   groups: CastCareerResultGroup[];
   filters: CastCareerFilters;
+  /** Optional local-only synthesis returned by the CAST runtime. */
+  reasoning_projection?: LocalCastReasoningProjection | null;
+}
+
+interface LocalCastReasoningRecord {
+  result_ref: string | null;
+  surface: string | null;
+  title: string | null;
+  company_name: string | null;
+  person_alias: string | null;
+  graduation_year_range: string | null;
+  academic_program: string | null;
+  technical_domains: string[];
+  occupations: string[];
+  locations: string[];
+  relation_flags: string[];
+  deadline: string | null;
+}
+
+interface LocalCastReasoningProjection {
+  records: LocalCastReasoningRecord[];
+  destination: "local";
+  redacted_fields: string[];
+  replaced_person_count: number;
+  status: string | null;
+  reason_code: string | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function compactLocalText(value: unknown, limit = 240): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.normalize("NFKC").replace(/\s+/gu, " ").trim();
+  return normalized ? normalized.slice(0, limit) : null;
+}
+
+function compactLocalList(value: unknown, limit = 8): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => compactLocalText(item, 120))
+        .filter((item): item is string => item !== null),
+    ),
+  ).slice(0, limit);
+}
+
+function compactLocalValue(value: unknown, limit = 160): string | null {
+  const scalar = compactLocalText(value, limit);
+  if (scalar) return scalar;
+  const list = compactLocalList(value, 8);
+  return list.length > 0 ? list.join("、").slice(0, limit) : null;
+}
+
+/**
+ * Read the optional local reasoning projection without trusting arbitrary
+ * CAST fields.  This deliberately ignores free text, URLs, IDs and names;
+ * the local card can only show the allowlisted, already-masked fields.
+ */
+function parseLocalCastReasoningProjection(
+  value: unknown,
+): LocalCastReasoningProjection | null {
+  if (!isRecord(value)) return null;
+  const rawRecords = Array.isArray(value.records)
+    ? value.records
+    : Array.isArray(value.items)
+      ? value.items
+      : [];
+  const records = rawRecords
+    .filter(isRecord)
+    .slice(0, 20)
+    .map(
+      (item): LocalCastReasoningRecord => ({
+        result_ref: compactLocalText(item.result_ref, 120),
+        surface: compactLocalText(item.surface, 60),
+        title: compactLocalText(item.title, 240),
+        company_name: compactLocalText(item.company_name, 240),
+        person_alias: compactLocalText(
+          item.person_alias ?? item.person_alias_label,
+          120,
+        ),
+        graduation_year_range: compactLocalValue(
+          item.graduation_year_range ?? item.graduation_year_buckets,
+          80,
+        ),
+        academic_program: compactLocalValue(
+          item.academic_program ??
+            item.academic_programs ??
+            item.technical_domains,
+          160,
+        ),
+        technical_domains: compactLocalList(item.technical_domains),
+        occupations: compactLocalList(item.occupations),
+        locations: compactLocalList(item.locations),
+        relation_flags: compactLocalList(item.relation_flags),
+        deadline: compactLocalText(item.deadline, 32),
+      }),
+    )
+    .filter(
+      (item) =>
+        item.title !== null ||
+        item.company_name !== null ||
+        item.person_alias !== null,
+    );
+  const destination = value.destination === "local" ? "local" : null;
+  if (!destination) return null;
+  const replaced =
+    typeof value.replaced_person_count === "number" &&
+    Number.isInteger(value.replaced_person_count) &&
+    value.replaced_person_count >= 0
+      ? Math.min(value.replaced_person_count, 1000)
+      : 0;
+  return {
+    records,
+    destination,
+    redacted_fields: [
+      ...new Set([
+        ...compactLocalList(value.redacted_fields, 20),
+        ...compactLocalList(value.removed_fields, 20),
+        ...compactLocalList(value.generalized_fields, 20),
+      ]),
+    ].slice(0, 20),
+    replaced_person_count: replaced,
+    status: compactLocalText(value.status, 80),
+    reason_code: compactLocalText(value.reason_code, 100),
+  };
+}
+
+function castReasoningFromResponse(
+  value: unknown,
+): LocalCastReasoningProjection | null {
+  if (!isRecord(value)) return null;
+  const candidates: unknown[] = [
+    value.reasoning_projection,
+    value.local_reasoning,
+    value.reasoning,
+    isRecord(value.projection) ? value.projection.reasoning_projection : null,
+    isRecord(value.projection) ? value.projection.local_reasoning : null,
+  ];
+  for (const candidate of candidates) {
+    if (isRecord(candidate) && isRecord(candidate.payload)) {
+      const parsed = parseLocalCastReasoningProjection({
+        ...candidate.payload,
+        ...(isRecord(candidate.manifest) ? candidate.manifest : {}),
+      });
+      if (parsed) return parsed;
+    }
+    const parsed = parseLocalCastReasoningProjection(candidate);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function sourceLabel(name: string | undefined): string {
+  switch (name) {
+    case "cast_career_search":
+    case "cast_search":
+    case "cast_read":
+    case "cast_alumni_read":
+      return "CAST";
+    case "browser_read_url":
+      return "一般Web";
+    case "library_catalog_search":
+    case "library_item_read":
+    case "library_catalog_browse":
+    case "library_discovery_search":
+    case "library_action_options":
+      return "図書館";
+    case "syllabus_search":
+      return "シラバス";
+    case "scombz_page_summary":
+    case "scombz_read":
+      return "SCombZ";
+    case "sitrus_read":
+      return "SITRUS";
+    case "moodle_read":
+      return "Moodle";
+    case "my_library_read":
+      return "My Library";
+    case "google_calendar_availability":
+      return "Google Calendar";
+    default:
+      return "情報源";
+  }
+}
+
+function statusLabel(status: string | null | undefined): string {
+  switch (status) {
+    case "known":
+      return "確認済み";
+    case "partial":
+      return "一部確認";
+    case "reauth_required":
+      return "再認証が必要";
+    case "form_changed":
+      return "画面構造が変更";
+    case "rate_limited":
+      return "一時的な制限";
+    case "server_error":
+      return "サービス側エラー";
+    case "unavailable":
+      return "利用不可";
+    case "local_model_unavailable":
+      return "端末内モデル未準備";
+    case "pseudonymization_failed":
+      return "仮名化に失敗";
+    case "vault_locked":
+      return "Career Vaultがロック中";
+    default:
+      return status ?? "状態不明";
+  }
+}
+
+function failureCodeFromError(error: unknown): string {
+  const text = error instanceof Error ? error.message : "";
+  if (/再認証|ログイン/u.test(text)) return "reauth_required";
+  if (/フォーム|構造/u.test(text)) return "form_changed";
+  if (/制限|rate/u.test(text)) return "rate_limited";
+  if (/サーバー|HTTP 5/u.test(text)) return "server_error";
+  if (/仮名化/u.test(text)) return "pseudonymization_failed";
+  if (/Vault|ロック/u.test(text)) return "vault_locked";
+  return "unavailable";
 }
 
 function formatCastCareerFilters(filters: CastCareerFilters): string {
@@ -387,6 +614,180 @@ function LibraryFloorMapPreview({ map }: { map: LibraryFloorMap }) {
   );
 }
 
+function ResearchTrace({ messages }: { messages: ChatTimelineMessage[] }) {
+  const activities = messages.filter(
+    (message) => message.role === "tool" && message.toolName,
+  );
+  if (activities.length === 0) return null;
+  return (
+    <details className="chat-research-trace">
+      <summary>調査トレース（{activities.length}件）</summary>
+      <ol>
+        {activities.map((activity, index) => (
+          <li
+            key={activity.id}
+            data-tool-state={activity.toolState}
+            data-source={sourceLabel(activity.toolName)}
+          >
+            <span className="chat-trace-index">{index + 1}</span>
+            <span className="chat-trace-source">
+              {sourceLabel(activity.toolName)}
+            </span>
+            <span className="chat-trace-label">{activity.content}</span>
+            <span className="chat-trace-status">
+              {activity.toolState === "running"
+                ? "確認中"
+                : activity.toolState === "failed"
+                  ? "失敗"
+                  : "完了"}
+            </span>
+          </li>
+        ))}
+      </ol>
+      <p>
+        調査の順序と成否だけを表示しています。モデルの逐語的な思考は保存・表示しません。
+      </p>
+    </details>
+  );
+}
+
+interface ContextManifestSummary {
+  evidenceCount: number;
+  publicCount: number;
+  personalCount: number;
+  localOnlyCount: number;
+  replacedPersonCount: number;
+  generalizedFields: string[];
+  destinations: string[];
+}
+
+function contextManifestSummary(
+  value: ChatConversation["contextManifest"],
+  localReasoning: LocalCastReasoningProjection[] = [],
+): ContextManifestSummary {
+  const manifest = value as unknown as Record<string, unknown>;
+  const evidence = Array.isArray(value.evidence) ? value.evidence : [];
+  const sourceEntries = Array.isArray(manifest.sources)
+    ? manifest.sources
+    : Array.isArray(manifest.items)
+      ? manifest.items
+      : [];
+  const readCount = (keys: string[]): number => {
+    for (const key of keys) {
+      const candidate = manifest[key];
+      if (typeof candidate === "number" && Number.isInteger(candidate)) {
+        return Math.max(0, Math.min(candidate, 1000));
+      }
+    }
+    return 0;
+  };
+  const stringsFrom = (keys: string[]): string[] => {
+    for (const key of keys) {
+      const candidate = manifest[key];
+      if (Array.isArray(candidate)) {
+        return compactLocalList(candidate, 20);
+      }
+    }
+    return [];
+  };
+  const destinations = [
+    ...sourceEntries
+      .filter(isRecord)
+      .map((entry) => compactLocalText(entry.destination, 60))
+      .filter((item): item is string => item !== null),
+    ...stringsFrom(["destinations", "processing_targets"]),
+    ...(localReasoning.length > 0 ? ["端末内"] : []),
+  ];
+  const uniqueDestinations = [...new Set(destinations)].slice(0, 8);
+  const localReasoningRecordCount = localReasoning.reduce(
+    (total, item) => total + item.records.length,
+    0,
+  );
+  const localReasoningPeople = localReasoning.reduce(
+    (total, item) => total + item.replaced_person_count,
+    0,
+  );
+  const localReasoningFields = localReasoning.flatMap(
+    (item) => item.redacted_fields,
+  );
+  return {
+    evidenceCount: evidence.length,
+    publicCount: evidence.filter(
+      (item) => item.data_classification === "public",
+    ).length,
+    personalCount: evidence.filter(
+      (item) => item.data_classification === "personal",
+    ).length,
+    localOnlyCount: Math.max(
+      readCount(["local_only_count", "local_count"]),
+      localReasoningRecordCount,
+    ),
+    replacedPersonCount: Math.max(
+      readCount(["replaced_person_count", "pseudonymized_person_count"]),
+      localReasoningPeople,
+    ),
+    generalizedFields: [
+      ...new Set([
+        ...stringsFrom(["generalized_fields", "redacted_fields"]),
+        ...localReasoningFields,
+      ]),
+    ].slice(0, 20),
+    destinations: uniqueDestinations,
+  };
+}
+
+function ContextManifestCard({
+  manifest,
+  localReasoning = [],
+}: {
+  manifest: ChatConversation["contextManifest"];
+  localReasoning?: LocalCastReasoningProjection[];
+}) {
+  const summary = contextManifestSummary(manifest, localReasoning);
+  const hasContent =
+    summary.evidenceCount > 0 ||
+    summary.localOnlyCount > 0 ||
+    summary.replacedPersonCount > 0 ||
+    summary.generalizedFields.length > 0 ||
+    summary.destinations.length > 0;
+  if (!hasContent) return null;
+  return (
+    <details className="chat-context-manifest">
+      <summary>Context Manifest</summary>
+      <dl>
+        <div>
+          <dt>参照</dt>
+          <dd>
+            {summary.evidenceCount}件（公開 {summary.publicCount}件 / 個人由来{" "}
+            {summary.personalCount}件）
+          </dd>
+        </div>
+        {summary.localOnlyCount > 0 ? (
+          <div>
+            <dt>端末内のみ</dt>
+            <dd>{summary.localOnlyCount}件</dd>
+          </div>
+        ) : null}
+        {summary.replacedPersonCount > 0 ? (
+          <div>
+            <dt>仮名化</dt>
+            <dd>{summary.replacedPersonCount}人分</dd>
+          </div>
+        ) : null}
+        {summary.destinations.length > 0 ? (
+          <div>
+            <dt>処理先</dt>
+            <dd>{summary.destinations.join("、")}</dd>
+          </div>
+        ) : null}
+      </dl>
+      {summary.generalizedFields.length > 0 ? (
+        <p>一般化・除外: {summary.generalizedFields.join("、")}</p>
+      ) : null}
+    </details>
+  );
+}
+
 function evidenceText(proposal: ActionProposal | null | undefined): string[] {
   return proposal?.evidence.map((item) => item.title) ?? [];
 }
@@ -479,6 +880,61 @@ function toolResultRequest(
     name,
     version: 1,
     result,
+  };
+}
+
+function castCareerFailureProjection(
+  argumentsObject: Record<string, unknown>,
+  error: unknown,
+): CastCareerAgentProjection {
+  const surfaces = Array.isArray(argumentsObject.surfaces)
+    ? argumentsObject.surfaces.filter(
+        (surface): surface is CastCareerSurface =>
+          typeof surface === "string" &&
+          [
+            "job",
+            "internship",
+            "company_session",
+            "company",
+            "hiring_record",
+            "selection_report",
+            "recording",
+            "career_event",
+            "counseling",
+          ].includes(surface),
+      )
+    : [];
+  const safeSurfaces =
+    surfaces.length > 0 ? [...new Set(surfaces)] : (["company"] as const);
+  const reasonCode = failureCodeFromError(error);
+  return {
+    schema_version: "v1",
+    status:
+      reasonCode === "reauth_required" ||
+      reasonCode === "form_changed" ||
+      reasonCode === "rate_limited"
+        ? reasonCode
+        : "unavailable",
+    searched_surfaces: [...safeSurfaces],
+    surface_coverage: safeSurfaces.map((surface) => ({
+      surface,
+      status:
+        reasonCode === "reauth_required" ||
+        reasonCode === "form_changed" ||
+        reasonCode === "rate_limited"
+          ? reasonCode
+          : "unavailable",
+      total_count: null,
+      returned_count: 0,
+      fetched_pages: 0,
+      page_size: 0,
+      reason_code: reasonCode,
+    })),
+    total_count: 0,
+    returned_count: 0,
+    anonymous_aggregates: [],
+    evidence_ids: [],
+    reason_codes: [reasonCode],
   };
 }
 
@@ -1773,32 +2229,24 @@ export function ChatPanel({
       if (!isCastCareerSearchResult(cast.projection)) {
         throw new Error("CAST横断検索結果を検証できませんでした。");
       }
-      if (
-        cast.projection.status !== "known" &&
-        cast.projection.status !== "partial"
-      ) {
-        const message =
-          cast.projection.status === "reauth_required"
-            ? "CASTのログインが必要です。開いた公式ページでログイン後、もう一度検索してください。"
-            : cast.projection.status === "form_changed"
-              ? "CASTの検索フォームが変更されました。検索を中断しました。"
-              : cast.projection.status === "rate_limited"
-                ? "CASTの検索が一時的に制限されました。時間を置いて再試行してください。"
-                : cast.projection.reason_codes.includes("cast_server_error")
-                  ? "CASTサーバーで一時的なエラーが発生しました。時間を置いて再試行してください。"
-                  : `CAST横断検索を利用できませんでした（${cast.projection.reason_codes.join(", ")}）。`;
-        throw new Error(message);
-      }
-      const rankedItems = rankCastCareerItems(
-        cast.items,
-        cast.query,
-        argumentsObject.limit as number,
-        argumentsObject.filters as CastCareerFilters,
-      );
-      const groups = groupCastCareerItems(
-        rankedItems,
-        argumentsObject.filters as CastCareerFilters,
-      );
+      const projectionStatus = cast.projection.status;
+      const isReadable =
+        projectionStatus === "known" || projectionStatus === "partial";
+      const rankedItems = isReadable
+        ? rankCastCareerItems(
+            cast.items,
+            cast.query,
+            argumentsObject.limit as number,
+            argumentsObject.filters as CastCareerFilters,
+          )
+        : [];
+      const groups = isReadable
+        ? groupCastCareerItems(
+            rankedItems,
+            argumentsObject.filters as CastCareerFilters,
+          )
+        : [];
+      const reasoningProjection = castReasoningFromResponse(cast);
       setLocalCastCareerDetails((items) => ({
         ...items,
         [activity.id]: {
@@ -1806,8 +2254,20 @@ export function ChatPanel({
           ranked_items: rankedItems,
           groups,
           filters: argumentsObject.filters as CastCareerFilters,
+          reasoning_projection: reasoningProjection,
         },
       }));
+      if (!isReadable) {
+        // A typed failure projection is still submitted so the Agent can
+        // continue with another source (for example public Web search).
+        // Do not abort the complete multi-source run on one unavailable
+        // campus source.
+        setChatProgress(
+          "resuming",
+          `${sourceLabel(call.name)}を確認できませんでした`,
+          `${statusLabel(projectionStatus)}。他の情報源を続けて確認します。`,
+        );
+      }
       request = toolResultRequest(
         call.tool_call_id,
         call.name,
@@ -1870,11 +2330,29 @@ export function ChatPanel({
       "Agentが取得結果を整理中",
       "Toolの結果を会話の文脈へ戻し、次の判断を生成しています。",
     );
+    const rawResult: unknown = request.result;
+    const resultRecord = isRecord(rawResult) ? rawResult : null;
+    const resultStatus =
+      resultRecord &&
+      typeof (resultRecord as { status?: unknown }).status === "string"
+        ? (resultRecord as { status: string }).status
+        : null;
+    const failedStatus =
+      resultStatus !== null &&
+      !["known", "partial", "unknown"].includes(resultStatus);
     const completedConversation = {
       ...conversationAfterTool,
       messages: conversationAfterTool.messages.map((item) =>
         item.id === activity.id
-          ? { ...item, toolState: "completed" as const }
+          ? {
+              ...item,
+              content: failedStatus
+                ? `${toolLabel(call.name)}（${statusLabel(resultStatus)}）`
+                : item.content,
+              toolState: failedStatus
+                ? ("failed" as const)
+                : ("completed" as const),
+            }
           : item,
       ),
     };
@@ -1884,6 +2362,53 @@ export function ChatPanel({
       conversation: completedConversation,
       request,
     };
+  }
+
+  /**
+   * Keep a recoverable CAST source failure inside the research loop.  The
+   * failure projection intentionally contains only the typed status and
+   * surface names, so the Agent can decide whether another public/local
+   * source is needed without receiving an HTML error page or a raw message.
+   */
+  async function recoverToolFailure(
+    response: Extract<ChatRunResponse, { status: "tool_required" }>,
+    current: ChatConversation,
+    error: unknown,
+  ): Promise<{
+    response: ChatRunResponse;
+    conversation: ChatConversation;
+  } | null> {
+    const [call] = response.calls;
+    if (call?.name !== "cast_career_search") return null;
+
+    const projection = castCareerFailureProjection(
+      isRecord(call.arguments) ? call.arguments : {},
+      error,
+    );
+    const failureConversation: ChatConversation = {
+      ...current,
+      updatedAt: new Date().toISOString(),
+      messages: current.messages.map((item) =>
+        item.id === `tool-${call.tool_call_id}`
+          ? {
+              ...item,
+              content: `${toolLabel(call.name)}（${statusLabel(projection.status)}）`,
+              toolState: "failed" as const,
+            }
+          : item,
+      ),
+    };
+    await persist(failureConversation);
+    setChatProgress(
+      "resuming",
+      `${sourceLabel(call.name)}を確認できませんでした`,
+      `${statusLabel(projection.status)}。他の情報源を続けて確認します。`,
+    );
+    const nextResponse = await apiClient.submitChatToolResult(
+      response.run_id,
+      toolResultRequest(call.tool_call_id, call.name, projection),
+    );
+    return { response: nextResponse, conversation: failureConversation };
   }
 
   async function finishResponse(
@@ -1930,7 +2455,17 @@ export function ChatPanel({
         "Agentが次の参照先を判断中",
         `${progressLabel}です。`,
       );
-      const next = await runTool(response, current, progressLabel);
+      let next: {
+        response: ChatRunResponse;
+        conversation: ChatConversation;
+      };
+      try {
+        next = await runTool(response, current, progressLabel);
+      } catch (error) {
+        const recovered = await recoverToolFailure(response, current, error);
+        if (!recovered) throw error;
+        next = recovered;
+      }
       response = next.response;
       current = next.conversation;
     }
@@ -2674,6 +3209,17 @@ export function ChatPanel({
         </aside>
       ) : null}
 
+      <ContextManifestCard
+        manifest={conversation.contextManifest}
+        localReasoning={Object.values(localCastCareerDetails)
+          .map((detail) => detail.reasoning_projection)
+          .filter(
+            (item): item is LocalCastReasoningProjection =>
+              item !== null && item !== undefined,
+          )}
+      />
+      <ResearchTrace messages={conversation.messages} />
+
       <div className="chat-timeline" aria-live="polite">
         {conversation.messages.length === 0 ? (
           <div className="chat-empty">
@@ -2693,6 +3239,14 @@ export function ChatPanel({
                   ? "Tool"
                   : "SIT ORBIT"}
             </span>
+            {message.role === "tool" ? (
+              <span
+                className="chat-source-label"
+                data-source={sourceLabel(message.toolName)}
+              >
+                {sourceLabel(message.toolName)}
+              </span>
+            ) : null}
             <div className="chat-message-content">
               <p>{message.content}</p>
               {message.role === "assistant" &&
@@ -3090,6 +3644,72 @@ export function ChatPanel({
                   ) : (
                     <p>端末内で表示できる詳細項目はありません。</p>
                   )}
+                  {localCastCareerDetails[message.id]?.reasoning_projection ? (
+                    <section
+                      className="chat-local-reasoning"
+                      aria-label="CAST端末内推論"
+                    >
+                      <strong>端末内で仮名化して整理した内容</strong>
+                      <p>
+                        元の人物名は外部へ送らず、人物{" "}
+                        {localCastCareerDetails[message.id]
+                          ?.reasoning_projection?.replaced_person_count ?? 0}
+                        件をこのChatの別名へ置換しました。
+                      </p>
+                      {localCastCareerDetails[message.id]?.reasoning_projection
+                        ?.redacted_fields.length ? (
+                        <p>
+                          一般化・除外:{" "}
+                          {localCastCareerDetails[
+                            message.id
+                          ]?.reasoning_projection?.redacted_fields.join("、")}
+                        </p>
+                      ) : null}
+                      {localCastCareerDetails[message.id]?.reasoning_projection
+                        ?.records.length ? (
+                        <ul>
+                          {localCastCareerDetails[
+                            message.id
+                          ]?.reasoning_projection?.records.map((record) => (
+                            <li
+                              key={
+                                record.result_ref ??
+                                `${record.surface ?? "record"}-${record.title ?? "item"}-${record.company_name ?? ""}`
+                              }
+                            >
+                              {record.title ? (
+                                <strong>{record.title}</strong>
+                              ) : null}
+                              {record.company_name
+                                ? ` / ${record.company_name}`
+                                : ""}
+                              {record.person_alias
+                                ? ` / ${record.person_alias}`
+                                : ""}
+                              {record.surface ? ` / ${record.surface}` : ""}
+                              {record.graduation_year_range
+                                ? ` / 卒業年度: ${record.graduation_year_range}`
+                                : ""}
+                              {record.academic_program
+                                ? ` / 学問分野: ${record.academic_program}`
+                                : ""}
+                              {record.technical_domains.length > 0
+                                ? ` / 技術: ${record.technical_domains.join("、")}`
+                                : ""}
+                              {record.occupations.length > 0
+                                ? ` / 職種: ${record.occupations.join("、")}`
+                                : ""}
+                              {record.relation_flags.length > 0
+                                ? ` / ${record.relation_flags.join("、")}`
+                                : ""}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p>端末内で利用できる仮名化済み詳細はありません。</p>
+                      )}
+                    </section>
+                  ) : null}
                 </details>
               ) : null}
               {message.evidence && message.evidence.length > 0 ? (
