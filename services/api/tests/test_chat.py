@@ -18,6 +18,7 @@ from orbit_api.agent.pydantic_ai_backend import (
     ChatDraft,
     DeferredChatRun,
     ToolName,
+    _normalize_cast_career_search_arguments,
     cast_career_search,
     cast_read,
     cast_search,
@@ -1078,6 +1079,26 @@ def test_cast_career_search_result_rejects_detail_and_small_cells() -> None:
                 ],
             }
         )
+
+
+def test_cast_career_search_drops_empty_optional_filters() -> None:
+    normalized = _normalize_cast_career_search_arguments(
+        {
+            "query": "情報系の採用実績",
+            "surfaces": ["hiring_record"],
+            "filters": {
+                "company_name": "  ",
+                "locations": [" 豊洲 ", ""],
+                "graduation_years": [2025],
+                "obog_required": None,
+            },
+        }
+    )
+
+    assert normalized["filters"] == {
+        "locations": ["豊洲"],
+        "graduation_years": [2025],
+    }
 
 
 def test_fixture_chat_route_runs_cast_alumni_aggregate_loop(monkeypatch) -> None:

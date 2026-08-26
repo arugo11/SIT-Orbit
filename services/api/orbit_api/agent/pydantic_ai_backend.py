@@ -208,6 +208,30 @@ ToolResult = (
 )
 
 
+class CastCareerSearchFilters(BaseModel):
+    """Allowlisted semantic filters exposed in the high-level CAST tool schema.
+
+    The previous ``dict[str, Any]`` signature left the model free to invent
+    form-specific keys.  Keeping the schema explicit makes the model emit only
+    values the content script can resolve against an observed CAST form.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    company_name: str | None = Field(default=None, max_length=200)
+    locations: list[str] | None = Field(default=None, max_length=20)
+    industries: list[str] | None = Field(default=None, max_length=20)
+    technical_domains: list[str] | None = Field(default=None, max_length=20)
+    occupations: list[str] | None = Field(default=None, max_length=20)
+    academic_programs: list[str] | None = Field(default=None, max_length=20)
+    graduation_years: list[int] | None = Field(default=None, max_length=20)
+    deadline_before: str | None = Field(default=None, max_length=10)
+    target_grades: list[str] | None = Field(default=None, max_length=20)
+    obog_required: bool | None = None
+    career_supporter_required: bool | None = None
+    recording_required: bool | None = None
+
+
 class ActionDraft(BaseModel):
     """Model-owned fields only; IDs and evidence are server-owned."""
 
@@ -1299,7 +1323,7 @@ async def cast_career_search(
             "counseling",
         ]
     ],
-    filters: dict[str, Any],
+    filters: CastCareerSearchFilters,
     limit: int = 10,
     exhaustive: bool = False,
 ) -> CastCareerSearchResult:
@@ -1777,6 +1801,38 @@ def _validate_cast_career_search_arguments(arguments: dict[str, Any]) -> None:
         raise RuntimeError("cast_career_search exhaustive must be a boolean.")
 
 
+def _normalize_cast_career_search_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Drop model-emitted empty optional filters before strict validation.
+
+    Some Azure tool-call decoders materialize optional fields as ``""`` or
+    ``[]`` even when the model did not select the filter.  Those values mean
+    "not specified" in the semantic contract; accepting them here keeps the
+    model from inventing a CAST form constraint while retaining strict
+    validation for every non-empty value.
+    """
+
+    normalized = dict(arguments)
+    filters = normalized.get("filters")
+    if not isinstance(filters, dict):
+        return normalized
+    cleaned: dict[str, Any] = {}
+    for key, value in filters.items():
+        if isinstance(value, str):
+            if value.strip():
+                cleaned[key] = value.strip()
+            continue
+        if isinstance(value, list):
+            items = [item.strip() if isinstance(item, str) else item for item in value]
+            items = [item for item in items if not (isinstance(item, str) and not item)]
+            if items:
+                cleaned[key] = items
+            continue
+        if value is not None:
+            cleaned[key] = value
+    normalized["filters"] = cleaned
+    return normalized
+
+
 class PydanticAIAgentBackend(AgentBackend):
     """Shared Agent adapter used by both OpenAI and Azure OpenAI providers."""
 
@@ -2179,8 +2235,10 @@ class PydanticAIAgentBackend(AgentBackend):
                 "surface coverage and applied conditions explicit; never claim an "
                 "exhaustive ranking from a bounded page read. CAST result detail stays "
                 "local, so cite the server-issued CAST career evidence ID and summarize "
-                "only aggregate data. After CAST, use general_web_search for public "
-                "job taxonomy or industry context when it is available; never include "
+                "only aggregate data. If the Research requirements list web as a "
+                "preferred source and no public Web evidence is present yet, you MUST "
+                "call general_web_search before returning final_result. Use it for "
+                "public job taxonomy or industry context; never include "
                 "CAST names, aliases, IDs, dates that identify a person, or campus URLs "
                 "in the public query. Continue one tool at a time until the research "
                 "requirements shown in the prompt are resolved, then separate CAST facts, "
@@ -2443,6 +2501,7 @@ class PydanticAIAgentBackend(AgentBackend):
         if call.tool_name == CAST_SEARCH_TOOL_NAME:
             _validate_cast_search_arguments(arguments)
         if call.tool_name == CAST_CAREER_SEARCH_TOOL_NAME:
+            arguments = _normalize_cast_career_search_arguments(arguments)
             _validate_cast_career_search_arguments(arguments)
         # Accept the pre-scope v1 empty call emitted by older local clients as
         # the safe default page. New model-generated calls still require the
