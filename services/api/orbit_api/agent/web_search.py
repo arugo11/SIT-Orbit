@@ -25,6 +25,23 @@ _SECRET_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _OPAQUE_LOCATOR_PATTERN = re.compile(r"\borbit-[a-z0-9-]+://", re.IGNORECASE)
+_MISSION_ALIAS_PATTERN = re.compile(
+    r"(?:先輩|担当者|卒業生)-[A-Z0-9]{4,16}", re.IGNORECASE
+)
+_PRIVATE_EVIDENCE_PATTERN = re.compile(
+    r"(?:cast-career-search|cast-search|sitrus-grades|moodle-summary|"
+    r"my-library-summary)-v\d+-[A-Za-z0-9_-]+",
+    re.IGNORECASE,
+)
+_INTERNAL_MARKER_PATTERN = re.compile(
+    r"(?:jsessionid|company[_ -]?code|internal[_ -]?id|hidden[_ -]?field|"
+    r"学籍番号|学生番号|面接官|指導教員)",
+    re.IGNORECASE,
+)
+_SMALL_CELL_PATTERN = re.compile(
+    r"20\d{2}.{0,24}(?:学科|学部|研究室|ゼミ)|(?:学科|学部|研究室|ゼミ).{0,24}20\d{2}",
+    re.IGNORECASE,
+)
 _PRIVATE_SIT_HOSTS = frozenset(
     {
         "scombz.shibaura-it.ac.jp",
@@ -70,6 +87,13 @@ def validate_public_search_query(query: str) -> str:
         raise ValueError("学籍番号を一般Web検索へ送ることはできません。")
     if _SECRET_PATTERN.search(normalized) or _OPAQUE_LOCATOR_PATTERN.search(normalized):
         raise ValueError("認証情報や内部locatorを一般Web検索へ送ることはできません。")
+    if (
+        _MISSION_ALIAS_PATTERN.search(normalized)
+        or _PRIVATE_EVIDENCE_PATTERN.search(normalized)
+        or _INTERNAL_MARKER_PATTERN.search(normalized)
+        or _SMALL_CELL_PATTERN.search(normalized)
+    ):
+        raise ValueError("個人・内部識別子を一般Web検索へ送ることはできません。")
     lowered = normalized.lower()
     if any(host in lowered for host in _PRIVATE_SIT_HOSTS):
         raise ValueError("学内限定サービスのURLを一般Web検索へ送ることはできません。")

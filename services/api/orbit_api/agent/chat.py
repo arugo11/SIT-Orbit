@@ -98,6 +98,8 @@ from .pydantic_ai_backend import (
     is_derived_my_library_evidence,
     is_derived_scombz_read_evidence,
     is_derived_sitrus_evidence,
+    research_trace_for_message,
+    tool_call_fingerprint,
     validate_library_operation_evidence,
     validate_my_library_result_page,
 )
@@ -140,7 +142,9 @@ _FIXTURE_CAST_SEARCH_QUERY = re.compile(
     re.IGNORECASE,
 )
 _FIXTURE_CAST_CAREER_SEARCH_QUERY = re.compile(
-    r"(?:横断|関連する|過去5年|OB.?OG|先輩.*選考|見るべき録画|相談枠|通いやすく.*機械|インターン.*説明会)",
+    r"(?:横断|関連する|過去5年|OB.?OG|先輩.*選考|見るべき録画|相談枠|"
+    r"通いやすく.*機械|インターン.*説明会|ML.?エンジニア|機械学習(?:エンジニア)?|"
+    r"芝浦工業大学.{0,50}(?:就職|採用|卒業生|先輩))",
     re.IGNORECASE,
 )
 _FIXTURE_LIBRARY_CATALOG_QUERY = re.compile(
@@ -396,7 +400,7 @@ class FixtureChatBackend:
             filters["academic_programs"] = ["情報系"]
         if "プログラミング" in message:
             filters["technical_domains"] = ["プログラミング"]
-        if "過去5年" in message and any(
+        if re.search(r"(?:過去5年|今まで|これまで)", message) and any(
             surface in surfaces for surface in ("hiring_record", "selection_report")
         ):
             filters["graduation_years"] = [2026, 2025, 2024, 2023, 2022]
@@ -1958,17 +1962,38 @@ class ChatRunService:
             )
         if execution.deferred is None:
             raise RuntimeError("The chat agent returned neither a response nor a tool request.")
+        required_trace = research_trace_for_message(request.message, request.history).mark_evidence(
+            context
+        )
+        current_trace = execution.deferred.research_trace
+        if not current_trace.request_message:
+            current_trace = required_trace
+        else:
+            current_trace = replace(
+                current_trace,
+                required_sources=current_trace.required_sources
+                | required_trace.required_sources,
+                preferred_sources=current_trace.preferred_sources
+                | required_trace.preferred_sources,
+                request_message=current_trace.request_message or required_trace.request_message,
+            )
+        deferred = replace(
+            execution.deferred,
+            research_trace=current_trace
+            .mark_evidence(context)
+            .register_tool(execution.deferred.tool_name, execution.deferred.arguments),
+        )
         if emit is not None:
             emit(
                 "tool_call",
-                self._progress_title(execution.deferred.tool_name),
-                max(execution.deferred.tool_call_count - 1, 0),
+                self._progress_title(deferred.tool_name),
+                max(deferred.tool_call_count - 1, 0),
                 8,
             )
         run_id = self.store.put(
             backend_name=os.getenv("ORBIT_AGENT_BACKEND", "fixture"),
             conversation_id=request.conversation_id,
-            deferred=execution.deferred,
+            deferred=deferred,
             context=context,
             advertised_tools=[
                 ChatClientTool(name=cast(Any, name), version=1) for name in advertised
@@ -1977,7 +2002,7 @@ class ChatRunService:
             or (manifest.library_records if manifest is not None else ()),
             related_books=execution.generated_related_books,
         )
-        return self._tool_required(run_id, execution.deferred)
+        return self._tool_required(run_id, deferred)
 
     async def start(self, request: ChatRunRequest) -> ChatRunResponse | ChatRunBackground:
         self._cleanup_background()
@@ -2125,6 +2150,10 @@ class ChatRunService:
             tool_evidence = _tool_evidence(request, run_id)
             self._tool_receipts[run_id] = (request.tool_call_id, tool_evidence.evidence_id)
             context = _merge_evidence(claimed.context, [tool_evidence])
+            trace = claimed.deferred.research_trace.mark_tool_result(
+                request.name,
+                getattr(request.result, "status", None),
+            ).mark_evidence(context)
             library_action_options = dict(claimed.library_action_options)
             if request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME and isinstance(
                 request.result, LibraryActionOptionsResult
@@ -2154,9 +2183,23 @@ class ChatRunService:
                 return response
             if execution.deferred is None:
                 raise RuntimeError("The chat agent returned neither a response nor a tool request.")
+            next_trace = trace
+            if execution.research_trace is not None:
+                next_trace = execution.research_trace
+            next_fingerprint = tool_call_fingerprint(
+                execution.deferred.tool_name,
+                execution.deferred.arguments,
+            )
+            if next_fingerprint in trace.tool_fingerprints:
+                raise ValueError("The chat agent repeated an unchanged tool request.")
+            next_trace = next_trace.mark_evidence(context).register_tool(
+                execution.deferred.tool_name,
+                execution.deferred.arguments,
+            )
+            next_deferred = replace(execution.deferred, research_trace=next_trace)
             self.store.continue_run(
                 run_id,
-                deferred=execution.deferred,
+                deferred=next_deferred,
                 context=context,
                 generation=claimed.generation,
                 claimed_call_id=claimed.deferred.tool_call_id,
@@ -2164,7 +2207,7 @@ class ChatRunService:
                 library_context=execution.library_context or claimed.library_context,
                 related_books=execution.generated_related_books,
             )
-            return self._tool_required(run_id, execution.deferred)
+            return self._tool_required(run_id, next_deferred)
         except BaseException:
             self._tool_receipts.pop(run_id, None)
             self.store.fail(run_id)
