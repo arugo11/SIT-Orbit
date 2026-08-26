@@ -301,6 +301,10 @@ class ResearchTrace:
     failed_sources: frozenset[str] = frozenset()
     tool_fingerprints: frozenset[str] = frozenset()
     request_message: str = ""
+    # Campus-specific career questions must use the high-level typed CAST
+    # connector. A generic CAST top-page read from an earlier turn is not
+    # sufficient evidence for this gate.
+    require_cast_career_search: bool = False
 
     @property
     def missing_required_sources(self) -> frozenset[str]:
@@ -323,6 +327,12 @@ class ResearchTrace:
         source = source_for_tool(tool_name)
         if source is None:
             return self
+        if (
+            source == "cast"
+            and self.require_cast_career_search
+            and tool_name != CAST_CAREER_SEARCH_TOOL_NAME
+        ):
+            return self
         if status in {"known", "partial"}:
             return replace(self, resolved_sources=self.resolved_sources | {source})
         return replace(
@@ -332,11 +342,18 @@ class ResearchTrace:
         )
 
     def mark_evidence(self, evidence: Iterable[EvidenceLink]) -> "ResearchTrace":
-        sources = {
-            source_for_evidence(item)
-            for item in evidence
-            if source_for_evidence(item) is not None
-        }
+        sources: set[str] = set()
+        for item in evidence:
+            source = source_for_evidence(item)
+            if source is None:
+                continue
+            if (
+                source == "cast"
+                and self.require_cast_career_search
+                and not is_derived_cast_career_search_evidence(item)
+            ):
+                continue
+            sources.add(source)
         return replace(self, resolved_sources=self.resolved_sources | set(sources))
 
 
@@ -401,6 +418,7 @@ def research_trace_for_message(
             required_sources=frozenset({"cast"}),
             preferred_sources=frozenset({"web"}),
             request_message=message[:8000],
+            require_cast_career_search=True,
         )
     return ResearchTrace(request_message=message[:8000])
 
@@ -2504,6 +2522,7 @@ class PydanticAIAgentBackend(AgentBackend):
         web_search_state = (
             ChatWebSearchState(executor=self.web_search_executor, budget=budget)
             if self.web_search_executor is not None
+            and not research_trace.missing_required_sources
             else None
         )
         book_discovery_state = (

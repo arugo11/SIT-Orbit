@@ -67,6 +67,29 @@ def test_research_trace_tracks_failure_as_resolved_limitation() -> None:
     assert failed.failed_sources == frozenset({"cast"})
 
 
+def test_campus_career_trace_requires_high_level_cast_evidence() -> None:
+    trace = research_trace_for_message(
+        "MLエンジニアとしては芝浦工業大学は今までどのような人がいましたか?"
+    )
+    low_level = EvidenceLink(
+        evidence_id="cast-search-v1-1234567890abcdef",
+        title="CAST検索から導出した匿名集計",
+        source_type="career",
+        locator="orbit-cast://search/1234567890abcdef",
+        data_classification="personal",
+    )
+    high_level = EvidenceLink(
+        evidence_id="cast-career-search-v1-1234567890abcdef",
+        title="CAST横断検索から導出した匿名集計",
+        source_type="career",
+        locator="orbit-cast://career-search/1234567890abcdef",
+        data_classification="personal",
+    )
+
+    assert trace.mark_evidence([low_level]).missing_required_sources == frozenset({"cast"})
+    assert trace.mark_evidence([high_level]).missing_required_sources == frozenset()
+
+
 def test_duplicate_tool_fingerprint_is_stable_for_mapping_order() -> None:
     first = tool_call_fingerprint("cast_career_search", {"b": 2, "a": [1, 2]})
     second = tool_call_fingerprint("cast_career_search", {"a": [1, 2], "b": 2})

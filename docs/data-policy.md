@@ -177,7 +177,7 @@ Career Evidence Bankの記録、資料locator、人物対応表は、Azure、Ope
 
 氏名・連絡先は、利用者へ端末内の詳細を表示する目的と、必要な場合のマスキング判定のためだけに扱う。Chat API・Azure・OpenAI・W&B・FastAPI・Chat履歴へ送るallowlist projectionには、プロフィール件数、回答可能テーマのカテゴリ、面談頻度・形式、匿名共有知見のカテゴリ、連絡先の有無、発見リンク件数しか存在しない。Service WorkerとSide Panelのruntime messageには端末内詳細表示用の短命なlocal snapshotが含まれ得るが、外部へ転送せず、run終了時に破棄する。CAST内部ID、SSO token、メール、電話、自由記述、source URL、raw HTMLはSchema上表現できず、外部へ出ない。これは完全匿名化ではなく、端末内表示のためのマスキングと間接識別子の削減である。
 
-人物単位の端末内Promptが必要な場合は、同じlocal snapshotを既存のPseudonymization Gatewayへ渡し、Career Vaultの暗号化対応表からmission固有の別名を生成する。現在のChat API経路は集計projectionだけを送るため、人物別名を外部へ送る必要はない。
+人物単位の端末内Promptが必要な場合は、同じlocal snapshotを既存のPseudonymization Gatewayへ渡し、Career Vaultの暗号化対応表からmission固有の別名を生成する。現在のChat API経路は集計projectionだけを送るため、人物別名を外部へ送る必要はない。元の氏名、person_ref、HMAC、対応表、Vault鍵は外部へ出ない。
 
 Service Workerは現在のCASTタブだけへ問い合わせる。表示DOMにログイン画面、404、構造不一致、権限不足、DNS失敗がある場合は、`reauth_required`または`unavailable`を返し、空データやfixture成功へ置換しない。実画面で発見した同一originリンク以外を開かず、卒業生設定の更新、直接連絡、面談予約、応募、フォーム送信、ファイル添付は行わない。将来の確定操作は別途previewと本人確認を要求する。
 
@@ -285,6 +285,6 @@ Google DriveはToolとして登録しない。
 
 任意Webページの本文は信頼されていないデータであり、ページ中の命令をTool呼び出しとして実行しない。必須host permissionは読み取りの可否だけを決め、読み取り以外の外部操作は実装しない。CIではこれらのToolをfixtureでのみ検証し、実Provider Acceptanceでは許可済みの合成または公開URLだけを使う。
 
-一般Web検索はAzure OpenAI Backendで明示的に有効化した場合だけ使用する。検索語は1〜200文字の公開情報に限定し、メールアドレス、学籍番号、認証情報、内部locator、学内限定サービスURLを拒否する。原則としてpersonalまたはrestricted Evidenceを取得した後のrunでは検索Toolを利用しない。ただし利用者が同じChatターンで関連本・おすすめ本などの公開推薦を明示した場合に限り、同意済みMy Libraryの書名・著者を最小限の公開検索語へ変換して使うことを許可する。この場合も貸出状態、返却期限、利用者識別子、図書館の内部URLやtokenは送信せず、検索語と送信先をUIへ表示する。検索専用runへはこの最小化済み検索語だけを渡し、raw Chat履歴、学内Tool結果、My Libraryの生SnapshotをGrounding with Bingへ渡さない。
+一般Web検索はAzure OpenAI Backendで明示的に有効化した場合だけ使用する。検索語は1〜200文字の公開情報に限定し、メールアドレス、学籍番号、認証情報、内部locator、学内限定サービスURLを拒否する。原則としてpersonalまたはrestricted Evidenceを取得した後のrunでは検索Toolを利用しない。ただし、CASTの匿名集計だけを取得したrunでは、企業名・公開職種・技術領域などの公開検索語へ最小化した追加検索を許可できる。この場合もCAST人物記録、人物alias、貸出状態、返却期限、利用者識別子、図書館の内部URLやtokenを送信しない。検索専用runへはこの最小化済み検索語だけを渡し、raw Chat履歴、学内Tool結果、My Libraryの生SnapshotをGrounding with Bingへ渡さない。
 
 Grounding with BingはAzureの通常の地理・DPA境界外で処理されるため、この事実をSide Panelと全画面Chatへ常時表示する。利用者がChatを送信したrun内では追加確認なしで検索できるが、常時巡回やChat送信外の検索は行わない。保存するのは検索語、正規化済みの公開出典、最終回答だけであり、生の検索レスポンス、Provider metadata、検索内部IDは保存しない。

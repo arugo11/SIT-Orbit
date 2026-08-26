@@ -89,6 +89,7 @@ from .pydantic_ai_backend import (
     ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
+    _default_cast_career_search_arguments,
     is_derived_cast_alumni_evidence,
     is_derived_cast_evidence,
     is_derived_cast_search_evidence,
@@ -1914,6 +1915,25 @@ class ChatRunService:
                     "Live SCombZ tools require Azure OpenAI with observability off."
                 )
         manifest = request.context_manifest
+        initial_context = list(manifest.evidence) if manifest is not None else []
+        required_trace = research_trace_for_message(
+            request.message, request.history
+        ).mark_evidence(initial_context)
+        if (
+            "cast" in required_trace.missing_required_sources
+            and CAST_CAREER_SEARCH_TOOL_NAME not in advertised
+        ):
+            return _canonical_response(
+                ChatDraft(
+                    content_markdown=(
+                        "この質問は芝浦工業大学の就職・卒業生情報を含むため、"
+                        "ログイン済みCASTの横断検索が必要です。"
+                        "拡張機能を更新してCAST検索を有効にしてから再試行してください。"
+                    )
+                ),
+                [],
+                action_id_prefix="act-chat",
+            )
         logger.info(
             "chat_start backend=%s advertised_tools=%s context_evidence=%d library_records=%d",
             type(backend).__name__,
@@ -1950,7 +1970,37 @@ class ChatRunService:
             manifest.evidence if manifest is not None else [],
             execution.generated_evidence,
         )
+        required_trace = required_trace.mark_evidence(context)
         if execution.draft is not None:
+            if (
+                "cast" in required_trace.missing_required_sources
+                and CAST_CAREER_SEARCH_TOOL_NAME in advertised
+            ):
+                arguments = _default_cast_career_search_arguments(request.message)
+                deferred = DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"research-cast-{uuid4().hex}",
+                    conversation_id=request.conversation_id,
+                    tool_name=CAST_CAREER_SEARCH_TOOL_NAME,
+                    tool_version=1,
+                    arguments=arguments,
+                    tool_call_count=1,
+                    research_trace=required_trace.register_tool(
+                        CAST_CAREER_SEARCH_TOOL_NAME, arguments
+                    ),
+                )
+                run_id = self.store.put(
+                    backend_name=os.getenv("ORBIT_AGENT_BACKEND", "fixture"),
+                    conversation_id=request.conversation_id,
+                    deferred=deferred,
+                    context=context,
+                    advertised_tools=request.client_tools,
+                    library_context=(
+                        manifest.library_records if manifest is not None else ()
+                    ),
+                    related_books=execution.generated_related_books,
+                )
+                return self._tool_required(run_id, deferred)
             if emit is not None:
                 emit("synthesizing", "回答をまとめています", 0, None)
             return _canonical_response(
@@ -1962,9 +2012,6 @@ class ChatRunService:
             )
         if execution.deferred is None:
             raise RuntimeError("The chat agent returned neither a response nor a tool request.")
-        required_trace = research_trace_for_message(request.message, request.history).mark_evidence(
-            context
-        )
         current_trace = execution.deferred.research_trace
         if not current_trace.request_message:
             current_trace = required_trace

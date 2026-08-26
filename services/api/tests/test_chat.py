@@ -1008,6 +1008,29 @@ def test_fixture_chat_route_runs_one_cast_career_cross_search(monkeypatch) -> No
     assert "company_code" not in second.text
 
 
+def test_campus_career_question_does_not_complete_without_cast_capability(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-cast-capability-missing",
+                "message": (
+                    "MLエンジニアとしては芝浦工業大学は今までどのような人がいましたか?"
+                ),
+                "history": [],
+                "client_tools": [{"name": "browser_read_url", "version": 1}],
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert "CAST" in payload["message"]["content_markdown"]
+    assert payload["message"]["evidence"] == []
+
+
 def test_chat_request_accepts_the_extension_read_only_capability_set() -> None:
     names: list[ChatToolName] = [
         "scombz_page_summary",
