@@ -15,7 +15,12 @@ import {
   isLibraryItemReadResult,
   isMoodleReadResult,
   isMyLibraryReadResult,
+  isScombzCourseListResult,
+  isScombzCourseReadResult,
+  isScombzMaterialSearchResult,
+  isScombzPortalReadResult,
   isSitrusGradeResult,
+  isSyllabusReadResult,
 } from "./client";
 
 const proposal = {
@@ -850,5 +855,123 @@ describe("AgentApiClient", () => {
       }),
     ).rejects.toThrow("Action ID must not be empty.");
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("validates all typed SCombZ projections and rejects hidden identifiers", () => {
+    const coverage = {
+      scope: "fixture",
+      requested: 1,
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      truncated: false,
+      next_cursor: null,
+    };
+    const course = {
+      course_ref: "orbit-scombz://course/1234567890abcdef",
+      display_name: "自然言語処理",
+      academic_year: 2026,
+      term: "春",
+      weekday: "金",
+      period: "3",
+      citation_uri: "orbit-scombz://citation/1234567890abcdef",
+    };
+    const common = {
+      schema_version: "v1" as const,
+      status: "known" as const,
+      coverage,
+      observed_at: "2026-08-28T00:00:00Z",
+      reason_code: null,
+    };
+    expect(isScombzCourseListResult({ ...common, courses: [course] })).toBe(
+      true,
+    );
+    expect(
+      isScombzPortalReadResult({
+        ...common,
+        items: [
+          {
+            ref: "orbit-scombz://item/1234567890abcdef",
+            section: "announcements",
+            title: "授業連絡",
+            detail: null,
+            observed_at: common.observed_at,
+            citation_uri: "orbit-scombz://citation/1234567890abcdef",
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      isScombzCourseReadResult({
+        ...common,
+        items: [
+          {
+            ref: "orbit-scombz://item/1234567890abcdef",
+            course_ref: course.course_ref,
+            section: "課題",
+            title: "レポート",
+            body: null,
+            due_at: null,
+            state: null,
+            has_pdf: false,
+            observed_at: common.observed_at,
+            citation_uri: "orbit-scombz://citation/1234567890abcdef",
+          },
+        ],
+        section_states: { 課題: "complete" },
+      }),
+    ).toBe(true);
+    expect(
+      isScombzMaterialSearchResult({
+        ...common,
+        hits: [
+          {
+            material_ref: "orbit-scombz://material/1234567890abcdef",
+            course_ref: course.course_ref,
+            material_title: "講義資料.pdf",
+            page: 2,
+            quote: "形態素解析の説明",
+            observed_at: common.observed_at,
+            citation_uri: "orbit-scombz://citation/1234567890abcdef-p2",
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      isScombzCourseListResult({
+        ...common,
+        courses: [{ ...course, internal_id: "secret" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("validates syllabus detail refs and blocks URL/ref substitutions", () => {
+    const detail = {
+      schema_version: "v1" as const,
+      status: "known" as const,
+      syllabus_ref: "orbit-syllabus://result/1234567890abcdef",
+      url: "https://syllabus.sic.shibaura-it.ac.jp/course/1",
+      course_code: "A0001",
+      title: "自然言語処理",
+      instructors: ["公開教員"],
+      objectives: "目的",
+      weekly_plan: ["第1回"],
+      evaluation: "試験",
+      textbooks: ["教科書"],
+      prerequisites: "線形代数",
+      observed_at: "2026-08-28T00:00:00Z",
+      reason_code: null,
+      citation_uri: "orbit-syllabus://citation/1234567890abcdef",
+    };
+    expect(isSyllabusReadResult(detail)).toBe(true);
+    expect(
+      isSyllabusReadResult({
+        ...detail,
+        url: "https://evil.example/course/1",
+      }),
+    ).toBe(false);
+    expect(isSyllabusReadResult({ ...detail, syllabus_url: detail.url })).toBe(
+      false,
+    );
   });
 });

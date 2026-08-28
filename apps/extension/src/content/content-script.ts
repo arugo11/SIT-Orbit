@@ -1,6 +1,8 @@
 import {
   isCastSearchMessage,
   isRequestPageContextMessage,
+  isScombzSourceIdentityMessage,
+  isScombzStudentReadMessage,
   MESSAGE_TYPES,
 } from "../shared/messages";
 import {
@@ -9,6 +11,11 @@ import {
 } from "./cast-alumni-reader";
 import { runCastSearch } from "./cast-search-api";
 import { parseScombzPageContext } from "./page-context";
+import {
+  CONTENT_SCRIPT_GENERATION,
+  readScombzStudent,
+  ADAPTER_VERSION as SCOMBZ_ADAPTER_VERSION,
+} from "./scombz-student-reader";
 
 function readPageContext() {
   return parseScombzPageContext(
@@ -46,6 +53,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (isCastSearchMessage(message)) {
     const { type: _type, tool_call_id: _toolCallId, ...request } = message;
     void runCastSearch(request).then(sendResponse);
+    return true;
+  }
+  if (isScombzSourceIdentityMessage(message)) {
+    sendResponse({
+      generation: CONTENT_SCRIPT_GENERATION,
+      adapter_version: SCOMBZ_ADAPTER_VERSION,
+    });
+    return;
+  }
+  if (isScombzStudentReadMessage(message)) {
+    void readScombzStudent(message).then(sendResponse);
     return true;
   }
   if (!isRequestPageContextMessage(message)) {

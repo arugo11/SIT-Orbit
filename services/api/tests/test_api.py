@@ -43,6 +43,7 @@ def test_capabilities_report_the_configured_personal_data_boundary(
     backend: str,
     allowed: bool,
 ) -> None:
+    monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
     with TestClient(app) as client:
         response = client.get("/v1/capabilities")
@@ -52,6 +53,44 @@ def test_capabilities_report_the_configured_personal_data_boundary(
         "agent_backend": backend,
         "my_library_personal_context": allowed,
     }
+
+
+@pytest.mark.parametrize(
+    ("backend", "mode", "observability", "live_tools"),
+    [
+        ("fixture", "off", "off", False),
+        ("azure_openai", "fixture", "off", False),
+        ("azure_openai", "live", "wandb", False),
+        ("azure_openai", "live", "off", True),
+    ],
+)
+def test_chat_capabilities_gate_live_scombz_tools(
+    monkeypatch,
+    backend: str,
+    mode: str,
+    observability: str,
+    live_tools: bool,
+) -> None:
+    monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
+    monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", mode)
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", observability)
+    if observability == "wandb":
+        monkeypatch.setattr(orbit_main, "init_observability", lambda: False)
+    with TestClient(app) as client:
+        response = client.get("/v1/chat/capabilities")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == "v1"
+    assert body["max_client_tools"] == 32
+    names = set(body["supported_client_tools"])
+    live_names = {
+        "scombz_course_list",
+        "scombz_portal_read",
+        "scombz_course_read",
+        "scombz_material_search",
+    }
+    assert bool(names & live_names) is live_tools
 
 
 def test_api_token_protects_v1_routes_but_not_health(monkeypatch) -> None:
@@ -77,6 +116,21 @@ def test_api_token_protects_v1_routes_but_not_health(monkeypatch) -> None:
     assert missing.headers["www-authenticate"] == "Bearer"
     assert wrong.status_code == 401
     assert accepted.status_code == 200
+
+
+def test_chat_capabilities_requires_the_same_authenticated_session(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_API_TOKEN", "test-chat-capability-token")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", "live")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        assert client.get("/v1/chat/capabilities").status_code == 401
+        response = client.get(
+            "/v1/chat/capabilities",
+            headers={"Authorization": "Bearer test-chat-capability-token"},
+        )
+    assert response.status_code == 200
+    assert response.json()["scombz_student_read_mode"] == "live"
 
 
 def test_configured_extension_origin_can_complete_cors_preflight(monkeypatch) -> None:

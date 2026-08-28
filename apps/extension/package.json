@@ -10,10 +10,13 @@
   "dependencies": {
     "@sit-orbit/api-client": "workspace:*",
     "cytoscape": "3.34.1",
+    "encoding-japanese": "^2.2.0",
     "hash-wasm": "4.12.0",
     "minisearch": "7.2.0",
+    "pdfjs-dist": "^5.7.284",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "tesseract.js": "^6.0.1"
   },
   "devDependencies": {
     "@types/chrome": "0.2.5",

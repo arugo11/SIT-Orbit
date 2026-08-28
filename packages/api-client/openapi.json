@@ -84,6 +84,25 @@
         }
       }
     },
+    "/v1/chat/capabilities": {
+      "get": {
+        "summary": "Chat Capabilities",
+        "description": "Return the authenticated Chat contract used for capability intersection.\n\nThe legacy capabilities endpoint above is intentionally untouched.  This\nendpoint is a stricter, versioned advertisement for the extension and is\nfail-closed for live SCombZ student reads.",
+        "operationId": "chat_capabilities_v1_chat_capabilities_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatCapabilities"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/agent/runs": {
       "post": {
         "summary": "Start Agent Run",
@@ -1614,6 +1633,89 @@
         ],
         "title": "ChatAssistantMessage"
       },
+      "ChatCapabilities": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "agent_backend": {
+            "type": "string",
+            "enum": [
+              "fixture",
+              "openai",
+              "azure_openai"
+            ],
+            "title": "Agent Backend"
+          },
+          "observability": {
+            "type": "string",
+            "enum": [
+              "off",
+              "wandb"
+            ],
+            "title": "Observability"
+          },
+          "scombz_student_read_mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "fixture",
+              "live"
+            ],
+            "title": "Scombz Student Read Mode"
+          },
+          "supported_client_tools": {
+            "items": {
+              "type": "string",
+              "enum": [
+                "scombz_page_summary",
+                "scombz_read",
+                "scombz_course_list",
+                "scombz_portal_read",
+                "scombz_course_read",
+                "scombz_material_search",
+                "google_calendar_availability",
+                "syllabus_search",
+                "syllabus_read",
+                "browser_read_url",
+                "sitrus_read",
+                "moodle_read",
+                "my_library_read",
+                "cast_read",
+                "cast_alumni_read",
+                "cast_search",
+                "library_catalog_search",
+                "library_item_read",
+                "library_catalog_browse",
+                "library_discovery_search",
+                "library_action_options"
+              ]
+            },
+            "type": "array",
+            "maxItems": 32,
+            "title": "Supported Client Tools"
+          },
+          "max_client_tools": {
+            "type": "integer",
+            "maximum": 32.0,
+            "minimum": 1.0,
+            "title": "Max Client Tools"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "agent_backend",
+          "observability",
+          "scombz_student_read_mode",
+          "max_client_tools"
+        ],
+        "title": "ChatCapabilities",
+        "description": "Authenticated capability advertisement for the Chat extension.\n\nThe legacy ``/v1/capabilities`` response intentionally remains stable for\nolder clients.  Chat clients use this richer projection to compute the\nintersection of locally available tools and the deployed server contract."
+      },
       "ChatClientTool": {
         "properties": {
           "name": {
@@ -1621,8 +1723,13 @@
             "enum": [
               "scombz_page_summary",
               "scombz_read",
+              "scombz_course_list",
+              "scombz_portal_read",
+              "scombz_course_read",
+              "scombz_material_search",
               "google_calendar_availability",
               "syllabus_search",
+              "syllabus_read",
               "browser_read_url",
               "sitrus_read",
               "moodle_read",
@@ -1850,7 +1957,7 @@
               "$ref": "#/components/schemas/ChatClientTool"
             },
             "type": "array",
-            "maxItems": 15,
+            "maxItems": 32,
             "title": "Client Tools"
           },
           "context_manifest": {
@@ -1917,8 +2024,13 @@
             "enum": [
               "scombz_page_summary",
               "scombz_read",
+              "scombz_course_list",
+              "scombz_portal_read",
+              "scombz_course_read",
+              "scombz_material_search",
               "google_calendar_availability",
               "syllabus_search",
+              "syllabus_read",
               "browser_read_url",
               "sitrus_read",
               "moodle_read",
@@ -1967,8 +2079,13 @@
             "enum": [
               "scombz_page_summary",
               "scombz_read",
+              "scombz_course_list",
+              "scombz_portal_read",
+              "scombz_course_read",
+              "scombz_material_search",
               "google_calendar_availability",
               "syllabus_search",
+              "syllabus_read",
               "browser_read_url",
               "sitrus_read",
               "moodle_read",
@@ -2001,7 +2118,22 @@
                 "$ref": "#/components/schemas/ScombzReadResult"
               },
               {
+                "$ref": "#/components/schemas/ScombzCourseListResult"
+              },
+              {
+                "$ref": "#/components/schemas/ScombzPortalReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/ScombzCourseReadResult"
+              },
+              {
+                "$ref": "#/components/schemas/ScombzMaterialSearchResult"
+              },
+              {
                 "$ref": "#/components/schemas/SyllabusSearchResult"
+              },
+              {
+                "$ref": "#/components/schemas/SyllabusReadResult"
               },
               {
                 "$ref": "#/components/schemas/BrowserReadResult"
@@ -3592,6 +3724,502 @@
         ],
         "title": "ReserveOperation"
       },
+      "ScombzCourseListResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "partial",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "courses": {
+            "items": {
+              "$ref": "#/components/schemas/ScombzCourseSummary"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Courses"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/ScombzCoverage"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "coverage",
+          "observed_at"
+        ],
+        "title": "ScombzCourseListResult"
+      },
+      "ScombzCourseReadItem": {
+        "properties": {
+          "ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-scombz://item/[A-Za-z0-9_-]{16,128}$",
+            "title": "Ref"
+          },
+          "course_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-scombz://course/[A-Za-z0-9_-]{16,128}$",
+            "title": "Course Ref"
+          },
+          "section": {
+            "type": "string",
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Section"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 6000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "has_pdf": {
+            "type": "boolean",
+            "title": "Has Pdf",
+            "default": false
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
+          "citation_uri": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation Uri"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "course_ref",
+          "section",
+          "title",
+          "observed_at"
+        ],
+        "title": "ScombzCourseReadItem"
+      },
+      "ScombzCourseReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "partial",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScombzCourseReadItem"
+            },
+            "type": "array",
+            "maxItems": 250,
+            "title": "Items"
+          },
+          "section_states": {
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "complete",
+                "truncated",
+                "failed",
+                "not_requested"
+              ]
+            },
+            "type": "object",
+            "maxProperties": 20,
+            "title": "Section States"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/ScombzCoverage"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "coverage",
+          "observed_at"
+        ],
+        "title": "ScombzCourseReadResult"
+      },
+      "ScombzCourseSummary": {
+        "properties": {
+          "course_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-scombz://course/[A-Za-z0-9_-]{16,128}$",
+            "title": "Course Ref"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Display Name"
+          },
+          "academic_year": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 2100.0,
+                "minimum": 2000.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Academic Year"
+          },
+          "term": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Term"
+          },
+          "weekday": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Weekday"
+          },
+          "period": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Period"
+          },
+          "citation_uri": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation Uri"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "course_ref",
+          "display_name"
+        ],
+        "title": "ScombzCourseSummary"
+      },
+      "ScombzCoverage": {
+        "properties": {
+          "scope": {
+            "type": "string",
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Scope"
+          },
+          "requested": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Requested"
+          },
+          "attempted": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Attempted"
+          },
+          "succeeded": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Succeeded"
+          },
+          "failed": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Failed"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated",
+            "default": false
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "scope",
+          "requested",
+          "attempted",
+          "succeeded",
+          "failed"
+        ],
+        "title": "ScombzCoverage",
+        "description": "Bounded coverage report for cross-course SCombZ reads."
+      },
+      "ScombzMaterialSearchHit": {
+        "properties": {
+          "material_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-scombz://material/[A-Za-z0-9_-]{16,128}$",
+            "title": "Material Ref"
+          },
+          "course_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-scombz://course/[A-Za-z0-9_-]{16,128}$",
+            "title": "Course Ref"
+          },
+          "material_title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Material Title"
+          },
+          "page": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Page"
+          },
+          "quote": {
+            "type": "string",
+            "maxLength": 1800,
+            "minLength": 1,
+            "title": "Quote"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
+          "citation_uri": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation Uri"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "material_ref",
+          "course_ref",
+          "material_title",
+          "page",
+          "quote",
+          "observed_at"
+        ],
+        "title": "ScombzMaterialSearchHit"
+      },
+      "ScombzMaterialSearchResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "partial",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "hits": {
+            "items": {
+              "$ref": "#/components/schemas/ScombzMaterialSearchHit"
+            },
+            "type": "array",
+            "maxItems": 24,
+            "title": "Hits"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/ScombzCoverage"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "coverage",
+          "observed_at"
+        ],
+        "title": "ScombzMaterialSearchResult"
+      },
       "ScombzPageSummaryResult": {
         "properties": {
           "route": {
@@ -3641,6 +4269,125 @@
         ],
         "title": "ScombzPageSummaryResult",
         "description": "A minimized summary of the currently displayed ScombZ page.\n\nThis deliberately has no title, URL, course name, item, link, HTML, or\nbrowser token field.  The tool name and version are carried by the\nsurrounding deferred-tool result envelope."
+      },
+      "ScombzPortalItem": {
+        "properties": {
+          "ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-scombz://item/[A-Za-z0-9_-]{16,128}$",
+            "title": "Ref"
+          },
+          "section": {
+            "type": "string",
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Section"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 1,
+            "title": "Title"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 3000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
+          "citation_uri": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation Uri"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "ref",
+          "section",
+          "title",
+          "observed_at"
+        ],
+        "title": "ScombzPortalItem"
+      },
+      "ScombzPortalReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "partial",
+              "reauth_required",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ScombzPortalItem"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Items"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/ScombzCoverage"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "coverage",
+          "observed_at"
+        ],
+        "title": "ScombzPortalReadResult"
       },
       "ScombzReadAnnouncement": {
         "properties": {
@@ -4157,8 +4904,169 @@
         "title": "SitrusGradeResult",
         "description": "In-memory SITRUS projection; the PDF and student identity are omitted."
       },
+      "SyllabusReadResult": {
+        "properties": {
+          "schema_version": {
+            "type": "string",
+            "const": "v1",
+            "title": "Schema Version",
+            "default": "v1"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "known",
+              "unavailable"
+            ],
+            "title": "Status"
+          },
+          "syllabus_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-syllabus://result/[A-Za-z0-9_-]{16,128}$",
+            "title": "Syllabus Ref"
+          },
+          "url": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Url"
+          },
+          "course_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Course Code"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "instructors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Instructors"
+          },
+          "objectives": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 6000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Objectives"
+          },
+          "weekly_plan": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 60,
+            "title": "Weekly Plan"
+          },
+          "evaluation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 3000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation"
+          },
+          "textbooks": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "title": "Textbooks"
+          },
+          "prerequisites": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Prerequisites"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "citation_uri": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation Uri"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status",
+          "syllabus_ref",
+          "url",
+          "observed_at"
+        ],
+        "title": "SyllabusReadResult"
+      },
       "SyllabusResult": {
         "properties": {
+          "syllabus_ref": {
+            "type": "string",
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "^orbit-syllabus://result/[A-Za-z0-9_-]{16,128}$",
+            "title": "Syllabus Ref"
+          },
           "title": {
             "type": "string",
             "maxLength": 300,
@@ -4206,11 +5114,24 @@
               }
             ],
             "title": "Snippet"
+          },
+          "citation_uri": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 240
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Citation Uri"
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
+          "syllabus_ref",
           "title",
           "url"
         ],

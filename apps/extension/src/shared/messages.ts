@@ -61,6 +61,9 @@ export const MESSAGE_TYPES = {
   workspaceSourceUnavailable: "workspace-source-unavailable",
   browserRead: "browser-read",
   syllabusSearch: "syllabus-search",
+  scombzPin: "scombz-pin",
+  scombzSourceIdentity: "scombz-source-identity",
+  scombzStudentRead: "scombz-student-read",
   sitrusRead: "sitrus-read",
   moodleRead: "moodle-read",
   moodleOpen: "moodle-open",
@@ -140,6 +143,117 @@ export interface SyllabusSearchMessage {
   query: string;
   year?: number | null;
   faculty?: string | null;
+}
+
+export type ScombzStudentAction =
+  | "course_list"
+  | "portal_read"
+  | "course_read"
+  | "material_search";
+
+export interface ScombzStudentReadMessage {
+  type: typeof MESSAGE_TYPES.scombzStudentRead;
+  tool_call_id: string;
+  conversation_id: string;
+  action: ScombzStudentAction;
+  arguments: Record<string, unknown>;
+  /** Internal binding fields added by the service worker only. */
+  content_script_generation?: string;
+  adapter_version?: "scombz-student-v1";
+}
+
+export interface ScombzPinMessage {
+  type: typeof MESSAGE_TYPES.scombzPin;
+  conversation_id: string;
+}
+
+export interface ScombzSourceIdentityMessage {
+  type: typeof MESSAGE_TYPES.scombzSourceIdentity;
+}
+
+export interface ScombzSourceIdentityResponse {
+  generation: string;
+  adapter_version: "scombz-student-v1";
+}
+
+export function isScombzSourceIdentityMessage(
+  value: unknown,
+): value is ScombzSourceIdentityMessage {
+  return isRecord(value) && value.type === MESSAGE_TYPES.scombzSourceIdentity;
+}
+
+export type ScombzPinResponse =
+  | { status: "pinned" }
+  | { status: "unavailable"; reason_code: string };
+
+export function isScombzPinMessage(value: unknown): value is ScombzPinMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ScombzPinMessage>;
+  return (
+    candidate.type === MESSAGE_TYPES.scombzPin &&
+    typeof candidate.conversation_id === "string" &&
+    candidate.conversation_id.length > 0
+  );
+}
+
+export interface ScombzStudentReadProjection {
+  schema_version: "v1";
+  status: "known" | "partial" | "reauth_required" | "unavailable";
+  coverage?: {
+    scope: string;
+    requested: number;
+    attempted: number;
+    succeeded: number;
+    failed: number;
+    truncated: boolean;
+    next_cursor: string | null;
+  };
+  [key: string]: unknown;
+}
+
+export type ScombzStudentReadResponse = {
+  status: "known" | "partial" | "reauth_required" | "unavailable";
+  projection: ScombzStudentReadProjection;
+  reason_code?: string | null;
+};
+
+export function isScombzStudentReadResponse(
+  value: unknown,
+): value is ScombzStudentReadResponse {
+  if (!isRecord(value)) return false;
+  if (
+    !["known", "partial", "reauth_required", "unavailable"].includes(
+      value.status as string,
+    ) ||
+    !isRecord(value.projection) ||
+    value.projection.schema_version !== "v1" ||
+    value.projection.status !== value.status ||
+    typeof value.projection.observed_at !== "string"
+  ) {
+    return false;
+  }
+  return (
+    value.reason_code === undefined ||
+    value.reason_code === null ||
+    typeof value.reason_code === "string"
+  );
+}
+
+export function isScombzStudentReadMessage(
+  value: unknown,
+): value is ScombzStudentReadMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ScombzStudentReadMessage>;
+  return (
+    candidate.type === MESSAGE_TYPES.scombzStudentRead &&
+    typeof candidate.tool_call_id === "string" &&
+    typeof candidate.conversation_id === "string" &&
+    ["course_list", "portal_read", "course_read", "material_search"].includes(
+      candidate.action as string,
+    ) &&
+    typeof candidate.arguments === "object" &&
+    candidate.arguments !== null
+  );
 }
 
 export interface SitrusReadMessage {
@@ -417,6 +531,9 @@ export type ExtensionMessage =
   | WorkspaceSourceUnavailableMessage
   | BrowserReadMessage
   | SyllabusSearchMessage
+  | ScombzSourceIdentityMessage
+  | ScombzPinMessage
+  | ScombzStudentReadMessage
   | SitrusReadMessage
   | MoodleReadMessage
   | MoodleOpenMessage

@@ -29,6 +29,13 @@ export interface ChatConversation {
   updatedAt: string;
   messages: ChatTimelineMessage[];
   contextManifest: ChatContextManifest;
+  processing_scope:
+    | "none"
+    | "personal/scombz_student"
+    | "public/syllabus"
+    | "mixed";
+  provider_destination: "local" | "azure_openai" | "none";
+  history_eligible: boolean;
 }
 
 export interface ChatContextManifest {
@@ -75,12 +82,30 @@ const RELATED_BOOK_REF_RE =
   /^orbit-book:\/\/candidate\/[A-Za-z0-9_-]{16,128}$/u;
 
 function sanitizeEvidence(item: EvidenceLink): EvidenceLink | null {
+  const opaqueScombzEvidence =
+    item?.data_classification === "personal" && item.source_type === "scombz";
+  const publicOrSynthetic = ["public", "synthetic"].includes(
+    item?.data_classification ?? "",
+  );
+  const opaquePersonalScombz =
+    opaqueScombzEvidence && item.locator.startsWith("orbit-scombz://");
   if (
     !item ||
-    !["public", "synthetic"].includes(item.data_classification) ||
+    (!publicOrSynthetic && !opaquePersonalScombz) ||
     !item.evidence_id ||
     !item.title ||
     !item.locator
+  ) {
+    return null;
+  }
+  if (
+    opaqueScombzEvidence &&
+    (!/^scombz-(?:page-summary|read|course-list|portal-read|course-read|material-search)-v1-[A-Za-z0-9_-]{16,200}$/u.test(
+      item.evidence_id,
+    ) ||
+      !/^orbit-scombz:\/\/(?:read|citation)\/[A-Za-z0-9_-]{16,128}$/u.test(
+        item.locator,
+      ))
   ) {
     return null;
   }
@@ -362,6 +387,23 @@ function sanitizeConversation(
       sanitizeMessage(message, contextManifest),
     ),
     contextManifest,
+    processing_scope:
+      conversation.processing_scope === "personal/scombz_student" ||
+      conversation.processing_scope === "public/syllabus" ||
+      conversation.processing_scope === "mixed"
+        ? conversation.processing_scope
+        : "none",
+    provider_destination:
+      conversation.provider_destination === "azure_openai" ||
+      conversation.provider_destination === "local" ||
+      conversation.provider_destination === "none"
+        ? conversation.provider_destination
+        : "none",
+    // Conversations written before the processing metadata existed are
+    // deliberately ineligible for provider history.  They may still be
+    // displayed locally, but their unclassified transcript/evidence must not
+    // silently cross the Azure boundary.
+    history_eligible: conversation.history_eligible === true,
   };
 }
 
@@ -706,5 +748,8 @@ export function newConversation(): ChatConversation {
       library_records: [],
       related_books: [],
     },
+    processing_scope: "none",
+    provider_destination: "none",
+    history_eligible: true,
   };
 }

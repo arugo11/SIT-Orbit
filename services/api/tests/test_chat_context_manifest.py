@@ -158,6 +158,27 @@ def test_manifest_repairs_identical_duplicate_evidence() -> None:
     assert manifest.evidence == [evidence]
 
 
+def test_manifest_allows_only_opaque_scombz_personal_evidence() -> None:
+    evidence = EvidenceLink(
+        evidence_id="scombz-course-read-v1-1234567890abcdef",
+        title="SCombZ授業情報（確認時点）",
+        source_type="scombz",
+        locator="orbit-scombz://citation/1234567890abcdef",
+        data_classification="personal",
+    )
+    manifest = ChatContextManifest(evidence=[evidence])
+    assert manifest.evidence == [evidence]
+
+    with pytest.raises(ValidationError):
+        ChatContextManifest(
+            evidence=[
+                evidence.model_copy(
+                    update={"locator": "https://scombz.shibaura-it.ac.jp/lms/course"}
+                )
+            ]
+        )
+
+
 def test_chat_request_repairs_identical_duplicate_manifest_evidence() -> None:
     evidence = {
         "evidence_id": "context-request-duplicate",

@@ -146,6 +146,14 @@ SIT ORBITでは、同プロジェクトのDOM Adapter、キャッシュ、メッ
 
 ただし、ScombZ Utilitiesはページ内へウィジェットを注入する構成であり、SIT ORBITのAgent UIはChrome標準Side Panelへ置く。
 
+### SCombZ Student Read Agent
+
+質問時に固定した認証済みSCombZタブから、`scombz_course_list`、`scombz_portal_read`、`scombz_course_read`、`scombz_material_search`をDeferred Toolとして実行する。Content Scriptは正規HTMLをsame-originで再取得し、Utilitiesが表示DOMへ加えた要素を入力にしない。年・学期の選択肢、可視leaf、read-only POSTだけをallowlist化し、提出・回答・出席・テスト開始系のactionは表現できない。
+
+各結果は`known | partial | reauth_required | unavailable`、`observed_at`、section別coverage、件数、cursorを持つ。内部ID・CSRF・Cookie・一時URLは30分以内の短命Private Handleへ隔離し、タブ、conversation、adapter versionに束縛する。Evidenceはpending call固有のIDへ直接結合し、同一Toolの再実行で取り違えない。
+
+教材PDFは拡張へ同梱したPDF.jsで端末内抽出し、文字層が不足するページだけローカルOCRを使う。1段の上限は20ファイル、100MB、300ページで、超過はpartialとcursorを返す。Azureへは関連上位本文のみを送る。公開シラバスは公式Namazuの`/namazu/namazu.cgi`へEUC-JP percent encodingで接続し、完全一致候補を`syllabus_search`、選択後の構造化詳細を`syllabus_read`で返す。
+
 ## Agentの境界
 
 既存のPydanticモデルをAPI契約の正本とする。

@@ -41,6 +41,10 @@ import {
   projectScombzPageSummary,
 } from "../content/page-context";
 import {
+  clearScombzStudentSessionConsent,
+  grantScombzStudentSessionConsent,
+} from "../content/scombz-consent";
+import {
   type CalendarCommand,
   type CastReadResponse,
   calendarCommandMessage,
@@ -952,6 +956,7 @@ export function App({
   workspaceSession,
 }: AppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const settingsCloseButtonRef = useRef<HTMLButtonElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsDrawerRef = useRef<HTMLElement>(null);
@@ -1623,6 +1628,20 @@ export function App({
     );
   };
 
+  const grantScombzConsent = async (): Promise<void> => {
+    await grantScombzStudentSessionConsent();
+    setSettingsMessage(
+      "SCombZの授業情報と抽出済みPDF本文を、必要な範囲だけAzure OpenAIへ送る同意を記録しました。",
+    );
+  };
+
+  const clearScombzConsent = async (): Promise<void> => {
+    await clearScombzStudentSessionConsent();
+    setSettingsMessage(
+      "SCombZの共有同意を解除しました。次回の読み取り時に再確認します。",
+    );
+  };
+
   const requestProposal = async (): Promise<void> => {
     dispatch({ type: "propose-started" });
     try {
@@ -1951,6 +1970,30 @@ export function App({
               読み取りは必要なToolが選ばれたときだけ行い、Chromeのサイト権限は拡張機能のインストール時に確認します。
               外部サービスの変更・送信だけは実行前に確認します。
             </p>
+            {settingsMessage ? (
+              <p className="settings-message">{settingsMessage}</p>
+            ) : null}
+            <p className="settings-message">
+              SCombZの授業情報と抽出済みPDF本文を、必要な範囲だけAzure
+              OpenAIへ送ります。
+              Cookie・生PDF・内部ID・全抽出本文は送信せず、会話終了時に端末内の一時データを破棄します。
+            </p>
+            <div className="button-row">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void grantScombzConsent()}
+              >
+                SCombZ共有に同意
+              </button>
+              <button
+                type="button"
+                className="text-button settings-text-action"
+                onClick={() => void clearScombzConsent()}
+              >
+                SCombZ共有同意を解除
+              </button>
+            </div>
             <button
               type="button"
               className="text-button settings-text-action"

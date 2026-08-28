@@ -40,8 +40,12 @@ OpenAIへ送信できるのは`synthetic`と`public`だけである。
 
 - 利用者のGoogle Calendarから導出した空き時間（`personal`の`calendar`、`orbit-calendar://availability/<opaque>`）
 - 表示中の解析済みScombZページから導出した5項目の概要（`personal`の`scombz`、`orbit-scombz://page-summary/<opaque>`）
+- 質問時に認証済みSCombZから取得した構造化授業・課題・教材本文（`personal/scombz_student`、`orbit-scombz://read/<opaque>`）
+- 公開シラバスの検索・詳細（`public/syllabus`）
 
 Calendarの予定名、ID、参加者、場所、説明、元レスポンス、SCombZのHTML、Cookie、パスワード、ブラウザtokenは送信しない。Web本文はユーザーが明示したrunの間だけ使い、rawページはrun終了時に破棄する。個人データを広く許可するものではなく、これらの固定prefixとサーバー生成のEvidence IDをruntimeで検証する。
+
+SCombZ学生Toolは`ORBIT_AGENT_BACKEND=azure_openai`かつ`ORBIT_OBSERVABILITY=off`の場合だけ広告する。PDFは端末内でPDF.jsと必要時のTesseract.jsによりページ単位で抽出し、生PDF・Cookie・内部ID・CSRF・一時URL・全量本文は外部へ送らない。Azureへ送るのは質問に関連する抽出本文、資料名、ページ番号、取得時刻の上限付きprojectionだけである。PDF本体、抽出全文、OCR画像、索引は保存せず、会話中の短命メモリだけに保持する。学生向けの`personal/scombz_student`と教員向けに将来追加する`restricted/scombz_teaching`は別分類とし、後者を本実装で広告しない。
 
 My Libraryだけは、利用者が個人の貸出・予約などを尋ねるChatを明示的に送信した場合に限り、上記の最小item（タイトル等）をAzure Agentへ送れる狭い例外とする。これは一般のpersonalデータ規則を解除せず、OpenAI/W&Bや別Providerへの送信、Chat送信外の取得を許可しない。OAuth/SSO詳細やraw snapshotは保持しない。
 

@@ -1,21 +1,38 @@
+# Operating system
 .DS_Store
+Thumbs.db
+
+# Local configuration and secrets
 .env
 .env.*
-!.env.example
+!.env*.example
+private_sources/
+
+# Python
 .venv/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .pyright/
+.coverage
+.coverage.*
+htmlcov/
 *.py[cod]
-*.tsbuildinfo
+
+# Node.js and TypeScript
 node_modules/
+*.tsbuildinfo
 .next/
 dist/
 coverage/
 apps/mobile/.expo/
 apps/mobile/web-build/
-apps/mobile/dist/
+
+# Local logs and tool output
+.logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
 evals/results/
-private_sources/
+wandb/

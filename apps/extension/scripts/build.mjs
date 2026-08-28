@@ -112,6 +112,39 @@ await Promise.all([
   ),
 ]);
 
+const ocrDirectory = resolve(outputDirectory, "ocr");
+const ocrLanguageDirectory = resolve(ocrDirectory, "lang");
+await mkdir(ocrLanguageDirectory, { recursive: true });
+await Promise.all([
+  copyFile(
+    resolve(packageRoot, "ocr/worker.min.js"),
+    resolve(ocrDirectory, "worker.min.js"),
+  ),
+  copyFile(
+    resolve(packageRoot, "ocr/tesseract-core.wasm.js"),
+    resolve(ocrDirectory, "tesseract-core.wasm.js"),
+  ),
+  copyFile(
+    resolve(packageRoot, "ocr/tesseract-core.wasm"),
+    resolve(ocrDirectory, "tesseract-core.wasm"),
+  ),
+  copyFile(
+    resolve(packageRoot, "ocr/lang/eng.traineddata.gz"),
+    resolve(ocrLanguageDirectory, "eng.traineddata.gz"),
+  ),
+  copyFile(
+    resolve(packageRoot, "ocr/lang/jpn.traineddata.gz"),
+    resolve(ocrLanguageDirectory, "jpn.traineddata.gz"),
+  ),
+  copyFile(
+    resolve(
+      packageRoot,
+      "node_modules/pdfjs-dist/legacy/build/pdf.worker.min.mjs",
+    ),
+    resolve(outputDirectory, "pdf.worker.min.mjs"),
+  ),
+]);
+
 const manifest = JSON.parse(
   await readFile(resolve(outputDirectory, "manifest.json"), "utf8"),
 );
@@ -142,6 +175,12 @@ const requiredFiles = [
   "workspace.html",
   "workspace.js",
   "styles.css",
+  "pdf.worker.min.mjs",
+  "ocr/worker.min.js",
+  "ocr/tesseract-core.wasm.js",
+  "ocr/tesseract-core.wasm",
+  "ocr/lang/eng.traineddata.gz",
+  "ocr/lang/jpn.traineddata.gz",
 ];
 
 if (
@@ -164,6 +203,13 @@ if (
       "https://sitrus.sic.shibaura-it.ac.jp/*",
       "https://*/*",
       "http://*/*",
+    ]) ||
+  JSON.stringify(manifest.web_accessible_resources) !==
+    JSON.stringify([
+      {
+        resources: ["pdf.worker.min.mjs", "ocr/*"],
+        matches: ["https://scombz.shibaura-it.ac.jp/*"],
+      },
     ]) ||
   manifest.optional_host_permissions !== undefined ||
   manifest.side_panel !== undefined ||

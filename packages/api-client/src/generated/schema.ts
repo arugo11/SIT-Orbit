@@ -55,6 +55,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/chat/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Capabilities
+         * @description Return the authenticated Chat contract used for capability intersection.
+         *
+         *     The legacy capabilities endpoint above is intentionally untouched.  This
+         *     endpoint is a stricter, versioned advertisement for the extension and is
+         *     fail-closed for live SCombZ student reads.
+         */
+        get: operations["chat_capabilities_v1_chat_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agent/runs": {
         parameters: {
             query?: never;
@@ -652,13 +676,48 @@ export interface components {
             /** Related Books */
             related_books?: components["schemas"]["RelatedBookCandidate"][];
         };
+        /**
+         * ChatCapabilities
+         * @description Authenticated capability advertisement for the Chat extension.
+         *
+         *     The legacy ``/v1/capabilities`` response intentionally remains stable for
+         *     older clients.  Chat clients use this richer projection to compute the
+         *     intersection of locally available tools and the deployed server contract.
+         */
+        ChatCapabilities: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Agent Backend
+             * @enum {string}
+             */
+            agent_backend: "fixture" | "openai" | "azure_openai";
+            /**
+             * Observability
+             * @enum {string}
+             */
+            observability: "off" | "wandb";
+            /**
+             * Scombz Student Read Mode
+             * @enum {string}
+             */
+            scombz_student_read_mode: "off" | "fixture" | "live";
+            /** Supported Client Tools */
+            supported_client_tools?: ("scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options")[];
+            /** Max Client Tools */
+            max_client_tools: number;
+        };
         /** ChatClientTool */
         ChatClientTool: {
             /**
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -772,7 +831,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -791,14 +850,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["CastSearchResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["ScombzCourseListResult"] | components["schemas"]["ScombzPortalReadResult"] | components["schemas"]["ScombzCourseReadResult"] | components["schemas"]["ScombzMaterialSearchResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["SyllabusReadResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["CastSearchResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
         };
         /**
          * ClientTool
@@ -1398,6 +1457,156 @@ export interface components {
             /** Resource Ref */
             resource_ref: string;
         };
+        /** ScombzCourseListResult */
+        ScombzCourseListResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "unavailable";
+            /** Courses */
+            courses?: components["schemas"]["ScombzCourseSummary"][];
+            coverage: components["schemas"]["ScombzCoverage"];
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /** ScombzCourseReadItem */
+        ScombzCourseReadItem: {
+            /** Ref */
+            ref: string;
+            /** Course Ref */
+            course_ref: string;
+            /** Section */
+            section: string;
+            /** Title */
+            title: string;
+            /** Body */
+            body?: string | null;
+            /** Due At */
+            due_at?: string | null;
+            /** State */
+            state?: string | null;
+            /**
+             * Has Pdf
+             * @default false
+             */
+            has_pdf: boolean;
+            /** Observed At */
+            observed_at: string;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
+        /** ScombzCourseReadResult */
+        ScombzCourseReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "unavailable";
+            /** Items */
+            items?: components["schemas"]["ScombzCourseReadItem"][];
+            /** Section States */
+            section_states?: {
+                [key: string]: "complete" | "truncated" | "failed" | "not_requested";
+            };
+            coverage: components["schemas"]["ScombzCoverage"];
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /** ScombzCourseSummary */
+        ScombzCourseSummary: {
+            /** Course Ref */
+            course_ref: string;
+            /** Display Name */
+            display_name: string;
+            /** Academic Year */
+            academic_year?: number | null;
+            /** Term */
+            term?: string | null;
+            /** Weekday */
+            weekday?: string | null;
+            /** Period */
+            period?: string | null;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
+        /**
+         * ScombzCoverage
+         * @description Bounded coverage report for cross-course SCombZ reads.
+         */
+        ScombzCoverage: {
+            /** Scope */
+            scope: string;
+            /** Requested */
+            requested: number;
+            /** Attempted */
+            attempted: number;
+            /** Succeeded */
+            succeeded: number;
+            /** Failed */
+            failed: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** ScombzMaterialSearchHit */
+        ScombzMaterialSearchHit: {
+            /** Material Ref */
+            material_ref: string;
+            /** Course Ref */
+            course_ref: string;
+            /** Material Title */
+            material_title: string;
+            /** Page */
+            page: number;
+            /** Quote */
+            quote: string;
+            /** Observed At */
+            observed_at: string;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
+        /** ScombzMaterialSearchResult */
+        ScombzMaterialSearchResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "unavailable";
+            /** Hits */
+            hits?: components["schemas"]["ScombzMaterialSearchHit"][];
+            coverage: components["schemas"]["ScombzCoverage"];
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
         /**
          * ScombzPageSummaryResult
          * @description A minimized summary of the currently displayed ScombZ page.
@@ -1420,6 +1629,42 @@ export interface components {
             related_link_count: number;
             /** Has Current Course */
             has_current_course: boolean;
+        };
+        /** ScombzPortalItem */
+        ScombzPortalItem: {
+            /** Ref */
+            ref: string;
+            /** Section */
+            section: string;
+            /** Title */
+            title: string;
+            /** Detail */
+            detail?: string | null;
+            /** Observed At */
+            observed_at: string;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
+        /** ScombzPortalReadResult */
+        ScombzPortalReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "unavailable";
+            /** Items */
+            items?: components["schemas"]["ScombzPortalItem"][];
+            coverage: components["schemas"]["ScombzCoverage"];
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
         };
         /**
          * ScombzReadAnnouncement
@@ -1593,11 +1838,53 @@ export interface components {
             /** Reason Code */
             reason_code?: string | null;
         };
+        /** SyllabusReadResult */
+        SyllabusReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /** Syllabus Ref */
+            syllabus_ref: string;
+            /** Url */
+            url: string;
+            /** Course Code */
+            course_code?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Instructors */
+            instructors?: string[];
+            /** Objectives */
+            objectives?: string | null;
+            /** Weekly Plan */
+            weekly_plan?: string[];
+            /** Evaluation */
+            evaluation?: string | null;
+            /** Textbooks */
+            textbooks?: string[];
+            /** Prerequisites */
+            prerequisites?: string | null;
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
         /**
          * SyllabusResult
          * @description One result from the official public syllabus search.
          */
         SyllabusResult: {
+            /** Syllabus Ref */
+            syllabus_ref: string;
             /** Title */
             title: string;
             /** Course Code */
@@ -1608,6 +1895,8 @@ export interface components {
             url: string;
             /** Snippet */
             snippet?: string | null;
+            /** Citation Uri */
+            citation_uri?: string | null;
         };
         /**
          * SyllabusSearchResult
@@ -1758,6 +2047,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentCapabilities"];
+                };
+            };
+        };
+    };
+    chat_capabilities_v1_chat_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatCapabilities"];
                 };
             };
         };

@@ -34,6 +34,7 @@ from orbit_api.models import (
     CastSearchAppliedFilters,
     CastSearchCoverage,
     CastSearchResult,
+    ChatCapabilities,
     ChatClientTool,
     ChatHistoryMessage,
     ChatRunRequest,
@@ -151,8 +152,13 @@ def test_chat_request_accepts_all_supported_client_tools() -> None:
     tool_names: list[ChatToolName] = [
         "scombz_page_summary",
         "scombz_read",
+        "scombz_course_list",
+        "scombz_portal_read",
+        "scombz_course_read",
+        "scombz_material_search",
         "google_calendar_availability",
         "syllabus_search",
+        "syllabus_read",
         "browser_read_url",
         "sitrus_read",
         "moodle_read",
@@ -173,6 +179,17 @@ def test_chat_request_accepts_all_supported_client_tools() -> None:
     )
 
     assert len(request.client_tools) == len(tool_names)
+
+
+def test_chat_capabilities_reject_live_scombz_tools_outside_azure_off_live() -> None:
+    with pytest.raises(ValueError, match="Live SCombZ"):
+        ChatCapabilities(
+            agent_backend="fixture",
+            observability="off",
+            scombz_student_read_mode="fixture",
+            supported_client_tools=["scombz_course_list"],
+            max_client_tools=32,
+        )
 
 
 def test_fixture_chat_route_returns_completed_message(monkeypatch) -> None:

@@ -16,9 +16,15 @@ import {
   isLibraryItemReadResult,
   isMoodleReadResult,
   isMyLibraryReadResult,
+  isScombzCourseListResult,
+  isScombzCourseReadResult,
+  isScombzMaterialSearchResult,
+  isScombzPortalReadResult,
   isSitrusGradeResult,
+  isSyllabusReadResult,
   isSyllabusSearchResult,
   type LibraryCatalogSearchResult,
+  type SyllabusReadResult,
   type SyllabusSearchResult,
 } from "../api/client";
 import {
@@ -31,6 +37,7 @@ import {
   type LibraryFloorMap,
   uniqueLibraryFloorMaps,
 } from "../connectors/library-floor-maps";
+import { parseSyllabusDetailHtml } from "../connectors/syllabus-search";
 import type { CastAlumniLocalSnapshot } from "../content/cast-alumni-reader";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
 import {
@@ -51,6 +58,7 @@ import {
   projectScombzPageSummary,
   projectScombzRead,
 } from "../content/page-context";
+import { hasScombzStudentSessionConsent } from "../content/scombz-consent";
 import type {
   BrowserReadResponse,
   CastAlumniReadResponse,
@@ -65,6 +73,8 @@ import type {
   LibraryItemReadResponse,
   MoodleReadResponse,
   MyLibraryReadResponse,
+  ScombzPinResponse,
+  ScombzStudentReadResponse,
   SitrusReadResponse,
 } from "../shared/messages";
 import { MESSAGE_TYPES } from "../shared/messages";
@@ -115,8 +125,18 @@ function toolLabel(name: string): string {
       return "Google Calendarを確認中";
     case "scombz_read":
       return "SCombZを確認中";
+    case "scombz_course_list":
+      return "SCombZの履修科目を確認中";
+    case "scombz_portal_read":
+      return "SCombZのポータル情報を確認中";
+    case "scombz_course_read":
+      return "SCombZの授業情報を確認中";
+    case "scombz_material_search":
+      return "SCombZの授業資料を検索中";
     case "syllabus_search":
       return "シラバスを検索中";
+    case "syllabus_read":
+      return "シラバス詳細を確認中";
     case "browser_read_url":
       return "ページを参照中";
     case "sitrus_read":
@@ -144,6 +164,35 @@ function toolLabel(name: string): string {
     default:
       return "情報を確認中";
   }
+}
+
+const PERSONAL_SCOMBZ_TOOL_NAMES = new Set([
+  "scombz_page_summary",
+  "scombz_read",
+  "scombz_course_list",
+  "scombz_portal_read",
+  "scombz_course_read",
+  "scombz_material_search",
+]);
+
+function mergeProcessingScope(
+  conversation: ChatConversation,
+  toolName: string,
+): ChatConversation {
+  const nextScope = PERSONAL_SCOMBZ_TOOL_NAMES.has(toolName)
+    ? "personal/scombz_student"
+    : toolName === "syllabus_search" || toolName === "syllabus_read"
+      ? "public/syllabus"
+      : null;
+  if (!nextScope || conversation.processing_scope === nextScope) {
+    return conversation;
+  }
+  const processing_scope =
+    conversation.processing_scope !== "none" &&
+    conversation.processing_scope !== nextScope
+      ? "mixed"
+      : nextScope;
+  return { ...conversation, processing_scope };
 }
 
 function explicitBookCount(messages: ChatTimelineMessage[]): number | null {
@@ -391,6 +440,11 @@ function toolResultRequest(
   name:
     | "scombz_page_summary"
     | "scombz_read"
+    | "scombz_course_list"
+    | "scombz_portal_read"
+    | "scombz_course_read"
+    | "scombz_material_search"
+    | "syllabus_read"
     | "google_calendar_availability"
     | "syllabus_search"
     | "browser_read_url"
@@ -513,6 +567,12 @@ export function ChatPanel({
   const [libraryChoiceFreeform, setLibraryChoiceFreeform] = useState<
     Record<string, string>
   >({});
+  // Syllabus refs are short-lived handles, not reusable URLs. Keep the
+  // conversation binding alongside the URL so a ref returned in one Chat
+  // cannot be replayed from a different Chat.
+  const syllabusRefsRef = useRef(
+    new Map<string, { conversationId: string; url: string }>(),
+  );
   const composerRef = useRef<HTMLTextAreaElement>(null);
   // Loading the history is asynchronous.  If a user starts a new chat (or
   // sends the first message) before that read completes, the late result must
@@ -596,13 +656,31 @@ export function ChatPanel({
     await saveConversation(next);
   }
 
-  function clientTools() {
+  function clientTools(
+    serverTools: ReadonlySet<string> | null = null,
+    maxClientTools = 32,
+  ) {
+    const liveScombzTools = new Set([
+      "scombz_course_list",
+      "scombz_portal_read",
+      "scombz_course_read",
+      "scombz_material_search",
+    ]);
+    const allows = (name: string): boolean => {
+      if (serverTools === null) return true;
+      return serverTools.has(name);
+    };
     const tools: Array<{
       name:
         | "scombz_page_summary"
         | "scombz_read"
+        | "scombz_course_list"
+        | "scombz_portal_read"
+        | "scombz_course_read"
+        | "scombz_material_search"
         | "google_calendar_availability"
         | "syllabus_search"
+        | "syllabus_read"
         | "browser_read_url"
         | "sitrus_read"
         | "moodle_read"
@@ -617,32 +695,56 @@ export function ChatPanel({
         | "library_action_options";
       version: 1;
     }> = [];
-    if (projectScombzRead(pageContext)) {
+    if (projectScombzRead(pageContext) && allows("scombz_read")) {
       tools.push({ name: "scombz_read", version: 1 });
     }
-    if (calendarState.status === "connected" && calendarState.snapshot) {
+    if (pageContext?.kind === "scombz" && serverTools !== null) {
+      for (const name of liveScombzTools as Set<
+        | "scombz_course_list"
+        | "scombz_portal_read"
+        | "scombz_course_read"
+        | "scombz_material_search"
+      >) {
+        if (allows(name)) tools.push({ name, version: 1 });
+      }
+    }
+    if (
+      calendarState.status === "connected" &&
+      calendarState.snapshot &&
+      allows("google_calendar_availability")
+    ) {
       tools.push({ name: "google_calendar_availability", version: 1 });
     }
-    tools.push({ name: "syllabus_search", version: 1 });
-    tools.push({ name: "browser_read_url", version: 1 });
-    if (isSitrusGradeUrl(pageContext?.url)) {
+    if (allows("syllabus_search"))
+      tools.push({ name: "syllabus_search", version: 1 });
+    if (allows("syllabus_read"))
+      tools.push({ name: "syllabus_read", version: 1 });
+    if (allows("browser_read_url"))
+      tools.push({ name: "browser_read_url", version: 1 });
+    if (isSitrusGradeUrl(pageContext?.url) && allows("sitrus_read")) {
       tools.push({ name: "sitrus_read", version: 1 });
     }
-    tools.push({ name: "moodle_read", version: 1 });
-    tools.push({ name: "my_library_read", version: 1 });
-    tools.push({ name: "cast_read", version: 1 });
-    tools.push({ name: "cast_alumni_read", version: 1 });
-    tools.push({ name: "cast_search", version: 1 });
+    if (allows("moodle_read")) tools.push({ name: "moodle_read", version: 1 });
+    if (allows("my_library_read"))
+      tools.push({ name: "my_library_read", version: 1 });
+    if (allows("cast_read")) tools.push({ name: "cast_read", version: 1 });
+    if (allows("cast_alumni_read"))
+      tools.push({ name: "cast_alumni_read", version: 1 });
+    if (allows("cast_search")) tools.push({ name: "cast_search", version: 1 });
     // OPAC/SIT Search reads are public and read-only. Advertise them on every
     // turn so the Agent can resolve elliptical follow-ups such as
     // 「どこに配架されてる？」 from the conversation context instead of
     // relying on a brittle latest-message keyword gate.
-    tools.push({ name: "library_catalog_search", version: 1 });
-    tools.push({ name: "library_item_read", version: 1 });
-    tools.push({ name: "library_catalog_browse", version: 1 });
-    tools.push({ name: "library_discovery_search", version: 1 });
-    tools.push({ name: "library_action_options", version: 1 });
-    return tools;
+    for (const name of [
+      "library_catalog_search",
+      "library_item_read",
+      "library_catalog_browse",
+      "library_discovery_search",
+      "library_action_options",
+    ] as const) {
+      if (allows(name)) tools.push({ name, version: 1 });
+    }
+    return tools.slice(0, Math.min(32, Math.max(1, maxClientTools)));
   }
 
   async function runTool(
@@ -661,8 +763,13 @@ export function ChatPanel({
     if (
       call.name !== "scombz_page_summary" &&
       call.name !== "scombz_read" &&
+      call.name !== "scombz_course_list" &&
+      call.name !== "scombz_portal_read" &&
+      call.name !== "scombz_course_read" &&
+      call.name !== "scombz_material_search" &&
       call.name !== "google_calendar_availability" &&
       call.name !== "syllabus_search" &&
+      call.name !== "syllabus_read" &&
       call.name !== "browser_read_url" &&
       call.name !== "sitrus_read" &&
       call.name !== "moodle_read" &&
@@ -703,6 +810,59 @@ export function ChatPanel({
         ))
     ) {
       throw new Error("シラバス検索の引数を検証できません。");
+    }
+    if (
+      call.name === "scombz_course_list" &&
+      Object.keys(argumentsObject).some(
+        (key) => !["query", "academic_year", "term", "cursor"].includes(key),
+      )
+    ) {
+      throw new Error("SCombZ履修科目の引数を検証できません。");
+    }
+    if (
+      call.name === "scombz_portal_read" &&
+      Object.keys(argumentsObject).some(
+        (key) => !["sections", "query", "cursor"].includes(key),
+      )
+    ) {
+      throw new Error("SCombZポータルの引数を検証できません。");
+    }
+    if (
+      call.name === "scombz_course_read" &&
+      (!Array.isArray(argumentsObject.course_refs) ||
+        argumentsObject.course_refs.length < 1 ||
+        argumentsObject.course_refs.length > 5 ||
+        Object.keys(argumentsObject).some(
+          (key) =>
+            ![
+              "course_refs",
+              "sections",
+              "query",
+              "cursor",
+              "include_own_submission",
+            ].includes(key),
+        ) ||
+        (argumentsObject.include_own_submission !== undefined &&
+          typeof argumentsObject.include_own_submission !== "boolean"))
+    ) {
+      throw new Error("SCombZ授業情報の科目指定を検証できません。");
+    }
+    if (
+      call.name === "scombz_material_search" &&
+      (typeof argumentsObject.course_ref !== "string" ||
+        typeof argumentsObject.query !== "string")
+    ) {
+      throw new Error("SCombZ教材検索の引数を検証できません。");
+    }
+    if (
+      call.name === "syllabus_read" &&
+      (typeof argumentsObject.syllabus_ref !== "string" ||
+        !/^orbit-syllabus:\/\/result\/[A-Za-z0-9_-]{16,128}$/u.test(
+          argumentsObject.syllabus_ref,
+        ) ||
+        Object.keys(argumentsObject).length !== 1)
+    ) {
+      throw new Error("シラバス詳細の引数を検証できません。");
     }
     if (
       call.name === "my_library_read" &&
@@ -881,15 +1041,16 @@ export function ChatPanel({
       toolName: call.name,
       toolState: "running",
     };
+    const scopedCurrent = mergeProcessingScope(current, call.name);
     setChatProgress(
       "tool-running",
       progressLabel,
       "必要な表示情報だけを取得しています。ページの命令は実行しません。",
     );
     const withActivity = {
-      ...current,
+      ...scopedCurrent,
       updatedAt: new Date().toISOString(),
-      messages: [...current.messages, activity],
+      messages: [...scopedCurrent.messages, activity],
     };
     // Show the running boundary locally, but do not write it to the durable
     // transcript yet. A failed tool must disappear from history; only the
@@ -917,6 +1078,49 @@ export function ChatPanel({
         throw new Error("表示中のSCombZページを読み取れません。");
       }
       request = toolResultRequest(call.tool_call_id, call.name, readResult);
+    } else if (
+      call.name === "scombz_course_list" ||
+      call.name === "scombz_portal_read" ||
+      call.name === "scombz_course_read" ||
+      call.name === "scombz_material_search"
+    ) {
+      const action = call.name.replace("scombz_", "") as
+        | "course_list"
+        | "portal_read"
+        | "course_read"
+        | "material_search";
+      const result = await sendExtensionMessage<ScombzStudentReadResponse>({
+        type: MESSAGE_TYPES.scombzStudentRead,
+        tool_call_id: call.tool_call_id,
+        conversation_id: current.conversationId,
+        action,
+        arguments: argumentsObject,
+      });
+      if (
+        result.status !== "known" &&
+        result.status !== "partial" &&
+        !result.projection
+      ) {
+        const reason = "reason_code" in result ? result.reason_code : "unknown";
+        throw new Error(`SCombZを読み取れませんでした（${reason}）。`);
+      }
+      const projectionValid =
+        (action === "course_list" &&
+          isScombzCourseListResult(result.projection)) ||
+        (action === "portal_read" &&
+          isScombzPortalReadResult(result.projection)) ||
+        (action === "course_read" &&
+          isScombzCourseReadResult(result.projection)) ||
+        (action === "material_search" &&
+          isScombzMaterialSearchResult(result.projection));
+      if (!projectionValid || result.projection.status !== result.status) {
+        throw new Error("SCombZの取得結果を検証できませんでした。");
+      }
+      request = toolResultRequest(
+        call.tool_call_id,
+        call.name,
+        result.projection as ChatToolResultRequest["result"],
+      );
     } else if (call.name === "google_calendar_availability") {
       const refreshed = calendarConnector
         ? await calendarConnector.refresh()
@@ -951,7 +1155,101 @@ export function ChatPanel({
       if (!isSyllabusSearchResult(syllabus)) {
         throw new Error("シラバス検索結果を検証できません。");
       }
+      for (const result of syllabus.results ?? []) {
+        if (result.syllabus_ref) {
+          syllabusRefsRef.current.set(result.syllabus_ref, {
+            conversationId: current.conversationId,
+            url: result.url,
+          });
+        }
+      }
       request = toolResultRequest(call.tool_call_id, call.name, syllabus);
+    } else if (call.name === "syllabus_read") {
+      const syllabusRef = argumentsObject.syllabus_ref as string;
+      const handle = syllabusRefsRef.current.get(syllabusRef);
+      const targetUrl =
+        handle?.conversationId === current.conversationId ? handle.url : null;
+      const fallbackUrl = "https://syllabus.sic.shibaura-it.ac.jp/";
+      const citationUri = `orbit-syllabus://citation/${syllabusRef.split("/").pop() ?? "detail"}`;
+      const unavailableDetail = (reasonCode: string): SyllabusReadResult => ({
+        schema_version: "v1",
+        status: "unavailable",
+        syllabus_ref: syllabusRef,
+        url: targetUrl ?? fallbackUrl,
+        course_code: null,
+        title: null,
+        instructors: [],
+        objectives: null,
+        weekly_plan: [],
+        evaluation: null,
+        textbooks: [],
+        prerequisites: null,
+        observed_at: new Date().toISOString(),
+        reason_code: reasonCode,
+        citation_uri: citationUri,
+      });
+      if (!targetUrl) {
+        request = toolResultRequest(
+          call.tool_call_id,
+          call.name,
+          unavailableDetail("syllabus_ref_expired"),
+        );
+      } else {
+        try {
+          const target = new URL(targetUrl);
+          if (
+            target.origin !== "https://syllabus.sic.shibaura-it.ac.jp" ||
+            target.protocol !== "https:"
+          ) {
+            request = toolResultRequest(
+              call.tool_call_id,
+              call.name,
+              unavailableDetail("syllabus_origin_rejected"),
+            );
+          } else {
+            const response = await fetch(target.href, { credentials: "omit" });
+            if (!response.ok) {
+              request = toolResultRequest(
+                call.tool_call_id,
+                call.name,
+                unavailableDetail(`http_${response.status}`),
+              );
+            } else {
+              const detail = parseSyllabusDetailHtml(await response.text());
+              const projection = {
+                schema_version: "v1" as const,
+                status: "known" as const,
+                syllabus_ref: syllabusRef,
+                url: target.href,
+                course_code: detail.course_code,
+                title: detail.title,
+                instructors: detail.instructors,
+                objectives: detail.objectives,
+                weekly_plan: detail.weekly_plan,
+                evaluation: detail.evaluation,
+                textbooks: detail.textbooks,
+                prerequisites: detail.prerequisites,
+                observed_at: new Date().toISOString(),
+                reason_code: null,
+                citation_uri: citationUri,
+              } satisfies SyllabusReadResult;
+              request = toolResultRequest(
+                call.tool_call_id,
+                call.name,
+                isSyllabusReadResult(projection)
+                  ? projection
+                  : unavailableDetail("syllabus_structure_not_found"),
+              );
+            }
+          }
+        } catch {
+          request = toolResultRequest(
+            call.tool_call_id,
+            call.name,
+            unavailableDetail("network_error"),
+          );
+        }
+      }
     } else if (call.name === "library_catalog_search") {
       setChatProgress(
         "tool-running",
@@ -1574,8 +1872,90 @@ export function ChatPanel({
       messages: [...beforeSend.messages, userMessage],
     };
     await persist(withUser);
-    const current = withUser;
+    let current = withUser;
     try {
+      let serverTools: ReadonlySet<string> | null = null;
+      let maxClientTools = 32;
+      let providerDestination: ChatConversation["provider_destination"] =
+        "local";
+      let liveScombzGate = false;
+      const capabilityReader = (
+        apiClient as AgentApiClient & {
+          chatCapabilities?: () => Promise<{
+            agent_backend: string;
+            observability: string;
+            scombz_student_read_mode: string;
+            supported_client_tools: readonly string[];
+            max_client_tools: number;
+          }>;
+        }
+      ).chatCapabilities;
+      if (typeof capabilityReader === "function") {
+        try {
+          const capabilities = await capabilityReader.call(apiClient);
+          liveScombzGate =
+            capabilities.agent_backend === "azure_openai" &&
+            capabilities.observability === "off" &&
+            capabilities.scombz_student_read_mode === "live";
+          providerDestination =
+            capabilities.agent_backend === "azure_openai"
+              ? "azure_openai"
+              : "local";
+          const allowed = new Set(capabilities.supported_client_tools);
+          maxClientTools = capabilities.max_client_tools;
+          if (!liveScombzGate) {
+            for (const name of [
+              "scombz_course_list",
+              "scombz_portal_read",
+              "scombz_course_read",
+              "scombz_material_search",
+            ]) {
+              allowed.delete(name);
+            }
+          }
+          serverTools = allowed;
+        } catch {
+          // Capability failure is fail-closed. The request may still answer
+          // from already stored conversation evidence, but it advertises no
+          // connector that the server has not explicitly approved.
+          serverTools = new Set();
+        }
+      }
+      if (pageContext?.kind === "scombz") {
+        if (!(await hasScombzStudentSessionConsent())) {
+          throw new Error(
+            "SCombZの授業情報をAzureへ送るには、設定で一度だけ共有同意が必要です。",
+          );
+        }
+        // Bind the conversation to the currently authenticated SCombZ tab at
+        // chat start. Subsequent connector calls use this pin and never
+        // silently switch to whichever tab later becomes active.
+        const pinResult = await sendExtensionMessage<ScombzPinResponse>({
+          type: MESSAGE_TYPES.scombzPin,
+          conversation_id: withUser.conversationId,
+        });
+        if (pinResult.status !== "pinned") {
+          throw new Error(
+            pinResult.reason_code === "scombz_source_tab_changed"
+              ? "SCombZの参照元タブが変わりました。元のタブを表示してから再試行してください。"
+              : "SCombZの参照元タブを固定できませんでした。ログイン状態と表示中のタブを確認してください。",
+          );
+        }
+      }
+      current = {
+        ...current,
+        processing_scope:
+          pageContext?.kind === "scombz" && liveScombzGate
+            ? "personal/scombz_student"
+            : current.processing_scope,
+        provider_destination: providerDestination,
+        // New conversations are eligible.  A legacy conversation loaded
+        // without this metadata remains ineligible and is sent without its
+        // old transcript or manifest.
+        history_eligible: current.history_eligible,
+        updatedAt: new Date().toISOString(),
+      };
+      await persist(current);
       setChatProgress(
         "planning",
         "Agentが回答方針を検討中",
@@ -1588,9 +1968,13 @@ export function ChatPanel({
         // this read-only path compatible with deployed API images from before
         // background execution was introduced (their strict request model
         // rejects unknown fields with HTTP 422).
-        history: toChatHistory(beforeSend.messages),
-        client_tools: clientTools(),
-        context_manifest: toChatContextManifest(beforeSend.contextManifest),
+        history: current.history_eligible
+          ? toChatHistory(beforeSend.messages)
+          : [],
+        client_tools: clientTools(serverTools, maxClientTools),
+        context_manifest: current.history_eligible
+          ? toChatContextManifest(beforeSend.contextManifest)
+          : null,
       });
       await finishResponse(response, current);
     } catch (error) {

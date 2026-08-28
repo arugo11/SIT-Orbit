@@ -47,10 +47,15 @@ from orbit_api.models import (
     MyLibraryScope,
     OrbitEvent,
     RelatedBookCandidate,
+    ScombzCourseListResult,
+    ScombzCourseReadResult,
+    ScombzMaterialSearchResult,
     ScombzPageSummaryResult,
+    ScombzPortalReadResult,
     ScombzReadResult,
     ScopedMyLibraryReadResult,
     SitrusGradeResult,
+    SyllabusReadResult,
     SyllabusSearchResult,
 )
 
@@ -73,7 +78,12 @@ CALENDAR_AVAILABILITY_LOCATOR_PREFIX = "orbit-calendar://availability/"
 SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX = "orbit-scombz://page-summary/"
 SAFE_CLASSIFICATIONS = {"synthetic", "public"}
 SCOMBZ_READ_TOOL_NAME = "scombz_read"
+SCOMBZ_COURSE_LIST_TOOL_NAME = "scombz_course_list"
+SCOMBZ_PORTAL_READ_TOOL_NAME = "scombz_portal_read"
+SCOMBZ_COURSE_READ_TOOL_NAME = "scombz_course_read"
+SCOMBZ_MATERIAL_SEARCH_TOOL_NAME = "scombz_material_search"
 SYLLABUS_SEARCH_TOOL_NAME = "syllabus_search"
+SYLLABUS_READ_TOOL_NAME = "syllabus_read"
 BROWSER_READ_TOOL_NAME = "browser_read_url"
 SITRUS_TOOL_NAME = "sitrus_read"
 SITRUS_GRADES_LOCATOR_PREFIX = "orbit-sitrus://grades/"
@@ -108,7 +118,12 @@ SUPPORTED_TOOL_NAMES = frozenset(
         CALENDAR_TOOL_NAME,
         SCOMBZ_TOOL_NAME,
         SCOMBZ_READ_TOOL_NAME,
+        SCOMBZ_COURSE_LIST_TOOL_NAME,
+        SCOMBZ_PORTAL_READ_TOOL_NAME,
+        SCOMBZ_COURSE_READ_TOOL_NAME,
+        SCOMBZ_MATERIAL_SEARCH_TOOL_NAME,
         SYLLABUS_SEARCH_TOOL_NAME,
+        SYLLABUS_READ_TOOL_NAME,
         BROWSER_READ_TOOL_NAME,
         MOODLE_TOOL_NAME,
         MY_LIBRARY_TOOL_NAME,
@@ -125,8 +140,13 @@ SUPPORTED_TOOL_NAMES = frozenset(
 ToolName = Literal[
     "scombz_page_summary",
     "scombz_read",
+    "scombz_course_list",
+    "scombz_portal_read",
+    "scombz_course_read",
+    "scombz_material_search",
     "google_calendar_availability",
     "syllabus_search",
+    "syllabus_read",
     "browser_read_url",
     "sitrus_read",
     "moodle_read",
@@ -145,7 +165,12 @@ ToolResult = (
     CalendarAvailabilityResult
     | ScombzPageSummaryResult
     | ScombzReadResult
+    | ScombzCourseListResult
+    | ScombzPortalReadResult
+    | ScombzCourseReadResult
+    | ScombzMaterialSearchResult
     | SyllabusSearchResult
+    | SyllabusReadResult
     | BrowserReadResult
     | SitrusGradeResult
     | MoodleReadResult
@@ -644,7 +669,12 @@ def is_derived_scombz_read_evidence(evidence: EvidenceLink) -> bool:
         evidence.source_type == "scombz"
         and evidence.data_classification == "personal"
         and _is_opaque_locator(locator=evidence.locator, prefix="orbit-scombz://read/")
-        and evidence.evidence_id.startswith("scombz-read-v1-")
+        and (
+            evidence.evidence_id.startswith("scombz-read-v1-")
+            or evidence.evidence_id.startswith("scombz-course-")
+            or evidence.evidence_id.startswith("scombz-portal-")
+            or evidence.evidence_id.startswith("scombz-material-")
+        )
     )
 
 
@@ -653,7 +683,10 @@ def is_derived_syllabus_evidence(evidence: EvidenceLink) -> bool:
         evidence.source_type == "syllabus"
         and evidence.data_classification == "public"
         and _is_opaque_locator(locator=evidence.locator, prefix="orbit-syllabus://search/")
-        and evidence.evidence_id.startswith("syllabus-search-v1-")
+        and (
+            evidence.evidence_id.startswith("syllabus-search-v1-")
+            or evidence.evidence_id.startswith("syllabus-read-v1-")
+        )
     )
 
 
@@ -832,6 +865,47 @@ async def scombz_read() -> ScombzReadResult:
     raise CallDeferred()
 
 
+async def scombz_course_list(
+    query: str = "",
+    academic_year: int | None = None,
+    term: str | None = None,
+    cursor: str | None = None,
+) -> ScombzCourseListResult:
+    """Deferred cross-course list read; navigation is owned by the extension."""
+
+    del query, academic_year, term, cursor
+    raise CallDeferred()
+
+
+async def scombz_portal_read(
+    sections: list[str] | None = None,
+    query: str = "",
+    cursor: str | None = None,
+) -> ScombzPortalReadResult:
+    del sections, query, cursor
+    raise CallDeferred()
+
+
+async def scombz_course_read(
+    course_refs: list[str],
+    sections: list[str] | None = None,
+    query: str = "",
+    cursor: str | None = None,
+    include_own_submission: bool = False,
+) -> ScombzCourseReadResult:
+    del course_refs, sections, query, cursor, include_own_submission
+    raise CallDeferred()
+
+
+async def scombz_material_search(
+    course_ref: str,
+    query: str,
+    cursor: str | None = None,
+) -> ScombzMaterialSearchResult:
+    del course_ref, query, cursor
+    raise CallDeferred()
+
+
 async def syllabus_search(
     query: str,
     year: int | None = None,
@@ -840,6 +914,11 @@ async def syllabus_search(
     """Deferred read of the public SIT syllabus search."""
 
     del query, year, faculty
+    raise CallDeferred()
+
+
+async def syllabus_read(syllabus_ref: str) -> SyllabusReadResult:
+    del syllabus_ref
     raise CallDeferred()
 
 
@@ -1616,10 +1695,20 @@ class PydanticAIAgentBackend(AgentBackend):
             tools.append(scombz_page_summary)
         if SCOMBZ_READ_TOOL_NAME in advertised:
             tools.append(scombz_read)
+        if SCOMBZ_COURSE_LIST_TOOL_NAME in advertised:
+            tools.append(scombz_course_list)
+        if SCOMBZ_PORTAL_READ_TOOL_NAME in advertised:
+            tools.append(scombz_portal_read)
+        if SCOMBZ_COURSE_READ_TOOL_NAME in advertised:
+            tools.append(scombz_course_read)
+        if SCOMBZ_MATERIAL_SEARCH_TOOL_NAME in advertised:
+            tools.append(scombz_material_search)
         if CALENDAR_TOOL_NAME in advertised:
             tools.append(google_calendar_availability)
         if SYLLABUS_SEARCH_TOOL_NAME in advertised:
             tools.append(syllabus_search)
+        if SYLLABUS_READ_TOOL_NAME in advertised:
+            tools.append(syllabus_read)
         if BROWSER_READ_TOOL_NAME in advertised:
             tools.append(browser_read_url)
         if SITRUS_TOOL_NAME in advertised:
@@ -1732,7 +1821,11 @@ class PydanticAIAgentBackend(AgentBackend):
                 "the first natural-language request never submits a reservation. If the "
                 "option is unavailable, explain the safe reason and do not emit a proposal. "
                 "If public search is unavailable, say so instead of inventing books or "
-                "sources."
+                "sources. For SCombZ reads, keep the student's own submission body, "
+                "uploaded file, and instructor feedback out of ordinary course reads; "
+                "set include_own_submission=true only when the student explicitly asks "
+                "to inspect their submitted content or feedback. Never request or "
+                "summarize active test questions or answer fields."
             ),
             tools=tools,
             model_settings=model_settings,
@@ -1862,6 +1955,37 @@ class PydanticAIAgentBackend(AgentBackend):
             faculty = arguments.get("faculty")
             if faculty is not None and (not isinstance(faculty, str) or len(faculty) > 200):
                 raise RuntimeError("syllabus_search faculty is outside the allowed range.")
+        if call.tool_name == SCOMBZ_COURSE_LIST_TOOL_NAME:
+            if set(arguments) - {"query", "academic_year", "term", "cursor"}:
+                raise RuntimeError("scombz_course_list received unknown arguments.")
+        if call.tool_name == SCOMBZ_PORTAL_READ_TOOL_NAME:
+            if set(arguments) - {"sections", "query", "cursor"}:
+                raise RuntimeError("scombz_portal_read received unknown arguments.")
+        if call.tool_name == SCOMBZ_COURSE_READ_TOOL_NAME:
+            if not isinstance(arguments.get("course_refs"), list) or not arguments["course_refs"]:
+                raise RuntimeError("scombz_course_read requires course_refs.")
+            if set(arguments) - {
+                "course_refs",
+                "sections",
+                "query",
+                "cursor",
+                "include_own_submission",
+            }:
+                raise RuntimeError("scombz_course_read received unknown arguments.")
+            if "include_own_submission" in arguments and not isinstance(
+                arguments["include_own_submission"], bool
+            ):
+                raise RuntimeError("include_own_submission must be boolean.")
+        if call.tool_name == SCOMBZ_MATERIAL_SEARCH_TOOL_NAME:
+            if not isinstance(arguments.get("course_ref"), str) or not isinstance(
+                arguments.get("query"), str
+            ):
+                raise RuntimeError("scombz_material_search requires course_ref and query.")
+        if call.tool_name == SYLLABUS_READ_TOOL_NAME:
+            if set(arguments) != {"syllabus_ref"} or not isinstance(
+                arguments.get("syllabus_ref"), str
+            ):
+                raise RuntimeError("syllabus_read requires syllabus_ref only.")
         if call.tool_name == CAST_SEARCH_TOOL_NAME:
             _validate_cast_search_arguments(arguments)
         # Accept the pre-scope v1 empty call emitted by older local clients as
@@ -2007,6 +2131,7 @@ class PydanticAIAgentBackend(AgentBackend):
         deferred: DeferredChatRun,
         tool_result: ToolResult,
         context: list[EvidenceLink],
+        tool_evidence: EvidenceLink | None = None,
         advertised_tools: set[str],
         seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
     ) -> ChatAgentExecution:
@@ -2014,10 +2139,37 @@ class PydanticAIAgentBackend(AgentBackend):
             raise ValueError(
                 "SITRUS grade data is local-only and cannot be sent to an external model."
             )
+
+        def select_evidence(
+            predicate: Callable[[EvidenceLink], bool],
+        ) -> EvidenceLink | None:
+            """Prefer the evidence minted for this exact pending call.
+
+            A context scan is retained only for callers using the pre-v1
+            direct-backend API.  The HTTP service always supplies
+            ``tool_evidence`` so repeated calls cannot bind to an older result
+            of the same tool.
+            """
+
+            if tool_evidence is not None:
+                if not predicate(tool_evidence):
+                    raise ValueError("The tool evidence does not match the deferred tool.")
+                return tool_evidence
+            # The direct backend API predates the HTTP service's explicit
+            # ``tool_evidence`` argument.  Its callers append the evidence for
+            # the resumed call, so retain the newest matching item without
+            # relying on a reverse-order search.  The service path never uses
+            # this compatibility branch.
+            selected: EvidenceLink | None = None
+            for item in context:
+                if predicate(item):
+                    selected = item
+            return selected
+
         if deferred.tool_name == CALENDAR_TOOL_NAME:
             if not isinstance(tool_result, CalendarAvailabilityResult):
                 raise ValueError("Calendar deferred calls require a CalendarAvailabilityResult.")
-            evidence = next((item for item in context if is_derived_calendar_evidence(item)), None)
+            evidence = select_evidence(is_derived_calendar_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "availability": tool_result.model_dump(mode="json"),
@@ -2025,7 +2177,7 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == SCOMBZ_TOOL_NAME:
             if not isinstance(tool_result, ScombzPageSummaryResult):
                 raise ValueError("SCombZ deferred calls require a ScombzPageSummaryResult.")
-            evidence = next((item for item in context if is_derived_scombz_evidence(item)), None)
+            evidence = select_evidence(is_derived_scombz_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "page_summary": tool_result.model_dump(mode="json"),
@@ -2033,24 +2185,47 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == SCOMBZ_READ_TOOL_NAME:
             if not isinstance(tool_result, ScombzReadResult):
                 raise ValueError("SCombZ read calls require a ScombzReadResult.")
-            evidence = next(
-                (item for item in context if is_derived_scombz_read_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_scombz_read_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "scombz_read": tool_result.model_dump(mode="json"),
             }
+        elif deferred.tool_name in {
+            SCOMBZ_COURSE_LIST_TOOL_NAME,
+            SCOMBZ_PORTAL_READ_TOOL_NAME,
+            SCOMBZ_COURSE_READ_TOOL_NAME,
+            SCOMBZ_MATERIAL_SEARCH_TOOL_NAME,
+        }:
+            if not isinstance(
+                tool_result,
+                (
+                    ScombzCourseListResult,
+                    ScombzPortalReadResult,
+                    ScombzCourseReadResult,
+                    ScombzMaterialSearchResult,
+                ),
+            ):
+                raise ValueError("SCombZ cross-course calls require a typed SCombZ result.")
+            evidence = select_evidence(is_derived_scombz_read_evidence)
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                deferred.tool_name: tool_result.model_dump(mode="json"),
+            }
         elif deferred.tool_name == SYLLABUS_SEARCH_TOOL_NAME:
             if not isinstance(tool_result, SyllabusSearchResult):
                 raise ValueError("Syllabus calls require a SyllabusSearchResult.")
-            evidence = next(
-                (item for item in context if is_derived_syllabus_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_syllabus_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "syllabus_search": tool_result.model_dump(mode="json"),
+            }
+        elif deferred.tool_name == SYLLABUS_READ_TOOL_NAME:
+            if not isinstance(tool_result, SyllabusReadResult):
+                raise ValueError("Syllabus detail calls require a SyllabusReadResult.")
+            evidence = select_evidence(is_derived_syllabus_evidence)
+            result_content = {
+                "evidence_id": evidence.evidence_id if evidence else None,
+                "syllabus_read": tool_result.model_dump(mode="json"),
             }
         elif deferred.tool_name == BROWSER_READ_TOOL_NAME:
             if not isinstance(tool_result, BrowserReadResult):
@@ -2091,10 +2266,7 @@ class PydanticAIAgentBackend(AgentBackend):
             if self.provider_name != "Azure OpenAI":
                 raise ValueError("My Library data requires the explicitly consented Azure Agent.")
             validate_my_library_result_page(tool_result, deferred.arguments)
-            evidence = next(
-                (item for item in context if is_derived_my_library_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_my_library_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "my_library_summary": tool_result.model_dump(mode="json"),
@@ -2102,10 +2274,7 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == CAST_TOOL_NAME:
             if not isinstance(tool_result, CastReadResult):
                 raise ValueError("CAST calls require a CastReadResult.")
-            evidence = next(
-                (item for item in context if is_derived_cast_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_cast_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "cast_summary": tool_result.model_dump(mode="json"),
@@ -2113,10 +2282,7 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == CAST_ALUMNI_TOOL_NAME:
             if not isinstance(tool_result, CastAlumniReadResult):
                 raise ValueError("CAST alumni calls require a CastAlumniReadResult.")
-            evidence = next(
-                (item for item in context if is_derived_cast_alumni_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_cast_alumni_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 # This model is deliberately an allow-listed aggregate.  The
@@ -2127,10 +2293,7 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == CAST_SEARCH_TOOL_NAME:
             if not isinstance(tool_result, CastSearchResult):
                 raise ValueError("CAST search calls require a CastSearchResult.")
-            evidence = next(
-                (item for item in reversed(context) if is_derived_cast_search_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_cast_search_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 # The extension's local evidence IDs are not server evidence;
@@ -2145,10 +2308,7 @@ class PydanticAIAgentBackend(AgentBackend):
             # the evidence generated for this call, rather than an earlier
             # catalog/item read, so the model can bind the returned projection
             # to the current step in the trace.
-            evidence = next(
-                (item for item in reversed(context) if is_derived_library_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_library_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "library_catalog_search": tool_result.model_dump(mode="json"),
@@ -2156,10 +2316,7 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == LIBRARY_ITEM_READ_TOOL_NAME:
             if not isinstance(tool_result, LibraryItemReadResult):
                 raise ValueError("Library item calls require a LibraryItemReadResult.")
-            evidence = next(
-                (item for item in reversed(context) if is_derived_library_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_library_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "library_item_read": tool_result.model_dump(mode="json"),
@@ -2167,10 +2324,7 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == LIBRARY_CATALOG_BROWSE_TOOL_NAME:
             if not isinstance(tool_result, LibraryCatalogBrowseResult):
                 raise ValueError("Library browse calls require a LibraryCatalogBrowseResult.")
-            evidence = next(
-                (item for item in reversed(context) if is_derived_library_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_library_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "library_catalog_browse": tool_result.model_dump(mode="json"),
@@ -2178,10 +2332,7 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == LIBRARY_DISCOVERY_SEARCH_TOOL_NAME:
             if not isinstance(tool_result, LibraryDiscoverySearchResult):
                 raise ValueError("Library discovery calls require a LibraryDiscoverySearchResult.")
-            evidence = next(
-                (item for item in reversed(context) if is_derived_library_evidence(item)),
-                None,
-            )
+            evidence = select_evidence(is_derived_library_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
                 "library_discovery_search": tool_result.model_dump(mode="json"),
@@ -2197,14 +2348,9 @@ class PydanticAIAgentBackend(AgentBackend):
                     "Personal library action capabilities require the explicitly "
                     "consented Azure Agent."
                 )
-            evidence = next(
-                (
-                    item
-                    for item in context
-                    if is_derived_library_action_evidence(item)
-                    and item.locator == tool_result.resource_ref
-                ),
-                None,
+            evidence = select_evidence(
+                lambda item: is_derived_library_action_evidence(item)
+                and item.locator == tool_result.resource_ref
             )
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,
@@ -2212,6 +2358,13 @@ class PydanticAIAgentBackend(AgentBackend):
             }
         else:
             raise ValueError("The deferred chat tool is unsupported.")
+        # The service creates one evidence record for this exact pending call
+        # and passes it explicitly.  Never infer the binding by searching a
+        # shared context list: repeated invocations of the same read-only tool
+        # must remain one-to-one with their ``tool_call_id``.
+        if tool_evidence is not None:
+            evidence = tool_evidence
+            result_content["evidence_id"] = tool_evidence.evidence_id
         if evidence is None:
             raise ValueError("A resumed chat run requires server-generated tool evidence.")
         related_books = list(deferred.related_books)

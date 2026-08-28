@@ -122,6 +122,9 @@ import {
   isOpenWorkspaceMessage,
   isPageContext,
   isPageContextUpdatedMessage,
+  isScombzPinMessage,
+  isScombzStudentReadMessage,
+  isScombzStudentReadResponse,
   isSitrusReadMessage,
   isSyllabusSearchMessage,
   isUpdateWorkspaceSessionMessage,
@@ -145,6 +148,9 @@ import {
   type MyLibraryReadResponse,
   type OpenWorkspaceMessage,
   type OpenWorkspaceResponse,
+  type ScombzPinResponse,
+  type ScombzSourceIdentityResponse,
+  type ScombzStudentReadResponse,
   type SitrusReadResponse,
   type UpdateWorkspaceSessionMessage,
   type WorkspaceSessionResponse,
@@ -175,6 +181,17 @@ const CAST_PERMISSION_PATTERN = `${CAST_ORIGIN}/*`;
 // Context Manifest record URLs may re-establish the ref after a worker
 // restart, but only after exact origin/path and opaque-ref validation.
 const libraryRecordRefs = new Map<string, string>();
+interface ScombzConversationBinding {
+  tabId: number;
+  expiresAt: number;
+  contentScriptGeneration: string;
+  adapterVersion: "scombz-student-v1";
+  serviceWorkerEpoch: string;
+}
+
+const SCOMBZ_HANDLE_TTL_MS = 30 * 60 * 1000;
+const SCOMBZ_SERVICE_WORKER_EPOCH = crypto.randomUUID();
+const scombzConversationTabs = new Map<string, ScombzConversationBinding>();
 const libraryRecordSnapshots = new Map<string, LibraryMaterializedRecord>();
 const libraryActionRefExpiry = new Map<string, number>();
 const LIBRARY_ACTION_REF_TTL_MS = 10 * 60 * 1000;
@@ -6459,6 +6476,120 @@ async function requestActivePageContext(): Promise<PageContext | null> {
   }
 }
 
+async function handleScombzStudentRead(
+  message: import("../shared/messages").ScombzStudentReadMessage,
+): Promise<ScombzStudentReadResponse> {
+  const unavailable = (
+    status: "reauth_required" | "unavailable",
+    reason_code: string,
+  ): ScombzStudentReadResponse => ({
+    status,
+    reason_code,
+    projection: {
+      schema_version: "v1",
+      status,
+      coverage: {
+        scope: message.action,
+        requested: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 1,
+        truncated: false,
+        next_cursor: null,
+      },
+      observed_at: new Date().toISOString(),
+      ...(message.action === "course_list"
+        ? { courses: [] }
+        : message.action === "portal_read"
+          ? { items: [] }
+          : message.action === "course_read"
+            ? { items: [], section_states: {} }
+            : { hits: [] }),
+      reason_code,
+    },
+  });
+  const pinned = scombzConversationTabs.get(message.conversation_id);
+  if (pinned === undefined) {
+    return unavailable("unavailable", "scombz_source_not_pinned");
+  }
+  if (pinned.expiresAt <= Date.now()) {
+    scombzConversationTabs.delete(message.conversation_id);
+    return unavailable("unavailable", "scombz_handle_expired");
+  }
+  if (pinned.serviceWorkerEpoch !== SCOMBZ_SERVICE_WORKER_EPOCH) {
+    scombzConversationTabs.delete(message.conversation_id);
+    return unavailable("unavailable", "scombz_handle_epoch_mismatch");
+  }
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.get(pinned.tabId);
+  } catch {
+    scombzConversationTabs.delete(message.conversation_id);
+    return unavailable("reauth_required", "scombz_source_tab_missing");
+  }
+  if (tab.id === undefined || !isScombzUrl(tab.url)) {
+    return unavailable("reauth_required", "scombz_source_tab_changed");
+  }
+  try {
+    const result = await chrome.tabs.sendMessage(pinned.tabId, {
+      ...message,
+      content_script_generation: pinned.contentScriptGeneration,
+      adapter_version: pinned.adapterVersion,
+    });
+    return isScombzStudentReadResponse(result)
+      ? result
+      : unavailable("unavailable", "scombz_projection_invalid");
+  } catch {
+    return unavailable("unavailable", "scombz_content_script_unavailable");
+  }
+}
+
+async function handleScombzPin(
+  message: import("../shared/messages").ScombzPinMessage,
+): Promise<ScombzPinResponse> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id === undefined || !isScombzUrl(tab.url)) {
+    return { status: "unavailable", reason_code: "scombz_page_not_active" };
+  }
+  const pinned = scombzConversationTabs.get(message.conversation_id);
+  if (pinned !== undefined && pinned.tabId !== tab.id) {
+    return { status: "unavailable", reason_code: "scombz_source_tab_changed" };
+  }
+  let identity: ScombzSourceIdentityResponse;
+  try {
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      type: MESSAGE_TYPES.scombzSourceIdentity,
+    });
+    if (
+      !response ||
+      typeof response !== "object" ||
+      typeof (response as Partial<ScombzSourceIdentityResponse>).generation !==
+        "string" ||
+      (response as Partial<ScombzSourceIdentityResponse>).adapter_version !==
+        "scombz-student-v1"
+    ) {
+      return {
+        status: "unavailable",
+        reason_code: "scombz_source_identity_missing",
+      };
+    }
+    identity = response as ScombzSourceIdentityResponse;
+  } catch {
+    return {
+      status: "unavailable",
+      reason_code: "scombz_content_script_unavailable",
+    };
+  }
+  scombzConversationTabs.set(message.conversation_id, {
+    tabId: tab.id,
+    expiresAt: Date.now() + SCOMBZ_HANDLE_TTL_MS,
+    contentScriptGeneration: identity.generation,
+    adapterVersion: identity.adapter_version,
+    serviceWorkerEpoch: SCOMBZ_SERVICE_WORKER_EPOCH,
+  });
+  return { status: "pinned" };
+}
+
 async function broadcastActivePageContext(
   tabId: number,
   context: PageContext | null,
@@ -6490,18 +6621,26 @@ function configureActionClick(): void {
 configureActionClick();
 chrome.runtime.onInstalled.addListener(configureActionClick);
 chrome.runtime.onStartup.addListener(() => {
+  scombzConversationTabs.clear();
   clearMyLibraryResourceMaps();
   clearLibraryRecordMaps();
   clearLibraryActionPreviews();
   configureActionClick();
 });
 chrome.runtime.onSuspend?.addListener(() => {
+  scombzConversationTabs.clear();
   clearMyLibraryResourceMaps();
   clearLibraryRecordMaps();
   clearLibraryActionPreviews();
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status === "loading") {
+    for (const [conversationId, binding] of scombzConversationTabs) {
+      if (binding.tabId === tabId)
+        scombzConversationTabs.delete(conversationId);
+    }
+  }
   if (changeInfo.url !== undefined || changeInfo.status !== undefined) {
     void updateTabPanel(tabId, changeInfo.url ?? tab.url);
   }
@@ -6511,6 +6650,9 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  for (const [conversationId, binding] of scombzConversationTabs) {
+    if (binding.tabId === tabId) scombzConversationTabs.delete(conversationId);
+  }
   void releaseWorkspaceTab(tabId);
   void markSourceUnavailable(tabId);
 });
@@ -6556,6 +6698,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleSitrusRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isScombzStudentReadMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleScombzStudentRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isScombzPinMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
+      return true;
+    }
+    void handleScombzPin(message).then(sendResponse);
     return true;
   }
 

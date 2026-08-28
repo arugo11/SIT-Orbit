@@ -8,6 +8,7 @@
       "!!**/.venv",
       "!!**/dist",
       "!!**/node_modules",
+      "!!apps/extension/ocr",
       "!!packages/api-client/openapi.json",
       "!!packages/api-client/src/generated",
       "!!pnpm-lock.yaml",

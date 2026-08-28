@@ -7,6 +7,7 @@ export type ProposeActionRequest =
 export type VerifyActionRequest = components["schemas"]["VerifyActionRequest"];
 export type AgentRunRequest = components["schemas"]["AgentRunRequest"];
 export type AgentCapabilities = components["schemas"]["AgentCapabilities"];
+export type ChatCapabilities = components["schemas"]["ChatCapabilities"];
 export type AgentSessionRequest = components["schemas"]["AgentSessionRequest"];
 export type AgentSessionResponse =
   components["schemas"]["AgentSessionResponse"];
@@ -44,6 +45,15 @@ export type CalendarAvailabilityResult =
 export type ScombzPageSummaryResult =
   components["schemas"]["ScombzPageSummaryResult"];
 export type ScombzReadResult = components["schemas"]["ScombzReadResult"];
+export type ScombzCourseListResult =
+  components["schemas"]["ScombzCourseListResult"];
+export type ScombzPortalReadResult =
+  components["schemas"]["ScombzPortalReadResult"];
+export type ScombzCourseReadResult =
+  components["schemas"]["ScombzCourseReadResult"];
+export type ScombzMaterialSearchResult =
+  components["schemas"]["ScombzMaterialSearchResult"];
+export type SyllabusReadResult = components["schemas"]["SyllabusReadResult"];
 export type SyllabusSearchResult =
   components["schemas"]["SyllabusSearchResult"];
 export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
@@ -205,6 +215,75 @@ function isAgentCapabilities(value: unknown): value is AgentCapabilities {
     hasExactlyKeys(value, ["agent_backend", "my_library_personal_context"]) &&
     isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) &&
     typeof value.my_library_personal_context === "boolean"
+  );
+}
+
+const chatToolNames = [
+  "scombz_page_summary",
+  "scombz_read",
+  "scombz_course_list",
+  "scombz_portal_read",
+  "scombz_course_read",
+  "scombz_material_search",
+  "google_calendar_availability",
+  "syllabus_search",
+  "syllabus_read",
+  "browser_read_url",
+  "sitrus_read",
+  "moodle_read",
+  "my_library_read",
+  "cast_read",
+  "cast_alumni_read",
+  "cast_search",
+  "library_catalog_search",
+  "library_item_read",
+  "library_catalog_browse",
+  "library_discovery_search",
+  "library_action_options",
+] as const;
+
+export type ChatToolName = (typeof chatToolNames)[number];
+
+export function isChatCapabilities(value: unknown): value is ChatCapabilities {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "agent_backend",
+      "observability",
+      "scombz_student_read_mode",
+      "supported_client_tools",
+      "max_client_tools",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) ||
+    !isOneOf(value.observability, ["off", "wandb"]) ||
+    !isOneOf(value.scombz_student_read_mode, ["off", "fixture", "live"]) ||
+    !Array.isArray(value.supported_client_tools) ||
+    value.supported_client_tools.length > 32 ||
+    new Set(value.supported_client_tools).size !==
+      value.supported_client_tools.length ||
+    !value.supported_client_tools.every((item) =>
+      isOneOf(item, chatToolNames),
+    ) ||
+    !isIntegerInRange(value.max_client_tools, 1, 32) ||
+    value.supported_client_tools.length > value.max_client_tools
+  ) {
+    return false;
+  }
+  const liveScombz =
+    value.agent_backend === "azure_openai" &&
+    value.observability === "off" &&
+    value.scombz_student_read_mode === "live";
+  const liveScombzTools = new Set([
+    "scombz_course_list",
+    "scombz_portal_read",
+    "scombz_course_read",
+    "scombz_material_search",
+  ]);
+  return (
+    liveScombz ||
+    !value.supported_client_tools.some((item) => liveScombzTools.has(item))
   );
 }
 
@@ -446,6 +525,309 @@ export function isScombzReadResult(value: unknown): value is ScombzReadResult {
   );
 }
 
+const scombzStudentStatuses = [
+  "known",
+  "partial",
+  "reauth_required",
+  "unavailable",
+] as const;
+const scombzCourseRefPattern =
+  /^orbit-scombz:\/\/course\/[A-Za-z0-9_-]{16,128}$/u;
+const scombzItemRefPattern = /^orbit-scombz:\/\/item\/[A-Za-z0-9_-]{16,128}$/u;
+const scombzMaterialRefPattern =
+  /^orbit-scombz:\/\/material\/[A-Za-z0-9_-]{16,128}$/u;
+const syllabusRefPattern =
+  /^orbit-syllabus:\/\/result\/[A-Za-z0-9_-]{16,128}$/u;
+
+function isScombzCoverage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "scope",
+      "requested",
+      "attempted",
+      "succeeded",
+      "failed",
+      "truncated",
+      "next_cursor",
+    ]) &&
+    isNonEmptyString(value.scope) &&
+    isIntegerInRange(value.requested, 0, 1000) &&
+    isIntegerInRange(value.attempted, 0, 1000) &&
+    isIntegerInRange(value.succeeded, 0, 1000) &&
+    isIntegerInRange(value.failed, 0, 1000) &&
+    typeof value.truncated === "boolean" &&
+    (value.next_cursor === null || typeof value.next_cursor === "string") &&
+    value.attempted >= value.succeeded + value.failed &&
+    (value.truncated || value.next_cursor === null)
+  );
+}
+
+function isScombzStudentEnvelope(value: unknown): value is JsonRecord {
+  return (
+    isRecord(value) &&
+    value.schema_version === "v1" &&
+    isOneOf(value.status, scombzStudentStatuses) &&
+    isScombzCoverage(value.coverage) &&
+    isNonEmptyString(value.observed_at) &&
+    (value.reason_code === null || typeof value.reason_code === "string")
+  );
+}
+
+function isScombzCitation(value: unknown): boolean {
+  return value === null || (typeof value === "string" && value.length <= 240);
+}
+
+function isScombzCourseSummary(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "course_ref",
+      "display_name",
+      "academic_year",
+      "term",
+      "weekday",
+      "period",
+      "citation_uri",
+    ]) &&
+    typeof value.course_ref === "string" &&
+    scombzCourseRefPattern.test(value.course_ref) &&
+    isNonEmptyString(value.display_name) &&
+    (value.academic_year === null ||
+      isIntegerInRange(value.academic_year, 2000, 2100)) &&
+    (value.term === null || typeof value.term === "string") &&
+    (value.weekday === null || typeof value.weekday === "string") &&
+    (value.period === null || typeof value.period === "string") &&
+    isScombzCitation(value.citation_uri)
+  );
+}
+
+function isScombzPortalItem(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "ref",
+      "section",
+      "title",
+      "detail",
+      "observed_at",
+      "citation_uri",
+    ]) &&
+    typeof value.ref === "string" &&
+    scombzItemRefPattern.test(value.ref) &&
+    isNonEmptyString(value.section) &&
+    isNonEmptyString(value.title) &&
+    (value.detail === null || typeof value.detail === "string") &&
+    isNonEmptyString(value.observed_at) &&
+    isScombzCitation(value.citation_uri)
+  );
+}
+
+function isScombzCourseReadItem(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "ref",
+      "course_ref",
+      "section",
+      "title",
+      "body",
+      "due_at",
+      "state",
+      "has_pdf",
+      "observed_at",
+      "citation_uri",
+    ]) &&
+    typeof value.ref === "string" &&
+    scombzItemRefPattern.test(value.ref) &&
+    typeof value.course_ref === "string" &&
+    scombzCourseRefPattern.test(value.course_ref) &&
+    isNonEmptyString(value.section) &&
+    isNonEmptyString(value.title) &&
+    (value.body === null || typeof value.body === "string") &&
+    (value.due_at === null || typeof value.due_at === "string") &&
+    (value.state === null || typeof value.state === "string") &&
+    typeof value.has_pdf === "boolean" &&
+    isNonEmptyString(value.observed_at) &&
+    isScombzCitation(value.citation_uri)
+  );
+}
+
+export function isScombzCourseListResult(
+  value: unknown,
+): value is ScombzCourseListResult {
+  return (
+    isScombzStudentEnvelope(value) &&
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "courses",
+      "coverage",
+      "observed_at",
+      "reason_code",
+    ]) &&
+    Array.isArray(value.courses) &&
+    value.courses.length <= 50 &&
+    (!["reauth_required", "unavailable"].includes(value.status as string) ||
+      value.courses.length === 0) &&
+    value.courses.every(isScombzCourseSummary)
+  );
+}
+
+export function isScombzPortalReadResult(
+  value: unknown,
+): value is ScombzPortalReadResult {
+  return (
+    isScombzStudentEnvelope(value) &&
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "items",
+      "coverage",
+      "observed_at",
+      "reason_code",
+    ]) &&
+    Array.isArray(value.items) &&
+    value.items.length <= 200 &&
+    (!["reauth_required", "unavailable"].includes(value.status as string) ||
+      value.items.length === 0) &&
+    value.items.every(isScombzPortalItem)
+  );
+}
+
+export function isScombzCourseReadResult(
+  value: unknown,
+): value is ScombzCourseReadResult {
+  return (
+    isScombzStudentEnvelope(value) &&
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "items",
+      "section_states",
+      "coverage",
+      "observed_at",
+      "reason_code",
+    ]) &&
+    Array.isArray(value.items) &&
+    value.items.length <= 250 &&
+    value.items.every(isScombzCourseReadItem) &&
+    isRecord(value.section_states) &&
+    Object.keys(value.section_states).length <= 20 &&
+    (!["reauth_required", "unavailable"].includes(value.status as string) ||
+      (value.items.length === 0 &&
+        Object.keys(value.section_states).length === 0)) &&
+    Object.values(value.section_states).every((state) =>
+      isOneOf(state, ["complete", "truncated", "failed", "not_requested"]),
+    )
+  );
+}
+
+function isScombzMaterialHit(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "material_ref",
+      "course_ref",
+      "material_title",
+      "page",
+      "quote",
+      "observed_at",
+      "citation_uri",
+    ]) &&
+    typeof value.material_ref === "string" &&
+    scombzMaterialRefPattern.test(value.material_ref) &&
+    typeof value.course_ref === "string" &&
+    scombzCourseRefPattern.test(value.course_ref) &&
+    isNonEmptyString(value.material_title) &&
+    isIntegerInRange(value.page, 1, 10000) &&
+    isNonEmptyString(value.quote) &&
+    value.quote.length <= 1800 &&
+    isNonEmptyString(value.observed_at) &&
+    isScombzCitation(value.citation_uri)
+  );
+}
+
+export function isScombzMaterialSearchResult(
+  value: unknown,
+): value is ScombzMaterialSearchResult {
+  return (
+    isScombzStudentEnvelope(value) &&
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "hits",
+      "coverage",
+      "observed_at",
+      "reason_code",
+    ]) &&
+    Array.isArray(value.hits) &&
+    value.hits.length <= 24 &&
+    (!["reauth_required", "unavailable"].includes(value.status as string) ||
+      value.hits.length === 0) &&
+    value.hits.every(isScombzMaterialHit)
+  );
+}
+
+export function isSyllabusReadResult(
+  value: unknown,
+): value is SyllabusReadResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "syllabus_ref",
+      "url",
+      "course_code",
+      "title",
+      "instructors",
+      "objectives",
+      "weekly_plan",
+      "evaluation",
+      "textbooks",
+      "prerequisites",
+      "observed_at",
+      "reason_code",
+      "citation_uri",
+    ]) ||
+    value.schema_version !== "v1" ||
+    (value.status !== "known" && value.status !== "unavailable") ||
+    typeof value.syllabus_ref !== "string" ||
+    !syllabusRefPattern.test(value.syllabus_ref) ||
+    typeof value.url !== "string" ||
+    !value.url.startsWith("https://syllabus.sic.shibaura-it.ac.jp/") ||
+    !isNonEmptyString(value.observed_at) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string") ||
+    !isScombzCitation(value.citation_uri) ||
+    !Array.isArray(value.instructors) ||
+    !value.instructors.every((item) => typeof item === "string") ||
+    !Array.isArray(value.weekly_plan) ||
+    !value.weekly_plan.every((item) => typeof item === "string") ||
+    !Array.isArray(value.textbooks) ||
+    !value.textbooks.every((item) => typeof item === "string")
+  ) {
+    return false;
+  }
+  return (
+    ["course_code", "title", "objectives", "evaluation", "prerequisites"].every(
+      (key) => {
+        const item = value[key];
+        return item === null || typeof item === "string";
+      },
+    ) &&
+    (value.status === "known" ||
+      (value.course_code === null &&
+        value.title === null &&
+        value.instructors.length === 0 &&
+        value.objectives === null &&
+        value.weekly_plan.length === 0 &&
+        value.evaluation === null &&
+        value.textbooks.length === 0 &&
+        value.prerequisites === null))
+  );
+}
+
 export function isSyllabusSearchResult(
   value: unknown,
 ): value is SyllabusSearchResult {
@@ -470,18 +852,25 @@ export function isSyllabusSearchResult(
       (item) =>
         isRecord(item) &&
         hasExactlyKeys(item, [
+          "syllabus_ref",
           "title",
           "course_code",
           "faculty",
           "url",
           "snippet",
+          "citation_uri",
         ]) &&
         typeof item.title === "string" &&
+        typeof item.syllabus_ref === "string" &&
+        /^orbit-syllabus:\/\/result\/[A-Za-z0-9_-]{16,128}$/u.test(
+          item.syllabus_ref,
+        ) &&
         (item.course_code === null || typeof item.course_code === "string") &&
         (item.faculty === null || typeof item.faculty === "string") &&
         typeof item.url === "string" &&
         item.url.startsWith("https://syllabus.sic.shibaura-it.ac.jp/") &&
-        (item.snippet === null || typeof item.snippet === "string"),
+        (item.snippet === null || typeof item.snippet === "string") &&
+        isScombzCitation(item.citation_uri),
     )
   );
 }
@@ -1518,25 +1907,6 @@ export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   );
 }
 
-const chatToolNames = [
-  "scombz_page_summary",
-  "scombz_read",
-  "google_calendar_availability",
-  "syllabus_search",
-  "browser_read_url",
-  "sitrus_read",
-  "moodle_read",
-  "my_library_read",
-  "cast_read",
-  "cast_alumni_read",
-  "cast_search",
-  "library_catalog_search",
-  "library_item_read",
-  "library_catalog_browse",
-  "library_discovery_search",
-  "library_action_options",
-] as const;
-
 function isChatEvidenceMessage(value: unknown): boolean {
   if (!isRecord(value)) return false;
   const hasBaseKeys = hasExactlyKeys(value, [
@@ -1887,6 +2257,37 @@ export class AgentApiClient {
     if (!isAgentCapabilities(payload)) {
       throw new AgentApiError(
         "Agent API returned invalid capabilities.",
+        response.status,
+        payload,
+      );
+    }
+    return payload;
+  }
+
+  async chatCapabilities(): Promise<ChatCapabilities> {
+    const requestInit = { method: "GET" } satisfies RequestInit;
+    let response = await this.authorizedFetch(
+      "/v1/chat/capabilities",
+      requestInit,
+    );
+    if (response.status === 401 && this.sessionProvider) {
+      response = await this.authorizedFetch(
+        "/v1/chat/capabilities",
+        requestInit,
+        true,
+      );
+    }
+    const payload = await readJson(response);
+    if (!responseIsOk(response)) {
+      throw new AgentApiError(
+        `Agent API returned HTTP ${response.status}.`,
+        response.status,
+        payload,
+      );
+    }
+    if (!isChatCapabilities(payload)) {
+      throw new AgentApiError(
+        "Agent API returned invalid Chat capabilities.",
         response.status,
         payload,
       );

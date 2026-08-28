@@ -38,6 +38,7 @@ from orbit_api.models import (
     AgentSessionRequest,
     AgentSessionResponse,
     AgentToolResultRequest,
+    ChatCapabilities,
     ChatRunRequest,
     ChatRunResponse,
     ChatRunStatusResponse,
@@ -251,6 +252,65 @@ async def capabilities() -> AgentCapabilities:
     return AgentCapabilities(
         agent_backend=supported_backend,
         my_library_personal_context=supported_backend == "azure_openai",
+    )
+
+
+@app.get("/v1/chat/capabilities", response_model=ChatCapabilities)
+async def chat_capabilities() -> ChatCapabilities:
+    """Return the authenticated Chat contract used for capability intersection.
+
+    The legacy capabilities endpoint above is intentionally untouched.  This
+    endpoint is a stricter, versioned advertisement for the extension and is
+    fail-closed for live SCombZ student reads.
+    """
+
+    backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
+    if backend not in {"fixture", "openai", "azure_openai"}:
+        raise HTTPException(status_code=503, detail="Agent backend is not supported.")
+    observability = os.getenv("ORBIT_OBSERVABILITY", "off")
+    if observability not in {"off", "wandb"}:
+        raise HTTPException(status_code=503, detail="Observability mode is not supported.")
+    scombz_mode = os.getenv("ORBIT_SCOMBZ_STUDENT_READ", "off")
+    if scombz_mode not in {"off", "fixture", "live"}:
+        raise HTTPException(status_code=503, detail="SCombZ student read mode is not supported.")
+
+    supported: list[str] = [
+        "scombz_page_summary",
+        "scombz_read",
+        "google_calendar_availability",
+        "syllabus_search",
+        "syllabus_read",
+        "browser_read_url",
+        "sitrus_read",
+        "moodle_read",
+        "my_library_read",
+        "cast_read",
+        "cast_alumni_read",
+        "cast_search",
+        "library_catalog_search",
+        "library_item_read",
+        "library_catalog_browse",
+        "library_discovery_search",
+        "library_action_options",
+    ]
+    live_scombz = (
+        backend == "azure_openai"
+        and observability == "off"
+        and scombz_mode == "live"
+    )
+    if live_scombz:
+        supported[2:2] = [
+            "scombz_course_list",
+            "scombz_portal_read",
+            "scombz_course_read",
+            "scombz_material_search",
+        ]
+    return ChatCapabilities(
+        agent_backend=cast(Literal["fixture", "openai", "azure_openai"], backend),
+        observability=cast(Literal["off", "wandb"], observability),
+        scombz_student_read_mode=cast(Literal["off", "fixture", "live"], scombz_mode),
+        supported_client_tools=cast(list, supported),
+        max_client_tools=32,
     )
 
 

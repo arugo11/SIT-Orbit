@@ -45,10 +45,15 @@ from orbit_api.models import (
     MyLibraryScope,
     RelatedBookCandidate,
     ReserveOperation,
+    ScombzCourseListResult,
+    ScombzCourseReadResult,
+    ScombzMaterialSearchResult,
     ScombzPageSummaryResult,
+    ScombzPortalReadResult,
     ScombzReadResult,
     ScopedMyLibraryReadResult,
     SitrusGradeResult,
+    SyllabusReadResult,
     SyllabusSearchResult,
 )
 
@@ -70,7 +75,11 @@ from .pydantic_ai_backend import (
     LIBRARY_LOCATOR_PREFIX,
     MOODLE_TOOL_NAME,
     MY_LIBRARY_TOOL_NAME,
+    SCOMBZ_COURSE_LIST_TOOL_NAME,
+    SCOMBZ_COURSE_READ_TOOL_NAME,
+    SCOMBZ_MATERIAL_SEARCH_TOOL_NAME,
     SCOMBZ_PAGE_SUMMARY_LOCATOR_PREFIX,
+    SCOMBZ_PORTAL_READ_TOOL_NAME,
     SCOMBZ_READ_TOOL_NAME,
     SYLLABUS_SEARCH_TOOL_NAME,
     ActionDraft,
@@ -99,6 +108,15 @@ CHAT_PROMPT_VERSION = "pydantic-ai-chat-v1"
 _FIXTURE_SCOMBZ_QUERY = re.compile(
     r"(?:scombz|sc?omb|時間割|授業|講義|課題|締切|休講|補講|お知らせ|成績|出席|評価)",
     re.IGNORECASE,
+)
+_FIXTURE_SCOMBZ_COURSE_LIST_QUERY = re.compile(
+    r"(?:履修科目|授業一覧|時間割|過年度|今学期|前期|後期)", re.IGNORECASE
+)
+_FIXTURE_SCOMBZ_PORTAL_QUERY = re.compile(
+    r"(?:ポータル|全体課題|お知らせ一覧|アンケート|カレンダー|コミュニティ)", re.IGNORECASE
+)
+_FIXTURE_SCOMBZ_MATERIAL_QUERY = re.compile(
+    r"(?:教材PDF|講義資料|授業資料|資料.*検索|PDF)", re.IGNORECASE
 )
 _FIXTURE_SITRUS_QUERY = re.compile(r"(?:成績|単位|GPA|評価|取得済み)", re.IGNORECASE)
 _FIXTURE_MOODLE_QUERY = re.compile(r"(?:moodle|ムードル|教材|コース|活動|未提出)", re.IGNORECASE)
@@ -154,7 +172,12 @@ class ChatBackend(Protocol):
             CalendarAvailabilityResult
             | ScombzPageSummaryResult
             | ScombzReadResult
+            | ScombzCourseListResult
+            | ScombzPortalReadResult
+            | ScombzCourseReadResult
+            | ScombzMaterialSearchResult
             | SyllabusSearchResult
+            | SyllabusReadResult
             | BrowserReadResult
             | SitrusGradeResult
             | MoodleReadResult
@@ -169,6 +192,7 @@ class ChatBackend(Protocol):
             | LibraryActionOptionsResult
         ),
         context: list[EvidenceLink],
+        tool_evidence: EvidenceLink | None = None,
         advertised_tools: set[str],
         seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
     ) -> ChatAgentExecution: ...
@@ -187,6 +211,54 @@ class FixtureChatBackend:
             return False
         recent_text = "\n".join(item.content for item in history[-4:])
         return bool(_FIXTURE_SCOMBZ_QUERY.search(f"{recent_text}\n{message}"))
+
+    @staticmethod
+    def _requests_scombz_course_list(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if SCOMBZ_COURSE_LIST_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_SCOMBZ_COURSE_LIST_QUERY.search(f"{recent_text}\n{message}"))
+
+    @staticmethod
+    def _requests_scombz_portal(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if SCOMBZ_PORTAL_READ_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_SCOMBZ_PORTAL_QUERY.search(f"{recent_text}\n{message}"))
+
+    @staticmethod
+    def _requests_scombz_material(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if SCOMBZ_MATERIAL_SEARCH_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_SCOMBZ_MATERIAL_QUERY.search(f"{recent_text}\n{message}"))
+
+    @staticmethod
+    def _requests_scombz_course(
+        message: str,
+        history: Sequence[ChatHistoryMessage],
+        advertised_tools: set[str],
+    ) -> bool:
+        if SCOMBZ_COURSE_READ_TOOL_NAME not in advertised_tools:
+            return False
+        recent_text = "\n".join(item.content for item in history[-4:])
+        return bool(_FIXTURE_SCOMBZ_QUERY.search(f"{recent_text}\n{message}")) and not (
+            _FIXTURE_SCOMBZ_COURSE_LIST_QUERY.search(f"{recent_text}\n{message}")
+            or _FIXTURE_SCOMBZ_PORTAL_QUERY.search(f"{recent_text}\n{message}")
+            or _FIXTURE_SCOMBZ_MATERIAL_QUERY.search(f"{recent_text}\n{message}")
+        )
 
     @staticmethod
     def _requests_sitrus_read(
@@ -363,9 +435,7 @@ class FixtureChatBackend:
     ) -> bool:
         if LIBRARY_ACTION_OPTIONS_TOOL_NAME not in advertised_tools:
             return False
-        conversation_text = "\n".join(
-            [item.content for item in history[-20:]] + [message]
-        )
+        conversation_text = "\n".join([item.content for item in history[-20:]] + [message])
         return bool(
             re.search(
                 r"(?:orbit-library://record/[A-Za-z0-9_-]{16,128}|予約|予約したい|取寄|取り寄せ)",
@@ -387,15 +457,9 @@ class FixtureChatBackend:
         del context, related_book_context
         advertised = set(advertised_tools or set())
         library_context = library_context or []
-        if self._requests_library_action_options(
-            message, history, advertised, library_context
-        ):
-            conversation_text = "\n".join(
-                [item.content for item in history[-20:]] + [message]
-            )
-            match = re.search(
-                r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message
-            )
+        if self._requests_library_action_options(message, history, advertised, library_context):
+            conversation_text = "\n".join([item.content for item in history[-20:]] + [message])
+            match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
             if match is None:
                 selected = next(
                     (
@@ -419,6 +483,60 @@ class FixtureChatBackend:
                         arguments={"resource_ref": match.group(0)},
                     )
                 )
+        if self._requests_scombz_course_list(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-scombz-course-list-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=SCOMBZ_COURSE_LIST_TOOL_NAME,
+                    arguments={
+                        "query": message.strip()[:200],
+                        "academic_year": None,
+                        "term": None,
+                        "cursor": None,
+                    },
+                )
+            )
+        if self._requests_scombz_portal(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-scombz-portal-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=SCOMBZ_PORTAL_READ_TOOL_NAME,
+                    arguments={"sections": None, "query": message.strip()[:200], "cursor": None},
+                )
+            )
+        if self._requests_scombz_material(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-scombz-material-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=SCOMBZ_MATERIAL_SEARCH_TOOL_NAME,
+                    arguments={
+                        "course_ref": "orbit-scombz://course/fixturecourse0000001",
+                        "query": message.strip()[:200],
+                        "cursor": None,
+                    },
+                )
+            )
+        if self._requests_scombz_course(message, history, advertised):
+            return ChatAgentExecution(
+                deferred=DeferredChatRun(
+                    messages=[],
+                    tool_call_id=f"fixture-scombz-course-{uuid4().hex}",
+                    conversation_id=conversation_id,
+                    tool_name=SCOMBZ_COURSE_READ_TOOL_NAME,
+                    arguments={
+                        "course_refs": ["orbit-scombz://course/fixturecourse0000001"],
+                        "sections": None,
+                        "query": message.strip()[:200],
+                        "cursor": None,
+                    },
+                )
+            )
         if self._requests_library_item_read(
             message,
             history,
@@ -566,7 +684,12 @@ class FixtureChatBackend:
             CalendarAvailabilityResult
             | ScombzPageSummaryResult
             | ScombzReadResult
+            | ScombzCourseListResult
+            | ScombzPortalReadResult
+            | ScombzCourseReadResult
+            | ScombzMaterialSearchResult
             | SyllabusSearchResult
+            | SyllabusReadResult
             | BrowserReadResult
             | SitrusGradeResult
             | MoodleReadResult
@@ -581,6 +704,7 @@ class FixtureChatBackend:
             | LibraryActionOptionsResult
         ),
         context: list[EvidenceLink],
+        tool_evidence: EvidenceLink | None = None,
         advertised_tools: set[str],
         seen_tool_call_ids: set[str] | frozenset[str] = frozenset(),
     ) -> ChatAgentExecution:
@@ -629,11 +753,7 @@ class FixtureChatBackend:
                     state = "利用可能" if option.available else "利用不可"
                     lines.append(f"- {option.action_type}: {state}")
                 reserve = next(
-                    (
-                        option
-                        for option in tool_result.options
-                        if option.action_type == "reserve"
-                    ),
+                    (option for option in tool_result.options if option.action_type == "reserve"),
                     None,
                 )
                 if (
@@ -911,6 +1031,82 @@ class FixtureChatBackend:
                     evidence_ids=[evidence.evidence_id],
                 )
             )
+        if deferred.tool_name in {
+            SCOMBZ_COURSE_LIST_TOOL_NAME,
+            SCOMBZ_PORTAL_READ_TOOL_NAME,
+            SCOMBZ_COURSE_READ_TOOL_NAME,
+            SCOMBZ_MATERIAL_SEARCH_TOOL_NAME,
+        }:
+            expected_types = (
+                ScombzCourseListResult
+                if deferred.tool_name == SCOMBZ_COURSE_LIST_TOOL_NAME
+                else ScombzPortalReadResult
+                if deferred.tool_name == SCOMBZ_PORTAL_READ_TOOL_NAME
+                else ScombzCourseReadResult
+                if deferred.tool_name == SCOMBZ_COURSE_READ_TOOL_NAME
+                else ScombzMaterialSearchResult
+            )
+            if not isinstance(tool_result, expected_types):
+                raise ValueError("The fixture SCombZ student call received an invalid result.")
+            student_result = cast(Any, tool_result)
+            evidence = tool_evidence or next(
+                (item for item in context if item.evidence_id.startswith("scombz-")),
+                None,
+            )
+            if evidence is None:
+                raise ValueError("A resumed fixture Chat run requires SCombZ evidence.")
+            if student_result.status in {"reauth_required", "unavailable"}:
+                message = (
+                    "SCombZのログイン状態を確認できません。公式画面で再認証してから再試行してください。"
+                    if student_result.status == "reauth_required"
+                    else (
+                        "SCombZの参照結果を取得できませんでした"
+                        f"（{student_result.reason_code or 'unknown'}）。"
+                    )
+                )
+                return ChatAgentExecution(
+                    draft=ChatDraft(content_markdown=message, evidence_ids=[evidence.evidence_id])
+                )
+            if deferred.tool_name == SCOMBZ_COURSE_LIST_TOOL_NAME:
+                lines = ["SCombZの履修科目・時間割を確認しました。"]
+                lines.extend(
+                    f"- {course.display_name}"
+                    f"（{course.academic_year or '年度不明'} / "
+                    f"{course.term or '学期不明'}）"
+                    for course in student_result.courses
+                )
+            elif deferred.tool_name == SCOMBZ_PORTAL_READ_TOOL_NAME:
+                lines = ["SCombZポータルの情報を確認しました。"]
+                lines.extend(f"- {item.section}: {item.title}" for item in student_result.items)
+            elif deferred.tool_name == SCOMBZ_COURSE_READ_TOOL_NAME:
+                lines = ["SCombZの授業ページを確認しました。"]
+                lines.extend(
+                    f"- {item.title}"
+                    + (f"（期限: {item.due_at}）" if item.due_at else "")
+                    + (f"\n  {item.body}" if item.body else "")
+                    for item in student_result.items
+                )
+            else:
+                lines = ["SCombZの教材PDFを確認しました。"]
+                lines.extend(
+                    f"- {hit.material_title} p.{hit.page}: {hit.quote}"
+                    for hit in student_result.hits
+                )
+            if (
+                not getattr(student_result, "courses", None)
+                and not getattr(student_result, "items", None)
+                and not getattr(student_result, "hits", None)
+            ):
+                lines.append("- 対象範囲に表示できる項目はありませんでした。")
+            if student_result.status == "partial":
+                lines.append(
+                    f"\n一部のみ確認しました（{student_result.coverage.succeeded}/{student_result.coverage.attempted}）。"
+                )
+            return ChatAgentExecution(
+                draft=ChatDraft(
+                    content_markdown="\n".join(lines), evidence_ids=[evidence.evidence_id]
+                )
+            )
         if deferred.tool_name != SCOMBZ_READ_TOOL_NAME:
             raise RuntimeError("The fixture Chat backend only executes the local SCombZ read tool.")
         if not isinstance(tool_result, ScombzReadResult):
@@ -919,6 +1115,8 @@ class FixtureChatBackend:
             (item for item in context if is_derived_scombz_read_evidence(item)),
             None,
         )
+        if tool_evidence is not None:
+            evidence = tool_evidence
         if evidence is None:
             raise ValueError("A resumed fixture Chat run requires SCombZ evidence.")
 
@@ -1196,8 +1394,21 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         title = "SCombZから取得した表示情報"
         source_type = "scombz"
         locator = f"orbit-scombz://read/{uuid4().hex}"
+    elif request.name in {
+        "scombz_course_list",
+        "scombz_portal_read",
+        "scombz_course_read",
+        "scombz_material_search",
+    }:
+        title = "SCombZから取得した学生向け情報"
+        source_type = "scombz"
+        locator = f"orbit-scombz://read/{uuid4().hex}"
     elif request.name == SYLLABUS_SEARCH_TOOL_NAME:
         title = "芝浦工業大学公式シラバス検索"
+        source_type = "syllabus"
+        locator = f"orbit-syllabus://search/{uuid4().hex}"
+    elif request.name == "syllabus_read":
+        title = "芝浦工業大学公式シラバス詳細"
         source_type = "syllabus"
         locator = f"orbit-syllabus://search/{uuid4().hex}"
     elif request.name == BROWSER_READ_TOOL_NAME:
@@ -1258,7 +1469,12 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
         CALENDAR_TOOL_NAME: "calendar-availability-v1",
         "scombz_page_summary": "scombz-page-summary-v1",
         SCOMBZ_READ_TOOL_NAME: "scombz-read-v1",
+        "scombz_course_list": "scombz-course-list-v1",
+        "scombz_portal_read": "scombz-portal-read-v1",
+        "scombz_course_read": "scombz-course-read-v1",
+        "scombz_material_search": "scombz-material-search-v1",
         SYLLABUS_SEARCH_TOOL_NAME: "syllabus-search-v1",
+        "syllabus_read": "syllabus-read-v1",
         BROWSER_READ_TOOL_NAME: "browser-read-v1",
         "sitrus_read": "sitrus-grades-v1",
         MOODLE_TOOL_NAME: "moodle-summary-v1",
@@ -1380,9 +1596,7 @@ def _canonical_response(
             if item not in selected:
                 selected.append(item)
     manifest_evidence = [
-        item
-        for item in canonical_context
-        if item.data_classification in {"public", "synthetic"}
+        item for item in canonical_context if item.data_classification in {"public", "synthetic"}
     ]
     manifest_evidence_ids = {item.evidence_id for item in manifest_evidence}
     manifest_related_books = [
@@ -1543,6 +1757,21 @@ class ChatRunService:
             cast(Any, backend).progress_callback = emit
         advertised = set(tool.name for tool in request.client_tools)
         advertised.update(getattr(backend, "server_tool_names", frozenset()))
+        live_scombz_tools = {
+            SCOMBZ_COURSE_LIST_TOOL_NAME,
+            SCOMBZ_PORTAL_READ_TOOL_NAME,
+            SCOMBZ_COURSE_READ_TOOL_NAME,
+            SCOMBZ_MATERIAL_SEARCH_TOOL_NAME,
+        }
+        if live_scombz_tools.intersection(advertised):
+            if not (
+                os.getenv("ORBIT_AGENT_BACKEND", "fixture") == "azure_openai"
+                and os.getenv("ORBIT_OBSERVABILITY", "off") == "off"
+                and os.getenv("ORBIT_SCOMBZ_STUDENT_READ", "off") == "live"
+            ):
+                raise ValueError(
+                    "Live SCombZ tools require Azure OpenAI with observability off."
+                )
         manifest = request.context_manifest
         logger.info(
             "chat_start backend=%s advertised_tools=%s context_evidence=%d library_records=%d",
@@ -1684,9 +1913,14 @@ class ChatRunService:
         self.store.peek(run_id)
         if os.getenv("ORBIT_OBSERVABILITY", "off") != "off":
             raise ValueError("Live client tools require ORBIT_OBSERVABILITY=off.")
-        unavailable_library_result = isinstance(
+        unavailable_read_result = isinstance(
             request.result,
             (
+                ScombzCourseListResult,
+                ScombzPortalReadResult,
+                ScombzCourseReadResult,
+                ScombzMaterialSearchResult,
+                SyllabusReadResult,
                 LibraryCatalogSearchResult,
                 LibraryItemReadResult,
                 LibraryCatalogBrowseResult,
@@ -1696,7 +1930,7 @@ class ChatRunService:
         )
         if (
             getattr(request.result, "status", None) in {"reauth_required", "unavailable"}
-            and not unavailable_library_result
+            and not unavailable_read_result
         ):
             raise ValueError("The client tool was unavailable and cannot resume this chat run.")
         if (
@@ -1730,7 +1964,8 @@ class ChatRunService:
                     "Personal library action capabilities require the explicitly "
                     "consented Azure Agent."
                 )
-            context = _merge_evidence(claimed.context, [_tool_evidence(request, run_id)])
+            tool_evidence = _tool_evidence(request, run_id)
+            context = _merge_evidence(claimed.context, [tool_evidence])
             library_action_options = dict(claimed.library_action_options)
             if request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME and isinstance(
                 request.result, LibraryActionOptionsResult
@@ -1742,6 +1977,7 @@ class ChatRunService:
                 deferred=claimed.deferred,
                 tool_result=request.result,
                 context=context,
+                tool_evidence=tool_evidence,
                 advertised_tools={tool.name for tool in claimed.advertised_tools},
                 seen_tool_call_ids=claimed.seen_tool_call_ids,
             )

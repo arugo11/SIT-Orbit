@@ -7,6 +7,7 @@ import type {
   LibraryBibliographicRecord,
   RelatedBookCandidate,
 } from "../api/client";
+import type { ChatConversation } from "./chat-history";
 import {
   ContextEvidenceConflictError,
   loadConversation,
@@ -177,6 +178,26 @@ describe("chat context manifest", () => {
     );
   });
 
+  it("retains only opaque SCombZ personal evidence for same-conversation context", () => {
+    const personal: EvidenceLink = {
+      evidence_id: "scombz-course-list-v1-1234567890abcdef",
+      title: "SCombZの履修科目",
+      source_type: "scombz",
+      locator: "orbit-scombz://read/1234567890abcdef",
+      data_classification: "personal",
+    };
+    let conversation = mergeConversationEvidence(newConversation(), [personal]);
+    expect(conversation.contextManifest.evidence).toEqual([personal]);
+
+    conversation = mergeConversationEvidence(conversation, [
+      {
+        ...personal,
+        locator: "orbit-scombz://read/1234567890abcdef?internal=secret",
+      },
+    ]);
+    expect(conversation.contextManifest.evidence).toEqual([personal]);
+  });
+
   it("repairs duplicate evidence retained in an older assistant message", async () => {
     const conversation = newConversation();
     await saveConversation({
@@ -219,5 +240,20 @@ describe("chat context manifest", () => {
     ]);
     expect(history).toHaveLength(1);
     expect(history[0]?.content).toHaveLength(12_000);
+  });
+
+  it("keeps legacy conversations local-only when processing metadata is absent", async () => {
+    const legacy = { ...newConversation() } as unknown as Record<
+      string,
+      unknown
+    >;
+    delete legacy.processing_scope;
+    delete legacy.provider_destination;
+    delete legacy.history_eligible;
+    await saveConversation(legacy as unknown as ChatConversation);
+    const loaded = await loadConversation(legacy.conversationId as string);
+    expect(loaded?.history_eligible).toBe(false);
+    expect(loaded?.provider_destination).toBe("none");
+    expect(loaded?.processing_scope).toBe("none");
   });
 });
