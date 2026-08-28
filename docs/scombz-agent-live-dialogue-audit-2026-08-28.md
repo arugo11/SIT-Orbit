@@ -323,3 +323,59 @@ Evidence: `scombz`の監査用別名`evidence-legacy-01`（実URL・内部IDは�
 ### 取り扱わなかった情報
 
 認証コード、Bearer token、Cookie、CSRF、SCombZ内部ID、`idnumber`、`objectName`、`resource_Id`、一時URL、生PDF、PDF全抽出本文、他学生の個人情報はレポート・Chat履歴・ログへ記録していない。
+
+## 修正後再監査（実認証・2026-08-28）
+
+### 配備read-back
+
+| 項目 | 実測値 | 判定 |
+| --- | --- | --- |
+| ソースcommit | `a9d8f1f1c07146e728fa9d1fa6e660c2b44ee73f` | PASS |
+| Container image | ACRのcommit固定digest（値は配備ログにのみ保持） | PASS |
+| revision | `sit-orbit-demo-api--0000048` | PASS |
+| provisioning | `Succeeded` | PASS |
+| `/health` | `{"status":"ok"}`（配備スクリプトread-back） | PASS |
+| backend | `azure_openai` | PASS |
+| observability | `off` | PASS |
+| SCombZ student read | `live` | PASS |
+| fixture/OpenAI fallback | 設定上無効 | PASS |
+| `ChatToolName` | 21 enum、SCombZ新4 Toolと`syllabus_read`を含む | PASS |
+| `client_tools`上限 | 32 | PASS |
+| `/v1/chat/capabilities` | OpenAPIへ追加、認証必須契約 | PASS（未認証の直接HTTP確認はネットワーク制限で未実行） |
+
+配備は`az acr build`成功後に管理APIでイメージdigestを解決し、そのdigestをContainer Appへ設定した。初回のpreview manifestコマンドがdigest解決で失敗したログは削除していない。再配備ログは`.logs/sit-orbit-scombz-deploy-2-2026-08-28.log`、設定read-backログは`.logs/sit-orbit-scombz-config-2026-08-28.log`に残している。
+
+### 再監査の開始状態
+
+| 項目 | 観測値 |
+| --- | --- |
+| 認証 | Chromeにログイン済みSCombZ Homeを確認 |
+| 固定対象 | 表示中のSCombZ Home（同じURLの候補から最新表示タブを固定） |
+| 同意 | Azure送信同意UIの状態は、SIT ORBITパネルが操作対象外のため未確認 |
+| 監査開始 | 2026-08-28 15:47 JST |
+| 送信済みuser発話 | 0 |
+| 受信済みagent応答 | 0 |
+| 新Tool選択 | 0 |
+| SCombZ read-only request | 0 |
+| 書き込みrequest | 0 |
+
+Chrome制御APIからはSCombZ本文タブのDOM・スクリーンショットを確認できる一方、SIT ORBITサイドパネルはChromeの通常タブではないため、入力欄・同意・送信ボタンを取得できなかった。拡張機能URLを新規タブへ直接開く操作はブラウザのURLポリシーにより拒否された。したがって、実認証19シナリオはこの時点では一つも実行しておらず、修正後のツール選択・PDF/OCR・シラバス・Evidence継続を成功扱いにしていない。
+
+### S01–S19（修正後・再開待ち）
+
+19シナリオは、初回監査の発話と失敗ログを保持したまま、SIT ORBITを通常タブで操作可能にした後、同じ順序で再実行する。現時点の判定は全件`BLOCKED`（UI操作対象が取得できないため）であり、応答やTool列を推測していない。
+
+再開条件は、ユーザーがSIT ORBITサイドパネルの「全画面で開く」をクリックし、拡張機能を通常タブとして表示すること。再開後は同じ認証済みSCombZ Homeタブを固定し、初回失敗ログを削除せず本節へ各会話の全発話・status・coverage・Evidence・通信pathを追記する。
+
+### 修正後時点の集計
+
+| 指標 | 件数 | 判定 |
+| --- | ---: | --- |
+| 修正後に実行した自然な質問シナリオ | 0 / 19 | BLOCKED |
+| 修正後の送信ターン | 0 | BLOCKED |
+| `/v1/chat/capabilities`の認証済み実測 | 0 | BLOCKED（拡張UI経路未操作） |
+| 契約422 | 0（修正後UI送信なし） | 未検証 |
+| 秘密情報のレポート記録・Azure送信 | 0 | PASS |
+| SCombZ書き込みrequest | 0 | PASS |
+| 受験中内容の取得 | 0 | 未検証 |
+| Evidence取り違え | 0 | 未検証 |
