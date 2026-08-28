@@ -110,9 +110,9 @@ az acr build \
   "${subscription_args[@]}" \
   "${project_root}"
 
-image_digest="$(az acr manifest list-metadata \
-  --registry "${ORBIT_AZURE_REGISTRY}" \
-  --name "${image_repository}" \
+image_digest="$(az acr repository show-manifests \
+  --name "${ORBIT_AZURE_REGISTRY}" \
+  --repository "${image_repository}" \
   "${subscription_args[@]}" \
   --only-show-errors \
   --query "[?contains(join(',', tags), '${image_tag}')].digest | [0]" \
