@@ -1511,7 +1511,10 @@ def _tool_evidence(request: ChatToolResultRequest, run_id: str) -> EvidenceLink:
                 }
                 else (
                     request.result.data_classification
-                    if isinstance(request.result, BrowserReadResult)
+                    if isinstance(
+                        request.result,
+                        (BrowserReadResult, CastAlumniReadResult),
+                    )
                     else "personal"
                 )
             )
@@ -1700,6 +1703,10 @@ class ChatRunService:
         self.backend_factory = backend_factory
         self._background: dict[str, _BackgroundChatRun] = {}
         self._background_expired: dict[str, float] = {}
+        # A receipt is scoped to the one deferred submission that produced it.
+        # The HTTP layer consumes it immediately to emit response headers; it
+        # is never persisted in a run, prompt, or observability payload.
+        self._tool_receipts: dict[str, tuple[str, str]] = {}
 
     @staticmethod
     def _progress_title(tool_name: str) -> str:
@@ -1904,6 +1911,12 @@ class ChatRunService:
                 state.task.cancel()
         self._background.clear()
         self._background_expired.clear()
+        self._tool_receipts.clear()
+
+    def take_tool_receipt(self, run_id: str) -> tuple[str, str] | None:
+        """Consume the latest call-specific evidence receipt for ``run_id``."""
+
+        return self._tool_receipts.pop(run_id, None)
 
     async def submit_tool_result(
         self,
@@ -1920,6 +1933,7 @@ class ChatRunService:
                 ScombzPortalReadResult,
                 ScombzCourseReadResult,
                 ScombzMaterialSearchResult,
+                SyllabusSearchResult,
                 SyllabusReadResult,
                 LibraryCatalogSearchResult,
                 LibraryItemReadResult,
@@ -1964,7 +1978,17 @@ class ChatRunService:
                     "Personal library action capabilities require the explicitly "
                     "consented Azure Agent."
                 )
+            if (
+                request.name == CAST_ALUMNI_TOOL_NAME
+                and isinstance(request.result, CastAlumniReadResult)
+                and request.result.data_classification == "restricted"
+                and backend_name != "azure_openai"
+            ):
+                raise ValueError(
+                    "Restricted CAST alumni data requires the explicitly consented Azure Agent."
+                )
             tool_evidence = _tool_evidence(request, run_id)
+            self._tool_receipts[run_id] = (request.tool_call_id, tool_evidence.evidence_id)
             context = _merge_evidence(claimed.context, [tool_evidence])
             library_action_options = dict(claimed.library_action_options)
             if request.name == LIBRARY_ACTION_OPTIONS_TOOL_NAME and isinstance(
@@ -2007,6 +2031,7 @@ class ChatRunService:
             )
             return self._tool_required(run_id, execution.deferred)
         except BaseException:
+            self._tool_receipts.pop(run_id, None)
             self.store.fail(run_id)
             raise
 

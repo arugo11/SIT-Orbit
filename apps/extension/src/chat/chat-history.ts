@@ -7,6 +7,7 @@ import type {
   LibraryBibliographicRecord,
   RelatedBookCandidate,
 } from "../api/client";
+import { isProviderSafeConversationText } from "../privacy/conversation-pseudonymization";
 
 export type ChatTimelineRole = "user" | "assistant" | "tool";
 
@@ -20,6 +21,16 @@ export interface ChatTimelineMessage {
   toolName?: string;
   toolState?: "running" | "completed" | "failed";
   relatedBooks?: RelatedBookCandidate[];
+  /** Provider-safe projection retained separately from local display text. */
+  provider_content?: string;
+  display_content?: string;
+  privacy_transform?: {
+    schema_version: "v1";
+    replaced_count: number;
+    removed_fields: string[];
+    generalized_fields: string[];
+    warnings: string[];
+  };
 }
 
 export interface ChatConversation {
@@ -32,6 +43,7 @@ export interface ChatConversation {
   processing_scope:
     | "none"
     | "personal/scombz_student"
+    | "restricted/cast_career"
     | "public/syllabus"
     | "mixed";
   provider_destination: "local" | "azure_openai" | "none";
@@ -367,6 +379,32 @@ function sanitizeMessage(
   return {
     ...message,
     content: sanitizeStoredText(message.content),
+    provider_content:
+      message.provider_content === undefined
+        ? undefined
+        : sanitizeStoredText(message.provider_content),
+    display_content:
+      message.display_content === undefined
+        ? undefined
+        : sanitizeStoredText(message.display_content),
+    privacy_transform: message.privacy_transform
+      ? {
+          schema_version: "v1",
+          replaced_count: Math.max(
+            0,
+            Math.min(10_000, message.privacy_transform.replaced_count),
+          ),
+          removed_fields: message.privacy_transform.removed_fields
+            .filter((item): item is string => typeof item === "string")
+            .slice(0, 32),
+          generalized_fields: message.privacy_transform.generalized_fields
+            .filter((item): item is string => typeof item === "string")
+            .slice(0, 32),
+          warnings: message.privacy_transform.warnings
+            .filter((item): item is string => typeof item === "string")
+            .slice(0, 16),
+        }
+      : undefined,
     evidence: messageEvidence,
     proposal: message.proposal ? { ...message.proposal } : message.proposal,
     relatedBooks: message.relatedBooks
@@ -389,6 +427,7 @@ function sanitizeConversation(
     contextManifest,
     processing_scope:
       conversation.processing_scope === "personal/scombz_student" ||
+      conversation.processing_scope === "restricted/cast_career" ||
       conversation.processing_scope === "public/syllabus" ||
       conversation.processing_scope === "mixed"
         ? conversation.processing_scope
@@ -540,8 +579,18 @@ export async function deleteAllConversations(): Promise<void> {
   database.close();
 }
 
+export interface ChatHistoryOptions {
+  /**
+   * Require an explicitly classified provider projection for every message.
+   * This is used for private conversations so a legacy display-only message
+   * cannot cross the provider boundary via the `content` fallback.
+   */
+  requireProviderContent?: boolean;
+}
+
 export function toChatHistory(
   messages: ChatTimelineMessage[],
+  options: ChatHistoryOptions = {},
 ): ChatHistoryMessage[] {
   return messages
     .filter(
@@ -551,10 +600,29 @@ export function toChatHistory(
         message.role === "user" || message.role === "assistant",
     )
     .slice(-20)
-    .map((message) => ({
-      role: message.role,
-      content: sanitizeStoredText(message.content),
-    }));
+    .map((message) => {
+      const content = options.requireProviderContent
+        ? message.provider_content
+        : (message.provider_content ?? message.content);
+      if (typeof content !== "string" || content.trim().length === 0) {
+        return null;
+      }
+      if (
+        options.requireProviderContent &&
+        !isProviderSafeConversationText(content)
+      ) {
+        // A provider projection is still rejected if an older or corrupted
+        // record contains a credential, personal identifier, or sensitive
+        // query parameter.  Never let the private-history option weaken the
+        // final outbound boundary.
+        return null;
+      }
+      return {
+        role: message.role,
+        content: sanitizeStoredText(content),
+      } satisfies ChatHistoryMessage;
+    })
+    .filter((item): item is ChatHistoryMessage => item !== null);
 }
 
 export function toChatContextManifest(

@@ -5,6 +5,8 @@ import {
   isLibraryActionPreviewMessage,
   isPageContext,
   isPageContextUpdatedMessage,
+  isScombzClearConversationMessage,
+  isScombzStudentReadResponse,
   MESSAGE_TYPES,
 } from "./messages";
 
@@ -26,6 +28,81 @@ const validScombzContext = {
     relatedLinks: [],
   },
 } as const;
+
+const validScombzStudentReadResponse = {
+  status: "known",
+  projection: {
+    schema_version: "v1",
+    status: "known",
+    courses: [],
+    coverage: {
+      scope: "timetable_surface",
+      requested: 0,
+      attempted: 0,
+      succeeded: 0,
+      failed: 0,
+      truncated: false,
+      next_cursor: null,
+    },
+    observed_at: "2026-08-30T00:00:00.000Z",
+    reason_code: null,
+  },
+} as const;
+
+describe("SCombZ student read response boundaries", () => {
+  it("requires typed coverage accounting in the runtime envelope", () => {
+    expect(isScombzStudentReadResponse(validScombzStudentReadResponse)).toBe(
+      true,
+    );
+    expect(
+      isScombzStudentReadResponse({
+        ...validScombzStudentReadResponse,
+        projection: {
+          ...validScombzStudentReadResponse.projection,
+          coverage: {
+            ...validScombzStudentReadResponse.projection.coverage,
+            attempted: 1,
+            succeeded: 1,
+            failed: 1,
+          },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      isScombzStudentReadResponse({
+        ...validScombzStudentReadResponse,
+        projection: {
+          ...validScombzStudentReadResponse.projection,
+          hidden_html: "<html>private</html>",
+        },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("SCombZ conversation cleanup boundaries", () => {
+  it("accepts only an opaque conversation cleanup command", () => {
+    expect(
+      isScombzClearConversationMessage({
+        type: MESSAGE_TYPES.scombzClearConversation,
+        conversation_id: "conversation-cleanup-1",
+      }),
+    ).toBe(true);
+    expect(
+      isScombzClearConversationMessage({
+        type: MESSAGE_TYPES.scombzClearConversation,
+        conversation_id: "conversation-cleanup-1",
+        tab_id: 42,
+      }),
+    ).toBe(false);
+    expect(
+      isScombzClearConversationMessage({
+        type: MESSAGE_TYPES.scombzClearConversation,
+        conversation_id: "short",
+      }),
+    ).toBe(false);
+  });
+});
 
 describe("runtime page-context message boundaries", () => {
   it("rejects a context whose kind and origin disagree", () => {

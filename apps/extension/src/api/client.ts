@@ -1,4 +1,8 @@
 import type { components } from "@sit-orbit/api-client";
+import {
+  CHAT_TOOL_NAMES,
+  type RegisteredChatToolName,
+} from "../chat/tool-registry";
 
 export type ActionProposal = components["schemas"]["ActionProposal"];
 export type OrbitEvent = components["schemas"]["OrbitEvent"];
@@ -189,6 +193,21 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/**
+ * Header receipts are opaque correlation values, not arbitrary response text.
+ * Keep the compatibility reader permissive about the exact prefix, while
+ * rejecting whitespace/control characters and unbounded values before they
+ * can enter the local evidence map.
+ */
+function isReceiptIdentifier(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 200 &&
+    value.length > 0 &&
+    /^[A-Za-z0-9._:-]+$/u.test(value)
+  );
+}
+
 function isIntegerInRange(
   value: unknown,
   minimum: number,
@@ -218,31 +237,7 @@ function isAgentCapabilities(value: unknown): value is AgentCapabilities {
   );
 }
 
-const chatToolNames = [
-  "scombz_page_summary",
-  "scombz_read",
-  "scombz_course_list",
-  "scombz_portal_read",
-  "scombz_course_read",
-  "scombz_material_search",
-  "google_calendar_availability",
-  "syllabus_search",
-  "syllabus_read",
-  "browser_read_url",
-  "sitrus_read",
-  "moodle_read",
-  "my_library_read",
-  "cast_read",
-  "cast_alumni_read",
-  "cast_search",
-  "library_catalog_search",
-  "library_item_read",
-  "library_catalog_browse",
-  "library_discovery_search",
-  "library_action_options",
-] as const;
-
-export type ChatToolName = (typeof chatToolNames)[number];
+export type ChatToolName = RegisteredChatToolName;
 
 export function isChatCapabilities(value: unknown): value is ChatCapabilities {
   if (
@@ -264,7 +259,7 @@ export function isChatCapabilities(value: unknown): value is ChatCapabilities {
     new Set(value.supported_client_tools).size !==
       value.supported_client_tools.length ||
     !value.supported_client_tools.every((item) =>
-      isOneOf(item, chatToolNames),
+      isOneOf(item, CHAT_TOOL_NAMES),
     ) ||
     !isIntegerInRange(value.max_client_tools, 1, 32) ||
     value.supported_client_tools.length > value.max_client_tools
@@ -840,6 +835,7 @@ export function isSyllabusSearchResult(
       "year",
       "faculty",
       "results",
+      "observed_at",
       "reason_code",
     ]) &&
     value.schema_version === "v1" &&
@@ -848,6 +844,7 @@ export function isSyllabusSearchResult(
     (value.year === null || typeof value.year === "number") &&
     (value.faculty === null || typeof value.faculty === "string") &&
     Array.isArray(value.results) &&
+    typeof value.observed_at === "string" &&
     value.results.every(
       (item) =>
         isRecord(item) &&
@@ -1615,21 +1612,24 @@ export function isCastAlumniReadResult(
 ): value is CastAlumniReadResult {
   if (
     !isRecord(value) ||
-    !hasExactlyKeys(value, [
-      "schema_version",
-      "status",
-      "data_classification",
-      "profile_count",
-      "topic_categories",
-      "availability_frequencies",
-      "meeting_modes",
-      "shareable_insight_categories",
-      "contact_present",
-      "discovered_link_count",
-      "reason_code",
-    ]) ||
+    !Object.keys(value).every((key) =>
+      [
+        "schema_version",
+        "status",
+        "data_classification",
+        "profile_count",
+        "profiles",
+        "topic_categories",
+        "availability_frequencies",
+        "meeting_modes",
+        "shareable_insight_categories",
+        "contact_present",
+        "discovered_link_count",
+        "reason_code",
+      ].includes(key),
+    ) ||
     value.schema_version !== "v1" ||
-    value.data_classification !== "personal" ||
+    !isOneOf(value.data_classification, ["personal", "restricted"]) ||
     !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
     !isIntegerInRange(value.profile_count, 0, 64) ||
     !Array.isArray(value.topic_categories) ||
@@ -1660,6 +1660,90 @@ export function isCastAlumniReadResult(
   ) {
     return false;
   }
+  if (
+    value.data_classification === "restricted" &&
+    value.profiles === undefined &&
+    value.profile_count !== 0
+  ) {
+    return false;
+  }
+  if (value.profiles !== undefined) {
+    if (
+      !Array.isArray(value.profiles) ||
+      value.profiles.length > 20 ||
+      value.data_classification !== "restricted" ||
+      value.contact_present ||
+      value.profile_count !== value.profiles.length ||
+      !value.profiles.every((profile) => {
+        if (!isRecord(profile)) return false;
+        if (
+          Object.keys(profile).some(
+            (key) =>
+              ![
+                "alias",
+                "role",
+                "company",
+                "technical_domains",
+                "job_types",
+                "location_area",
+                "graduation_year_bucket",
+                "evidence_id",
+              ].includes(key),
+          )
+        ) {
+          return false;
+        }
+        const directIdentifier =
+          /(?:@|https?:\/\/|orbit-[a-z0-9-]+:\/\/|(?:\+81|0)[-\d() ]{8,}|\b[A-Z]{1,5}[-_ ]?\d{5,}\b)/iu;
+        const safeText = (item: unknown, max: number): boolean =>
+          item === undefined ||
+          item === null ||
+          (typeof item === "string" &&
+            item.length <= max &&
+            !directIdentifier.test(item));
+        return (
+          typeof profile.alias === "string" &&
+          /^\[\[ORBIT_PERSON_[A-Za-z0-9_-]{16,64}\]\]$/u.test(profile.alias) &&
+          isOneOf(profile.role, ["alumni", "supporter", "unknown"]) &&
+          safeText(profile.company, 160) &&
+          Array.isArray(profile.technical_domains) &&
+          profile.technical_domains.length <= 12 &&
+          new Set(profile.technical_domains).size ===
+            profile.technical_domains.length &&
+          profile.technical_domains.every(
+            (item) =>
+              typeof item === "string" &&
+              item.length > 0 &&
+              item.length <= 120 &&
+              !directIdentifier.test(item),
+          ) &&
+          Array.isArray(profile.job_types) &&
+          profile.job_types.length <= 12 &&
+          new Set(profile.job_types).size === profile.job_types.length &&
+          profile.job_types.every(
+            (item) =>
+              typeof item === "string" &&
+              item.length > 0 &&
+              item.length <= 120 &&
+              !directIdentifier.test(item),
+          ) &&
+          safeText(profile.location_area, 80) &&
+          (profile.graduation_year_bucket === undefined ||
+            profile.graduation_year_bucket === null ||
+            (typeof profile.graduation_year_bucket === "string" &&
+              /^(?:before-2010|20[0-9]{2}-20[0-9]{2})$/u.test(
+                profile.graduation_year_bucket,
+              ))) &&
+          (profile.evidence_id === undefined ||
+            profile.evidence_id === null ||
+            (typeof profile.evidence_id === "string" &&
+              /^[A-Za-z0-9_-]{3,200}$/u.test(profile.evidence_id)))
+        );
+      })
+    ) {
+      return false;
+    }
+  }
   if (value.status === "known") return true;
   return (
     value.profile_count === 0 &&
@@ -1668,7 +1752,8 @@ export function isCastAlumniReadResult(
     value.meeting_modes.length === 0 &&
     value.shareable_insight_categories.length === 0 &&
     !value.contact_present &&
-    value.discovered_link_count === 0
+    value.discovered_link_count === 0 &&
+    (value.profiles === undefined || value.profiles.length === 0)
   );
 }
 
@@ -2112,7 +2197,7 @@ export function isChatRunResponse(value: unknown): value is ChatRunResponse {
     isRecord(call) &&
     hasExactlyKeys(call, ["tool_call_id", "name", "version", "arguments"]) &&
     isNonEmptyString(call.tool_call_id) &&
-    isOneOf(call.name, chatToolNames) &&
+    isOneOf(call.name, CHAT_TOOL_NAMES) &&
     call.version === 1 &&
     isRecord(call.arguments)
   );
@@ -2351,6 +2436,85 @@ export class AgentApiClient {
       isChatRunResponse,
       "chat run",
     );
+  }
+
+  /**
+   * Submit one deferred result and retain the server's call-specific evidence
+   * receipt.  The regular method remains unchanged for older deployments;
+   * audit and multi-turn runners use this method when the headers are
+   * available and otherwise receive a null receipt.
+   */
+  async submitChatToolResultWithReceipt(
+    runId: string,
+    request: ChatToolResultRequest,
+  ): Promise<{ response: ChatRunResponse; evidence_id: string | null }> {
+    if (!runId.trim()) {
+      throw new TypeError("Chat run ID must not be empty.");
+    }
+    const requestInit = {
+      method: "POST",
+      body: JSON.stringify(request),
+    } satisfies RequestInit;
+    let response = await this.authorizedFetch(
+      `/v1/chat/runs/${encodeURIComponent(runId)}/tool-results`,
+      requestInit,
+    );
+    if (response.status === 401 && this.sessionProvider) {
+      response = await this.authorizedFetch(
+        `/v1/chat/runs/${encodeURIComponent(runId)}/tool-results`,
+        requestInit,
+        true,
+      );
+    }
+    const payload = await readJson(response);
+    if (!responseIsOk(response)) {
+      throw new AgentApiError(
+        `Agent API returned HTTP ${response.status}.`,
+        response.status,
+        payload,
+      );
+    }
+    if (!isChatRunResponse(payload)) {
+      throw new AgentApiError(
+        "Agent API returned an invalid chat run.",
+        response.status,
+        payload,
+      );
+    }
+    // Older test hosts and pre-receipt deployments may not expose a Headers
+    // object at all.  Treat that as the documented compatibility case; once
+    // either receipt header is present, however, the pair must be complete.
+    const headerCallId = response.headers?.get("X-Orbit-Tool-Call-Id") ?? null;
+    const headerEvidenceId =
+      response.headers?.get("X-Orbit-Evidence-Id") ?? null;
+    const hasCallReceipt = headerCallId !== null;
+    const hasEvidenceReceipt = headerEvidenceId !== null;
+    // A receipt is an atomic pair.  Accepting one header without the other
+    // would make a later retry fall back to positional matching and could
+    // attach evidence from a repeated read-only call to the wrong request.
+    if (hasCallReceipt !== hasEvidenceReceipt) {
+      throw new AgentApiError(
+        "Agent API returned an incomplete tool receipt.",
+        response.status,
+        { category: "tool_result_invalid" },
+      );
+    }
+    if (
+      hasCallReceipt &&
+      (!isReceiptIdentifier(headerCallId) ||
+        !isReceiptIdentifier(headerEvidenceId) ||
+        headerCallId !== request.tool_call_id)
+    ) {
+      throw new AgentApiError(
+        "Agent API returned a mismatched tool receipt.",
+        response.status,
+        { category: "tool_result_invalid" },
+      );
+    }
+    return {
+      response: payload,
+      evidence_id: hasEvidenceReceipt ? headerEvidenceId : null,
+    };
   }
 
   async verify(

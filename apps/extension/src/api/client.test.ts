@@ -49,11 +49,16 @@ const completionEvent = {
   },
 };
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(
+  body: unknown,
+  status = 200,
+  headers?: HeadersInit,
+): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
     json: vi.fn(async () => body),
+    headers: new Headers(headers),
   } as unknown as Response;
 }
 
@@ -373,6 +378,53 @@ describe("AgentApiClient", () => {
         ...result,
         status: "unavailable",
         profile_count: 0,
+      }),
+    ).toBe(false);
+    const restricted = {
+      ...result,
+      data_classification: "restricted",
+      profile_count: 1,
+      contact_present: false,
+      profiles: [
+        {
+          alias: "[[ORBIT_PERSON_0123456789abcdef]]",
+          role: "alumni",
+          company: "Example Labs",
+          technical_domains: ["自然言語処理"],
+          job_types: ["研究開発"],
+          location_area: "東京",
+          graduation_year_bucket: "2020-2024",
+          evidence_id: "cast-alumni-v1-0123456789abcdef",
+        },
+      ],
+    };
+    expect(isCastAlumniReadResult(restricted)).toBe(true);
+    expect(
+      isCastAlumniReadResult({
+        ...restricted,
+        profiles: [
+          {
+            ...restricted.profiles[0],
+            email: "student@example.invalid",
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      isCastAlumniReadResult({
+        ...restricted,
+        profiles: [
+          {
+            ...restricted.profiles[0],
+            company: "https://example.invalid",
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      isCastAlumniReadResult({
+        ...restricted,
+        profiles: undefined,
       }),
     ).toBe(false);
   });
@@ -745,6 +797,116 @@ describe("AgentApiClient", () => {
         execution_mode: "background",
       }),
     ).resolves.toEqual(response);
+  });
+
+  it("binds a complete server receipt to the submitted tool call", async () => {
+    const response = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-receipt",
+        content_markdown: "確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const request = {
+      tool_call_id: "call-receipt-1",
+      name: "scombz_course_list" as const,
+      version: 1 as const,
+      result: {
+        schema_version: "v1" as const,
+        status: "known" as const,
+        courses: [],
+        coverage: {
+          scope: "course_list",
+          requested: 0,
+          attempted: 0,
+          succeeded: 0,
+          failed: 0,
+          truncated: false,
+          next_cursor: null,
+        },
+        observed_at: "2026-08-30T00:00:00Z",
+        reason_code: null,
+      },
+    };
+    const fetcher = createFetcher(
+      jsonResponse(response, 200, {
+        "X-Orbit-Tool-Call-Id": request.tool_call_id,
+        "X-Orbit-Evidence-Id": "scombz-course-list-v1-receipt-1",
+      }),
+    );
+    const client = new AgentApiClient({ fetcher });
+
+    await expect(
+      client.submitChatToolResultWithReceipt("run-receipt", request),
+    ).resolves.toEqual({
+      response,
+      evidence_id: "scombz-course-list-v1-receipt-1",
+    });
+  });
+
+  it("rejects an incomplete or mismatched receipt instead of positional matching", async () => {
+    const response = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-receipt-invalid",
+        content_markdown: "確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const request = {
+      tool_call_id: "call-receipt-2",
+      name: "scombz_course_list" as const,
+      version: 1 as const,
+      result: {
+        schema_version: "v1" as const,
+        status: "known" as const,
+        courses: [],
+        coverage: {
+          scope: "course_list",
+          requested: 0,
+          attempted: 0,
+          succeeded: 0,
+          failed: 0,
+          truncated: false,
+          next_cursor: null,
+        },
+        observed_at: "2026-08-30T00:00:00Z",
+        reason_code: null,
+      },
+    };
+    const partial = new AgentApiClient({
+      fetcher: createFetcher(
+        jsonResponse(response, 200, {
+          "X-Orbit-Tool-Call-Id": request.tool_call_id,
+        }),
+      ),
+    });
+    await expect(
+      partial.submitChatToolResultWithReceipt("run-receipt", request),
+    ).rejects.toMatchObject({
+      name: "AgentApiError",
+      status: 200,
+      body: { category: "tool_result_invalid" },
+    });
+
+    const mismatched = new AgentApiClient({
+      fetcher: createFetcher(
+        jsonResponse(response, 200, {
+          "X-Orbit-Tool-Call-Id": "call-receipt-other",
+          "X-Orbit-Evidence-Id": "scombz-course-list-v1-receipt-2",
+        }),
+      ),
+    });
+    await expect(
+      mismatched.submitChatToolResultWithReceipt("run-receipt", request),
+    ).rejects.toMatchObject({
+      name: "AgentApiError",
+      status: 200,
+      body: { category: "tool_result_invalid" },
+    });
   });
 
   it("accepts a google_drive EvidenceLink with an opaque locator", async () => {

@@ -73,7 +73,7 @@ class ChatCapabilities(StrictApiModel):
     agent_backend: Literal["fixture", "openai", "azure_openai"]
     observability: Literal["off", "wandb"]
     scombz_student_read_mode: Literal["off", "fixture", "live"]
-    supported_client_tools: list["ChatToolName"] = Field(default_factory=list, max_length=32)
+    supported_client_tools: list["ChatToolName"] = Field(max_length=32)
     max_client_tools: StrictInt = Field(ge=1, le=32)
 
     @model_validator(mode="after")
@@ -477,6 +477,7 @@ class SyllabusSearchResult(StrictApiModel):
     year: StrictInt | None = Field(default=None, ge=2000, le=2100)
     faculty: StrictStr | None = Field(default=None, max_length=200)
     results: list[SyllabusResult] = Field(default_factory=list, max_length=20)
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
     reason_code: StrictStr | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
@@ -1046,6 +1047,59 @@ class CastReadResult(StrictApiModel):
         return self
 
 
+class CastAlumniProfile(StrictApiModel):
+    """Bounded pseudonymous CAST profile for the restricted career scope.
+
+    The alias is generated in the extension and is the only person-like
+    identifier accepted by the external Agent.  Names, contact values,
+    source IDs, free text, and URLs have no fields in this projection.
+    """
+
+    alias: StrictStr = Field(
+        min_length=1,
+        max_length=120,
+        pattern=r"^\[\[ORBIT_PERSON_[A-Za-z0-9_-]{16,64}\]\]$",
+    )
+    role: Literal["alumni", "supporter", "unknown"]
+    company: StrictStr | None = Field(default=None, max_length=160)
+    technical_domains: list[StrictStr] = Field(default_factory=list, max_length=12)
+    job_types: list[StrictStr] = Field(default_factory=list, max_length=12)
+    location_area: StrictStr | None = Field(default=None, max_length=80)
+    graduation_year_bucket: StrictStr | None = Field(
+        default=None,
+        max_length=24,
+        pattern=r"^(?:before-2010|20[0-9]{2}-20[0-9]{2})$",
+    )
+    evidence_id: StrictStr | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def contains_no_direct_identifiers(self) -> "CastAlumniProfile":
+        values = [
+            self.company,
+            *self.technical_domains,
+            *self.job_types,
+            self.location_area,
+            self.evidence_id,
+        ]
+        joined = "\n".join(value for value in values if value)
+        if re.search(
+            r"(?:@|https?://|orbit-[a-z0-9-]+://|(?:\+81|0)[-\d() ]{8,}|"
+            r"\b[A-Z]{1,5}[-_ ]?\d{5,}\b)",
+            joined,
+            re.IGNORECASE,
+        ):
+            raise ValueError("Restricted CAST profiles must not contain direct identifiers.")
+        if self.evidence_id is not None and not re.fullmatch(
+            r"[A-Za-z0-9_-]{3,200}", self.evidence_id
+        ):
+            raise ValueError("Restricted CAST profile evidence IDs must be opaque.")
+        if len(set(self.technical_domains)) != len(self.technical_domains):
+            raise ValueError("Restricted CAST profile domains must be unique.")
+        if len(set(self.job_types)) != len(self.job_types):
+            raise ValueError("Restricted CAST profile job types must be unique.")
+        return self
+
+
 class CastAlumniReadResult(StrictApiModel):
     """Generalized CAST supporter data with no person or contact fields.
 
@@ -1056,8 +1110,9 @@ class CastAlumniReadResult(StrictApiModel):
 
     schema_version: Literal["v1"] = "v1"
     status: Literal["known", "reauth_required", "unavailable"]
-    data_classification: Literal["personal"] = "personal"
+    data_classification: Literal["personal", "restricted"] = "personal"
     profile_count: StrictInt = Field(ge=0, le=64)
+    profiles: list[CastAlumniProfile] = Field(default_factory=list, max_length=20)
     topic_categories: list[StrictStr] = Field(default_factory=list, max_length=32)
     availability_frequencies: list[Literal["weekly", "monthly", "occasional", "unknown"]] = Field(
         default_factory=list, max_length=4
@@ -1080,8 +1135,16 @@ class CastAlumniReadResult(StrictApiModel):
             or self.shareable_insight_categories
             or self.contact_present
             or self.discovered_link_count
+            or self.profiles
         ):
             raise ValueError("Unavailable CAST alumni results cannot include derived data.")
+        if self.data_classification == "personal" and self.profiles:
+            raise ValueError("Personal CAST alumni results cannot carry provider profiles.")
+        if self.data_classification == "restricted":
+            if self.contact_present:
+                raise ValueError("Restricted CAST alumni results cannot expose contact presence.")
+            if self.profile_count != len(self.profiles):
+                raise ValueError("Restricted CAST profile count must match profiles.")
         if len(set(self.topic_categories)) != len(self.topic_categories):
             raise ValueError("CAST alumni topic categories must be unique.")
         if len(set(self.shareable_insight_categories)) != len(self.shareable_insight_categories):
@@ -1541,8 +1604,21 @@ class ChatContextManifest(StrictApiModel):
                         r"orbit-scombz://(?:read|citation)/[A-Za-z0-9_-]{16,128}",
                         item.locator,
                     )
+                ) and not (
+                    item.data_classification == "restricted"
+                    and item.source_type == "career"
+                    and re.fullmatch(
+                        r"cast-alumni-v1-[A-Za-z0-9_-]{16,200}",
+                        item.evidence_id,
+                    )
+                    and re.fullmatch(
+                        r"orbit-cast://alumni/[A-Za-z0-9_-]{16,128}",
+                        item.locator,
+                    )
                 ):
-                    raise ValueError("Personal evidence cannot be included in a context manifest.")
+                    raise ValueError(
+                        "Personal or restricted evidence cannot be included in a context manifest."
+                    )
             locator = urlparse(item.locator)
             if locator.scheme in {"http", "https"} and (
                 locator.username or locator.password or locator.query or locator.fragment
@@ -1832,6 +1908,7 @@ __all__ = [
     "BrowserReadLink",
     "BrowserReadResult",
     "CastReadResult",
+    "CastAlumniProfile",
     "CastAlumniReadResult",
     "CastSearchAggregate",
     "CastSearchAppliedFilters",

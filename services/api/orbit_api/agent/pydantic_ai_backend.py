@@ -740,7 +740,7 @@ def is_derived_cast_alumni_evidence(evidence: EvidenceLink) -> bool:
 
     return (
         evidence.source_type == "career"
-        and evidence.data_classification == "personal"
+        and evidence.data_classification in {"personal", "restricted"}
         and _is_opaque_locator(evidence.locator, CAST_ALUMNI_LOCATOR_PREFIX)
         and evidence.evidence_id.startswith("cast-alumni-v1-")
     )
@@ -2282,6 +2282,13 @@ class PydanticAIAgentBackend(AgentBackend):
         elif deferred.tool_name == CAST_ALUMNI_TOOL_NAME:
             if not isinstance(tool_result, CastAlumniReadResult):
                 raise ValueError("CAST alumni calls require a CastAlumniReadResult.")
+            if (
+                tool_result.data_classification == "restricted"
+                and self.provider_name != "Azure OpenAI"
+            ):
+                raise ValueError(
+                    "Restricted CAST alumni data requires the explicitly consented Azure Agent."
+                )
             evidence = select_evidence(is_derived_cast_alumni_evidence)
             result_content = {
                 "evidence_id": evidence.evidence_id if evidence else None,

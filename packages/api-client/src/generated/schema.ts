@@ -496,6 +496,35 @@ export interface components {
             reason_code?: string | null;
         };
         /**
+         * CastAlumniProfile
+         * @description Bounded pseudonymous CAST profile for the restricted career scope.
+         *
+         *     The alias is generated in the extension and is the only person-like
+         *     identifier accepted by the external Agent.  Names, contact values,
+         *     source IDs, free text, and URLs have no fields in this projection.
+         */
+        CastAlumniProfile: {
+            /** Alias */
+            alias: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "alumni" | "supporter" | "unknown";
+            /** Company */
+            company?: string | null;
+            /** Technical Domains */
+            technical_domains?: string[];
+            /** Job Types */
+            job_types?: string[];
+            /** Location Area */
+            location_area?: string | null;
+            /** Graduation Year Bucket */
+            graduation_year_bucket?: string | null;
+            /** Evidence Id */
+            evidence_id?: string | null;
+        };
+        /**
          * CastAlumniReadResult
          * @description Generalized CAST supporter data with no person or contact fields.
          *
@@ -518,11 +547,13 @@ export interface components {
             /**
              * Data Classification
              * @default personal
-             * @constant
+             * @enum {string}
              */
-            data_classification: "personal";
+            data_classification: "personal" | "restricted";
             /** Profile Count */
             profile_count: number;
+            /** Profiles */
+            profiles?: components["schemas"]["CastAlumniProfile"][];
             /** Topic Categories */
             topic_categories?: string[];
             /** Availability Frequencies */
@@ -707,7 +738,7 @@ export interface components {
              */
             scombz_student_read_mode: "off" | "fixture" | "live";
             /** Supported Client Tools */
-            supported_client_tools?: ("scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options")[];
+            supported_client_tools: ("scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options")[];
             /** Max Client Tools */
             max_client_tools: number;
         };
@@ -1922,6 +1953,8 @@ export interface components {
             faculty?: string | null;
             /** Results */
             results?: components["schemas"]["SyllabusResult"][];
+            /** Observed At */
+            observed_at: string;
             /** Reason Code */
             reason_code?: string | null;
         };

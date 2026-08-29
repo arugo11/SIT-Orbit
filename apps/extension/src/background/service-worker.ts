@@ -1,4 +1,20 @@
 import {
+  AgentApiClient,
+  type ChatToolResultRequest,
+  DEFAULT_AGENT_API_BASE,
+  isScombzCourseListResult,
+  isScombzCourseReadResult,
+  isScombzMaterialSearchResult,
+  isScombzPortalReadResult,
+  type SyllabusReadResult,
+} from "../api/client";
+import {
+  type AuditSourceDescriptor,
+  startAuditBridge,
+} from "../audit/audit-bridge";
+import { createManagedAgentSessionProvider } from "../auth/managed-agent-auth";
+import type { ChatToolExecutor } from "../chat/chat-runner";
+import {
   type CalendarConnectorResult,
   GoogleCalendarConnector,
 } from "../connectors/google-calendar";
@@ -39,13 +55,16 @@ import {
   readOpacDiagnosticEvents,
 } from "../connectors/opac-diagnostics";
 import {
+  parseSyllabusDetailHtml,
   SYLLABUS_SEARCH_ORIGIN,
   searchOfficialSyllabus,
 } from "../connectors/syllabus-search";
 import {
   CAST_ALUMNI_INTERNAL_MESSAGE,
+  type CastAlumniAgentProjection,
   type CastAlumniLocalSnapshot,
   type CastAlumniPageReadResult,
+  type CastAlumniRole,
   projectCastAlumniForAgent,
 } from "../content/cast-alumni-reader";
 import {
@@ -82,11 +101,13 @@ import {
   isSitrusGradeUrl,
   type PageContext,
 } from "../content/page-context";
+import { hasScombzStudentSessionConsent } from "../content/scombz-consent";
 import {
   parseSitrusGradeProjection,
   parseSitrusGradeTableProjection,
   type SitrusTableRow,
 } from "../content/sitrus-reader";
+import { ConversationPseudonymizationGateway } from "../privacy/conversation-pseudonymization";
 import {
   type BrowserReadResponse,
   type CalendarCommandMessage,
@@ -122,6 +143,7 @@ import {
   isOpenWorkspaceMessage,
   isPageContext,
   isPageContextUpdatedMessage,
+  isScombzClearConversationMessage,
   isScombzPinMessage,
   isScombzStudentReadMessage,
   isScombzStudentReadResponse,
@@ -192,6 +214,54 @@ interface ScombzConversationBinding {
 const SCOMBZ_HANDLE_TTL_MS = 30 * 60 * 1000;
 const SCOMBZ_SERVICE_WORKER_EPOCH = crypto.randomUUID();
 const scombzConversationTabs = new Map<string, ScombzConversationBinding>();
+
+interface AuditScombzSourceBinding {
+  tabId: number;
+  source_ref: string;
+  page_kind: string;
+  authenticated: boolean;
+  contentScriptGeneration: string;
+  adapterVersion: "scombz-student-v1";
+  serviceWorkerEpoch: string;
+  expiresAt: number;
+}
+
+// Audit source refs are deliberately held only in the service worker.  They
+// are opaque to the CLI and are invalidated when the worker or source tab is
+// restarted/removed.
+const auditScombzSources = new Map<string, AuditScombzSourceBinding>();
+const auditScombzSourceByTab = new Map<number, string>();
+const auditSyllabusRefs = new Map<string, Map<string, string>>();
+const castConversationPseudonymizer = new ConversationPseudonymizationGateway();
+// A service-worker lifecycle is a privacy boundary.  Do not let an encrypted
+// CAST alias mapping survive a worker restart merely because
+// chrome.storage.session still contains the key.
+const castConversationPseudonymizerReady =
+  castConversationPseudonymizer.clearAll();
+
+async function clearConversationBindings(
+  conversationId: string,
+): Promise<void> {
+  scombzConversationTabs.delete(conversationId);
+  auditSyllabusRefs.delete(conversationId);
+  await castConversationPseudonymizerReady.catch(() => undefined);
+  await castConversationPseudonymizer
+    .clear(conversationId)
+    .catch(() => undefined);
+}
+
+function clearAuditSourceMaps(): void {
+  auditScombzSources.clear();
+  auditScombzSourceByTab.clear();
+  auditSyllabusRefs.clear();
+}
+
+function invalidateAuditSourceForTab(tabId: number): void {
+  const sourceRef = auditScombzSourceByTab.get(tabId);
+  if (!sourceRef) return;
+  auditScombzSourceByTab.delete(tabId);
+  auditScombzSources.delete(sourceRef);
+}
 const libraryRecordSnapshots = new Map<string, LibraryMaterializedRecord>();
 const libraryActionRefExpiry = new Map<string, number>();
 const LIBRARY_ACTION_REF_TTL_MS = 10 * 60 * 1000;
@@ -6006,7 +6076,54 @@ async function readCastAlumniPage(
   return { status: "unavailable", reason_code: "alumni_reader_unavailable" };
 }
 
-async function handleCastAlumniRead(): Promise<CastAlumniReadResponse> {
+async function projectCastAlumniForConversation(
+  detail: CastAlumniLocalSnapshot,
+  conversationId: string,
+): Promise<CastAlumniAgentProjection> {
+  await castConversationPseudonymizerReady;
+  const aggregate = projectCastAlumniForAgent(detail);
+  const typedPeople = detail.profiles.slice(0, 20).map((profile) => ({
+    display_name: profile.display_name ?? undefined,
+    source_identifier: profile.local_id,
+    role: profile.role,
+    technical_domains: profile.answerable_topics,
+    job_types: [],
+  }));
+  const transformed = await castConversationPseudonymizer.transformTypedPeople(
+    conversationId,
+    typedPeople,
+  );
+  const profiles = transformed.provider_people.slice(0, 20).map((profile) => ({
+    alias: profile.alias,
+    role: (profile.role === "alumni" ||
+    profile.role === "supporter" ||
+    profile.role === "unknown"
+      ? profile.role
+      : "unknown") as CastAlumniRole,
+    ...(profile.company ? { company: profile.company } : {}),
+    technical_domains: profile.technical_domains ?? [],
+    job_types: profile.job_types ?? [],
+    ...(profile.location_area ? { location_area: profile.location_area } : {}),
+    ...(profile.graduation_year_bucket
+      ? { graduation_year_bucket: profile.graduation_year_bucket }
+      : {}),
+    evidence_id: `cast-alumni-v1-${crypto.randomUUID().replaceAll("-", "")}`,
+  }));
+  return {
+    ...aggregate,
+    data_classification: "restricted",
+    profile_count: profiles.length,
+    profiles,
+    // Contact presence is deliberately not exported with the restricted
+    // profile projection.  The local detail card remains the only place that
+    // can show whether a contact value was present.
+    contact_present: false,
+  };
+}
+
+async function handleCastAlumniRead(
+  conversationId?: string,
+): Promise<CastAlumniReadResponse> {
   if (!(await hasBrowserPermission(CAST_PERMISSION_PATTERN, CAST_ORIGIN))) {
     return {
       status: "permission_required",
@@ -6027,10 +6144,13 @@ async function handleCastAlumniRead(): Promise<CastAlumniReadResponse> {
     const page = await readCastAlumniPage(tab.id);
     if (page.status !== "known") return page;
     const detail: CastAlumniLocalSnapshot = page.detail;
+    const projection = conversationId
+      ? await projectCastAlumniForConversation(detail, conversationId)
+      : projectCastAlumniForAgent(detail);
     return {
       status: "known",
       detail,
-      projection: projectCastAlumniForAgent(detail),
+      projection,
     };
   } catch {
     return { status: "unavailable", reason_code: "alumni_read_failed" };
@@ -6493,7 +6613,10 @@ async function handleScombzStudentRead(
         requested: 0,
         attempted: 0,
         succeeded: 0,
-        failed: 1,
+        // The connector has not sent a request when the source is missing or
+        // unauthenticated.  Keep the coverage counts internally consistent;
+        // reason_code describes why the read could not start.
+        failed: 0,
         truncated: false,
         next_cursor: null,
       },
@@ -6544,43 +6667,45 @@ async function handleScombzStudentRead(
   }
 }
 
-async function handleScombzPin(
-  message: import("../shared/messages").ScombzPinMessage,
+async function pinScombzConversationToTab(
+  conversationId: string,
+  tabId: number,
 ): Promise<ScombzPinResponse> {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id === undefined || !isScombzUrl(tab.url)) {
-    return { status: "unavailable", reason_code: "scombz_page_not_active" };
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return { status: "unavailable", reason_code: "scombz_source_tab_missing" };
   }
-  const pinned = scombzConversationTabs.get(message.conversation_id);
+  if (tab.id === undefined || !isScombzUrl(tab.url)) {
+    return { status: "unavailable", reason_code: "scombz_source_tab_changed" };
+  }
+  const pinned = scombzConversationTabs.get(conversationId);
   if (pinned !== undefined && pinned.tabId !== tab.id) {
     return { status: "unavailable", reason_code: "scombz_source_tab_changed" };
   }
-  let identity: ScombzSourceIdentityResponse;
-  try {
-    const response = await chrome.tabs.sendMessage(tab.id, {
-      type: MESSAGE_TYPES.scombzSourceIdentity,
-    });
-    if (
-      !response ||
-      typeof response !== "object" ||
-      typeof (response as Partial<ScombzSourceIdentityResponse>).generation !==
-        "string" ||
-      (response as Partial<ScombzSourceIdentityResponse>).adapter_version !==
-        "scombz-student-v1"
-    ) {
-      return {
-        status: "unavailable",
-        reason_code: "scombz_source_identity_missing",
-      };
-    }
-    identity = response as ScombzSourceIdentityResponse;
-  } catch {
+  const identity = await readScombzSourceIdentity(tab.id);
+  if (!identity) {
     return {
       status: "unavailable",
       reason_code: "scombz_content_script_unavailable",
     };
   }
-  scombzConversationTabs.set(message.conversation_id, {
+  if (!identity.authenticated) {
+    return { status: "unavailable", reason_code: "scombz_reauth_required" };
+  }
+  if (
+    pinned &&
+    (pinned.contentScriptGeneration !== identity.generation ||
+      pinned.serviceWorkerEpoch !== SCOMBZ_SERVICE_WORKER_EPOCH)
+  ) {
+    scombzConversationTabs.delete(conversationId);
+    return {
+      status: "unavailable",
+      reason_code: "scombz_source_reloaded",
+    };
+  }
+  scombzConversationTabs.set(conversationId, {
     tabId: tab.id,
     expiresAt: Date.now() + SCOMBZ_HANDLE_TTL_MS,
     contentScriptGeneration: identity.generation,
@@ -6589,6 +6714,493 @@ async function handleScombzPin(
   });
   return { status: "pinned" };
 }
+
+async function handleScombzPin(
+  message: import("../shared/messages").ScombzPinMessage,
+): Promise<ScombzPinResponse> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tab?.id === undefined || !isScombzUrl(tab.url)) {
+    return { status: "unavailable", reason_code: "scombz_page_not_active" };
+  }
+  return pinScombzConversationToTab(message.conversation_id, tab.id);
+}
+
+function auditPageKind(url: string | undefined): string {
+  if (!url) return "unknown";
+  try {
+    const pathname = new URL(url).pathname;
+    if (pathname === "/portal/home" || pathname === "/portal/home/") {
+      return "portal_home";
+    }
+    if (pathname.includes("/lms/course")) return "course";
+    if (pathname.includes("/lms/timetable")) return "timetable";
+    if (pathname.includes("/lms/task")) return "tasks";
+    if (pathname.includes("/portal/calendar")) return "calendar";
+    return "scombz";
+  } catch {
+    return "unknown";
+  }
+}
+
+function newAuditSourceRef(): string {
+  return `orbit-source://${crypto.randomUUID().replace(/[^A-Za-z0-9_-]/gu, "")}`;
+}
+
+interface ScombzSourceIdentity {
+  generation: string;
+  adapter_version: "scombz-student-v1";
+  authenticated: boolean;
+}
+
+function isCurrentScombzSourceIdentity(
+  value: unknown,
+): value is ScombzSourceIdentityResponse {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ScombzSourceIdentityResponse>;
+  return (
+    typeof candidate.generation === "string" &&
+    candidate.generation.length > 0 &&
+    candidate.adapter_version === "scombz-student-v1" &&
+    (candidate.authenticated === undefined ||
+      typeof candidate.authenticated === "boolean")
+  );
+}
+
+async function sendScombzContentMessage(
+  tabId: number,
+  message: unknown,
+): Promise<unknown | null> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch {
+    // A service-worker restart or an explicit audit-build reload can leave an
+    // already-open page without our content script. Inject only our bundled
+    // read-only script, then retry the same tab; never search for another tab.
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content-script.js"],
+      });
+      return await chrome.tabs.sendMessage(tabId, message);
+    } catch {
+      return null;
+    }
+  }
+}
+
+async function readScombzSourceIdentity(
+  tabId: number,
+): Promise<ScombzSourceIdentity | null> {
+  try {
+    const request = { type: MESSAGE_TYPES.scombzSourceIdentity } as const;
+    let response = await sendScombzContentMessage(tabId, request);
+    // An already-open page may still be running the previous unpacked audit
+    // build.  A stale identity is not accepted as the source for a new
+    // conversation; refresh only this same tab with our bundled script and
+    // retry once.  We intentionally do not query for or switch to another
+    // SCombZ tab here.
+    if (
+      response !== null &&
+      typeof response === "object" &&
+      !isCurrentScombzSourceIdentity(response)
+    ) {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["content-script.js"],
+      });
+      response = await chrome.tabs.sendMessage(tabId, request);
+    }
+    if (!isCurrentScombzSourceIdentity(response)) {
+      return null;
+    }
+    const identity = response;
+    return {
+      generation: identity.generation,
+      adapter_version: "scombz-student-v1",
+      authenticated: identity.authenticated !== false,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function listAuditSources(): Promise<AuditSourceDescriptor[]> {
+  const tabs = await chrome.tabs.query({});
+  const currentTabs = new Set<number>();
+  const output: AuditSourceDescriptor[] = [];
+  for (const tab of tabs) {
+    if (tab.id === undefined || !isScombzUrl(tab.url)) continue;
+    currentTabs.add(tab.id);
+    const identity = await readScombzSourceIdentity(tab.id);
+    let sourceRef = auditScombzSourceByTab.get(tab.id);
+    const existing = sourceRef ? auditScombzSources.get(sourceRef) : undefined;
+    if (
+      !identity ||
+      !existing ||
+      (existing &&
+        (existing.expiresAt <= Date.now() ||
+          existing.contentScriptGeneration !== identity.generation ||
+          existing.serviceWorkerEpoch !== SCOMBZ_SERVICE_WORKER_EPOCH))
+    ) {
+      if (sourceRef) auditScombzSources.delete(sourceRef);
+      sourceRef = newAuditSourceRef();
+      auditScombzSourceByTab.set(tab.id, sourceRef);
+    }
+    if (!sourceRef) continue;
+    const expiresAt =
+      sourceRef === existing?.source_ref && existing.expiresAt > Date.now()
+        ? existing.expiresAt
+        : Date.now() + SCOMBZ_HANDLE_TTL_MS;
+    const descriptor: AuditScombzSourceBinding = {
+      tabId: tab.id,
+      source_ref: sourceRef,
+      page_kind: auditPageKind(tab.url),
+      authenticated: identity?.authenticated ?? false,
+      contentScriptGeneration:
+        identity?.generation ?? "unavailable-content-script",
+      adapterVersion: "scombz-student-v1",
+      serviceWorkerEpoch: SCOMBZ_SERVICE_WORKER_EPOCH,
+      expiresAt,
+    };
+    auditScombzSources.set(sourceRef, descriptor);
+    output.push({
+      source_ref: descriptor.source_ref,
+      connector: "scombz",
+      page_kind: descriptor.page_kind,
+      authenticated: descriptor.authenticated,
+    });
+  }
+  for (const [tabId, sourceRef] of auditScombzSourceByTab) {
+    if (!currentTabs.has(tabId)) {
+      auditScombzSourceByTab.delete(tabId);
+      auditScombzSources.delete(sourceRef);
+    }
+  }
+  return output;
+}
+
+async function bindAuditSource(
+  conversationId: string,
+  sourceRef: string,
+): Promise<{ ok: true } | { ok: false; status: string; reason_code: string }> {
+  const source = auditScombzSources.get(sourceRef);
+  if (!source || source.expiresAt <= Date.now()) {
+    if (source) auditScombzSources.delete(sourceRef);
+    return {
+      ok: false,
+      status: "unavailable",
+      reason_code: "source_ref_expired",
+    };
+  }
+  const result = await pinScombzConversationToTab(conversationId, source.tabId);
+  return result.status === "pinned"
+    ? { ok: true }
+    : {
+        ok: false,
+        status:
+          result.reason_code === "scombz_reauth_required" ||
+          result.reason_code === "scombz_source_tab_missing"
+            ? "reauth_required"
+            : "unavailable",
+        reason_code: result.reason_code,
+      };
+}
+
+function auditSourceTools(source: AuditSourceDescriptor): ReadonlySet<string> {
+  if (source.connector !== "scombz") return new Set();
+  return new Set([
+    "scombz_course_list",
+    "scombz_portal_read",
+    "scombz_course_read",
+    "scombz_material_search",
+    "syllabus_search",
+    "syllabus_read",
+  ]);
+}
+
+function auditSyllabusUnavailable(
+  syllabusRef: string,
+  url: string,
+  reasonCode: string,
+): SyllabusReadResult {
+  return {
+    schema_version: "v1",
+    status: "unavailable",
+    syllabus_ref: syllabusRef,
+    url,
+    course_code: null,
+    title: null,
+    instructors: [],
+    objectives: null,
+    weekly_plan: [],
+    evaluation: null,
+    textbooks: [],
+    prerequisites: null,
+    observed_at: new Date().toISOString(),
+    reason_code: reasonCode,
+    citation_uri: `orbit-syllabus://citation/${syllabusRef.split("/").pop() ?? "detail"}`,
+  };
+}
+
+type AuditCommunication = {
+  method: "GET";
+  paths: string[];
+  query_omitted: true;
+};
+
+function auditScombzProjectionSummary(
+  projection: Record<string, unknown>,
+  toolName: string,
+): Record<string, unknown> {
+  const coverage =
+    projection.coverage && typeof projection.coverage === "object"
+      ? projection.coverage
+      : null;
+  const countFields = ["courses", "items", "hits"] as const;
+  const counts: Record<string, number> = {};
+  for (const field of countFields) {
+    const value = projection[field];
+    if (Array.isArray(value)) counts[field] = value.length;
+  }
+  const sectionStates =
+    toolName === "scombz_course_read" &&
+    projection.section_states &&
+    typeof projection.section_states === "object"
+      ? projection.section_states
+      : null;
+  const nextCursor =
+    coverage &&
+    typeof coverage === "object" &&
+    "next_cursor" in coverage &&
+    typeof (coverage as { next_cursor?: unknown }).next_cursor === "string"
+      ? (coverage as { next_cursor: string }).next_cursor
+      : null;
+  return {
+    status: projection.status,
+    coverage,
+    counts,
+    section_states: sectionStates,
+    cursor_present: nextCursor !== null,
+    observed_at: projection.observed_at,
+    communication: auditCommunicationForTool(toolName),
+  };
+}
+
+function auditCommunicationForTool(name: string): AuditCommunication | null {
+  switch (name) {
+    case "scombz_course_list":
+      return {
+        method: "GET",
+        paths: ["/lms/timetable"],
+        query_omitted: true,
+      };
+    case "scombz_portal_read":
+      return {
+        method: "GET",
+        paths: ["/portal/home"],
+        query_omitted: true,
+      };
+    case "scombz_course_read":
+      return {
+        method: "GET",
+        paths: ["/lms/course"],
+        query_omitted: true,
+      };
+    case "scombz_material_search":
+      return {
+        method: "GET",
+        paths: [
+          "/lms/course",
+          "/lms/course/make/tempfile",
+          "/lms/course/material/setfiledown/<filename>",
+        ],
+        query_omitted: true,
+      };
+    case "syllabus_search":
+      return {
+        method: "GET",
+        paths: ["/namazu/namazu.cgi"],
+        query_omitted: true,
+      };
+    case "syllabus_read":
+      return {
+        method: "GET",
+        paths: ["/<official-syllabus-detail>"],
+        query_omitted: true,
+      };
+    default:
+      return null;
+  }
+}
+
+const executeAuditTool: ChatToolExecutor = async (call, context) => {
+  const argumentsObject = call.arguments ?? {};
+  if (
+    call.name === "scombz_course_list" ||
+    call.name === "scombz_portal_read" ||
+    call.name === "scombz_course_read" ||
+    call.name === "scombz_material_search"
+  ) {
+    const action = call.name.replace("scombz_", "") as
+      | "course_list"
+      | "portal_read"
+      | "course_read"
+      | "material_search";
+    const result = await handleScombzStudentRead({
+      type: MESSAGE_TYPES.scombzStudentRead,
+      tool_call_id: call.tool_call_id,
+      conversation_id: context.conversation_id,
+      action,
+      arguments: argumentsObject,
+    });
+    const projectionValid =
+      (action === "course_list" &&
+        isScombzCourseListResult(result.projection)) ||
+      (action === "portal_read" &&
+        isScombzPortalReadResult(result.projection)) ||
+      (action === "course_read" &&
+        isScombzCourseReadResult(result.projection)) ||
+      (action === "material_search" &&
+        isScombzMaterialSearchResult(result.projection));
+    if (!projectionValid || result.projection.status !== result.status) {
+      throw new Error("SCombZの取得結果を検証できませんでした。");
+    }
+    return {
+      request: {
+        tool_call_id: call.tool_call_id,
+        name: call.name,
+        version: 1,
+        result: result.projection as ChatToolResultRequest["result"],
+      },
+      audit: auditScombzProjectionSummary(
+        result.projection as Record<string, unknown>,
+        call.name,
+      ),
+    };
+  }
+  if (call.name === "syllabus_search") {
+    const result = await searchOfficialSyllabus(
+      typeof argumentsObject.query === "string" ? argumentsObject.query : "",
+      typeof argumentsObject.year === "number" ? argumentsObject.year : null,
+      typeof argumentsObject.faculty === "string"
+        ? argumentsObject.faculty
+        : null,
+    );
+    const refs = auditSyllabusRefs.get(context.conversation_id) ?? new Map();
+    for (const item of result.results) refs.set(item.syllabus_ref, item.url);
+    auditSyllabusRefs.set(context.conversation_id, refs);
+    return {
+      request: {
+        tool_call_id: call.tool_call_id,
+        name: call.name,
+        version: 1,
+        result: result as unknown as ChatToolResultRequest["result"],
+      },
+      audit: {
+        status: result.status,
+        count: result.results.length,
+        candidates: result.results.map((item) => ({
+          title: item.title,
+          course_code: item.course_code,
+          faculty: item.faculty,
+          syllabus_ref: item.syllabus_ref,
+          citation_uri: item.citation_uri,
+        })),
+        observed_at: new Date().toISOString(),
+        communication: auditCommunicationForTool(call.name),
+      },
+    };
+  }
+  if (call.name === "syllabus_read") {
+    const syllabusRef =
+      typeof argumentsObject.syllabus_ref === "string"
+        ? argumentsObject.syllabus_ref
+        : "";
+    const url = auditSyllabusRefs
+      .get(context.conversation_id)
+      ?.get(syllabusRef);
+    let projection: SyllabusReadResult;
+    if (!url) {
+      projection = auditSyllabusUnavailable(
+        syllabusRef,
+        `${SYLLABUS_SEARCH_ORIGIN}/`,
+        "syllabus_ref_expired",
+      );
+    } else {
+      try {
+        const target = new URL(url);
+        if (
+          target.origin !== SYLLABUS_SEARCH_ORIGIN ||
+          target.protocol !== "https:"
+        ) {
+          projection = auditSyllabusUnavailable(
+            syllabusRef,
+            `${SYLLABUS_SEARCH_ORIGIN}/`,
+            "syllabus_origin_rejected",
+          );
+        } else {
+          const response = await fetch(target.href, { credentials: "omit" });
+          if (!response.ok) {
+            projection = auditSyllabusUnavailable(
+              syllabusRef,
+              target.href,
+              `http_${response.status}`,
+            );
+          } else {
+            const detail = parseSyllabusDetailHtml(await response.text());
+            projection = {
+              schema_version: "v1",
+              status: "known",
+              syllabus_ref: syllabusRef,
+              url: target.href,
+              course_code: detail.course_code,
+              title: detail.title,
+              instructors: detail.instructors,
+              objectives: detail.objectives,
+              weekly_plan: detail.weekly_plan,
+              evaluation: detail.evaluation,
+              textbooks: detail.textbooks,
+              prerequisites: detail.prerequisites,
+              observed_at: new Date().toISOString(),
+              reason_code: null,
+              citation_uri: `orbit-syllabus://citation/${syllabusRef.split("/").pop() ?? "detail"}`,
+            };
+          }
+        }
+      } catch {
+        projection = auditSyllabusUnavailable(
+          syllabusRef,
+          url,
+          "network_error",
+        );
+      }
+    }
+    return {
+      request: {
+        tool_call_id: call.tool_call_id,
+        name: call.name,
+        version: 1,
+        result: projection,
+      },
+      audit: {
+        status: projection.status,
+        fields_present: [
+          projection.course_code ? "course_code" : null,
+          projection.title ? "title" : null,
+          projection.instructors?.length ? "instructors" : null,
+          projection.objectives ? "objectives" : null,
+          projection.weekly_plan?.length ? "weekly_plan" : null,
+          projection.evaluation ? "evaluation" : null,
+          projection.textbooks?.length ? "textbooks" : null,
+          projection.prerequisites ? "prerequisites" : null,
+        ].filter((field): field is string => field !== null),
+        observed_at: projection.observed_at,
+        communication: auditCommunicationForTool(call.name),
+      },
+    };
+  }
+  throw new Error("監査経路では対象外のread-only Toolです。");
+};
 
 async function broadcastActivePageContext(
   tabId: number,
@@ -6622,6 +7234,7 @@ configureActionClick();
 chrome.runtime.onInstalled.addListener(configureActionClick);
 chrome.runtime.onStartup.addListener(() => {
   scombzConversationTabs.clear();
+  clearAuditSourceMaps();
   clearMyLibraryResourceMaps();
   clearLibraryRecordMaps();
   clearLibraryActionPreviews();
@@ -6629,6 +7242,7 @@ chrome.runtime.onStartup.addListener(() => {
 });
 chrome.runtime.onSuspend?.addListener(() => {
   scombzConversationTabs.clear();
+  clearAuditSourceMaps();
   clearMyLibraryResourceMaps();
   clearLibraryRecordMaps();
   clearLibraryActionPreviews();
@@ -6640,6 +7254,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (binding.tabId === tabId)
         scombzConversationTabs.delete(conversationId);
     }
+    // A reload creates a new content-script generation.  Rotate the opaque
+    // audit source ref as well so an existing CLI conversation cannot reuse a
+    // handle minted for the previous page instance.
+    invalidateAuditSourceForTab(tabId);
   }
   if (changeInfo.url !== undefined || changeInfo.status !== undefined) {
     void updateTabPanel(tabId, changeInfo.url ?? tab.url);
@@ -6653,6 +7271,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   for (const [conversationId, binding] of scombzConversationTabs) {
     if (binding.tabId === tabId) scombzConversationTabs.delete(conversationId);
   }
+  invalidateAuditSourceForTab(tabId);
   void releaseWorkspaceTab(tabId);
   void markSourceUnavailable(tabId);
 });
@@ -6707,6 +7326,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleScombzStudentRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isScombzClearConversationMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    void clearConversationBindings(message.conversation_id)
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 
@@ -6790,7 +7420,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ status: "unavailable", reason_code: "untrusted_sender" });
       return true;
     }
-    void handleCastAlumniRead().then(sendResponse);
+    void handleCastAlumniRead(message.conversation_id).then(sendResponse);
     return true;
   }
 
@@ -6830,6 +7460,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         year: message.year ?? null,
         faculty: message.faculty ?? null,
         results: [],
+        observed_at: new Date().toISOString(),
         reason_code: "untrusted_sender",
       });
       return true;
@@ -6991,3 +7622,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void broadcastActivePageContext(sender.tab.id ?? -1, message.context);
   }
 });
+
+// The CLI audit bridge is compiled into an explicitly requested audit build
+// only.  Production/CI bundles define this flag as false; no localhost
+// socket is opened and no audit secret is embedded in those bundles.
+if (
+  typeof __ORBIT_AUDIT_BUILD__ !== "undefined" &&
+  __ORBIT_AUDIT_BUILD__ &&
+  typeof __ORBIT_AUDIT_BRIDGE_SECRET__ === "string" &&
+  __ORBIT_AUDIT_BRIDGE_SECRET__.length > 0 &&
+  typeof __ORBIT_AUDIT_BRIDGE_PORT__ === "number" &&
+  __ORBIT_AUDIT_BRIDGE_PORT__ > 0
+) {
+  const auditSessionProvider = createManagedAgentSessionProvider({
+    baseUrl: DEFAULT_AGENT_API_BASE,
+  });
+  const auditApi = new AgentApiClient({
+    baseUrl: DEFAULT_AGENT_API_BASE,
+    sessionProvider: auditSessionProvider,
+  });
+  const auditPseudonymizer = new ConversationPseudonymizationGateway();
+  // A service-worker restart is a privacy boundary for the local alias map.
+  // Clear the encrypted IndexedDB records and session key before accepting
+  // the first CLI command; a failed cleanup keeps the bridge fail-closed.
+  const auditPseudonymizerReady = auditPseudonymizer.clearAll();
+  void auditPseudonymizerReady.catch(() => undefined);
+  startAuditBridge({
+    port: __ORBIT_AUDIT_BRIDGE_PORT__,
+    secret: __ORBIT_AUDIT_BRIDGE_SECRET__,
+    dependencies: {
+      api: auditApi,
+      health: () => auditApi.health(),
+      build_version: "scombz-audit-v1",
+      list_sources: listAuditSources,
+      bind_source: bindAuditSource,
+      source_tools: auditSourceTools,
+      execute_tool: executeAuditTool,
+      clear_conversation: clearConversationBindings,
+      has_scombz_consent: hasScombzStudentSessionConsent,
+      pseudonymizer: auditPseudonymizer,
+      pseudonymizer_ready: auditPseudonymizerReady,
+    },
+  });
+}

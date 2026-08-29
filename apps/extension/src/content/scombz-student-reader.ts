@@ -27,6 +27,59 @@ export const ADAPTER_VERSION = "scombz-student-v1" as const;
 export const CONTENT_SCRIPT_GENERATION =
   globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 const OCR_MIN_CONFIDENCE = 45;
+const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu;
+const PHONE_RE = /(?:\+81|0)[-\d() ]{8,}/gu;
+const STUDENT_ID_RE =
+  /\b(?:20\d{2,}[A-Z]{1,8}\d{5,}|[A-Z]{1,5}[-_ ]?\d{5,})\b/giu;
+
+export interface MaterialBatchBounds {
+  start: number;
+  end: number;
+  truncated: boolean;
+}
+
+/**
+ * Keep material pagination at the PDF-count boundary rather than treating
+ * the first twenty links as the whole collection.  The cursor stores a link
+ * offset, so every continuation advances monotonically through the visible
+ * links and cannot repeat the same batch forever.
+ */
+export function materialBatchBounds(
+  total: number,
+  start: number,
+): MaterialBatchBounds {
+  if (
+    !Number.isInteger(total) ||
+    total < 0 ||
+    !Number.isInteger(start) ||
+    start < 0 ||
+    start > total
+  ) {
+    throw new Error("material_cursor_invalid");
+  }
+  const end = Math.min(total, start + MAX_FILES);
+  return { start, end, truncated: end < total };
+}
+
+function sanitizeVisibleText(value: string): string {
+  return value
+    .replace(EMAIL_RE, "[連絡先は省略]")
+    .replace(PHONE_RE, "[連絡先は省略]")
+    .replace(STUDENT_ID_RE, "[識別子は省略]")
+    .replace(/https?:\/\/[^\s)]+/giu, (match) => {
+      try {
+        const url = new URL(match);
+        // A SCombZ URL in a body is a private navigation target, not useful
+        // evidence.  Expose only an opaque citation URI generated below.
+        if (url.origin === ORIGIN) return "[URLは省略]";
+        url.search = "";
+        url.hash = "";
+        return url.toString();
+      } catch {
+        return "[URLは省略]";
+      }
+    });
+}
 
 // PDF.js is bundled by the extension rather than loaded from the SCombZ page
 // (or a CDN).  Point the worker at an extension-local asset so the content
@@ -92,7 +145,10 @@ function emptyProjection(
       requested: 0,
       attempted: 0,
       succeeded: 0,
-      failed: 1,
+      // No network request was made when the source/handle was already known
+      // to be unusable. Keep the coverage arithmetic consistent (attempted >=
+      // succeeded + failed) and let reason_code carry the boundary.
+      failed: 0,
       truncated: false,
       next_cursor: null,
     },
@@ -149,12 +205,13 @@ function opaqueCursor(conversationId: string, offset: number): string {
 function cursorOffset(value: string | null, conversationId: string): number {
   if (!value) return 0;
   const entry = cursorOffsets.get(value);
-  if (!entry || entry.conversationId !== conversationId || entry.offset < 0)
-    return 0;
+  if (!entry || entry.conversationId !== conversationId || entry.offset < 0) {
+    throw new Error("cursor_invalid");
+  }
   if ((handleExpiry.get(value) ?? 0) <= Date.now()) {
     cursorOffsets.delete(value);
     handleExpiry.delete(value);
-    return 0;
+    throw new Error("cursor_expired");
   }
   return entry.offset;
 }
@@ -203,24 +260,108 @@ function text(element: Element | null, limit = 6000): string {
     if (value) values.push(value);
     node = walker.nextNode();
   }
-  return values.join(" ").slice(0, limit);
+  return sanitizeVisibleText(values.join(" ")).slice(0, limit);
 }
 
 function isUnsafeCoursePath(pathname: string): boolean {
   // Course pages are fetched by GET for reading only.  Explicit action/test
   // routes are rejected before the request is sent so a handle cannot be
   // redirected into a write or active-exam surface.
-  return /(?:^|\/)(?:answer|answers|attendance|delete|edit|exam|examination|quiz|quizzes|start|submit|test|tests|update|write)(?:\/|$)/iu.test(
+  return /(?:^|\/)(?:answer|answers|attendance|delete|download|edit|exam|examination|file|make|quiz|quizzes|setfiledown|start|submit|test|tests|update|write)(?:\/|$)/iu.test(
     pathname,
   );
 }
 
-function hasVisibleTestControls(block: Element): boolean {
-  return Array.from(
-    block.querySelectorAll(
-      "form, input, textarea, select, button[type='submit']",
-    ),
-  ).some((element) => visible(element));
+function isAllowedHtmlQuery(target: URL): boolean {
+  const pathname = target.pathname;
+  const allowed =
+    pathname === "/portal/home"
+      ? new Set<string>()
+      : pathname === "/lms/timetable"
+        ? new Set(["selectDisplayMode", "risyunen", "kikanCd"])
+        : new Set(["idnumber"]);
+  const seen = new Set<string>();
+  for (const [key, value] of target.searchParams.entries()) {
+    // Duplicate query keys make it possible to smuggle a second action value
+    // past a parser that only reads the first one.  Keep the read contract
+    // deterministic and reject suspicious action-shaped values up front.
+    if (
+      seen.has(key) ||
+      !allowed.has(key) ||
+      value.length > 240 ||
+      /(?:answer|attendance|delete|edit|exam|quiz|start|submit|test|update|write)/iu.test(
+        `${key}=${value}`,
+      )
+    ) {
+      return false;
+    }
+    seen.add(key);
+  }
+  return true;
+}
+
+/**
+ * Resolve the read-only course target attached to a visible timetable tile.
+ * SCombZ versions differ: some render the course id on the tile itself,
+ * while others put the canonical `/lms/course?idnumber=...` link on a child
+ * anchor or a data attribute.  Prefer the canonical link and only keep the
+ * opaque id in the content-script map; it is never returned to the Agent.
+ */
+function coursePathFromTile(tile: HTMLElement): string | null {
+  const hrefs: string[] = [];
+  if (tile instanceof HTMLAnchorElement) {
+    const href = tile.getAttribute("href");
+    if (href) hrefs.push(href);
+  }
+  for (const anchor of Array.from(
+    tile.querySelectorAll<HTMLAnchorElement>("a[href]"),
+  )) {
+    const href = anchor.getAttribute("href");
+    if (href) hrefs.push(href);
+  }
+  for (const href of hrefs) {
+    try {
+      const target = new URL(href, ORIGIN);
+      if (
+        target.origin === ORIGIN &&
+        target.pathname === "/lms/course" &&
+        isAllowedHtmlQuery(target)
+      ) {
+        const idnumber = target.searchParams.get("idnumber");
+        if (idnumber) {
+          return `${target.pathname}?idnumber=${encodeURIComponent(idnumber)}`;
+        }
+      }
+    } catch {
+      // Try the next same-page representation instead of following a link.
+    }
+  }
+  const id =
+    tile.id.trim() ||
+    tile.dataset.idnumber?.trim() ||
+    tile.dataset.courseId?.trim() ||
+    tile.getAttribute("data-idnumber")?.trim() ||
+    tile.getAttribute("data-course-id")?.trim() ||
+    "";
+  if (!id || !/^[A-Za-z0-9._~-]{1,200}$/u.test(id)) return null;
+  return `/lms/course?idnumber=${encodeURIComponent(id)}`;
+}
+
+/**
+ * Treat an unresolved test/quiz heading as active by default.  A changed
+ * SCombZ DOM may hide the form controls while leaving the question text in a
+ * visible detail block; requiring controls here would then leak an in-progress
+ * exam.  Only an explicit result/completion marker may make the section
+ * readable.  The helper is exported so the boundary can be regression-tested
+ * without constructing a full browser document.
+ */
+export function isInProgressTestTitle(title: string): boolean {
+  return (
+    /(?:テスト|試験|小テスト|examination|exam|quiz)/iu.test(title) &&
+    !/(?:結果|成績|講評|終了|完了|result|score|feedback|review|completed)/iu.test(
+      title,
+    )
+  );
 }
 
 function isOwnSubmissionSection(title: string): boolean {
@@ -240,7 +381,8 @@ async function html(path: string): Promise<Document> {
     target.pathname === "/lms/course/material" ||
     (target.pathname.startsWith("/lms/course/") &&
       !isUnsafeCoursePath(target.pathname));
-  if (!allowed) throw new Error("path_not_allowlisted");
+  if (!allowed || !isAllowedHtmlQuery(target))
+    throw new Error("path_not_allowlisted");
   const response = await fetch(target.href, { credentials: "same-origin" });
   if (!response.ok) throw new Error(`http_${response.status}`);
   const responseUrl = new URL(response.url || target.href, ORIGIN);
@@ -252,7 +394,11 @@ async function html(path: string): Promise<Document> {
     throw new Error("login_required");
   }
   const source = await response.text();
-  if (/ログイン|login|password/iu.test(source.slice(0, 5000)))
+  if (
+    /<input\b[^>]*type=["']?password\b/iu.test(source) ||
+    /<form\b[^>]*action=["'][^"']*\/login(?:[/?"'])/iu.test(source) ||
+    /<title\b[^>]*>[^<]*(?:ログイン|login)[^<]*<\/title>/iu.test(source)
+  )
     throw new Error("login_required");
   return new DOMParser().parseFromString(source, "text/html");
 }
@@ -273,9 +419,30 @@ function sameOriginReadPath(value: string): string | null {
     const target = new URL(value, ORIGIN);
     if (
       target.origin !== ORIGIN ||
-      !target.pathname.startsWith("/lms/course/material/setfiledown/")
+      !target.pathname.startsWith("/lms/course/material/setfiledown/") ||
+      target.username ||
+      target.password ||
+      target.hash
     ) {
       return null;
+    }
+    const fileName = target.pathname.slice(
+      "/lms/course/material/setfiledown/".length,
+    );
+    if (!fileName || decodeURIComponent(fileName).includes("/")) return null;
+    const allowedQueryKeys = new Set([
+      "fileName",
+      "fileId",
+      "idnumber",
+      "resourceId",
+      "screen",
+      "contentId",
+      "endDate",
+    ]);
+    const seenQueryKeys = new Set<string>();
+    for (const key of target.searchParams.keys()) {
+      if (seenQueryKeys.has(key) || !allowedQueryKeys.has(key)) return null;
+      seenQueryKeys.add(key);
     }
     return `${target.pathname}${target.search}`;
   } catch {
@@ -299,13 +466,30 @@ function courseList(
   ).map((option) => option.value.trim());
   if (
     year !== null &&
-    yearOptions.length > 0 &&
-    !yearOptions.includes(String(year))
+    (!yearOptions.length || !yearOptions.includes(String(year)))
   ) {
     throw new Error("academic_year_not_available");
   }
-  if (term !== null && termOptions.length > 0 && !termOptions.includes(term)) {
+  if (term !== null && (!termOptions.length || !termOptions.includes(term))) {
     throw new Error("term_not_available");
+  }
+  // The timetable endpoint may silently fall back to the current term when a
+  // requested year/term is no longer valid.  Do not label that response as the
+  // requested historical period: the selected option in the returned HTML is
+  // the only read-time confirmation that the server honored the choice.
+  const selectedYear =
+    doc
+      .querySelector<HTMLSelectElement>('select[name="risyunen"]')
+      ?.value.trim() ?? "";
+  const selectedTerm =
+    doc
+      .querySelector<HTMLSelectElement>('select[name="kikanCd"]')
+      ?.value.trim() ?? "";
+  if (year !== null && selectedYear !== String(year)) {
+    throw new Error("academic_year_not_selected");
+  }
+  if (term !== null && selectedTerm !== term) {
+    throw new Error("term_not_selected");
   }
   const tiles = Array.from(
     doc.querySelectorAll<HTMLElement>(".timetable-course-top-btn"),
@@ -332,16 +516,11 @@ function courseList(
   const courses: unknown[] = [];
   for (const tile of selected) {
     if (!visible(tile)) continue;
-    const id = tile.id.trim();
+    const coursePath = coursePathFromTile(tile);
     const name = text(tile, 300);
-    if (!id || !name) continue;
+    if (!coursePath || !name) continue;
     const courseRef = ref("course");
-    remember(
-      courseTargets,
-      courseRef,
-      `/lms/course?idnumber=${encodeURIComponent(id)}`,
-      conversationId,
-    );
+    remember(courseTargets, courseRef, coursePath, conversationId);
     courses.push({
       course_ref: courseRef,
       display_name: name,
@@ -458,7 +637,7 @@ async function materialSearch(
         requested: 0,
         attempted: 0,
         succeeded: 0,
-        failed: 1,
+        failed: 0,
         truncated: false,
         next_cursor: null,
       },
@@ -468,7 +647,7 @@ async function materialSearch(
   const doc = await html(path);
   const links = Array.from(
     doc.querySelectorAll<HTMLElement>(".fileDownload, a[href$='.pdf' i]"),
-  );
+  ).filter(visible);
   if (
     links.length === 0 &&
     !doc.querySelector("#courseTopForm, .contents-detail, .block-title")
@@ -485,7 +664,7 @@ async function materialSearch(
     processTerm: (value) => value.toLocaleLowerCase(),
   });
   const start = cursorOffset(cursor, conversationId);
-  const fileLimit = Math.min(links.length, MAX_FILES);
+  const batch = materialBatchBounds(links.length, start);
   let activePdf: Awaited<
     ReturnType<typeof pdfjsLib.getDocument>["promise"]
   > | null = null;
@@ -498,7 +677,7 @@ async function materialSearch(
     await pdf?.destroy().catch(() => undefined);
   };
   try {
-    for (let index = start; index < fileLimit; index += 1) {
+    for (let index = batch.start; index < batch.end; index += 1) {
       attemptedFiles += 1;
       const link = links[index];
       if (!link) {
@@ -511,6 +690,10 @@ async function materialSearch(
           : link.getAttribute("data-url");
       if (!href) {
         const parent = link.parentElement;
+        if (!parent || !visible(parent)) {
+          failedFiles += 1;
+          continue;
+        }
         const fileName = parent
           ?.querySelector(".fileName")
           ?.textContent?.trim();
@@ -540,16 +723,18 @@ async function materialSearch(
           );
           if (tempfile.ok) {
             const fileId = (await tempfile.text()).trim();
-            const finalParams = new URLSearchParams({
-              fileName,
-              fileId,
-              idnumber,
-              resourceId,
-              screen: "1",
-              contentId: materialId ?? "",
-              endDate: endDate ?? "",
-            });
-            href = `${ORIGIN}/lms/course/material/setfiledown/${encodeURIComponent(fileName.replace(/\s+/gu, "_"))}?${finalParams}`;
+            if (/^[A-Za-z0-9._-]{1,200}$/u.test(fileId)) {
+              const finalParams = new URLSearchParams({
+                fileName,
+                fileId,
+                idnumber,
+                resourceId,
+                screen: "1",
+                contentId: materialId ?? "",
+                endDate: endDate ?? "",
+              });
+              href = `${ORIGIN}/lms/course/material/setfiledown/${encodeURIComponent(fileName.replace(/\s+/gu, "_"))}?${finalParams}`;
+            }
           }
         }
       }
@@ -586,7 +771,9 @@ async function materialSearch(
             succeeded: succeededFiles,
             failed: failedFiles,
             truncated: true,
-            next_cursor: opaqueCursor(conversationId, index),
+            // Skip the file that exhausted the byte budget. Reusing its
+            // offset would make every continuation hit the same limit again.
+            next_cursor: opaqueCursor(conversationId, index + 1),
           },
           observed_at: new Date().toISOString(),
           reason_code: "pdf_limit_exceeded",
@@ -599,8 +786,7 @@ async function materialSearch(
       // from the official downloader.
       if (
         !isPdfMagic(buffer) ||
-        (type !== "" &&
-          !/(?:application\/pdf|application\/octet-stream)/iu.test(type))
+        !/(?:application\/pdf|application\/octet-stream)/iu.test(type)
       ) {
         failedFiles += 1;
         continue;
@@ -618,7 +804,7 @@ async function materialSearch(
             succeeded: succeededFiles,
             failed: failedFiles,
             truncated: true,
-            next_cursor: opaqueCursor(conversationId, index),
+            next_cursor: opaqueCursor(conversationId, index + 1),
           },
           observed_at: new Date().toISOString(),
           reason_code: "pdf_limit_exceeded",
@@ -628,6 +814,7 @@ async function materialSearch(
         pdf = await pdfjsLib.getDocument({
           data: buffer,
           isEvalSupported: false,
+          disableJavaScript: true,
           enableXfa: false,
           useSystemFonts: false,
           stopAtErrors: true,
@@ -651,7 +838,9 @@ async function materialSearch(
             succeeded: succeededFiles,
             failed: failedFiles,
             truncated: true,
-            next_cursor: opaqueCursor(conversationId, index),
+            // This PDF would exceed the page budget even though it parsed
+            // successfully; advance past it so the cursor is monotonic.
+            next_cursor: opaqueCursor(conversationId, index + 1),
           },
           observed_at: new Date().toISOString(),
           reason_code: "pdf_limit_exceeded",
@@ -662,14 +851,16 @@ async function materialSearch(
       for (let pageNo = 1; pageNo <= pdf.numPages; pageNo += 1) {
         const page = await pdf.getPage(pageNo);
         const content = await page.getTextContent();
-        let body = content.items
-          .map((item) => ("str" in item ? item.str : ""))
-          .join(" ")
-          .replace(/\s+/gu, " ")
-          .trim();
+        let body = sanitizeVisibleText(
+          content.items
+            .map((item) => ("str" in item ? item.str : ""))
+            .join(" ")
+            .replace(/\s+/gu, " ")
+            .trim(),
+        );
         if (!body) {
           const ocr = await recognizePdfPage(page);
-          if (ocr) body = ocr.text;
+          if (ocr) body = sanitizeVisibleText(ocr.text);
           else {
             ocrNeeded = true;
             await page.cleanup?.();
@@ -708,7 +899,7 @@ async function materialSearch(
               succeeded: succeededFiles,
               failed: failedFiles,
               truncated: true,
-              next_cursor: opaqueCursor(conversationId, index),
+              next_cursor: opaqueCursor(conversationId, index + 1),
             },
             observed_at: new Date().toISOString(),
             reason_code: "quote_limit_exceeded",
@@ -725,8 +916,7 @@ async function materialSearch(
         });
         if (hits.length >= MAX_HITS) {
           await destroyActivePdf();
-          const hitTruncated =
-            index + 1 < fileLimit || links.length > MAX_FILES;
+          const hitTruncated = index + 1 < batch.end || batch.truncated;
           return {
             schema_version: "v1",
             status: hitTruncated || failedFiles > 0 ? "partial" : "known",
@@ -756,7 +946,7 @@ async function materialSearch(
   } finally {
     await destroyActivePdf();
   }
-  const truncated = links.length > MAX_FILES;
+  const truncated = batch.truncated;
   return {
     schema_version: "v1",
     status: truncated || ocrNeeded || failedFiles > 0 ? "partial" : "known",
@@ -768,7 +958,7 @@ async function materialSearch(
       succeeded: succeededFiles,
       failed: failedFiles,
       truncated,
-      next_cursor: truncated ? opaqueCursor(conversationId, fileLimit) : null,
+      next_cursor: truncated ? opaqueCursor(conversationId, batch.end) : null,
     },
     observed_at: new Date().toISOString(),
     reason_code: truncated
@@ -947,10 +1137,7 @@ async function read(
             !requestedSections.some((section) => title.includes(section))
           )
             continue;
-          const activeTest =
-            /テスト|試験|examination|exam|quiz/iu.test(title) &&
-            !/結果|成績|講評|終了|完了|result|score|feedback/iu.test(title) &&
-            hasVisibleTestControls(block);
+          const activeTest = isInProgressTestTitle(title);
           const isSubmission = isOwnSubmissionSection(title);
           if (isSubmission && !includeOwnSubmission) {
             sectionStates[`${courseRef}:${title}`] = "not_requested";
@@ -1004,13 +1191,19 @@ async function read(
           : cursorTruncated || statesTruncated
             ? "partial"
             : "known";
+      // The API contract deliberately forbids detail fields on an entirely
+      // unavailable result.  Keep the failed count/reason in coverage and
+      // omit per-section state in that case so the projection remains
+      // type-valid and the Agent can explain the boundary without guessing.
+      const responseSectionStates =
+        status === "unavailable" ? {} : boundedSectionStates;
       return {
         status,
         projection: {
           schema_version: "v1",
           status,
           items,
-          section_states: boundedSectionStates,
+          section_states: responseSectionStates,
           coverage: {
             scope: "selected_courses",
             requested: refs.length,

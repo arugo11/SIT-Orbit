@@ -16,6 +16,7 @@ from orbit_api.agent.pydantic_ai_backend import (
     ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
+    ToolName,
     cast_read,
     cast_search,
     google_calendar_availability,
@@ -28,6 +29,7 @@ from orbit_api.agent.pydantic_ai_backend import (
 from orbit_api.main import app
 from orbit_api.models import (
     CalendarAvailabilityResult,
+    CastAlumniProfile,
     CastAlumniReadResult,
     CastReadResult,
     CastSearchAggregate,
@@ -36,6 +38,7 @@ from orbit_api.models import (
     CastSearchResult,
     ChatCapabilities,
     ChatClientTool,
+    ChatContextManifest,
     ChatHistoryMessage,
     ChatRunRequest,
     ChatRunToolRequired,
@@ -58,8 +61,9 @@ from pydantic_ai.models.function import FunctionModel
 
 
 class StubChatBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, deferred_tool_name: ToolName = MY_LIBRARY_TOOL_NAME) -> None:
         self.resume_calls = 0
+        self.deferred_tool_name: ToolName = deferred_tool_name
 
     async def start_chat(
         self,
@@ -85,13 +89,17 @@ class StubChatBackend:
                 messages=[],
                 tool_call_id="stub-my-library-call",
                 conversation_id=conversation_id,
-                tool_name=MY_LIBRARY_TOOL_NAME,
-                arguments={
-                    "scope": "current_loans",
-                    "query": "",
-                    "offset": 0,
-                    "limit": 20,
-                },
+                tool_name=self.deferred_tool_name,
+                arguments=(
+                    {
+                        "scope": "current_loans",
+                        "query": "",
+                        "offset": 0,
+                        "limit": 20,
+                    }
+                    if self.deferred_tool_name == MY_LIBRARY_TOOL_NAME
+                    else {}
+                ),
             )
         )
 
@@ -189,6 +197,36 @@ def test_chat_capabilities_reject_live_scombz_tools_outside_azure_off_live() -> 
             scombz_student_read_mode="fixture",
             supported_client_tools=["scombz_course_list"],
             max_client_tools=32,
+        )
+
+
+def test_chat_context_manifest_accepts_restricted_cast_alumni_projection() -> None:
+    manifest = ChatContextManifest(
+        evidence=[
+            EvidenceLink(
+                evidence_id="cast-alumni-v1-1234567890abcdef",
+                title="CASTから取得した就活サポーター情報（一般化）",
+                source_type="career",
+                locator="orbit-cast://alumni/1234567890abcdef",
+                data_classification="restricted",
+            )
+        ]
+    )
+    assert manifest.evidence[0].data_classification == "restricted"
+
+
+def test_chat_context_manifest_rejects_unscoped_restricted_projection() -> None:
+    with pytest.raises(ValueError, match="restricted evidence"):
+        ChatContextManifest(
+            evidence=[
+                EvidenceLink(
+                    evidence_id="cast-alumni-v1-1234567890abcdef",
+                    title="未許可の制限データ",
+                    source_type="career",
+                    locator="orbit-cast://summary/1234567890abcdef",
+                    data_classification="restricted",
+                )
+            ]
         )
 
 
@@ -306,6 +344,90 @@ async def test_chat_service_accepts_scoped_my_library_for_azure_stub(monkeypatch
     assert backend.resume_calls == 1
 
 
+def restricted_cast_alumni_result() -> CastAlumniReadResult:
+    return CastAlumniReadResult(
+        status="known",
+        data_classification="restricted",
+        profile_count=1,
+        profiles=[
+            CastAlumniProfile(
+                alias="[[ORBIT_PERSON_0123456789abcdef]]",
+                role="supporter",
+                company="合成企業",
+                technical_domains=["技術・研究"],
+                job_types=["ソフトウェア"],
+                location_area="関東",
+                graduation_year_bucket="2020-2024",
+                evidence_id="cast-evidence-opaque-abc",
+            )
+        ],
+        topic_categories=["技術・研究"],
+        availability_frequencies=["monthly"],
+        meeting_modes=["online"],
+        shareable_insight_categories=["技術・学習"],
+        contact_present=False,
+        discovered_link_count=1,
+        reason_code=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_name", ["fixture", "openai"])
+async def test_chat_service_rejects_restricted_cast_alumni_before_backend_resume(
+    monkeypatch,
+    backend_name: str,
+) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend_name)
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    backend = StubChatBackend(deferred_tool_name=CAST_ALUMNI_TOOL_NAME)
+    service = ChatRunService(backend_factory=lambda: backend)
+    pending = await service.start(
+        ChatRunRequest(
+            conversation_id=f"chat-cast-boundary-{backend_name}",
+            message="就活サポーターの情報を確認して",
+            client_tools=[ChatClientTool(name=CAST_ALUMNI_TOOL_NAME, version=1)],
+        )
+    )
+    assert isinstance(pending, ChatRunToolRequired)
+
+    with pytest.raises(ValueError, match="Restricted CAST alumni data"):
+        await service.submit_tool_result(
+            pending.run_id,
+            ChatToolResultRequest(
+                tool_call_id=pending.calls[0].tool_call_id,
+                name=CAST_ALUMNI_TOOL_NAME,
+                version=1,
+                result=restricted_cast_alumni_result(),
+            ),
+        )
+    assert backend.resume_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_openai_backend_rejects_restricted_cast_alumni() -> None:
+    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    first = DeferredChatRun(
+        messages=[],
+        tool_call_id="cast-alumni-boundary-call",
+        conversation_id="conversation-cast-alumni-boundary",
+        tool_name=CAST_ALUMNI_TOOL_NAME,
+    )
+    evidence = EvidenceLink(
+        evidence_id="cast-evidence-opaque-abc",
+        title="CASTから取得した就活サポーター情報（一般化）",
+        source_type="career",
+        locator="orbit-cast://alumni/0123456789abcdef",
+        data_classification="restricted",
+    )
+    with pytest.raises(ValueError, match="Restricted CAST alumni data"):
+        await backend.resume_chat(
+            deferred=first,
+            tool_result=restricted_cast_alumni_result(),
+            context=[evidence],
+            advertised_tools={CAST_ALUMNI_TOOL_NAME},
+        )
+
+
 def test_fixture_chat_route_runs_scombz_tool_loop(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
@@ -345,6 +467,8 @@ def test_fixture_chat_route_runs_scombz_tool_loop(monkeypatch) -> None:
         )
 
     assert second.status_code == 200
+    assert second.headers["x-orbit-tool-call-id"] == call["tool_call_id"]
+    assert second.headers["x-orbit-evidence-id"].startswith("scombz-read-v1-")
     completed = second.json()
     assert completed["status"] == "completed"
     assert "組込みシステム" in completed["message"]["content_markdown"]

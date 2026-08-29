@@ -242,6 +242,58 @@ describe("chat context manifest", () => {
     expect(history[0]?.content).toHaveLength(12_000);
   });
 
+  it("does not fall back to display content when a private history entry is unclassified", () => {
+    const history = toChatHistory(
+      [
+        {
+          id: "user-private-legacy",
+          role: "user",
+          content: "学生の氏名と連絡先を含む表示用本文",
+        },
+        {
+          id: "assistant-private-safe",
+          role: "assistant",
+          content: "端末表示用の回答",
+          provider_content: "[[ORBIT_PERSON_safe-token]]を確認しました。",
+        },
+      ],
+      { requireProviderContent: true },
+    );
+    expect(history).toEqual([
+      {
+        role: "assistant",
+        content: "[[ORBIT_PERSON_safe-token]]を確認しました。",
+      },
+    ]);
+  });
+
+  it("drops a corrupted private provider projection before history serialization", () => {
+    const history = toChatHistory(
+      [
+        {
+          id: "assistant-private-unsafe",
+          role: "assistant",
+          content: "端末表示用の回答",
+          provider_content:
+            "資料を確認しました。https://scombz.shibaura-it.ac.jp/lms/course?idnumber=private-id",
+        },
+        {
+          id: "assistant-private-safe",
+          role: "assistant",
+          content: "端末表示用の回答",
+          provider_content: "[[ORBIT_PERSON_safe-token]]を確認しました。",
+        },
+      ],
+      { requireProviderContent: true },
+    );
+    expect(history).toEqual([
+      {
+        role: "assistant",
+        content: "[[ORBIT_PERSON_safe-token]]を確認しました。",
+      },
+    ]);
+  });
+
   it("keeps legacy conversations local-only when processing metadata is absent", async () => {
     const legacy = { ...newConversation() } as unknown as Record<
       string,

@@ -41,6 +41,20 @@ function reportPageContextAfterNavigation(): void {
   window.setTimeout(reportPageContext, 0);
 }
 
+function isAuthenticatedScombzPage(): boolean {
+  const pathname = window.location.pathname;
+  if (/^\/login(?:\/|$)/u.test(pathname)) return false;
+  if (/login|ログイン|password/iu.test(document.title)) return false;
+  // The authenticated SCombZ shell exposes a Logout link.  Requiring this
+  // visible, same-origin affordance keeps an audit source from being treated
+  // as authenticated after a login redirect or an expired session page.
+  return Boolean(
+    document.querySelector(
+      'a[href*="/logout"], form[action*="/logout"], [data-testid="logout"]',
+    ),
+  );
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (
     typeof message === "object" &&
@@ -59,6 +73,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({
       generation: CONTENT_SCRIPT_GENERATION,
       adapter_version: SCOMBZ_ADAPTER_VERSION,
+      authenticated: isAuthenticatedScombzPage(),
     });
     return;
   }

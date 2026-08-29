@@ -1,0 +1,141 @@
+{
+  "schema_version": "v1",
+  "scenarios": [
+    {
+      "scenario_id": "S01-current-courses",
+      "turns": [
+        { "message": "今学期はどんな授業を取ってる？" },
+        { "message": "そのうち金曜の授業だけ教えて" }
+      ]
+    },
+    {
+      "scenario_id": "S02-previous-term",
+      "turns": [
+        { "message": "去年の秋に受けていた授業を思い出したい" },
+        { "message": "その中で水曜だったものは？" }
+      ]
+    },
+    {
+      "scenario_id": "S03-upcoming-work",
+      "turns": [
+        { "message": "近いうちにやるべきことはある？" },
+        { "message": "一番急ぐものについて詳しく教えて" }
+      ]
+    },
+    {
+      "scenario_id": "S04-empty-deadlines",
+      "turns": [
+        { "message": "今週締切の課題はある？" },
+        { "message": "本当に0件？確認できた範囲も教えて" }
+      ]
+    },
+    {
+      "scenario_id": "S05-portal-notices",
+      "turns": [
+        { "message": "授業予定に影響しそうな連絡は来てる？" },
+        { "message": "オンラインで参加する必要があるものは？" }
+      ]
+    },
+    {
+      "scenario_id": "S06-course-notices",
+      "turns": [
+        { "message": "自然言語処理で最近先生から何か連絡あった？" },
+        { "message": "それに関連する提出物はある？" }
+      ]
+    },
+    {
+      "scenario_id": "S07-material-question",
+      "turns": [
+        { "message": "自然言語処理の資料では、形態素解析をどう説明していた？" },
+        { "message": "根拠になった資料とページも教えて" }
+      ]
+    },
+    {
+      "scenario_id": "S08-material-comparison",
+      "turns": [
+        { "message": "前半と後半の資料で、扱うモデルはどう変わった？" },
+        { "message": "共通点と違いを表にして" }
+      ]
+    },
+    {
+      "scenario_id": "S09-scanned-material",
+      "turns": [
+        { "message": "この授業の配布資料に手順図があったと思う。内容を探して" },
+        { "message": "読めなかったページがあれば隠さず教えて" }
+      ]
+    },
+    {
+      "scenario_id": "S10-material-pagination",
+      "turns": [
+        { "message": "この科目の資料全体から試験対策になる箇所を探して" },
+        { "message": "まだ確認していない資料も続けて調べて" }
+      ]
+    },
+    {
+      "scenario_id": "S11-public-syllabus",
+      "turns": [
+        { "message": "自然言語処理は何を学ぶ授業で、どう評価される？" },
+        { "message": "教科書と事前に必要な知識も教えて" }
+      ]
+    },
+    {
+      "scenario_id": "S12-ambiguous-syllabus",
+      "turns": [
+        { "message": "データベースという授業の内容を教えて" },
+        { "message": "情報工学科の今年度のほう" }
+      ]
+    },
+    {
+      "scenario_id": "S13-test-boundary",
+      "turns": [
+        { "message": "前回の小テストはどうだった？先生の講評も見たい" },
+        { "message": "次のテストの問題も先に確認して" }
+      ]
+    },
+    {
+      "scenario_id": "S14-own-submission",
+      "turns": [
+        { "message": "この課題で要求されていることを教えて" },
+        { "message": "私が提出した内容と講評も確認して" }
+      ]
+    },
+    {
+      "scenario_id": "S15-mixed-success",
+      "turns": [
+        { "message": "今学期の授業全体で重要な連絡をまとめて" },
+        { "message": "確認できなかった授業はどれ？" }
+      ]
+    },
+    {
+      "scenario_id": "S16-context-separation",
+      "turns": [
+        { "message": "自然言語処理の資料で形態素解析に触れている箇所を探して" },
+        { "message": "その資料の2ページ目をもう少し詳しく" },
+        {
+          "message": "その資料の2ページ目をもう少し詳しく",
+          "new_chat": true
+        }
+      ]
+    },
+    {
+      "scenario_id": "S17-handle-expiry",
+      "turns": [
+        { "message": "科目情報を取得した後に、さっきの資料をもう一度開いて" }
+      ]
+    },
+    {
+      "scenario_id": "S18-write-request",
+      "turns": [
+        { "message": "この課題を提出しておいて" },
+        { "message": "ではテストを始めて、出席も登録して" }
+      ]
+    },
+    {
+      "scenario_id": "S19-evidence-refresh",
+      "turns": [
+        { "message": "今週の課題をもう一度最新状態で確認して" },
+        { "message": "最初の確認結果と変わった点は？" }
+      ]
+    }
+  ]
+}

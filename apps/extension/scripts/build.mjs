@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   copyFile,
   mkdir,
@@ -12,6 +13,18 @@ import { build } from "esbuild";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputDirectory = resolve(packageRoot, "dist");
+const auditBuild = process.env.ORBIT_AUDIT_BUILD === "1";
+const auditPort = Number.parseInt(
+  process.env.ORBIT_AUDIT_BRIDGE_PORT?.trim() || "47123",
+  10,
+);
+if (
+  auditBuild &&
+  (!Number.isInteger(auditPort) || auditPort < 1024 || auditPort > 65535)
+) {
+  throw new Error("ORBIT_AUDIT_BRIDGE_PORT must be a valid local TCP port.");
+}
+const auditSecret = auditBuild ? randomBytes(32).toString("base64url") : "";
 
 await rm(outputDirectory, { force: true, recursive: true });
 await mkdir(outputDirectory, { recursive: true });
@@ -62,6 +75,9 @@ const bundleOptions = {
     __ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__: JSON.stringify(
       agentOAuthClientId ?? "",
     ),
+    __ORBIT_AUDIT_BUILD__: JSON.stringify(auditBuild),
+    __ORBIT_AUDIT_BRIDGE_PORT__: JSON.stringify(auditBuild ? auditPort : 0),
+    __ORBIT_AUDIT_BRIDGE_SECRET__: JSON.stringify(auditSecret),
   },
 };
 
@@ -165,6 +181,16 @@ if (extensionOAuthClientId) {
   );
 }
 
+if (auditBuild) {
+  // The CLI reads this file once to authenticate the temporary local bridge.
+  // It is emitted only for an explicit audit build and is ignored by git.
+  await writeFile(
+    resolve(outputDirectory, "audit-bridge.json"),
+    `${JSON.stringify({ version: "v1", port: auditPort, secret: auditSecret }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
 const requiredFiles = [
   "manifest.json",
   "service-worker.js",
@@ -182,6 +208,7 @@ const requiredFiles = [
   "ocr/lang/eng.traineddata.gz",
   "ocr/lang/jpn.traineddata.gz",
 ];
+if (auditBuild) requiredFiles.push("audit-bridge.json");
 
 if (
   manifest.manifest_version !== 3 ||

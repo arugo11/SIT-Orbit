@@ -15,6 +15,7 @@ export interface SyllabusSearchResultView {
     snippet: string | null;
     citation_uri: string | null;
   }>;
+  observed_at: string;
   reason_code: string | null;
 }
 
@@ -30,12 +31,25 @@ export interface SyllabusDetailView {
 }
 
 export const SYLLABUS_SEARCH_ORIGIN = "https://syllabus.sic.shibaura-it.ac.jp";
+const SYLLABUS_BREAK_MARKER = "__ORBIT_BREAK__";
 
 function stripMarkup(value: string): string {
   return value
     .replace(/<[^>]*>/gu, " ")
     .replace(/&nbsp;/gu, " ")
     .replace(/&amp;/gu, "&")
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, '"')
+    .replace(/&#39;/gu, "'")
+    .replace(/&#(\d+);/gu, (_match, code: string) => {
+      const value = Number.parseInt(code, 10);
+      return Number.isFinite(value) ? String.fromCodePoint(value) : "";
+    })
+    .replace(/&#x([0-9a-f]+);/giu, (_match, code: string) => {
+      const value = Number.parseInt(code, 16);
+      return Number.isFinite(value) ? String.fromCodePoint(value) : "";
+    })
     .replace(/\s+/gu, " ")
     .trim();
 }
@@ -83,44 +97,196 @@ export function parseSyllabusDetailHtml(html: string): SyllabusDetailView {
       .replace(/[\u00a0\t]+/gu, " ")
       .trim()
       .slice(0, 6000);
+  const cleanWithBreaks = (value: string): string =>
+    stripMarkup(value.replace(/<br\s*\/?>/giu, SYLLABUS_BREAK_MARKER))
+      .replace(/[ \t]+/gu, " ")
+      .replace(new RegExp(` *${SYLLABUS_BREAK_MARKER} *`, "gu"), "\n")
+      .replace(/ *\n */gu, "\n")
+      .trim()
+      .slice(0, 6000);
   const doc =
     typeof DOMParser === "function"
       ? new DOMParser().parseFromString(html, "text/html")
       : null;
-  const headings = doc
-    ? Array.from(doc.querySelectorAll("h1, h2, h3, dt, th, .heading"))
-    : [];
-  const valueFor = (labels: string[]): string | null => {
-    const heading = headings.find((node) =>
-      labels.some((label) => clean(node.textContent ?? "").includes(label)),
-    );
-    if (!heading) return null;
-    const sibling = heading.nextElementSibling;
-    return sibling ? clean(sibling.textContent ?? "") || null : null;
+  const panelBlocks = (): Array<{
+    heading: string;
+    body: string;
+    bodyHtml: string;
+  }> => {
+    if (!doc) return [];
+    return Array.from(doc.querySelectorAll<HTMLElement>(".panel.panel-default"))
+      .map((panel) => {
+        const heading = clean(
+          panel.querySelector(".panel-heading")?.textContent ?? "",
+        );
+        const bodyElement = panel.querySelector<HTMLElement>(".panel-body");
+        return {
+          heading,
+          body: cleanWithBreaks(
+            bodyElement?.innerHTML ?? bodyElement?.textContent ?? "",
+          ),
+          bodyHtml: bodyElement?.innerHTML ?? "",
+        };
+      })
+      .filter((item) => item.heading || item.body);
   };
-  const listFor = (labels: string[]): string[] => {
-    const value = valueFor(labels);
-    if (!value) return [];
-    return value
-      .split(/\n|(?=第\s*\d+\s*回)/u)
+  const panels = panelBlocks();
+  const panelFor = (
+    labels: string[],
+  ): { body: string; bodyHtml: string } | null => {
+    const match = panels.find((panel) =>
+      labels.some((label) => panel.heading.includes(label)),
+    );
+    return match ? { body: match.body, bodyHtml: match.bodyHtml } : null;
+  };
+  const listFromBody = (
+    panel: { body: string; bodyHtml: string } | null,
+  ): string[] => {
+    if (!panel?.body) return [];
+    const fromRows = [
+      ...panel.bodyHtml.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/giu),
+    ]
+      .map((match) => cleanWithBreaks(match[1] ?? ""))
+      .filter((item) => item && !/^授業計画(?:\s|$)/u.test(item));
+    const values =
+      fromRows.length > 0
+        ? fromRows
+        : panel.body.split(/\n|(?=第\s*\d+\s*回)/u);
+    return values
       .map((item) => clean(item))
       .filter(Boolean)
       .slice(0, 60);
   };
+  const domResult: SyllabusDetailView | null = doc
+    ? (() => {
+        const instructorNames = Array.from(
+          doc.querySelectorAll<HTMLElement>(
+            ".teacher a, a[href*='resea.shibaura-it.ac.jp']",
+          ),
+        )
+          .map((item) => clean(item.textContent ?? ""))
+          .filter(Boolean)
+          .filter((item, index, values) => values.indexOf(item) === index)
+          .slice(0, 20);
+        const courseCode =
+          clean(
+            doc.querySelector("#KamokuCD, [name='KamokuCD']")?.textContent ??
+              "",
+          ) || null;
+        const title =
+          clean(
+            doc.querySelector(".kamoku.jpn, h1, .title")?.textContent ?? "",
+          ) || null;
+        const objective = panelFor(["授業の目的", "到達目標"]);
+        const plan = panelFor(["授業計画", "授業内容"]);
+        const evaluation = panelFor(["評価方法と基準", "評価方法", "成績評価"]);
+        const textbooks = panelFor(["教科書・参考書", "教科書", "参考書"]);
+        const prerequisites = panelFor([
+          "履修登録前の準備",
+          "前提条件",
+          "履修条件",
+          "前提",
+        ]);
+        return {
+          course_code: courseCode,
+          title,
+          instructors: instructorNames,
+          objectives: objective?.body || null,
+          weekly_plan: listFromBody(plan),
+          evaluation: evaluation?.body || null,
+          textbooks: listFromBody(textbooks),
+          prerequisites: prerequisites?.body || null,
+        };
+      })()
+    : null;
+  if (
+    domResult &&
+    (domResult.course_code || domResult.title || panels.length > 0)
+  ) {
+    return domResult;
+  }
+
+  // Service workers do not guarantee DOMParser.  Keep a bounded regex adapter
+  // for the official static syllabus HTML so the same reader works from the
+  // audit bridge without injecting a page parser or loading a remote library.
+  const blocks = [
+    ...html.matchAll(
+      /<div\b[^>]*class=["'][^"']*panel\s+panel-default[^"']*["'][^>]*>([\s\S]*?)(?=<div\b[^>]*class=["'][^"']*panel\s+panel-default|<\/body>|$)/giu,
+    ),
+  ].map((match) => match[1] ?? "");
+  const fallbackPanel = (
+    labels: string[],
+  ): { body: string; bodyHtml: string } | null => {
+    for (const block of blocks) {
+      const heading = clean(
+        block.match(
+          /<div\b[^>]*class=["'][^"']*panel-heading[^"']*["'][^>]*>([\s\S]*?)<\/div>/iu,
+        )?.[1] ?? "",
+      );
+      if (!labels.some((label) => heading.includes(label))) continue;
+      const bodyHtml =
+        block.match(
+          /<div\b[^>]*class=["'][^"']*panel-body[^"']*["'][^>]*>([\s\S]*)/iu,
+        )?.[1] ?? "";
+      return { body: cleanWithBreaks(bodyHtml), bodyHtml };
+    }
+    return null;
+  };
+  const fallbackList = (
+    panel: { body: string; bodyHtml: string } | null,
+  ): string[] => {
+    if (!panel?.body) return [];
+    const rows = [...panel.bodyHtml.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/giu)]
+      .map((match) => cleanWithBreaks(match[1] ?? ""))
+      .filter(Boolean);
+    return (rows.length > 0 ? rows : panel.body.split(/\n|(?=第\s*\d+\s*回)/u))
+      .map((item) => clean(item))
+      .filter(Boolean)
+      .slice(0, 60);
+  };
+  const teacherMatches = [
+    ...html.matchAll(
+      /<td\b[^>]*class=["'][^"']*\bteacher\b[^"']*["'][^>]*>[\s\S]*?<a\b[^>]*>([\s\S]*?)<\/a>/giu,
+    ),
+  ]
+    .map((match) => clean(match[1] ?? ""))
+    .filter(Boolean)
+    .filter((item, index, values) => values.indexOf(item) === index)
+    .slice(0, 20);
+  const fallbackObjective = fallbackPanel(["授業の目的", "到達目標"]);
+  const fallbackPlan = fallbackPanel(["授業計画", "授業内容"]);
+  const fallbackEvaluation = fallbackPanel([
+    "評価方法と基準",
+    "評価方法",
+    "成績評価",
+  ]);
+  const fallbackTextbooks = fallbackPanel([
+    "教科書・参考書",
+    "教科書",
+    "参考書",
+  ]);
+  const fallbackPrerequisites = fallbackPanel([
+    "履修登録前の準備",
+    "前提条件",
+    "履修条件",
+    "前提",
+  ]);
   return {
     course_code:
+      clean(html.match(/id=["']KamokuCD["'][^>]*>([^<]+)/iu)?.[1] ?? "") ||
+      null,
+    title:
       clean(
-        doc?.querySelector("#KamokuCD, [name='KamokuCD']")?.textContent ?? "",
+        html.match(
+          /class=["'][^"']*\bkamoku\s+jpn\b[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/iu,
+        )?.[1] ?? "",
       ) || null,
-    title: clean(doc?.querySelector("h1, .title")?.textContent ?? "") || null,
-    instructors: valueFor(["担当教員", "教員"])
-      ? [valueFor(["担当教員", "教員"]) as string]
-      : [],
-    objectives: valueFor(["授業の目的", "到達目標"]),
-    weekly_plan: listFor(["授業計画", "授業内容"]),
-    evaluation: valueFor(["評価方法", "成績評価"]),
-    textbooks: listFor(["教科書", "参考書"]),
-    prerequisites: valueFor(["前提", "履修条件"]),
+    instructors: teacherMatches,
+    objectives: fallbackObjective?.body || null,
+    weekly_plan: fallbackList(fallbackPlan),
+    evaluation: fallbackEvaluation?.body || null,
+    textbooks: fallbackList(fallbackTextbooks),
+    prerequisites: fallbackPrerequisites?.body || null,
   };
 }
 
@@ -132,19 +298,14 @@ export function parseSyllabusSearchHtml(
   faculty: string | null = null,
 ): SyllabusSearchResultView {
   const results: SyllabusSearchResultView["results"] = [];
+  const observedAt = new Date().toISOString();
   const dtPattern = /<dt\b[^>]*>([\s\S]*?)<\/dt>/giu;
   const resultFragments = [...html.matchAll(dtPattern)]
     .map((match) => match[1] ?? "")
     .filter((fragment) => /<a\b[^>]*href=/iu.test(fragment));
-  const fragments =
-    resultFragments.length > 0
-      ? resultFragments
-      : [
-          ...html.matchAll(
-            /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/giu,
-          ),
-        ].map((match) => `<a href="${match[1] ?? ""}">${match[2] ?? ""}</a>`);
-  for (const fragment of fragments) {
+  // Namazu's result list is the only trusted result region.  Navigation or
+  // footer anchors outside <dt> must never become syllabus candidates.
+  for (const fragment of resultFragments) {
     const match = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/iu.exec(
       fragment,
     );
@@ -170,6 +331,7 @@ export function parseSyllabusSearchHtml(
     year,
     faculty,
     results,
+    observed_at: observedAt,
     reason_code: null,
   };
 }
@@ -213,6 +375,7 @@ export async function searchOfficialSyllabus(
         year,
         faculty,
         results: [],
+        observed_at: new Date().toISOString(),
         reason_code: `http_${response.status}`,
       };
     }
@@ -231,6 +394,7 @@ export async function searchOfficialSyllabus(
       year,
       faculty,
       results: [],
+      observed_at: new Date().toISOString(),
       reason_code: "network_error",
     };
   }

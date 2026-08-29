@@ -2,6 +2,7 @@ import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import {
   type ActionProposal,
   type AgentApiClient,
+  type ChatCapabilities,
   type ChatRunResponse,
   type ChatToolResultRequest,
   classifyAgentApiError,
@@ -59,6 +60,7 @@ import {
   projectScombzRead,
 } from "../content/page-context";
 import { hasScombzStudentSessionConsent } from "../content/scombz-consent";
+import { ConversationPseudonymizationGateway } from "../privacy/conversation-pseudonymization";
 import type {
   BrowserReadResponse,
   CastAlumniReadResponse,
@@ -94,6 +96,13 @@ import {
   toChatContextManifest,
   toChatHistory,
 } from "./chat-history";
+import { ChatRunner } from "./chat-runner";
+import {
+  advertiseReadOnlyTools,
+  isRegisteredReadOnlyTool,
+  toolDisplayLabel,
+  validateChatToolArguments,
+} from "./tool-registry";
 
 const CHAT_FAILURE_MESSAGE =
   "今は応答できませんでした。もう一度お試しください。";
@@ -118,52 +127,7 @@ export interface ChatPanelProps {
 // be added later only as presentation, with this deterministic text as the
 // fail-closed fallback.
 function toolLabel(name: string): string {
-  switch (name) {
-    case "scombz_page_summary":
-      return "SCombZを確認中";
-    case "google_calendar_availability":
-      return "Google Calendarを確認中";
-    case "scombz_read":
-      return "SCombZを確認中";
-    case "scombz_course_list":
-      return "SCombZの履修科目を確認中";
-    case "scombz_portal_read":
-      return "SCombZのポータル情報を確認中";
-    case "scombz_course_read":
-      return "SCombZの授業情報を確認中";
-    case "scombz_material_search":
-      return "SCombZの授業資料を検索中";
-    case "syllabus_search":
-      return "シラバスを検索中";
-    case "syllabus_read":
-      return "シラバス詳細を確認中";
-    case "browser_read_url":
-      return "ページを参照中";
-    case "sitrus_read":
-      return "SITRUSの成績を確認中";
-    case "moodle_read":
-      return "Moodleを確認中";
-    case "my_library_read":
-      return "My Libraryを確認中";
-    case "cast_read":
-      return "CASTを確認中";
-    case "cast_alumni_read":
-      return "CASTの就活サポーターを確認中";
-    case "cast_search":
-      return "CASTを検索中";
-    case "library_catalog_search":
-      return "書籍ごとにOPACを確認中";
-    case "library_item_read":
-      return "所蔵詳細を確認中";
-    case "library_catalog_browse":
-      return "書誌情報を確認中";
-    case "library_discovery_search":
-      return "SIT Searchを検索中";
-    case "library_action_options":
-      return "図書館の操作可否を確認中";
-    default:
-      return "情報を確認中";
-  }
+  return toolDisplayLabel(name);
 }
 
 const PERSONAL_SCOMBZ_TOOL_NAMES = new Set([
@@ -178,12 +142,15 @@ const PERSONAL_SCOMBZ_TOOL_NAMES = new Set([
 function mergeProcessingScope(
   conversation: ChatConversation,
   toolName: string,
+  dataClassification?: "personal" | "restricted",
 ): ChatConversation {
   const nextScope = PERSONAL_SCOMBZ_TOOL_NAMES.has(toolName)
     ? "personal/scombz_student"
     : toolName === "syllabus_search" || toolName === "syllabus_read"
       ? "public/syllabus"
-      : null;
+      : toolName === "cast_alumni_read" && dataClassification === "restricted"
+        ? "restricted/cast_career"
+        : null;
   if (!nextScope || conversation.processing_scope === nextScope) {
     return conversation;
   }
@@ -574,6 +541,7 @@ export function ChatPanel({
     new Map<string, { conversationId: string; url: string }>(),
   );
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const pseudonymizerRef = useRef(new ConversationPseudonymizationGateway());
   // Loading the history is asynchronous.  If a user starts a new chat (or
   // sends the first message) before that read completes, the late result must
   // not replace the conversation they are actively editing with an older one.
@@ -744,14 +712,24 @@ export function ChatPanel({
     ] as const) {
       if (allows(name)) tools.push({ name, version: 1 });
     }
-    return tools.slice(0, Math.min(32, Math.max(1, maxClientTools)));
+    const advertised = advertiseReadOnlyTools({
+      locallyAvailable: new Set(tools.map((tool) => tool.name)),
+      serverAllowed: serverTools,
+      maxClientTools,
+    });
+    return advertised as typeof tools;
   }
 
   async function runTool(
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
     progressLabel = toolLabel(response.calls[0]?.name ?? ""),
-  ): Promise<{ response: ChatRunResponse; conversation: ChatConversation }> {
+    options: { submit?: boolean } = {},
+  ): Promise<{
+    response: ChatRunResponse;
+    conversation: ChatConversation;
+    request: ChatToolResultRequest;
+  }> {
     const [call] = response.calls;
     if (!call) {
       throw new Error("AgentのTool呼び出しを検証できません。");
@@ -760,30 +738,17 @@ export function ChatPanel({
     if (call.version !== 1 || typeof argumentsObject !== "object") {
       throw new Error("AgentのTool引数を検証できません。");
     }
-    if (
-      call.name !== "scombz_page_summary" &&
-      call.name !== "scombz_read" &&
-      call.name !== "scombz_course_list" &&
-      call.name !== "scombz_portal_read" &&
-      call.name !== "scombz_course_read" &&
-      call.name !== "scombz_material_search" &&
-      call.name !== "google_calendar_availability" &&
-      call.name !== "syllabus_search" &&
-      call.name !== "syllabus_read" &&
-      call.name !== "browser_read_url" &&
-      call.name !== "sitrus_read" &&
-      call.name !== "moodle_read" &&
-      call.name !== "my_library_read" &&
-      call.name !== "cast_read" &&
-      call.name !== "cast_alumni_read" &&
-      call.name !== "cast_search" &&
-      call.name !== "library_catalog_search" &&
-      call.name !== "library_item_read" &&
-      call.name !== "library_catalog_browse" &&
-      call.name !== "library_discovery_search" &&
-      call.name !== "library_action_options"
-    ) {
+    if (!isRegisteredReadOnlyTool(call.name)) {
       throw new Error("このChatではまだ対応していないToolです。");
+    }
+    const registryValidation = validateChatToolArguments(
+      call.name,
+      argumentsObject,
+    );
+    if (!registryValidation.ok) {
+      throw new Error(
+        `AgentのTool引数を検証できません（${registryValidation.reason}）。`,
+      );
     }
     if (
       (call.name === "scombz_page_summary" ||
@@ -1674,6 +1639,7 @@ export function ChatPanel({
       const alumni = await sendExtensionMessage<CastAlumniReadResponse>({
         type: "cast-alumni-read",
         tool_call_id: call.tool_call_id,
+        conversation_id: current.conversationId,
       });
       if (alumni.status === "permission_required") {
         throw new Error(
@@ -1695,6 +1661,13 @@ export function ChatPanel({
         ...items,
         [activity.id]: alumni.detail,
       }));
+      if (alumni.projection.data_classification === "restricted") {
+        conversationAfterTool = mergeProcessingScope(
+          conversationAfterTool,
+          call.name,
+          "restricted",
+        );
+      }
       request = toolResultRequest(
         call.tool_call_id,
         call.name,
@@ -1759,10 +1732,32 @@ export function ChatPanel({
         browser.projection,
       );
     }
-    const nextResponse = await apiClient.submitChatToolResult(
-      response.run_id,
-      request,
-    );
+    if (
+      call.name === "scombz_page_summary" ||
+      call.name === "scombz_read" ||
+      call.name === "scombz_course_list" ||
+      call.name === "scombz_portal_read" ||
+      call.name === "scombz_course_read" ||
+      call.name === "scombz_material_search" ||
+      call.name === "cast_alumni_read"
+    ) {
+      // Keep the provider-facing result behind the same conversation gateway
+      // as the user message and history. The local display/detail state stays
+      // untouched; only the request sent to the Agent is transformed.
+      const transformed =
+        await pseudonymizerRef.current.transformToolProjection(
+          conversationAfterTool.conversationId,
+          request.result,
+        );
+      request = {
+        ...request,
+        result: transformed.provider_result as ChatToolResultRequest["result"],
+      };
+    }
+    const nextResponse =
+      options.submit === false
+        ? response
+        : await apiClient.submitChatToolResult(response.run_id, request);
     setChatProgress(
       "resuming",
       "Agentが取得結果を整理中",
@@ -1777,7 +1772,11 @@ export function ChatPanel({
       ),
     };
     await persist(completedConversation);
-    return { response: nextResponse, conversation: completedConversation };
+    return {
+      response: nextResponse,
+      conversation: completedConversation,
+      request,
+    };
   }
 
   async function finishResponse(
@@ -1828,7 +1827,40 @@ export function ChatPanel({
       response = next.response;
       current = next.conversation;
     }
-    const assistant = messageFromResponse(response);
+    const assistantFromResponse = messageFromResponse(response);
+    let restoredAssistant = {
+      content: assistantFromResponse.content,
+      warnings: [] as string[],
+    };
+    if (
+      current.processing_scope === "personal/scombz_student" ||
+      current.processing_scope === "restricted/cast_career" ||
+      current.processing_scope === "mixed"
+    ) {
+      try {
+        restoredAssistant = await pseudonymizerRef.current.restoreMarkdown(
+          current.conversationId,
+          assistantFromResponse.content,
+        );
+      } catch {
+        // A test/fixture mount may not expose Web Crypto.  Provider output is
+        // already safe in that case; keep the assistant response visible rather
+        // than turning a local restore optimization into a chat failure.
+      }
+    }
+    const assistant: ChatTimelineMessage = {
+      ...assistantFromResponse,
+      content: restoredAssistant.content,
+      display_content: restoredAssistant.content,
+      provider_content: assistantFromResponse.content,
+      privacy_transform: {
+        schema_version: "v1",
+        replaced_count: 0,
+        removed_fields: [],
+        generalized_fields: [],
+        warnings: restoredAssistant.warnings,
+      },
+    };
     setChatProgress("completed", "完了", "回答と参照元を表示しました。");
     const responseManifest =
       response.status === "completed" ? response.context_manifest : null;
@@ -1862,6 +1894,7 @@ export function ChatPanel({
       content: message,
     };
     const beforeSend = conversation;
+    let providerMessage = message;
     const withUser = {
       ...beforeSend,
       title:
@@ -1876,6 +1909,7 @@ export function ChatPanel({
     try {
       let serverTools: ReadonlySet<string> | null = null;
       let maxClientTools = 32;
+      let capabilitiesSnapshot: ChatCapabilities | null = null;
       let providerDestination: ChatConversation["provider_destination"] =
         "local";
       let liveScombzGate = false;
@@ -1893,6 +1927,7 @@ export function ChatPanel({
       if (typeof capabilityReader === "function") {
         try {
           const capabilities = await capabilityReader.call(apiClient);
+          capabilitiesSnapshot = capabilities as ChatCapabilities;
           liveScombzGate =
             capabilities.agent_backend === "azure_openai" &&
             capabilities.observability === "off" &&
@@ -1919,6 +1954,7 @@ export function ChatPanel({
           // from already stored conversation evidence, but it advertises no
           // connector that the server has not explicitly approved.
           serverTools = new Set();
+          capabilitiesSnapshot = null;
         }
       }
       if (pageContext?.kind === "scombz") {
@@ -1941,12 +1977,50 @@ export function ChatPanel({
               : "SCombZの参照元タブを固定できませんでした。ログイン状態と表示中のタブを確認してください。",
           );
         }
+        // A production client must not send a personal SCombZ prompt when
+        // the authenticated live capability cannot be proven.  In
+        // particular, do not continue with the legacy `scombz_read` tool or
+        // an unclassified provider message after a capability fetch error.
+        if (typeof capabilityReader === "function" && !liveScombzGate) {
+          throw new Error(
+            capabilitiesSnapshot
+              ? "SCombZのlive読み取り機能は現在利用できません。"
+              : "SCombZのlive capabilityを確認できません。再認証後に再試行してください。",
+          );
+        }
+      }
+      // Keep every Azure-bound user turn behind the conversation gateway. The
+      // first CAST question is sent before a restricted projection exists, so
+      // limiting this to SCombZ would leave a later follow-up with an
+      // unclassified name or contact value in the provider history. Public
+      // syllabus text is unchanged unless it contains a direct credential,
+      // identifier, or query-bearing URL that must be removed at the boundary.
+      if (providerDestination === "azure_openai") {
+        const transformed = await pseudonymizerRef.current.transformText(
+          withUser.conversationId,
+          message,
+        );
+        providerMessage = transformed.provider_content;
+        current = {
+          ...current,
+          messages: current.messages.map((item) =>
+            item.id === userMessage.id
+              ? {
+                  ...item,
+                  display_content: message,
+                  provider_content: transformed.provider_content,
+                  privacy_transform: transformed.report,
+                }
+              : item,
+          ),
+        };
       }
       current = {
         ...current,
         processing_scope:
           pageContext?.kind === "scombz" && liveScombzGate
-            ? "personal/scombz_student"
+            ? mergeProcessingScope(current, "scombz_course_list")
+                .processing_scope
             : current.processing_scope,
         provider_destination: providerDestination,
         // New conversations are eligible.  A legacy conversation loaded
@@ -1956,27 +2030,91 @@ export function ChatPanel({
         updatedAt: new Date().toISOString(),
       };
       await persist(current);
+      let providerContextManifest = current.history_eligible
+        ? toChatContextManifest(current.contextManifest)
+        : null;
+      if (
+        providerContextManifest &&
+        (current.processing_scope === "personal/scombz_student" ||
+          current.processing_scope === "restricted/cast_career" ||
+          current.processing_scope === "mixed")
+      ) {
+        const transformedEvidence =
+          await pseudonymizerRef.current.transformEvidence(
+            current.conversationId,
+            providerContextManifest.evidence ?? [],
+          );
+        providerContextManifest = {
+          ...providerContextManifest,
+          evidence:
+            transformedEvidence as typeof providerContextManifest.evidence,
+        };
+      }
       setChatProgress(
         "planning",
         "Agentが回答方針を検討中",
         "利用できる参照先と会話の文脈から、次の確認方法を選んでいます。",
       );
-      const response = await apiClient.startChat({
-        conversation_id: withUser.conversationId,
-        message,
-        // `sync` is the server default.  Omitting the optional field keeps
-        // this read-only path compatible with deployed API images from before
-        // background execution was introduced (their strict request model
-        // rejects unknown fields with HTTP 422).
-        history: current.history_eligible
-          ? toChatHistory(beforeSend.messages)
-          : [],
-        client_tools: clientTools(serverTools, maxClientTools),
-        context_manifest: current.history_eligible
-          ? toChatContextManifest(beforeSend.contextManifest)
-          : null,
+      // Keep older embedders usable while they upgrade to the v1 capability
+      // endpoint.  The production AgentApiClient always exposes
+      // `chatCapabilities`; this branch never advertises the new SCombZ
+      // student tools and is retained only for legacy test/host adapters.
+      if (typeof capabilityReader !== "function") {
+        const response = await apiClient.startChat({
+          conversation_id: withUser.conversationId,
+          message: providerMessage,
+          history: current.history_eligible
+            ? toChatHistory(beforeSend.messages, {
+                requireProviderContent:
+                  current.processing_scope === "personal/scombz_student" ||
+                  current.processing_scope === "restricted/cast_career" ||
+                  current.processing_scope === "mixed",
+              })
+            : [],
+          client_tools: clientTools(serverTools, maxClientTools),
+          context_manifest: providerContextManifest,
+        });
+        await finishResponse(response, current);
+        return;
+      }
+      const locallyAvailableTools = new Set(
+        clientTools(serverTools, maxClientTools).map((tool) => tool.name),
+      );
+      let runnerConversation = current;
+      const runner = new ChatRunner({
+        api: apiClient,
+        executeTool: async (call) => {
+          const outcome = await runTool(
+            {
+              status: "tool_required",
+              run_id: "ui-runner",
+              calls: [call],
+            },
+            runnerConversation,
+            toolLabel(call.name),
+            { submit: false },
+          );
+          runnerConversation = outcome.conversation;
+          return { request: outcome.request };
+        },
       });
-      await finishResponse(response, current);
+      const runnerResult = await runner.run({
+        conversation_id: withUser.conversationId,
+        message: providerMessage,
+        history: current.history_eligible
+          ? toChatHistory(beforeSend.messages, {
+              requireProviderContent:
+                current.processing_scope === "personal/scombz_student" ||
+                current.processing_scope === "restricted/cast_career" ||
+                current.processing_scope === "mixed",
+            })
+          : [],
+        context_manifest: providerContextManifest,
+        capabilities: capabilitiesSnapshot,
+        locally_available_tools: locallyAvailableTools,
+      });
+      current = runnerConversation;
+      await finishResponse(runnerResult.response, current);
     } catch (error) {
       const failureMessage = userFacingChatFailure(error);
       setRetryText(message);
@@ -2010,6 +2148,25 @@ export function ChatPanel({
 
   async function createConversation(): Promise<void> {
     conversationInteractionRef.current = true;
+    // An explicit New Chat is a privacy boundary: do not keep the previous
+    // conversation's alias mapping available for a later local restore.
+    await pseudonymizerRef.current.clear(conversation.conversationId);
+    // The background service worker owns the SCombZ course/material handles
+    // and the CAST projection gateway. Invalidate those maps at the same
+    // boundary; changing only the UI conversation id must not leave an old
+    // handle usable by a later read.
+    const clearResult = await sendExtensionMessage<{ ok: boolean }>({
+      type: MESSAGE_TYPES.scombzClearConversation,
+      conversation_id: conversation.conversationId,
+    });
+    if (!clearResult.ok) {
+      throw new Error("会話の参照元を破棄できませんでした。");
+    }
+    // Syllabus refs are conversation-bound handles too.  Drop them eagerly
+    // instead of merely relying on the conversation-id check in syllabus_read;
+    // this keeps the local broker bounded and makes the New Chat boundary
+    // explicit for audit and privacy reviews.
+    syllabusRefsRef.current.clear();
     const next = newConversation();
     await persist(next);
     setRetryText(null);
@@ -2029,6 +2186,7 @@ export function ChatPanel({
 
   async function clearConversations(): Promise<void> {
     await deleteAllConversations();
+    await pseudonymizerRef.current.clearAll();
     await createConversation();
   }
 

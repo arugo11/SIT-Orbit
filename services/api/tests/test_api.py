@@ -149,8 +149,14 @@ def test_configured_extension_origin_can_complete_cors_preflight(monkeypatch) ->
             headers={
                 "Origin": origin,
                 "Access-Control-Request-Method": "POST",
-                "Access-Control-Request-Headers": "authorization,content-type",
+                "Access-Control-Request-Headers": (
+                    "authorization,content-type,x-orbit-tool-call-id,x-orbit-evidence-id"
+                ),
             },
+        )
+        actual = client.post(
+            "/v1/chat/runs",
+            headers={"Origin": origin},
         )
 
     assert response.status_code == 200
@@ -158,6 +164,13 @@ def test_configured_extension_origin_can_complete_cors_preflight(monkeypatch) ->
     allowed_headers = response.headers["access-control-allow-headers"]
     assert "Authorization" in allowed_headers
     assert "Content-Type" in allowed_headers
+    assert "X-Orbit-Tool-Call-Id" in allowed_headers
+    assert "X-Orbit-Evidence-Id" in allowed_headers
+
+    assert actual.status_code == 200
+    exposed = actual.headers.get("access-control-expose-headers", "")
+    assert "X-Orbit-Evidence-Id" in exposed
+    assert "X-Orbit-Tool-Call-Id" in exposed
 
 
 def test_unconfigured_origin_is_not_allowed_by_cors(monkeypatch) -> None:

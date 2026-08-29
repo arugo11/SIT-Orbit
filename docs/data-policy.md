@@ -34,9 +34,9 @@ MVPの`OrbitEvent`と`EvidenceLink`は次の区分を持つ。
 - `personal`
 - `restricted`
 
-OpenAIへ送信できるのは`synthetic`と`public`だけである。
+通常のOpenAI（非Azure）およびW&B経路へ送信できるのは`synthetic`と`public`だけである。Azure OpenAIを明示的に選択したAgent runでは、以下に定める狭い個人データ例外だけを追加で許可する。Providerを自動で切り替えたり、例外を一般のpersonalデータへ広げたりしない。
 
-ただし、Branch 7のAgent runでは、次の2種類のサーバー生成EvidenceLinkだけを例外として扱える。
+ただし、Branch 7のAgent runでは、次のサーバー生成EvidenceLinkだけを例外として扱える。
 
 - 利用者のGoogle Calendarから導出した空き時間（`personal`の`calendar`、`orbit-calendar://availability/<opaque>`）
 - 表示中の解析済みScombZページから導出した5項目の概要（`personal`の`scombz`、`orbit-scombz://page-summary/<opaque>`）
@@ -46,6 +46,12 @@ OpenAIへ送信できるのは`synthetic`と`public`だけである。
 Calendarの予定名、ID、参加者、場所、説明、元レスポンス、SCombZのHTML、Cookie、パスワード、ブラウザtokenは送信しない。Web本文はユーザーが明示したrunの間だけ使い、rawページはrun終了時に破棄する。個人データを広く許可するものではなく、これらの固定prefixとサーバー生成のEvidence IDをruntimeで検証する。
 
 SCombZ学生Toolは`ORBIT_AGENT_BACKEND=azure_openai`かつ`ORBIT_OBSERVABILITY=off`の場合だけ広告する。PDFは端末内でPDF.jsと必要時のTesseract.jsによりページ単位で抽出し、生PDF・Cookie・内部ID・CSRF・一時URL・全量本文は外部へ送らない。Azureへ送るのは質問に関連する抽出本文、資料名、ページ番号、取得時刻の上限付きprojectionだけである。PDF本体、抽出全文、OCR画像、索引は保存せず、会話中の短命メモリだけに保持する。学生向けの`personal/scombz_student`と教員向けに将来追加する`restricted/scombz_teaching`は別分類とし、後者を本実装で広告しない。
+
+SCombZ／CASTの個人値を外部Agentへ送る処理は「匿名化」ではなく、端末内の追加情報で復元可能な「会話単位の仮名化」として扱う。Typed Snapshotをallowlistへ投影してから、名前・表示名を会話固有opaque tokenへ置換し、メール、電話、学籍番号、Cookie、CSRF、内部ID、URL query／fragment、未分類自由記述を除外する。provider向け履歴と端末表示を`provider_content`／`display_content`に分け、同一conversationの追質問にはprovider側の仮名化済み履歴だけを再送する。対応表は会話専用AES-GCMで暗号化してIndexedDBへ保存し、鍵は`chrome.storage.session`だけに置く。新Chat、Service Worker再起動、30分無操作、明示削除で破棄し、失われた鍵や未知tokenは推測復元しない。詳しい根拠は[privacy-pseudonymization-research.md](./privacy-pseudonymization-research.md)を参照する。
+
+SCombZの授業情報・抽出済みPDF本文をAzure OpenAIへ送る前に、利用者が設定画面で一度だけ明示同意する。同意の記録は`chrome.storage.local`へISO 8601の付与時刻だけを保存し、利用者の解除操作で削除する。Cookie、アカウント、授業本文、対応表、鍵は同意記録へ含めない。記録がない環境では、監査CLIを含むlive SCombZ Toolを`consent_required`で停止する。
+
+CASTの`restricted/cast_career`例外を有効にできるのは、型付き仮名プロフィール（別名、役割、企業、一般化卒業年、技術領域、職種、地域、Evidence）だけであり、`ORBIT_AGENT_BACKEND=azure_openai`かつ`ORBIT_OBSERVABILITY=off`に限定する。自由記述、連絡先、成績、資格情報、元の人物名、内部ID、raw HTML、添付は外部へ送らない。現在のSCombZ監査CLIはSCombZ学生Toolと公式シラバスToolだけを広告し、CASTを暗黙に追加しない。
 
 My Libraryだけは、利用者が個人の貸出・予約などを尋ねるChatを明示的に送信した場合に限り、上記の最小item（タイトル等）をAzure Agentへ送れる狭い例外とする。これは一般のpersonalデータ規則を解除せず、OpenAI/W&Bや別Providerへの送信、Chat送信外の取得を許可しない。OAuth/SSO詳細やraw snapshotは保持しない。
 
@@ -183,7 +189,7 @@ ES下書きは、確認済みEvidenceの`evidence_id`、claim、context、action
 
 ### OBOGコンシェルジュ
 
-就活サポーター候補は、企業詳細の確認済みSnapshotを端末内で仮名化してから扱う。Prompt入力へ渡すのはミッション別名、一般化した卒業年、企業、技術領域、職種、確認済み支援リソースの種別と表示名だけであり、元の氏名、内部ID、source identifier、連絡先、URL、選考報告locatorは除外する。外部Azureへ個人・第三者のCAST記録を送る経路は作らない。
+就活サポーター候補は、企業詳細の確認済みSnapshotを端末内で仮名化してから扱う。Prompt入力へ渡すのはミッション別名、一般化した卒業年、企業、技術領域、職種、確認済み支援リソースの種別と表示名だけであり、元の氏名、内部ID、source identifier、連絡先、URL、選考報告locatorは除外する。通常のOBOGコンシェルジュ経路で外部Azureへ個人・第三者のCAST記録を送ることはない。ただし、別途明示同意された`restricted/cast_career`のChat経路では、`cast_alumni_read`の型付き仮名projection（別名、役割、企業、一般化卒業年、技術領域、職種、地域、Evidence）だけを、Azure OpenAIかつ観測無効のrunへ送信できる。自由記述、連絡先、成績、資格情報、元の人物名、内部ID、raw HTML、添付はこの例外にも含めない。
 
 候補探索、面談目的、質問の優先順位、キャリアサポート課宛ての依頼文、面談前の確認事項、お礼文はChrome Prompt APIのstructured outputで端末内生成する。候補別名や支援リソースIDが未知の場合、個人名、URL、メール、電話、tokenが含まれる場合、または候補にない事実を直接連絡先として出した場合は応答を採用しない。連絡、予約、応募、添付、送信は別のAction Adapterでpreviewと本人確認を経るまで開始しない。
 
@@ -211,7 +217,7 @@ ReActの計画・観測・例外の分離はイベント履歴の設計根拠に
 
 ### 多視点キャリアレビュー
 
-ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはなく、Prompt APIが利用できない場合も外部Providerへfallbackしない。
+ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。このローカルレビュー経路では、個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはない。Chatで`restricted/cast_career`を扱う場合も、許可済みの型付き仮名projectionだけをAzure OpenAIかつ観測無効のrunへ送る別経路に限る。Prompt APIが利用できない場合に、ESレビューをAzureや別Providerへfallbackしない。
 
 レビューは視点ごとの判定と、根拠を参照するstrength／gapだけを保持する。総合点、順位、採用確率、視点を混ぜた単一スコアは保存・表示しない。判定が分かれたときは`disagreements`として各視点と判定を併記し、利用者が理由を比較できる状態を維持する。未知のEvidence ID・ES文、根拠にない数値、credentialらしい文字列、未許可フィールドを含む応答は採用しない。独立sessionと不一致保持は、LLM-as-a-judgeの位置バイアスを避け、評価軸を混同しないための最小構成である。[Judging the Judges](https://aclanthology.org/2025.ijcnlp-long.18/)
 

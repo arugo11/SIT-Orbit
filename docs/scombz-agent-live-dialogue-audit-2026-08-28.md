@@ -379,3 +379,80 @@ Chrome制御APIからはSCombZ本文タブのDOM・スクリーンショット�
 | SCombZ書き込みrequest | 0 | PASS |
 | 受験中内容の取得 | 0 | 未検証 |
 | Evidence取り違え | 0 | 未検証 |
+
+## CLI実認証監査 2026-08-29T18:31:27.999Z
+
+- シナリオファイル: docs/scombz-agent-live-scenarios.json
+- 実行経路: CLI → 監査buildのChrome拡張 → 配備済みAgent API
+- 判定: **BLOCKED**
+- Cookie、Bearer token、CSRF、tab ID、生HTML、生PDFはこの記録へ保存しない。
+
+### 最初の安全な再現ログ
+
+```text
+{"status":"BLOCKED","reason":"監査buildの拡張が接続しませんでした。"}
+```
+
+原因は推測せず、監査buildまたは認証済みsourceがCLIへ接続しなかった事実だけを記録する。
+
+## CLI実認証監査 2026-08-29T18:58:45.417Z
+
+- シナリオファイル: docs/scombz-agent-live-scenarios.json
+- 実行経路: CLI → 監査buildのChrome拡張 → 配備済みAgent API
+- 判定: **BLOCKED**
+- Cookie、Bearer token、CSRF、tab ID、生HTML、生PDFはこの記録へ保存しない。
+
+### 最初の安全な再現ログ
+
+```text
+{"status":"BLOCKED","reason":"監査buildの拡張が接続しませんでした。"}
+```
+
+原因は推測せず、監査buildまたは認証済みsourceがCLIへ接続しなかった事実だけを記録する。
+
+## CLI実認証監査 2026-08-29T20:38:19.300Z
+
+- シナリオファイル: docs/scombz-agent-live-scenarios.json
+- 実行経路: CLI → 監査buildのChrome拡張 → 配備済みAgent API
+- 判定: **BLOCKED**
+- Cookie、Bearer token、CSRF、tab ID、生HTML、生PDFはこの記録へ保存しない。
+
+### 最初の安全な再現ログ
+
+```text
+{"status":"BLOCKED","reason":"監査buildの拡張が接続しませんでした。"}
+```
+
+原因は推測せず、監査buildまたは認証済みsourceがCLIへ接続しなかった事実だけを記録する。今回も19シナリオの会話・Tool結果・Evidenceは生成していない。
+
+## CLI監査bridge再確認 2026-08-30T05:48:35+09:00
+
+- 実行: `pnpm --filter @sit-orbit/extension build:audit` 後に `ORBIT_AUDIT_WAIT_MS=1000 pnpm audit:agent -- preflight`
+- 経路: CLI → 監査buildのChrome拡張 → Agent API（接続待ち）
+- 判定: **BLOCKED**
+- 取得したuser/agent発話: 0 / 0
+- Tool実行、SCombZ read-only request、書き込みrequest、Evidence: 0
+
+### 最初の安全な再現ログ
+
+```text
+{"status":"BLOCKED","reason":"監査buildの拡張が接続しませんでした。"}
+```
+
+監査buildを生成できることと、CLIが未接続を成功扱いしないことだけを確認した。認証済みChromeへ監査buildを読み込んでいないため、実認証19シナリオの会話・Tool選択・PDF/OCR・シラバス・Evidence継続は実行していない。Cookie、Bearer token、CSRF、tab ID、生HTML、生PDFは取得・保存していない。
+
+## CLI監査bridge再確認 2026-08-30T06:05:48+09:00
+
+- 実行: 依存関係を固定した監査buildを生成し、`ORBIT_AUDIT_WAIT_MS=1000 pnpm audit:agent -- preflight`を実行後、production buildへ復元
+- 経路: CLI → 監査buildのChrome拡張 → Agent API（接続待ち）
+- 判定: **BLOCKED**（監査buildの生成は成功、Chrome bridge接続は未確立）
+- 取得したuser/agent発話: 0 / 0
+- Tool実行、SCombZ read-only request、書き込みrequest、Evidence: 0
+
+### 最初の安全な再現ログ
+
+```text
+{"status":"BLOCKED","reason":"監査buildの拡張が接続しませんでした。"}
+```
+
+今回もライブの認証情報・Cookie・Bearer token・CSRF・tab ID・生HTML・生PDFは取得・保存していない。production artifactへの復元は成功し、監査bridgeのsecretとlocalhost接続コードは配布物に含まれないことを確認した。

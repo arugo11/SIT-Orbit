@@ -2341,6 +2341,67 @@ describe("service worker side panel contract", () => {
     expect(JSON.stringify(payload.projection)).not.toContain("山田太郎");
   });
 
+  it("returns conversation-scoped pseudonymous CAST profiles when requested", async () => {
+    permissionsContains.mockResolvedValue(true);
+    queryTabs.mockResolvedValue([
+      {
+        id: 79,
+        url: "https://shibaura.pita.services/career/supporter/list",
+      },
+    ] as chrome.tabs.Tab[]);
+    tabSendMessage.mockResolvedValue({
+      status: "known",
+      detail: {
+        schema_version: "v1",
+        page_path: "/career/supporter/list",
+        profiles: [
+          {
+            local_id: "cast-alumni-local-1",
+            display_name: "山田太郎",
+            role: "alumni",
+            answerable_topics: ["技術・研究"],
+            availability_frequency: "monthly",
+            meeting_modes: ["online"],
+            shareable_insights: ["選考体験"],
+            contact_present: true,
+          },
+        ],
+        discovered_links: [],
+      },
+    });
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.castAlumniRead,
+        tool_call_id: "cast-alumni-call-2",
+        conversation_id: "conversation-cast-pseudonymized",
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload.projection).toEqual(
+      expect.objectContaining({
+        data_classification: "restricted",
+        profile_count: 1,
+        contact_present: false,
+      }),
+    );
+    expect(payload.projection.profiles[0]).toEqual(
+      expect.objectContaining({
+        alias: expect.stringMatching(
+          /^\[\[ORBIT_PERSON_[A-Za-z0-9_-]{16,64}\]\]$/u,
+        ),
+        role: "alumni",
+        technical_domains: ["技術・研究"],
+        job_types: [],
+      }),
+    );
+    expect(JSON.stringify(payload.projection)).not.toContain("山田太郎");
+    expect(payload.detail.profiles[0].display_name).toBe("山田太郎");
+  });
+
   it("enables the panel per tab and preserves its path for ScombZ and other origins", async () => {
     onUpdated.dispatch(
       11,
@@ -2827,4 +2888,63 @@ describe("service worker side panel contract", () => {
       });
     },
   );
+
+  it("reinjects the bundled content script when the pinned tab reports a stale identity", async () => {
+    queryTabs.mockResolvedValue([defaultTab(91)]);
+    tabSendMessage
+      .mockResolvedValueOnce({
+        generation: "old-generation",
+        adapter_version: "old-adapter",
+        authenticated: true,
+      })
+      .mockResolvedValueOnce({
+        generation: "current-generation",
+        adapter_version: "scombz-student-v1",
+        authenticated: true,
+      });
+
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.scombzPin,
+        conversation_id: "audit-stale-identity",
+      },
+      {},
+      response,
+    );
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({ status: "pinned" });
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 91 },
+      files: ["content-script.js"],
+    });
+    expect(tabSendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears conversation-bound SCombZ state only for a trusted extension page", async () => {
+    const untrustedResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.scombzClearConversation,
+        conversation_id: "audit-cleanup-1",
+      },
+      { id: "attacker-extension" },
+      untrustedResponse,
+    );
+    await vi.waitFor(() => expect(untrustedResponse).toHaveBeenCalledTimes(1));
+    expect(untrustedResponse).toHaveBeenCalledWith({ ok: false });
+
+    const trustedResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.scombzClearConversation,
+        conversation_id: "audit-cleanup-1",
+      },
+      { id: "orbit-extension-id" },
+      trustedResponse,
+    );
+    await vi.waitFor(() => expect(trustedResponse).toHaveBeenCalledTimes(1));
+    expect(trustedResponse).toHaveBeenCalledWith({ ok: true });
+  });
 });

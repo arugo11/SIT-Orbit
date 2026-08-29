@@ -1165,6 +1165,99 @@
         "title": "CalendarAvailabilityResult",
         "description": "Minimal v1 result accepted from the extension's Calendar connector.\n\nEvent IDs, titles, attendees, locations, descriptions, and raw Google\nresponses deliberately have no representation in this model."
       },
+      "CastAlumniProfile": {
+        "properties": {
+          "alias": {
+            "type": "string",
+            "maxLength": 120,
+            "minLength": 1,
+            "pattern": "^\\[\\[ORBIT_PERSON_[A-Za-z0-9_-]{16,64}\\]\\]$",
+            "title": "Alias"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "alumni",
+              "supporter",
+              "unknown"
+            ],
+            "title": "Role"
+          },
+          "company": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 160
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company"
+          },
+          "technical_domains": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "title": "Technical Domains"
+          },
+          "job_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 12,
+            "title": "Job Types"
+          },
+          "location_area": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Area"
+          },
+          "graduation_year_bucket": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 24,
+                "pattern": "^(?:before-2010|20[0-9]{2}-20[0-9]{2})$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graduation Year Bucket"
+          },
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "alias",
+          "role"
+        ],
+        "title": "CastAlumniProfile",
+        "description": "Bounded pseudonymous CAST profile for the restricted career scope.\n\nThe alias is generated in the extension and is the only person-like\nidentifier accepted by the external Agent.  Names, contact values,\nsource IDs, free text, and URLs have no fields in this projection."
+      },
       "CastAlumniReadResult": {
         "properties": {
           "schema_version": {
@@ -1184,7 +1277,10 @@
           },
           "data_classification": {
             "type": "string",
-            "const": "personal",
+            "enum": [
+              "personal",
+              "restricted"
+            ],
             "title": "Data Classification",
             "default": "personal"
           },
@@ -1193,6 +1289,14 @@
             "maximum": 64.0,
             "minimum": 0.0,
             "title": "Profile Count"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/CastAlumniProfile"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "title": "Profiles"
           },
           "topic_categories": {
             "items": {
@@ -1711,6 +1815,7 @@
           "agent_backend",
           "observability",
           "scombz_student_read_mode",
+          "supported_client_tools",
           "max_client_tools"
         ],
         "title": "ChatCapabilities",
@@ -5193,6 +5298,12 @@
             "maxItems": 20,
             "title": "Results"
           },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
+          },
           "reason_code": {
             "anyOf": [
               {
@@ -5210,7 +5321,8 @@
         "type": "object",
         "required": [
           "status",
-          "query"
+          "query",
+          "observed_at"
         ],
         "title": "SyllabusSearchResult",
         "description": "A bounded public result set from the official syllabus search."

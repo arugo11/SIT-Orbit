@@ -154,6 +154,18 @@ SIT ORBITでは、同プロジェクトのDOM Adapter、キャッシュ、メッ
 
 教材PDFは拡張へ同梱したPDF.jsで端末内抽出し、文字層が不足するページだけローカルOCRを使う。1段の上限は20ファイル、100MB、300ページで、超過はpartialとcursorを返す。Azureへは関連上位本文のみを送る。公開シラバスは公式Namazuの`/namazu/namazu.cgi`へEUC-JP percent encodingで接続し、完全一致候補を`syllabus_search`、選択後の構造化詳細を`syllabus_read`で返す。
 
+CLI実認証監査では、監査buildのService WorkerがSCombZタブを会話開始時に固定し、`127.0.0.1`のCLI WebSocketへ監査命令・進捗・伏字済み結果だけを渡す。CLIはBearer token、Cookie、CSRF、タブID、内部ID、raw HTML、生PDFを受け取らない。ランダムなbuild secret、相互challenge／HMAC、連番、Origin制限、最大frame長、15秒未満のkeepaliveを使い、通常配布buildではブリッジのコードと設定をtree-shakeする。
+
+監査CLIとSide Panelは共通の`ChatRunner`、Tool Registry、capability gate、最大8回のread-only Tool loop、call-specific Evidence receiptを使う。conversationごとにopaqueな`source_ref`とprovider履歴をメモリへ保持し、同じconversationの追質問だけを同じ参照元へ送る。新Chat、固定タブの再読込、Service Worker再起動、TTL失効時はsource handleを再利用せず、`BLOCKED`、`reauth_required`、`partial`、`unavailable`の観測結果を返す。
+
+#### 会話単位の仮名化境界
+
+SCombZ／CASTのTyped Snapshotは、Azureへ渡す直前にConversationPseudonymizationGatewayを通る。Gatewayは会話固有token、フィールドallowlist、準識別子の一般化、漏えいスキャンを適用し、端末表示用`display_content`とprovider用`provider_content`を分ける。対応表は会話専用AES-GCMで暗号化した短命IndexedDB値、鍵は`chrome.storage.session`に限定し、新Chat、30分無操作、ブラウザ／Service Worker再起動、明示削除で破棄する。復元は通常Markdown本文の送信済み完全一致tokenだけで、URL、引用URI、Evidence ID、コード、Tool引数は対象外である。
+
+SCombZのlive送信は、設定画面で一度だけ取得した利用者同意（`chrome.storage.local`に付与時刻のみ保存）が存在する場合に限る。同意を解除すると次のlive Tool実行は`consent_required`で停止し、同意記録へ認証情報や教材本文を保存しない。
+
+この処理は匿名化ではなく仮名化であり、再識別不能を主張しない。`personal/scombz_student`は抽出済みPDF関連本文を含むAzure例外、`restricted/cast_career`は型付き仮名プロフィールだけを含むAzure例外とする。いずれもAzure backend、Observability off、明示同意、同一conversationの分類済み履歴という条件を同時に満たさない限り広告しない。
+
 ## Agentの境界
 
 既存のPydanticモデルをAPI契約の正本とする。
@@ -340,7 +352,7 @@ CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含�
 
 内部人物IDと元の氏名の対応表は、Argon2idとAES-256-GCMを用いるCareer Vaultの暗号化レコードだけに保存する。鍵は`chrome.storage.session`とメモリに限り、15分の無操作またはChrome終了で破棄する。FastAPI、Azure、W&B、Chat履歴、ログへ、元の氏名、内部人物ID、対応表、HMAC、raw HTML、tokenを渡さない。Service WorkerとSide Panelのruntime messageには、利用者へ端末内詳細を表示するための短命なlocal snapshotが含まれ得るが、外部ページ・API・履歴へ転送せず、run終了時に破棄する。外部別名はmission nonceから生成し、同一mission内だけで安定させる。
 
-個人・第三者のCAST記録はChrome Prompt APIのオンデバイス実行へ固定し、APIが利用できない場合にAzureへfallbackしない。Azureへ送れるのは公開情報、匿名集計、一般化属性だけである。Context Manifestで処理先と送信payloadを表示し、外部書込み、応募、予約、添付、Calendar登録はpreview後の本人確認を必須とする。個人情報を安全に仮名化できない自由記述は送信せず、端末内で停止する。
+個人・第三者のCAST記録は、このDecision RoomとローカルPrompt経路ではChrome Prompt APIのオンデバイス実行へ固定し、APIが利用できない場合にAzureへfallbackしない。別のChat経路で`restricted/cast_career`を明示的に有効化する場合だけ、allowlist済みの型付き仮名projectionをAzure OpenAIかつ観測無効のrunへ送れる。Context Manifestで処理先と送信payloadを表示し、外部書込み、応募、予約、添付、Calendar登録はpreview後の本人確認を必須とする。個人情報を安全に仮名化できない自由記述は送信せず、端末内で停止する。
 
 ### CAST横断検索
 
@@ -406,7 +418,7 @@ ES生成はAzure、FastAPI、W&Bへ送信せず、Chrome Prompt APIが利用で�
 
 `buildCastDecisionRoom`は、求人またはインターンと、同一企業として確認できた採用実績・選考記録・OB・OG表示を端末内で比較する。技術領域、勤務地、職種、採用実績、選考記録、OB・OG支援、締切、不足情報を独立した判断軸として返し、単一の相性点や順位は生成しない。
 
-各軸は`match`、`partial`、`mismatch`、`unknown`のいずれかと、要約、ローカルEvidence ID、不足項目を持つ。企業名とCASTのlocal IDを含む`subject`、求人の締切、表示件数などの詳細は拡張機能のメモリ内UI専用であり、FastAPI、Azure、W&B、Chat履歴へ送らない。別企業の履歴Snapshotは企業名一致を確認できない限り紐付けず、未知として扱う。
+各軸は`match`、`partial`、`mismatch`、`unknown`のいずれかと、要約、ローカルEvidence ID、不足項目を持つ。企業名とCASTのlocal IDを含む`subject`、求人の締切、表示件数などの詳細は拡張機能のメモリ内UI専用であり、FastAPI、Azure、W&B、Chat履歴へ送らない。別企業の履歴Snapshotは企業名一致を確認できない限り紐付けず、未知として扱う。Decision Roomとは別のChat経路で`restricted/cast_career`を明示的に許可する場合も、Azure OpenAIかつ観測無効のrunへ送れるのは`cast_alumni_read`のallowlist済み型付き仮名projectionだけであり、元の人物名、内部ID、連絡先、自由記述、raw HTML、添付は表現できない。
 
 判断結果は、応募・予約・送信を実行する機能ではない。次の一歩は「不足情報を確認する」「締切と必要書類を本人が確認する」といった読み取り専用の案内に限定し、確定操作は後続のAction Adapterで本人確認を要求する。[Human and LLM-Based Resume Matching](https://aclanthology.org/2025.findings-naacl.270/)が示すLLM評価と人間評価の非互換性を踏まえ、説明可能な軸別Evidenceを優先し、総合スコアを採用しない。
 

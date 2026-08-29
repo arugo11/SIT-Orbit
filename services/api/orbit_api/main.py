@@ -4,7 +4,7 @@ import secrets
 from contextlib import asynccontextmanager
 from typing import Literal, cast
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -209,7 +209,13 @@ def configure_cors(application: FastAPI) -> None:
         allow_origins=origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=[
+            "Authorization",
+            "Content-Type",
+            "X-Orbit-Tool-Call-Id",
+            "X-Orbit-Evidence-Id",
+        ],
+        expose_headers=["X-Orbit-Tool-Call-Id", "X-Orbit-Evidence-Id"],
     )
 
 
@@ -431,9 +437,16 @@ async def read_library_item(request: LibraryItemReadRequest) -> LibraryItemReadR
 async def submit_chat_tool_result(
     run_id: str,
     request: ChatToolResultRequest,
+    response: Response,
 ) -> ChatRunResponse:
     try:
-        return await chat_run_service.submit_tool_result(run_id, request)
+        result = await chat_run_service.submit_tool_result(run_id, request)
+        receipt = chat_run_service.take_tool_receipt(run_id)
+        if receipt is not None:
+            tool_call_id, evidence_id = receipt
+            response.headers["X-Orbit-Tool-Call-Id"] = tool_call_id
+            response.headers["X-Orbit-Evidence-Id"] = evidence_id
+        return result
     except (ChatRunUnknownError, ChatRunExpiredError, ChatRunConsumedError) as error:
         raise HTTPException(status_code=410, detail="Chat run is no longer resumable.") from error
     except (RuntimeError, ValueError) as error:
