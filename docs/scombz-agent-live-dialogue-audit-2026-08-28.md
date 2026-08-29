@@ -456,3 +456,29 @@ Chrome制御APIからはSCombZ本文タブのDOM・スクリーンショット�
 ```
 
 今回もライブの認証情報・Cookie・Bearer token・CSRF・tab ID・生HTML・生PDFは取得・保存していない。production artifactへの復元は成功し、監査bridgeのsecretとlocalhost接続コードは配布物に含まれないことを確認した。
+
+## Azure再配備Gate 2026-08-30T07:22:05+09:00
+
+- source commit: `931a3ec1fa5dfc93287700f6e56247887c1814c5`
+- immutable image digest: `sha256:05b535f3d3ceacd5654e88ae20e1a4c95dcb65f383483fc2cb997373ba7fef52`
+- ready revision: `sit-orbit-demo-api--0000050`
+- `/health`: `{"status":"ok"}`
+- 配備OpenAPI: ローカル正本とsemantic一致
+- Chat Tool契約: 21 Tool、`client_tools`上限32、新SCombZ 4 Toolと`syllabus_read`を確認
+- runtime read-back: `azure_openai / observability=off / scombz_student_read=live`
+- 未認証`GET /v1/chat/capabilities`: `401`
+
+このGateは配備契約と認証必須境界の確認であり、認証済みcapabilityやSCombZ実データ取得の成功を意味しない。後者は監査buildのChrome拡張からのみ実行し、CLIへBearer tokenを取り出さない。
+
+## 配備後CLI preflight 2026-08-30T07:22:34+09:00
+
+- 監査build生成: PASS
+- CLI bridge接続: **BLOCKED**
+- production artifact復元: PASS
+- 実行した会話、Tool、Evidence、SCombZ request: 0
+
+```text
+{"status":"BLOCKED","reason":"監査buildの拡張が接続しませんでした。"}
+```
+
+配備APIのGateは合格したが、認証済みChromeへ今回生成した監査buildを読み込んでいないため、19シナリオは開始していない。fixtureや合成Tool結果へ切り替えず、初回失敗をそのまま保持した。
