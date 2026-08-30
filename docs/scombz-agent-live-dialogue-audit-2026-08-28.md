@@ -482,3 +482,17 @@ Chrome制御APIからはSCombZ本文タブのDOM・スクリーンショット�
 ```
 
 配備APIのGateは合格したが、認証済みChromeへ今回生成した監査buildを読み込んでいないため、19シナリオは開始していない。fixtureや合成Tool結果へ切り替えず、初回失敗をそのまま保持した。
+
+## ユーザー応答後のCLI再接続 2026-08-30T20:13:27+09:00
+
+- `pnpm audit:agent -- preflight`: 30秒待機で`BLOCKED`
+- 45秒待機で再試行: `BLOCKED`
+- CLI待機中に既存の認証済みSCombZ Homeタブだけを再読み込みして再試行: `BLOCKED`
+- Chrome上の認証済みSCombZ Homeタブ: 確認済み
+- 会話、Tool、Evidence、SCombZ request: 0
+
+```text
+{"status":"BLOCKED","reason":"監査buildの拡張が接続しませんでした。"}
+```
+
+監査build本体にはlocalhost bridge、build secret、Service Workerが含まれることをローカルartifactで確認した。Chromeの拡張機能管理画面はブラウザ制御の安全ポリシーにより操作できないため、拡張の読み込み・再読み込みを自動化していない。fixtureやAPI tokenのCLI抽出へ切り替えず停止した。
