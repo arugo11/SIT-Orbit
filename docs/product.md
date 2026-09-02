@@ -20,6 +20,21 @@ SIT ORBITは、芝浦工業大学で生じる授業・研究・課外活動を�
 完了結果を新しいイベントとして残す
 ```
 
+## Chat and campus evidence
+
+Chatは一般的な会話、推論、公開Web調査、公開ページ・PDF読解、下書き、計画作成をToolなしでも行える。認証済み学内情報が必要な場合だけAgent Harnessが利用可能なSCombZ、Calendar、Moodle、My Library、CAST、SITRUS、シラバス、図書館Toolを絞り込み、最小化したEvidenceを回答へ戻す。
+
+SITRUSについては、「私の成績を教えて」「何単位取れている？」のような個人成績の意図をTool Routerが検出する。
+管理者がAzure OpenAI向けのlive personal contextを有効化し、利用者がSITRUSへログイン済みの場合だけ、取得済み科目と単位集計を回答へ利用する。
+
+学内Toolを利用できない場合は一般論を実取得結果として補わず、`partial`、`unavailable`、`reauth_required`または「学内情報を確認していない」と表示する。Extensionが認証済みConnectorの中心であり、WebとMobileのfixture画面を実連携として提示しない。
+
+## Runtime profiles
+
+本番と収録用デモは、明示した実行プロファイルと別々のAPI originで分離する。本番は`ORBIT_RUNTIME_PROFILE=production`でfixture backendを拒否し、デモは`ORBIT_RUNTIME_PROFILE=demo`、`ORBIT_AGENT_BACKEND=fixture`、`ORBIT_SCOMBZ_STUDENT_READ=fixture`、observability無効の組合せだけを許可する。拡張機能もproduction buildからデモfixtureを除外し、demo buildでだけ合成結果を接続する。どちらのプロファイルも、失敗時に他方へ自動切替しない。
+
+収録用デモでは画面上のモード表示を追加しない。モードの識別はデプロイ先、build profile、APIのread-backで行い、利用者向けChatは製品と同じ表示を保つ。
+
 ## Foundation scenario
 
 B1の学生が大宮キャンパスへ到着する。

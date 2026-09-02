@@ -1,10 +1,13 @@
-# Data Policy
+# Data policy
 
-## Default
+外部LLMへデータを送信する場合は、送信先とデータ種別を実行時設定で明示する。
 
-OpenAIとW&B Weaveはデフォルトで無効とする。
+個人情報は会話単位の匿名化処理を通し、氏名、学籍番号、認証情報、Cookie、OAuth tokenを送信しない。
 
-通常開発とCIは合成fixtureだけを利用する。
+SITRUSの成績は、管理者が`ORBIT_SITRUS_PERSONAL_CONTEXT=live`を明示し、Azure OpenAIを選択し、observabilityを無効化した組合せに限って送信できる。この`live`設定は管理者による有効化であり、利用者同意を意味しない。追加の同意UIは設けない。
+
+送信項目は科目名、判定、評価、単位数、年度、学期、単位区分別集計と、`status`、`report_label`、`observed_at`、`reason_code`だけに限定する。GPA、科目コード、term slot、再履修情報、氏名、学籍番号、token、Cookie、生レスポンスは端末からAgent APIへ送信しない。Agent APIは未定義フィールドを拒否する。
+通常のOpenAIとW&BにはSITRUSの成績を送信しない。
 
 ## Data allowed in demo services
 
@@ -288,3 +291,4 @@ Google DriveはToolとして登録しない。
 一般Web検索はAzure OpenAI Backendで明示的に有効化した場合だけ使用する。検索語は1〜200文字の公開情報に限定し、メールアドレス、学籍番号、認証情報、内部locator、学内限定サービスURLを拒否する。原則としてpersonalまたはrestricted Evidenceを取得した後のrunでは検索Toolを利用しない。ただし、CASTの匿名集計だけを取得したrunでは、企業名・公開職種・技術領域などの公開検索語へ最小化した追加検索を許可できる。この場合もCAST人物記録、人物alias、貸出状態、返却期限、利用者識別子、図書館の内部URLやtokenを送信しない。検索専用runへはこの最小化済み検索語だけを渡し、raw Chat履歴、学内Tool結果、My Libraryの生SnapshotをGrounding with Bingへ渡さない。
 
 Grounding with BingはAzureの通常の地理・DPA境界外で処理されるため、この事実をSide Panelと全画面Chatへ常時表示する。利用者がChatを送信したrun内では追加確認なしで検索できるが、常時巡回やChat送信外の検索は行わない。保存するのは検索語、正規化済みの公開出典、最終回答だけであり、生の検索レスポンス、Provider metadata、検索内部IDは保存しない。
+SITRUSの生レスポンス、構造化Tool Result、成績を含む回答ターンは、アプリケーションログ、W&B、IndexedDB、Chrome storageへ保存しない。

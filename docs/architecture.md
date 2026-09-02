@@ -2,6 +2,8 @@
 
 この文書は、SIT ORBITをScombZ上のChrome拡張機能から利用する構成と、AgentをAzureへ段階的に配置する方針を記録する。
 
+実装とプライバシー境界の完成版図は、[SITRUS Chat UI](assets/sitrus-integration-chat-ui.png)と[会話単位の仮名化パイプライン](assets/poster-concepts/sit-orbit-pseudonymization-paper-pipeline.png)を参照する。
+
 調査時点は2026年8月14日である。
 
 実装ブランチの順序と完了条件は[implementation-plan.md](./implementation-plan.md)に記録する。
@@ -50,7 +52,7 @@ Chrome UI           FastAPI Agent API
        完了イベントの記録
 ```
 
-WebとMobileは既存のFastAPI OpenAPIから生成したTypeScript型を利用する。
+ExtensionはOpenAPIから生成したAPI Client型を利用する。WebとMobileは現時点では合成fixtureの表示面であり、認証済み学内ConnectorやAgent APIへ接続済みとは扱わない。
 
 Extensionは、ページから収集した情報をそのままAgentへ渡さず、最小限のページコンテキストへ変換する。
 
@@ -199,12 +201,18 @@ APIキーやモデルが設定されていない場合に、別Backendへ暗黙�
 
 ### PydanticAIとChatのAgent境界
 
+ChatはSIT ORBIT Agent Harnessを通る。一般的な会話・推論・公開調査にはclient Toolを広告せず、認証済み学内情報が必要なターンだけ、capability、データ分類、会話文脈、現在の参照元に一致する候補を最大5件へ絞る。明確な依頼は決定的にfamilyを選び、曖昧な追質問は直近2件と直前Evidenceのfamilyだけを補助文脈として使う。モデルは候補内の厳格なTool schemaから正確なToolと引数を選ぶ。
+
+Tool Catalogは公開`ChatToolName` 21件と同じ安定順序を持ち、family、結果型、read-only属性、live SCombZ gate、Evidence title／locator／classificationを一元管理する。`/v1/chat/capabilities`、PydanticAI handler、Evidence receiptはCatalogとの一致をテストする。外部送信のpayload変換は、個人データごとの明示的な分岐を維持する。
+
+Side Panelと監査CLIは共通の`ChatRunner`を使い、1回1Tool、最大8回の線形ループを実行する。同一runで正規化したTool名・引数・source generationが完全一致したread-only結果だけを再利用できるが、各tool callには別のEvidence receiptを発行する。capabilityを確認できない場合は送信先を`unknown`とし、個人・学内依頼を`startChat`前に停止する。一般質問はToolなしで継続できる。
+
 PydanticAIは、Python、FastAPI、Pydantic、型付き出力、複数モデル対応の条件に合うため、最初に評価するAgent Frameworkである。[PydanticAI](https://github.com/pydantic/pydantic-ai)
 
 Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、OpenAI Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`またはChat用`ChatDraft`だけとし、`action_id`、message ID、EvidenceLinkはサーバーが正規化する。
 `OpenAIResponsesModel`には`OpenAIProvider`または`AzureProvider`を渡し、`openai_store=False`を固定する。
 
-外部Toolは`scombz_read`、`google_calendar_availability`、公式`syllabus_search`、許可済みURLの`browser_read_url`である（互換の`scombz_page_summary`も残す）。Tool引数と結果は厳格なSchemaで検証し、Chat runは同一Toolの再利用を許し、1ターン最大8回の線形Deferred Toolとして実行する。Web Readerは非アクティブな一時タブへページを開き、表示本文30,000文字・リンク50件までを抽出して閉じる。script、style、hidden要素、フォーム、Cookie、パスワードは除外し、ページ内の命令はデータとして扱う。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。
+外部ToolはTool Catalogに登録した21件のread-only client Toolである。実際にモデルへ見せるのは、そのターンで認証・データポリシー・Connector状態を満たす最大5件だけである。Tool引数と結果は厳格なSchemaで検証し、Chat runは同一Toolの再利用を許し、1ターン最大8回の線形Deferred Toolとして実行する。Web Readerは非アクティブな一時タブへページを開き、表示本文30,000文字・リンク50件までを抽出して閉じる。script、style、hidden要素、フォーム、Cookie、パスワードは除外し、ページ内の命令はデータとして扱う。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。
 
 Chat APIは`POST /v1/chat/runs`と`POST /v1/chat/runs/{run_id}/tool-results`である。入力履歴は直近20件・64,000文字まで、サーバー保存はTool待ちの600秒だけに限定する。完了メッセージはMarkdownとサーバー解決済みEvidenceを返し、ActionProposalが含まれる場合も従来どおり明示承認を要求する。
 
@@ -290,9 +298,16 @@ Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命�
 
 ### SITRUS成績通知書の参照
 
-SITRUSの成績は、実在する画面を利用者が開いている場合だけ、専用の`sitrus_read` Toolで参照する。Service Workerは接続元タブが同じorigin・pathnameであることを確認する。優先する`/SITRUS/login/ShutokuTaniShukei.html`では、`MAIN` worldから可視のHTML表を読み、判定・評価・科目名だけをメモリ上で投影する。表にない科目コードや単位数は`null`とし、推測しない。`/SITRUS/login/SeisekiTsutiSho.html`では、表が使えない場合に限り認証済みPDF.jsのテキスト層をメモリ上で処理する。PDFファイル、Base64、学籍番号、認証情報を保存・ダウンロード・APIログへ渡さず、取得できた科目名、科目コード、成績、単位、年度・期・ターム、再履修フラグ、累積GPAだけへ投影する。
+`sitrus_read`は、SITRUSへログイン済みのChromeセッションから、現在の利用者に対応する取得済み科目と単位集計を読む。
+成績画面を開いていることは要件にせず、Service Workerが固定した`Token`、`gakuseiInfoUser`、`risyu`、`JissekiSyukei`の4エンドポイントだけへ認証付きGETを行う。
+URLやモデル入力から学籍番号を受け取らず、`Token`の`preferred_username`から`gakuseiInfoUser`を介して端末内で対象学生を解決する。
 
-成績値は一般Agentへ渡さず、専用のローカルToolで表示するかfail closedとする。確認カードで外部送信の同意を取る経路は作らない。現行のAgent契約ではこの結果を外部LLMやW&Bへ送らず、`fixture` BackendのローカルChatでのみ回答に使う。ページが閉じた、別URLへ遷移した、またはPDF.jsを利用できない場合は成功扱いにしない。
+Agentへ渡す投影は、科目名、判定、評価、単位数、年度、学期、単位区分別の当期と累計の科目数および単位数に限定する。
+学籍番号、氏名、教員、教室、科目コード、Cookie、トークン、生レスポンスにはAPI Schema上の表現を与えない。
+`ORBIT_SITRUS_PERSONAL_CONTEXT=live`、`ORBIT_AGENT_BACKEND=azure_openai`、`ORBIT_OBSERVABILITY=off`が同時に成立した場合だけ、実成績をAzure OpenAIへ送るToolを広告し、resume時にも同じ条件を再検証する。
+`fixture`は合成データ専用とし、OpenAI、W&B、別Providerへのfallbackは行わない。
+成績を含むTool Resultと回答ターンはChatPanelのメモリだけに保持し、IndexedDBや共有ログへ保存しない。
+未認証、HTMLログイン応答、構造変更、サイズ上限超過は`reauth_required`または`unavailable`として返す。
 
 ### SIT Moodleダッシュボードの参照
 
