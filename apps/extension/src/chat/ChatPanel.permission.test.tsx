@@ -198,6 +198,38 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(permissionsRequest).not.toHaveBeenCalled();
   });
 
+  it("does not retain failed OPAC progress rows in the transcript", async () => {
+    const apiClient = createApiClient(
+      toolRequired("library_catalog_search", { query: "対象書籍" }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    mounted.chromeRuntime.sendMessage.mockImplementation(
+      (_request: unknown, callback?: (response: unknown) => void) => {
+        callback?.({
+          status: "unavailable",
+          reason_code: "search_navigation_timeout",
+        });
+      },
+    );
+
+    await sendMessage(mounted, "対象書籍は大学にある？");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes("確認しました。"),
+    );
+
+    expect(
+      mounted.document.querySelectorAll(".chat-message-tool"),
+    ).toHaveLength(0);
+  });
+
   it("renders public OPAC holding location and loan status in the tool timeline", async () => {
     const apiClient = createApiClient(
       toolRequired("library_catalog_search", { query: "ロボット" }),

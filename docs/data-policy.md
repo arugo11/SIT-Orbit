@@ -100,6 +100,8 @@ Agent APIへ送るのは、厳格な公開書誌メタデータ、表示され�
 
 公開図書館ディスカバリーのEvidenceは`source_type=library`、`data_classification=public`、検証済みの`library-*` IDと`orbit-library://public/` locatorだけを許可する。Branch 3のaction-options Evidenceはopaque `resource_ref`をlocatorにした専用IDへ分離し、公開OPACはpublic、My Library由来はpersonalとして扱う。raw HTMLとTool生レスポンスはChat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存しない。
 
+OPACの遷移・抽出障害を利用者自身が確認できるよう、検索語、処理段階、遷移先の種別、件数、所要時間、成否、理由コードだけを`chrome.storage.session`へ最大200件保存する。この診断ログはブラウザ終了時に消え、設定画面からコピー・消去できる。URL、query/fragment、書誌ID、opaque ref、所蔵内容、raw HTML、Cookie、token、利用者情報は記録せず、Chat履歴、IndexedDB、Agent API、Azure、W&Bへ送信しない。コピー内容には検索語が含まれることを設定画面で明示する。
+
 Connectorは、`not_connected`、`connected`、`reauth_required`、`unavailable`の状態を表示する。
 
 外部サービスへの書き込みは、Agentが候補を作成した後、利用者が確認した場合だけ実行する。

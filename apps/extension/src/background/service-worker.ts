@@ -29,6 +29,15 @@ import {
   LIBRARY_SIT_SEARCH_PERMISSION_PATTERN,
 } from "../connectors/library-discovery";
 import {
+  appendOpacDiagnosticEvent,
+  clearOpacDiagnosticEvents,
+  normalizeOpacDiagnosticQuery,
+  OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+  type OpacDiagnosticPhase,
+  type OpacDiagnosticRouteKind,
+  readOpacDiagnosticEvents,
+} from "../connectors/opac-diagnostics";
+import {
   SYLLABUS_SEARCH_ORIGIN,
   searchOfficialSyllabus,
 } from "../connectors/syllabus-search";
@@ -100,6 +109,8 @@ import {
   isMyLibraryDisconnectMessage,
   isMyLibraryOpenMessage,
   isMyLibraryReadMessage,
+  isOpacDiagnosticsClearMessage,
+  isOpacDiagnosticsGetMessage,
   isOpenWorkspaceMessage,
   isPageContext,
   isPageContextUpdatedMessage,
@@ -240,7 +251,10 @@ function unavailableBrowser(reason_code: string): BrowserReadResponse {
   return { status: "unavailable", reason_code };
 }
 
-async function waitForTabReady(tabId: number): Promise<void> {
+async function waitForTabReady(
+  tabId: number,
+  timeoutMs = 8_000,
+): Promise<void> {
   try {
     const current = await chrome.tabs.get(tabId);
     const status = (current as chrome.tabs.Tab & { status?: string }).status;
@@ -265,7 +279,196 @@ async function waitForTabReady(tabId: number): Promise<void> {
       if (updatedTabId === tabId && changeInfo.status === "complete") finish();
     };
     chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(finish, 8000);
+    setTimeout(finish, timeoutMs);
+  });
+}
+
+const LIBRARY_NAVIGATION_TIMEOUT_MS = 15_000;
+const LIBRARY_NAVIGATION_POLL_MS = 100;
+
+type LibraryNavigationResult =
+  | { status: "ready" }
+  | { status: "unavailable"; reason_code: string };
+
+function sameNavigationUrl(left: string | undefined, right: string): boolean {
+  if (!left) return false;
+  try {
+    const actual = new URL(left);
+    const expected = new URL(right);
+    return (
+      actual.origin === expected.origin &&
+      actual.pathname === expected.pathname &&
+      actual.search === expected.search &&
+      actual.hash === expected.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function sameSearchNavigationUrl(
+  actualUrl: string | undefined,
+  expectedUrl: string,
+): boolean {
+  if (!actualUrl) return false;
+  try {
+    const actual = new URL(actualUrl);
+    const expected = new URL(expectedUrl);
+    if (
+      actual.origin !== expected.origin ||
+      decodeURIComponent(actual.pathname) !==
+        decodeURIComponent(expected.pathname) ||
+      actual.hash !== expected.hash
+    ) {
+      return false;
+    }
+    const entries = (url: URL): string[] =>
+      Array.from(url.searchParams.entries())
+        .map(([key, value]) => `${key}\u0000${value}`)
+        .sort();
+    const actualEntries = entries(actual);
+    const expectedEntries = entries(expected);
+    return (
+      actualEntries.length === expectedEntries.length &&
+      actualEntries.every((entry, index) => entry === expectedEntries[index])
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isCanonicalLibrarySearchRecordRedirect(
+  actualUrl: string | undefined,
+): boolean {
+  if (!actualUrl) return false;
+  try {
+    const actual = new URL(actualUrl);
+    return (
+      actual.origin === LIBRARY_OPAC_ORIGIN &&
+      /^\/opc\/recordID\/catalog\.bib\/[A-Za-z0-9._-]{1,128}$/u.test(
+        actual.pathname,
+      ) &&
+      actual.searchParams.get("caller") === "xc-search" &&
+      Array.from(actual.searchParams.keys()).every(
+        (key) => key === "caller" || key === "hit",
+      ) &&
+      !actual.hash
+    );
+  } catch {
+    return false;
+  }
+}
+
+function classifyLibraryNavigationUrl(
+  actualUrl: string | undefined,
+): OpacDiagnosticRouteKind {
+  if (!actualUrl) return "unknown";
+  try {
+    const url = new URL(actualUrl);
+    if (url.origin !== LIBRARY_OPAC_ORIGIN) return "unknown";
+    if (url.pathname.startsWith("/opc/xc/search/")) return "search_results";
+    if (url.pathname.startsWith("/opc/recordID/catalog.bib/")) {
+      return "single_record";
+    }
+    if (/login|selectLogin/iu.test(url.pathname)) return "login";
+    if (/error/iu.test(url.pathname)) return "error";
+    if (url.pathname === "/opc/" || url.pathname === "/opc") return "entry";
+    return "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function isAllowedLibraryNavigationUrl(
+  actualUrl: string | undefined,
+  expectedUrl: string,
+  allowSearchRecordRedirect: boolean,
+): boolean {
+  return (
+    sameNavigationUrl(actualUrl, expectedUrl) ||
+    sameSearchNavigationUrl(actualUrl, expectedUrl) ||
+    (allowSearchRecordRedirect &&
+      isCanonicalLibrarySearchRecordRedirect(actualUrl))
+  );
+}
+
+async function waitForLibraryNavigation(
+  tabId: number,
+  expectedUrl: string,
+  timeoutReason: string,
+  mismatchReason: string,
+  initialUrl?: string,
+  allowSearchRecordRedirect = false,
+): Promise<LibraryNavigationResult> {
+  if (!expectedUrl.startsWith(`${LIBRARY_OPAC_ORIGIN}/`)) {
+    return { status: "unavailable", reason_code: "invalid_expected_url" };
+  }
+  return new Promise<LibraryNavigationResult>((resolve) => {
+    let settled = false;
+    let navigationObserved = false;
+    let baselineUrl = initialUrl;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let pollId: ReturnType<typeof setInterval> | undefined;
+    const finish = (result: LibraryNavigationResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      if (pollId !== undefined) clearInterval(pollId);
+      chrome.tabs.onUpdated.removeListener?.(listener);
+      resolve(result);
+    };
+    const inspect = async (updatedTab?: chrome.tabs.Tab): Promise<void> => {
+      let tab = updatedTab;
+      if (!tab) {
+        try {
+          tab = await chrome.tabs.get(tabId);
+        } catch {
+          return;
+        }
+      }
+      const currentUrl = tab.url;
+      if (!baselineUrl && currentUrl) {
+        baselineUrl = currentUrl;
+      } else if (
+        baselineUrl &&
+        currentUrl &&
+        !sameNavigationUrl(currentUrl, baselineUrl)
+      ) {
+        navigationObserved = true;
+      }
+      if (
+        isAllowedLibraryNavigationUrl(
+          currentUrl,
+          expectedUrl,
+          allowSearchRecordRedirect,
+        )
+      ) {
+        const status = (tab as chrome.tabs.Tab & { status?: string }).status;
+        if (status === "complete") finish({ status: "ready" });
+        return;
+      }
+      const status = (tab as chrome.tabs.Tab & { status?: string }).status;
+      if (navigationObserved && status === "complete") {
+        finish({ status: "unavailable", reason_code: mismatchReason });
+      }
+    };
+    const listener = (
+      updatedTabId: number,
+      changeInfo: { status?: string; url?: string },
+      updatedTab?: chrome.tabs.Tab,
+    ): void => {
+      if (updatedTabId !== tabId) return;
+      if (changeInfo.url) navigationObserved = true;
+      void inspect(updatedTab);
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    pollId = setInterval(() => {
+      void inspect();
+    }, LIBRARY_NAVIGATION_POLL_MS);
+    timeoutId = setTimeout(() => {
+      finish({ status: "unavailable", reason_code: timeoutReason });
+    }, LIBRARY_NAVIGATION_TIMEOUT_MS);
+    void inspect();
   });
 }
 
@@ -327,6 +530,7 @@ type LibraryActionPageProjection =
       holding_visible: boolean;
       official_viewer_visible: boolean;
       official_viewer_url: string | null;
+      reserve_entry_visible: boolean;
     }
   | { status: "reauth_required"; reason_code: string }
   | { status: "unavailable"; reason_code: string };
@@ -413,7 +617,11 @@ function submitLibraryCatalogSearchInPage(filters: {
   pub_year?: number | null;
   campus?: "toyosu" | "omiya" | "any";
   format?: "book" | "journal" | "ebook" | "any";
-}): { status: "submitted" | "unavailable"; reason_code?: string } {
+}): {
+  status: "submitted" | "unavailable";
+  expected_url?: string;
+  reason_code?: string;
+} {
   try {
     const isVisible = (element: Element): boolean => {
       for (
@@ -605,8 +813,9 @@ function submitLibraryCatalogSearchInPage(filters: {
         );
       }
     }
-    location.href = searchUrl.toString();
-    return { status: "submitted" };
+    const expected_url = searchUrl.toString();
+    location.href = expected_url;
+    return { status: "submitted", expected_url };
   } catch {
     return { status: "unavailable", reason_code: "search_submit_failed" };
   }
@@ -825,10 +1034,16 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
             candidate.reservation_count === holding.reservation_count,
         ) === index,
     );
+  const leafAvailabilityCells = (root: ParentNode): Element[] =>
+    Array.from(
+      root.querySelectorAll('td.xc-availability, td[id^="xc-availability-"]'),
+    ).filter(
+      (cell) =>
+        !cell.querySelector('td.xc-availability, td[id^="xc-availability-"]') &&
+        visibleText(cell, 500).length > 0,
+    );
   const parseSearchHoldings = (row: Element): LibraryRawHolding[] => {
-    const availabilityCells = Array.from(
-      row.querySelectorAll("td.xc-availability"),
-    ).filter((cell) => visibleText(cell, 500).length > 0);
+    const availabilityCells = leafAvailabilityCells(row);
     const candidates =
       availabilityCells.length > 0
         ? availabilityCells
@@ -845,9 +1060,7 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     );
   };
   const parseDocumentHoldings = (): LibraryRawHolding[] => {
-    const availabilityCells = Array.from(
-      document.querySelectorAll("td.xc-availability"),
-    ).filter((cell) => visibleText(cell, 500).length > 0);
+    const availabilityCells = leafAvailabilityCells(document);
     const candidates =
       availabilityCells.length > 0
         ? availabilityCells
@@ -874,14 +1087,21 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     const titleElement = Array.from(row.querySelectorAll(".xc-title")).find(
       isVisible,
     );
+    const titleLink = titleElement
+      ? Array.from(titleElement.querySelectorAll<HTMLAnchorElement>("a[href]"))
+          .filter(isVisible)
+          .at(0)
+      : undefined;
     const renderedTitle =
-      titleElement && isVisible(titleElement)
-        ? visibleText(titleElement, 300)
-        : "";
+      titleLink && isVisible(titleLink)
+        ? visibleText(titleLink, 300)
+        : titleElement && isVisible(titleElement)
+          ? visibleText(titleElement, 300)
+          : "";
     const title = clean(
       renderedTitle || link.getAttribute("title") || visibleText(link, 300),
       300,
-    );
+    ).replace(/^\d+[.)]\s*/u, "");
     if (!title) return null;
     const text = visibleText(row, 2_000);
     const visibleValues = (selector: string, limit: number): string[] =>
@@ -936,13 +1156,13 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
     ) {
       return { status: "unavailable", reason_code: "unexpected_opac_result" };
     }
+    if (document.readyState && document.readyState !== "complete") {
+      return { status: "loading" };
+    }
     // OPAC loads availability through an AJAX fragment after the document
-    // itself is ready.  Do not use a page-wide `loading` text/selector here:
-    // the live page contains unrelated loading labels in hidden widgets and
-    // that made a valid detail page look perpetually pending.  Only an
-    // explicitly busy page or a visible availability cell with its loader
-    // placeholder keeps the bounded poll alive.
-    const loadingElement = document.querySelector('[aria-busy="true"]');
+    // itself is ready.  Only a visible availability cell with its loader
+    // placeholder keeps the bounded poll alive.  Page-wide aria-busy flags
+    // also cover unrelated widgets and can make a valid record look pending.
     const pendingAvailability = Array.from(
       document.querySelectorAll<HTMLElement>(
         'td.xc-availability, td[id^="xc-availability-"], [data-availability]',
@@ -951,31 +1171,47 @@ function readLibraryCatalogSearchInPage(): LibraryPageProjection {
       .filter(isVisible)
       .some((cell) => {
         const text = visibleText(cell, 200).toLowerCase();
+        if (!text) return true;
         return (
           cell.querySelector('img[alt*="loading" i], .ajax-loader') !== null ||
           /^(?:loading[.…]*|読み込み中)$/iu.test(text)
         );
       });
-    if ((loadingElement && isVisible(loadingElement)) || pendingAvailability) {
+    if (pendingAvailability) {
       return { status: "loading" };
     }
     const resultRows = Array.from(
       document.querySelectorAll<Element>(".result-row"),
     ).filter(isVisible);
-    const searchRecords = resultRows
-      .map((row) => {
-        const canonicalLink = Array.from(
-          row.querySelectorAll<HTMLAnchorElement>(
-            '.xc-title a[href], a[href*="/opc/recordID/catalog.bib/"]',
-          ),
-        ).find(
-          (link) =>
-            recordIdFromUrl(link.href) !== null &&
-            !/cover\s+image|表紙/iu.test(link.getAttribute("title") ?? ""),
-        );
-        return canonicalLink ? parseRecord(canonicalLink, row) : null;
-      })
-      .filter((item): item is LibraryRawRecord => item !== null);
+    const canonicalResultLink = (row: Element): HTMLAnchorElement | null =>
+      Array.from(
+        row.querySelectorAll<HTMLAnchorElement>(
+          '.xc-title a[href], a[href*="/opc/recordID/catalog.bib/"]',
+        ),
+      ).find(
+        (link) =>
+          recordIdFromUrl(link.href) !== null &&
+          !/cover\s+image|表紙/iu.test(link.getAttribute("title") ?? ""),
+      ) ?? null;
+    const canonicalLinks = resultRows.map(canonicalResultLink);
+    if (resultRows.length > 0 && canonicalLinks.some((link) => link === null)) {
+      return {
+        status: "unavailable",
+        reason_code: "result_structure_not_found",
+      };
+    }
+    const parsedSearchRecords = canonicalLinks.map((link, index) =>
+      link ? parseRecord(link, resultRows[index]) : null,
+    );
+    if (parsedSearchRecords.some((record) => record === null)) {
+      return {
+        status: "unavailable",
+        reason_code: "result_structure_not_found",
+      };
+    }
+    const searchRecords = parsedSearchRecords.filter(
+      (item): item is LibraryRawRecord => item !== null,
+    );
     const fallbackRecords =
       resultRows.length > 0
         ? []
@@ -1510,6 +1746,11 @@ function readLibraryActionOptionsInPage(): LibraryActionPageProjection {
         return false;
       }
     });
+    const reserveEntryVisible = Array.from(
+      document.querySelectorAll<HTMLElement>(
+        "button, a, input[type='button'], input[type='submit']",
+      ),
+    ).some((element) => visible(element) && /予約|取寄/iu.test(text(element)));
     return {
       status: "known",
       holding_visible,
@@ -1517,6 +1758,7 @@ function readLibraryActionOptionsInPage(): LibraryActionPageProjection {
       official_viewer_url: viewerLink
         ? new URL(viewerLink.href, current.href).href
         : null,
+      reserve_entry_visible: reserveEntryVisible,
     };
   } catch {
     return { status: "unavailable", reason_code: "action_options_read_failed" };
@@ -1866,6 +2108,7 @@ function publicLibraryActionOptions(
         ? "available"
         : "holding_not_visible",
       required_inputs: [],
+      verification_level: projection.holding_visible ? "entry_visible" : "none",
     },
     {
       action_type: "open_online",
@@ -1874,42 +2117,55 @@ function publicLibraryActionOptions(
         ? "available"
         : "official_viewer_not_visible",
       required_inputs: [],
+      verification_level: projection.official_viewer_visible
+        ? "entry_visible"
+        : "none",
     },
     {
       action_type: "reserve",
-      available: false,
-      reason_code: unavailableWriteReason,
+      available: projection.reserve_entry_visible,
+      reason_code: projection.reserve_entry_visible
+        ? "available"
+        : unavailableWriteReason,
       required_inputs: ["pickup_campus"],
+      verification_level: projection.reserve_entry_visible
+        ? "entry_visible"
+        : "none",
     },
     {
       action_type: "intercampus_transfer",
       available: false,
       reason_code: unavailableWriteReason,
       required_inputs: ["pickup_campus"],
+      verification_level: "none",
     },
     {
       action_type: "renew",
       available: false,
       reason_code: "not_personal_loan",
       required_inputs: [],
+      verification_level: "none",
     },
     {
       action_type: "purchase_request",
       available: false,
       reason_code: unavailableWriteReason,
       required_inputs: ["reason"],
+      verification_level: "none",
     },
     {
       action_type: "ill_loan",
       available: false,
       reason_code: unavailableWriteReason,
       required_inputs: ["receiver", "payment", "fee"],
+      verification_level: "none",
     },
     {
       action_type: "ill_copy",
       available: false,
       reason_code: unavailableWriteReason,
       required_inputs: ["receiver", "payment", "fee", "page_range"],
+      verification_level: "none",
     },
   ];
   return {
@@ -1952,6 +2208,7 @@ function myLibraryActionOptions(
       available: false,
       reason_code: "holding_not_visible",
       required_inputs: [],
+      verification_level: "none",
     },
     {
       action_type: "open_online",
@@ -1961,42 +2218,52 @@ function myLibraryActionOptions(
           ? "available"
           : "official_viewer_not_visible",
       required_inputs: [],
+      verification_level:
+        projection.target_found && projection.viewer_visible
+          ? "entry_visible"
+          : "none",
     },
     {
       action_type: "reserve",
       available: false,
       reason_code: targetReason,
       required_inputs: ["pickup_campus"],
+      verification_level: "none",
     },
     {
       action_type: "intercampus_transfer",
       available: false,
       reason_code: targetReason,
       required_inputs: ["pickup_campus"],
+      verification_level: "none",
     },
     {
       action_type: "renew",
       available: false,
       reason_code: renewable ? "write_form_not_verified" : renewReason,
       required_inputs: [],
+      verification_level: "none",
     },
     {
       action_type: "purchase_request",
       available: false,
       reason_code: "write_form_not_verified",
       required_inputs: ["reason"],
+      verification_level: "none",
     },
     {
       action_type: "ill_loan",
       available: false,
       reason_code: "write_form_not_verified",
       required_inputs: ["receiver", "payment", "fee"],
+      verification_level: "none",
     },
     {
       action_type: "ill_copy",
       available: false,
       reason_code: "write_form_not_verified",
       required_inputs: ["receiver", "payment", "fee", "page_range"],
+      verification_level: "none",
     },
   ];
   return {
@@ -2097,7 +2364,18 @@ async function readLibraryCatalogPage(
   mode: "search" | "record" | "browse",
   expectedRecordId?: string,
 ): Promise<LibraryPageProjection> {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  const deadline = Date.now() + LIBRARY_NAVIGATION_TIMEOUT_MS;
+  let lastProjection: LibraryPageProjection = {
+    status: "loading",
+  };
+  const transientReasons = new Set([
+    "projection_missing",
+    "projection_failed",
+    "record_structure_not_found",
+    "result_structure_not_found",
+    "catalog_projection_failed",
+  ]);
+  while (Date.now() < deadline) {
     try {
       const [injected] = await chrome.scripting.executeScript({
         target: { tabId },
@@ -2105,34 +2383,80 @@ async function readLibraryCatalogPage(
         func: readLibraryCatalogSearchInPage,
       });
       const value = injected?.result as LibraryPageProjection | undefined;
-      if (!value) return libraryUnavailable("projection_missing");
-      if (value.status === "known" && mode === "record" && expectedRecordId) {
+      if (!value) {
+        lastProjection = libraryUnavailable("projection_missing");
+      } else if (
+        value.status === "known" &&
+        mode === "record" &&
+        expectedRecordId
+      ) {
         const matching = value.records.filter(
           (record) => record.record_id === expectedRecordId,
         );
-        if (!matching.length) {
-          return libraryUnavailable("record_structure_not_found");
+        if (matching.length > 0 && matching[0]) {
+          return { status: "known", records: [matching[0]] };
         }
-        const current = matching[0];
-        if (!current) return libraryUnavailable("record_structure_not_found");
-        return { status: "known", records: [current] };
+        lastProjection = libraryUnavailable("record_structure_not_found");
+      } else if (value.status === "known") {
+        return value;
+      } else if (
+        value.status === "unavailable" &&
+        !transientReasons.has(value.reason_code)
+      ) {
+        return value;
+      } else {
+        lastProjection = value;
       }
-      if (value.status !== "loading") return value;
     } catch {
-      return libraryUnavailable("projection_failed");
+      lastProjection = libraryUnavailable("projection_failed");
     }
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(LIBRARY_NAVIGATION_POLL_MS, remaining)),
+    );
   }
+  if (lastProjection.status === "unavailable") return lastProjection;
   return libraryUnavailable("availability_loading_timeout");
 }
 
-async function createLibraryTab(url: string): Promise<number | null> {
+async function createLibraryTab(
+  url: string,
+  expectedUrl?: string,
+  failure?: { reason_code?: string },
+): Promise<number | null> {
+  let tabId: number | undefined;
   try {
     const tab = await chrome.tabs.create({ url, active: false });
-    if (tab.id === undefined) return null;
-    await waitForTabReady(tab.id);
+    if (tab.id === undefined) {
+      if (failure) failure.reason_code = "tab_create_failed";
+      return null;
+    }
+    tabId = tab.id;
+    if (expectedUrl) {
+      const navigation = await waitForLibraryNavigation(
+        tab.id,
+        expectedUrl,
+        "record_navigation_timeout",
+        "record_navigation_mismatch",
+        tab.url,
+      );
+      if (navigation.status !== "ready") {
+        if (failure) failure.reason_code = navigation.reason_code;
+        await chrome.tabs.remove(tab.id).catch(() => undefined);
+        return null;
+      }
+    } else {
+      await waitForTabReady(tab.id, LIBRARY_NAVIGATION_TIMEOUT_MS);
+    }
     return tab.id;
   } catch {
+    if (failure && !failure.reason_code) {
+      failure.reason_code = "tab_create_failed";
+    }
+    if (tabId !== undefined) {
+      await chrome.tabs.remove(tabId).catch(() => undefined);
+    }
     return null;
   }
 }
@@ -2140,12 +2464,56 @@ async function createLibraryTab(url: string): Promise<number | null> {
 async function handleLibraryCatalogSearch(
   message: LibraryCatalogSearchMessage,
 ): Promise<LibraryCatalogSearchResponse> {
+  const operationId = crypto.randomUUID();
+  const query = normalizeOpacDiagnosticQuery(message.query);
+  const startedAt = Date.now();
+  const log = (
+    phase: OpacDiagnosticPhase,
+    options: {
+      routeKind?: OpacDiagnosticRouteKind | null;
+      resultCount?: number | null;
+      status?: "running" | "known" | "unavailable";
+      reasonCode?: string | null;
+    } = {},
+  ): void => {
+    void appendOpacDiagnosticEvent({
+      schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+      occurred_at: new Date().toISOString(),
+      operation_id: operationId,
+      query,
+      phase,
+      route_kind: options.routeKind ?? null,
+      result_count: options.resultCount ?? null,
+      duration_ms:
+        phase === "search_completed" || phase === "search_failed"
+          ? Date.now() - startedAt
+          : null,
+      status: options.status ?? "running",
+      reason_code: options.reasonCode ?? null,
+    });
+  };
+  const unavailable = (
+    reasonCode: string,
+    routeKind: OpacDiagnosticRouteKind | null = null,
+  ): LibraryCatalogSearchResponse => {
+    log("search_failed", {
+      routeKind,
+      status: "unavailable",
+      reasonCode,
+    });
+    return libraryUnavailable(reasonCode);
+  };
+  log("search_started");
   if (
     !(await hasBrowserPermission(
       LIBRARY_OPAC_PERMISSION_PATTERN,
       LIBRARY_OPAC_ORIGIN,
     ))
   ) {
+    log("search_failed", {
+      status: "unavailable",
+      reasonCode: "permission_required",
+    });
     return {
       status: "permission_required",
       origin: LIBRARY_OPAC_ORIGIN,
@@ -2153,8 +2521,9 @@ async function handleLibraryCatalogSearch(
     };
   }
   const tabId = await createLibraryTab(LIBRARY_OPAC_ENTRY_URL);
-  if (tabId === null) return libraryUnavailable("entry_tab_create_failed");
+  if (tabId === null) return unavailable("entry_tab_create_failed");
   try {
+    log("entry_ready", { routeKind: "entry" });
     const submitted = await chrome.scripting.executeScript({
       target: { tabId },
       world: "ISOLATED",
@@ -2171,27 +2540,77 @@ async function handleLibraryCatalogSearch(
         },
       ],
     });
-    if (submitted[0]?.result?.status !== "submitted") {
-      return libraryUnavailable(
-        submitted[0]?.result?.reason_code ?? "search_submit_failed",
-      );
+    const submission = submitted[0]?.result as
+      | {
+          status?: string;
+          expected_url?: string;
+          reason_code?: string;
+        }
+      | undefined;
+    if (submission?.status !== "submitted") {
+      return unavailable(submission?.reason_code ?? "search_submit_failed");
     }
-    await waitForTabReady(tabId);
+    log("search_submitted");
+    if (submission.expected_url) {
+      if (
+        !submission.expected_url.startsWith(
+          `${LIBRARY_OPAC_ORIGIN}/opc/xc/search/`,
+        )
+      ) {
+        return unavailable("search_navigation_mismatch");
+      }
+      const navigation = await waitForLibraryNavigation(
+        tabId,
+        submission.expected_url,
+        "search_navigation_timeout",
+        "search_navigation_mismatch",
+        undefined,
+        true,
+      );
+      if (navigation.status !== "ready") {
+        const failedTab = await chrome.tabs.get(tabId).catch(() => undefined);
+        return unavailable(
+          navigation.reason_code,
+          classifyLibraryNavigationUrl(failedTab?.url),
+        );
+      }
+    } else {
+      // Compatibility for older test/fixture callers.  The current page
+      // submission always returns expected_url, so production never falls
+      // back to the stale-tab readiness check.
+      await waitForTabReady(tabId, LIBRARY_NAVIGATION_TIMEOUT_MS);
+    }
+    const navigatedTab = await chrome.tabs.get(tabId).catch(() => undefined);
+    log("navigation_ready", {
+      routeKind: classifyLibraryNavigationUrl(navigatedTab?.url),
+    });
+    log("projection_started", {
+      routeKind: classifyLibraryNavigationUrl(navigatedTab?.url),
+    });
     const projection = await readLibraryCatalogPage(tabId, "search");
     if (projection.status !== "known") {
-      return libraryUnavailable(
+      return unavailable(
         projection.status === "unavailable"
           ? projection.reason_code
           : "availability_loading_timeout",
+        classifyLibraryNavigationUrl(navigatedTab?.url),
       );
     }
     const materialized = projection.records.map(materializeLibraryRecord);
     if (materialized.some((item) => item === null)) {
-      return libraryUnavailable("record_projection_invalid");
+      return unavailable(
+        "record_projection_invalid",
+        classifyLibraryNavigationUrl(navigatedTab?.url),
+      );
     }
     const items = materialized
       .filter((item): item is LibraryMaterializedRecord => item !== null)
       .slice(0, message.limit ?? 10);
+    log("search_completed", {
+      routeKind: classifyLibraryNavigationUrl(navigatedTab?.url),
+      resultCount: items.length,
+      status: "known",
+    });
     return {
       status: "known",
       projection: {
@@ -2203,7 +2622,7 @@ async function handleLibraryCatalogSearch(
       },
     };
   } catch {
-    return libraryUnavailable("catalog_search_failed");
+    return unavailable("catalog_search_failed");
   } finally {
     await chrome.tabs.remove(tabId).catch(() => undefined);
   }
@@ -2266,10 +2685,14 @@ async function handleLibraryItemRead(
   if (!recordId) return libraryUnavailable("unknown_resource_ref");
   let tabId: number | null = null;
   try {
-    tabId = await createLibraryTab(
-      `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`,
-    );
-    if (tabId === null) return libraryUnavailable("record_tab_create_failed");
+    const recordUrl = `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`;
+    const tabFailure: { reason_code?: string } = {};
+    tabId = await createLibraryTab(recordUrl, recordUrl, tabFailure);
+    if (tabId === null) {
+      return libraryUnavailable(
+        tabFailure.reason_code ?? "record_tab_create_failed",
+      );
+    }
     const projection = await readLibraryCatalogPage(tabId, "record", recordId);
     if (projection.status !== "known") {
       return libraryUnavailable(
@@ -2314,9 +2737,13 @@ async function readPublicLibraryActionSurface(
   recordId: string,
 ): Promise<PublicLibraryActionSurface> {
   const officialUrl = `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(recordId)}`;
-  const tabId = await createLibraryTab(officialUrl);
+  const tabFailure: { reason_code?: string } = {};
+  const tabId = await createLibraryTab(officialUrl, officialUrl, tabFailure);
   if (tabId === null) {
-    return { status: "unavailable", reason_code: "record_tab_create_failed" };
+    return {
+      status: "unavailable",
+      reason_code: tabFailure.reason_code ?? "record_tab_create_failed",
+    };
   }
   try {
     const page = await readLibraryCatalogPage(tabId, "record", recordId);
@@ -2756,17 +3183,21 @@ async function handleLibraryActionOptions(
         pattern: LIBRARY_OPAC_PERMISSION_PATTERN,
       };
     }
+    const publicRecordUrl = `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(
+      publicRecordId,
+    )}`;
+    const tabFailure: { reason_code?: string } = {};
     const tabId = await createLibraryTab(
-      `${LIBRARY_OPAC_ORIGIN}${LIBRARY_RECORD_PATH_PREFIX}${encodeURIComponent(
-        publicRecordId,
-      )}`,
+      publicRecordUrl,
+      publicRecordUrl,
+      tabFailure,
     );
     if (tabId === null) {
       return {
         status: "known",
         projection: unavailableLibraryActionOptions(
           message.resource_ref,
-          "record_tab_create_failed",
+          tabFailure.reason_code ?? "record_tab_create_failed",
         ),
       };
     }
@@ -5145,6 +5576,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleLibraryCatalogSearch(message).then(sendResponse);
+    return true;
+  }
+
+  if (isOpacDiagnosticsGetMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({
+        schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+        events: [],
+      });
+      return true;
+    }
+    void readOpacDiagnosticEvents()
+      .then((events) =>
+        sendResponse({
+          schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+          events,
+        }),
+      )
+      .catch(() =>
+        sendResponse({
+          schema_version: OPAC_DIAGNOSTIC_SCHEMA_VERSION,
+          events: [],
+        }),
+      );
+    return true;
+  }
+
+  if (isOpacDiagnosticsClearMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({ ok: false });
+      return true;
+    }
+    void clearOpacDiagnosticEvents()
+      .then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false }));
     return true;
   }
 

@@ -980,6 +980,110 @@ async def test_function_model_reads_authoritative_opac_detail_after_catalog_disc
 
 
 @pytest.mark.asyncio
+async def test_function_model_searches_three_named_books_individually(
+    monkeypatch,
+) -> None:
+    """A multi-book holding check must preserve one query per original title."""
+
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    titles = [
+        "ROS2とPythonで作って学ぶAIロボット入門 改訂第2版",
+        "改訂新版 ROS 2ではじめよう 次世代ロボットプログラミング",
+        "機械学習入門 ボルツマン機械学習から深層学習まで",
+    ]
+    model_turn = [0]
+    requested_queries: list[str] = []
+
+    def model_function(_messages, _info):
+        index = model_turn[0]
+        model_turn[0] += 1
+        if index < len(titles):
+            query = titles[index]
+            requested_queries.append(query)
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+                        {"query": query, "limit": 10},
+                        tool_call_id=f"catalog-multi-{index + 1}",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "3冊を個別に確認しました。",
+                        "evidence_ids": [],
+                    },
+                    tool_call_id="final-multi-book",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="multi-book-catalog-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[library_catalog_search],
+    )
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    advertised = {LIBRARY_CATALOG_SEARCH_TOOL_NAME}
+
+    execution = await backend.start_chat(
+        conversation_id="conversation-three-library-books",
+        message="その3冊は大学にある？",
+        history=[
+            ChatHistoryMessage(
+                role="assistant",
+                content="\n".join(f"{index + 1}. {title}" for index, title in enumerate(titles)),
+            )
+        ],
+        advertised_tools=advertised,
+    )
+    seen_call_ids: set[str] = set()
+    evidence_context: list[EvidenceLink] = []
+    for index, title in enumerate(titles):
+        assert execution.deferred is not None
+        assert execution.deferred.tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME
+        assert execution.deferred.arguments["query"] == title
+        current_call_id = execution.deferred.tool_call_id
+        evidence_context.append(
+            EvidenceLink(
+                evidence_id=f"library-catalog-search-v1-{index + 1:016x}",
+                title="芝浦工業大学公式OPACの公開カタログ検索",
+                source_type="library",
+                locator=f"orbit-library://public/{index + 1:032x}",
+                data_classification="public",
+            )
+        )
+        execution = await backend.resume_chat(
+            deferred=execution.deferred,
+            tool_result=LibraryCatalogSearchResult(
+                status="known",
+                query=title,
+                items=[],
+                reason_code=None,
+            ),
+            context=evidence_context,
+            advertised_tools=advertised,
+            seen_tool_call_ids=seen_call_ids,
+        )
+        seen_call_ids.add(current_call_id)
+
+    assert execution.draft is not None
+    assert requested_queries == titles
+    assert all("\n" not in query for query in requested_queries)
+    assert len(set(requested_queries)) == 3
+
+
+@pytest.mark.asyncio
 async def test_function_model_sends_only_moodle_derived_projection(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     calls = [0]

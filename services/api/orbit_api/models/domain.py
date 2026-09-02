@@ -118,6 +118,7 @@ class LibraryActionOption(BaseModel):
     available: bool
     reason_code: str = Field(min_length=1, max_length=100, pattern=r"^[a-z][a-z0-9_]*$")
     required_inputs: list[LibraryActionInput] = Field(default_factory=list, max_length=8)
+    verification_level: Literal["none", "entry_visible"] = "none"
 
     @model_validator(mode="after")
     def capability_is_consistent(self) -> "LibraryActionOption":
@@ -135,16 +136,13 @@ class LibraryActionOption(BaseModel):
             raise ValueError("Library action inputs must match the action type.")
         if self.available != (self.reason_code == "available"):
             raise ValueError("Library action availability must match its reason code.")
-        if self.action_type in {
-            "reserve",
-            "intercampus_transfer",
-            "renew",
-            "purchase_request",
-            "ill_loan",
-            "ill_copy",
-        } and self.available:
+        if self.available and self.verification_level != "entry_visible":
             raise ValueError(
-                "Library write actions remain unavailable until submit and read-back are verified."
+                "Available library actions require a verified visible entry point."
+            )
+        if not self.available and self.verification_level != "none":
+            raise ValueError(
+                "Unavailable library actions cannot carry an entry verification."
             )
         return self
 

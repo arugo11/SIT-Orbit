@@ -53,6 +53,8 @@ import {
   MESSAGE_TYPES,
   type MoodleReadResponse,
   type MyLibraryReadResponse,
+  type OpacDiagnosticsClearResponse,
+  type OpacDiagnosticsGetResponse,
   type OpenWorkspaceResponse,
   type WorkspaceStatusResponse,
 } from "../shared/messages";
@@ -107,6 +109,21 @@ function requestCalendarCommand(
       (response: unknown) => {
         if (chrome.runtime.lastError || !isCalendarResult(response)) {
           reject(new Error("Calendar connector response was unavailable."));
+          return;
+        }
+        resolve(response);
+      },
+    );
+  });
+}
+
+function requestOpacDiagnostics(): Promise<OpacDiagnosticsGetResponse> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      { type: MESSAGE_TYPES.opacDiagnosticsGet },
+      (response: OpacDiagnosticsGetResponse | undefined) => {
+        if (chrome.runtime.lastError || !response) {
+          reject(new Error("OPAC診断ログを取得できませんでした。"));
           return;
         }
         resolve(response);
@@ -1097,6 +1114,10 @@ export function App({
     useState<CampusServiceConnectionStatus>("not_connected");
   const [castMessage, setCastMessage] = useState<string | null>(null);
   const [castBusy, setCastBusy] = useState(false);
+  const [opacDiagnosticCount, setOpacDiagnosticCount] = useState(0);
+  const [opacDiagnosticMessage, setOpacDiagnosticMessage] = useState<
+    string | null
+  >(null);
   const [driveFixtureConnector, setDriveFixtureConnector] = useState(() =>
     createFixtureDriveConnector({
       candidates: DRIVE_FIXTURE_CANDIDATE,
@@ -1140,6 +1161,60 @@ export function App({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [settingsOpen]);
+
+  const copyOpacDiagnostics = async (): Promise<void> => {
+    try {
+      const snapshot = await requestOpacDiagnostics();
+      await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
+      setOpacDiagnosticCount(snapshot.events.length);
+      setOpacDiagnosticMessage(
+        `OPAC診断ログ ${snapshot.events.length}件をコピーしました。`,
+      );
+    } catch {
+      setOpacDiagnosticMessage("OPAC診断ログをコピーできませんでした。");
+    }
+  };
+
+  const clearOpacDiagnostics = async (): Promise<void> => {
+    await new Promise<void>((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { type: MESSAGE_TYPES.opacDiagnosticsClear },
+        (response: OpacDiagnosticsClearResponse | undefined) => {
+          if (chrome.runtime.lastError || !response?.ok) {
+            reject(new Error("OPAC診断ログを消去できませんでした。"));
+            return;
+          }
+          resolve();
+        },
+      );
+    })
+      .then(() => {
+        setOpacDiagnosticCount(0);
+        setOpacDiagnosticMessage("OPAC診断ログを消去しました。");
+      })
+      .catch(() => {
+        setOpacDiagnosticMessage("OPAC診断ログを消去できませんでした。");
+      });
+  };
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    let active = true;
+    void requestOpacDiagnostics()
+      .then((snapshot) => {
+        if (active) setOpacDiagnosticCount(snapshot.events.length);
+      })
+      .catch(() => {
+        if (active) {
+          setOpacDiagnosticMessage(
+            "OPAC診断ログの件数を取得できませんでした。",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, [settingsOpen]);
 
   const runCalendarAction = async (
@@ -1910,6 +1985,33 @@ export function App({
                     : "B1 大宮の提案を作成"}
               </button>
             </div>
+            <section aria-labelledby="opac-diagnostics-title">
+              <h3 id="opac-diagnostics-title">OPAC診断ログ</h3>
+              <p className="settings-message">
+                このブラウザを終了するまで端末内に保持します（現在
+                {opacDiagnosticCount}
+                件）。コピー内容には検索語が含まれますが、認証情報、所蔵内容、内部IDは記録しません。
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void copyOpacDiagnostics()}
+                >
+                  OPAC診断ログをコピー
+                </button>
+                <button
+                  type="button"
+                  className="text-button settings-text-action"
+                  onClick={() => void clearOpacDiagnostics()}
+                >
+                  OPAC診断ログを消去
+                </button>
+              </div>
+              {opacDiagnosticMessage ? (
+                <p className="state-message">{opacDiagnosticMessage}</p>
+              ) : null}
+            </section>
             {loopState.status === "tool-running" ||
             loopState.status === "resuming" ? (
               <p className="state-message" data-agent-status={loopState.status}>

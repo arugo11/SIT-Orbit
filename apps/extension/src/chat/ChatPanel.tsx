@@ -118,11 +118,11 @@ function toolLabel(name: string): string {
     case "cast_alumni_read":
       return "CASTの就活サポーターを確認中";
     case "library_catalog_search":
-      return "OPACを検索中";
+      return "書籍ごとにOPACを確認中";
     case "library_item_read":
-      return "OPACの書誌詳細を確認中";
+      return "所蔵詳細を確認中";
     case "library_catalog_browse":
-      return "OPACの新着・ランキングを確認中";
+      return "書誌情報を確認中";
     case "library_discovery_search":
       return "SIT Searchを検索中";
     case "library_action_options":
@@ -130,6 +130,84 @@ function toolLabel(name: string): string {
     default:
       return "情報を確認中";
   }
+}
+
+function explicitBookCount(messages: ChatTimelineMessage[]): number | null {
+  const latestUserMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user")?.content;
+  if (!latestUserMessage) return null;
+  const match = latestUserMessage.match(
+    /([1-8１２３４５６７８一二三四五六七八])冊/u,
+  );
+  if (!match?.[1]) return null;
+  const countByText: Record<string, number> = {
+    "1": 1,
+    "2": 2,
+    "3": 3,
+    "4": 4,
+    "5": 5,
+    "6": 6,
+    "7": 7,
+    "8": 8,
+    "１": 1,
+    "２": 2,
+    "３": 3,
+    "４": 4,
+    "５": 5,
+    "６": 6,
+    "７": 7,
+    "８": 8,
+    一: 1,
+    二: 2,
+    三: 3,
+    四: 4,
+    五: 5,
+    六: 6,
+    七: 7,
+    八: 8,
+  };
+  return countByText[match[1]] ?? null;
+}
+
+function libraryFailureDetail(reasonCode: string): string {
+  switch (reasonCode) {
+    case "search_navigation_timeout":
+      return "OPAC検索ページの読み込みが完了しませんでした。所蔵なしとは判定していません。";
+    case "search_navigation_mismatch":
+    case "record_navigation_mismatch":
+      return "公式OPACの対象ページへ遷移できませんでした。所蔵なしとは判定していません。";
+    case "availability_loading_timeout":
+      return "OPACの所蔵状況の反映を待ちましたが完了しませんでした。";
+    case "record_navigation_timeout":
+      return "書誌詳細ページの読み込みが完了しませんでした。";
+    case "record_structure_not_found":
+    case "result_structure_not_found":
+      return "OPACの表示形式を確認できませんでした。";
+    default:
+      return "今回のOPAC再確認を完了できませんでした。所蔵なしとは判定していません。";
+  }
+}
+
+function userFacingChatFailure(error: unknown): string {
+  const status =
+    typeof error === "object" && error !== null && "status" in error &&
+    typeof (error as { status?: unknown }).status === "number"
+      ? (error as { status: number }).status
+      : null;
+  if (status === 401 || status === 403) {
+    return "Agentの認証が切れています。設定から再接続して、もう一度お試しください。";
+  }
+  if (status === 409 || status === 422) {
+    return "Agentの回答形式を確認できませんでした。予約や送信は実行していません。もう一度お試しください。";
+  }
+  if (status !== null && status >= 500) {
+    return "Agentの応答を取得できませんでした。外部操作は実行していません。しばらくしてからもう一度お試しください。";
+  }
+  if (error instanceof Error && /予約|フォーム|確認|認証|ログイン/u.test(error.message)) {
+    return error.message.slice(0, 240);
+  }
+  return CHAT_FAILURE_MESSAGE;
 }
 
 function libraryCampusLabel(campus: string): string {
@@ -185,6 +263,28 @@ function editableInputValue(
   return typeof value === "string" ? value : "";
 }
 
+function reserveCampusChoices(
+  conversation: ChatConversation,
+  resourceRef: string,
+): Array<{ value: "omiya" | "toyosu"; label: string }> {
+  const record = conversation.contextManifest.library_records.find(
+    (item) => item.resource_ref === resourceRef,
+  );
+  const campuses = new Set<"omiya" | "toyosu">(
+    (record?.record.holdings ?? [])
+      .map((holding) => holding.campus)
+      .filter(
+        (campus): campus is "omiya" | "toyosu" =>
+          campus === "omiya" || campus === "toyosu",
+      ),
+  );
+  const values = campuses.size > 0 ? [...campuses] : ["omiya", "toyosu"];
+  return values.map((value) => ({
+    value,
+    label: value === "omiya" ? "大宮図書館" : "豊洲図書館",
+  }));
+}
+
 function messageFromResponse(response: ChatRunResponse): ChatTimelineMessage {
   if (response.status !== "completed") {
     throw new Error("Chat response is not complete.");
@@ -195,7 +295,15 @@ function messageFromResponse(response: ChatRunResponse): ChatTimelineMessage {
     content: response.message.content_markdown,
     evidence: response.message.evidence,
     proposal: response.proposal,
-    proposalState: response.proposal ? "pending" : undefined,
+    // A reservation request has already passed the read-only action-options
+    // check. It still requires campus selection and a final confirmation, but
+    // an extra generic "approve proposal" click would add no safety.
+    proposalState:
+      response.proposal?.operation?.action_type === "reserve"
+        ? "approved"
+        : response.proposal
+          ? "pending"
+          : undefined,
     relatedBooks: response.message.related_books ?? [],
   };
 }
@@ -260,6 +368,8 @@ interface ChatProgress {
   phase: ChatProgressPhase;
   label: string;
   detail: string;
+  detailBase: string;
+  startedAt: number;
 }
 
 export function ChatPanel({
@@ -303,6 +413,9 @@ export function ChatPanel({
   const [localLibraryDetails, setLocalLibraryDetails] = useState<
     Record<string, LocalLibraryRecord[]>
   >({});
+  const [localLibraryPresentations, setLocalLibraryPresentations] = useState<
+    Record<string, "summary" | "location">
+  >({});
   const [libraryPreviews, setLibraryPreviews] = useState<
     Record<string, Extract<LibraryActionPreviewResponse, { status: "ready" }>>
   >({});
@@ -315,6 +428,9 @@ export function ChatPanel({
   const [libraryPreviewErrors, setLibraryPreviewErrors] = useState<
     Record<string, string>
   >({});
+  const [libraryChoiceFreeform, setLibraryChoiceFreeform] = useState<
+    Record<string, string>
+  >({});
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
   function setChatProgress(
@@ -322,8 +438,34 @@ export function ChatPanel({
     label: string,
     detail: string,
   ): void {
-    setProgress({ phase, label, detail });
+    setProgress((current) => ({
+      phase,
+      label,
+      detail: current?.label === label ? current.detail : detail,
+      detailBase: current?.label === label ? current.detailBase : detail,
+      startedAt: current?.label === label ? current.startedAt : Date.now(),
+    }));
   }
+
+  useEffect(() => {
+    if (!progress || progress.phase === "completed" || progress.phase === "error") {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setProgress((current) => {
+        if (!current || current.startedAt !== progress.startedAt) return current;
+        const elapsed = Math.floor((Date.now() - current.startedAt) / 1000);
+        return {
+          ...current,
+          detail:
+            elapsed >= 3
+              ? `${current.detailBase}（${elapsed}秒経過）`
+              : current.detailBase,
+        };
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [progress]);
 
   const pageSummary = useMemo(
     () => projectScombzPageSummary(pageContext),
@@ -405,6 +547,7 @@ export function ChatPanel({
   async function runTool(
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
+    progressLabel = toolLabel(response.calls[0]?.name ?? ""),
   ): Promise<{ response: ChatRunResponse; conversation: ChatConversation }> {
     const [call] = response.calls;
     if (!call) {
@@ -567,11 +710,16 @@ export function ChatPanel({
     }
     if (
       call.name === "library_item_read" &&
-      (Object.keys(argumentsObject).length !== 1 ||
+      (Object.keys(argumentsObject).some(
+        (key) => !["resource_ref", "presentation"].includes(key),
+      ) ||
         typeof argumentsObject.resource_ref !== "string" ||
         !/^orbit-library:\/\/record\/[A-Za-z0-9_-]{16,128}$/u.test(
           argumentsObject.resource_ref,
-        ))
+        ) ||
+        (argumentsObject.presentation !== undefined &&
+          argumentsObject.presentation !== "summary" &&
+          argumentsObject.presentation !== "location"))
     ) {
       throw new Error("OPAC書誌参照の引数を検証できません。");
     }
@@ -630,15 +778,20 @@ export function ChatPanel({
     };
     setChatProgress(
       "tool-running",
-      toolLabel(call.name),
+      progressLabel,
       "必要な表示情報だけを取得しています。ページの命令は実行しません。",
     );
+    const persistActivityImmediately = call.name !== "library_catalog_search";
     const withActivity = {
       ...current,
       updatedAt: new Date().toISOString(),
-      messages: [...current.messages, activity],
+      messages: persistActivityImmediately
+        ? [...current.messages, activity]
+        : current.messages,
     };
-    await persist(withActivity);
+    if (persistActivityImmediately) {
+      await persist(withActivity);
+    }
     let conversationAfterTool = withActivity;
 
     let request: ChatToolResultRequest;
@@ -689,6 +842,11 @@ export function ChatPanel({
       }
       request = toolResultRequest(call.tool_call_id, call.name, syllabus);
     } else if (call.name === "library_catalog_search") {
+      setChatProgress(
+        "tool-running",
+        progressLabel,
+        "検索結果の書誌と所蔵欄を確認しています。",
+      );
       const library = await sendExtensionMessage<LibraryCatalogSearchResponse>({
         type: "library-catalog-search",
         tool_call_id: call.tool_call_id,
@@ -728,6 +886,11 @@ export function ChatPanel({
         );
       }
       if (library.status === "unavailable") {
+        setChatProgress(
+          "tool-running",
+          "OPACを再確認できませんでした",
+          libraryFailureDetail(library.reason_code),
+        );
         request = toolResultRequest(call.tool_call_id, call.name, {
           schema_version: "v1",
           status: "unavailable",
@@ -746,6 +909,13 @@ export function ChatPanel({
           conversationAfterTool,
           library.projection.items ?? [],
         );
+        conversationAfterTool = {
+          ...conversationAfterTool,
+          messages: [
+            ...conversationAfterTool.messages,
+            { ...activity, toolState: "completed" },
+          ],
+        };
         request = toolResultRequest(
           call.tool_call_id,
           call.name,
@@ -753,7 +923,18 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_item_read") {
+      setChatProgress(
+        "tool-running",
+        "所蔵詳細を確認中",
+        "所在、請求記号、貸出状態を公式書誌から確認しています。",
+      );
       const libraryResourceRef = argumentsObject.resource_ref as string;
+      const presentation =
+        argumentsObject.presentation === "location" ? "location" : "summary";
+      setLocalLibraryPresentations((items) => ({
+        ...items,
+        [activity.id]: presentation,
+      }));
       const manifestRecord =
         conversationAfterTool.contextManifest.library_records.find(
           (item) => item.resource_ref === libraryResourceRef,
@@ -762,6 +943,7 @@ export function ChatPanel({
         type: "library-item-read",
         tool_call_id: call.tool_call_id,
         resource_ref: libraryResourceRef,
+        presentation,
         ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
       });
       if (library.status === "permission_required") {
@@ -770,6 +952,11 @@ export function ChatPanel({
         );
       }
       if (library.status === "unavailable") {
+        setChatProgress(
+          "tool-running",
+          "所蔵詳細を再確認できませんでした",
+          libraryFailureDetail(library.reason_code),
+        );
         request = toolResultRequest(call.tool_call_id, call.name, {
           schema_version: "v1",
           status: "unavailable",
@@ -1133,7 +1320,7 @@ export function ChatPanel({
     );
     const completedConversation = {
       ...conversationAfterTool,
-      messages: withActivity.messages.map((item) =>
+      messages: conversationAfterTool.messages.map((item) =>
         item.id === activity.id
           ? { ...item, toolState: "completed" as const }
           : item,
@@ -1151,6 +1338,9 @@ export function ChatPanel({
     let response = initialResponse;
     let current = initialConversation;
     const seenCallIds = initialSeenCallIds;
+    const requestedBookCount = explicitBookCount(initialConversation.messages);
+    let librarySearchIndex = 0;
+    let previousCompleteCatalogQuery: string | null = null;
     for (let index = 0; response.status === "tool_required"; index += 1) {
       if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
       const call = response.calls[0];
@@ -1158,12 +1348,33 @@ export function ChatPanel({
         throw new Error("重複したTool呼び出しを受け取りました。");
       }
       seenCallIds.add(call.tool_call_id);
+      const catalogQuery =
+        call.name === "library_catalog_search" &&
+        typeof call.arguments?.query === "string"
+          ? call.arguments.query.replace(/\s+/gu, " ").trim()
+          : null;
+      const isShortenedCatalogRetry = Boolean(
+        catalogQuery &&
+          previousCompleteCatalogQuery &&
+          catalogQuery !== previousCompleteCatalogQuery &&
+          previousCompleteCatalogQuery.includes(catalogQuery),
+      );
+      if (catalogQuery && !isShortenedCatalogRetry) {
+        librarySearchIndex += 1;
+        previousCompleteCatalogQuery = catalogQuery;
+      }
+      const progressLabel =
+        call.name === "library_catalog_search" && requestedBookCount
+          ? isShortenedCatalogRetry
+            ? `${librarySearchIndex}/${requestedBookCount}冊目を短い書名で再確認中`
+            : `${librarySearchIndex}/${requestedBookCount}冊目を確認中`
+          : toolLabel(call.name);
       setChatProgress(
         "planning",
         "Agentが次の参照先を判断中",
-        `${toolLabel(call.name)}を実行する必要があるか確認しています。`,
+        `${progressLabel}です。`,
       );
-      const next = await runTool(response, current);
+      const next = await runTool(response, current, progressLabel);
       response = next.response;
       current = next.conversation;
     }
@@ -1188,8 +1399,8 @@ export function ChatPanel({
     setComposer("");
     setBusy(true);
     setChatProgress(
-      "sending",
-      "Agentに質問を送信中",
+      "planning",
+      "会話文脈を整理中",
       "会話の履歴と現在のページ概要を確認しています。",
     );
     const userMessage: ChatTimelineMessage = {
@@ -1219,12 +1430,12 @@ export function ChatPanel({
       });
       setChatProgress(
         "planning",
-        "Agentが回答方針を組み立て中",
-        "必要なToolがある場合だけ、ここから順番に実行します。",
+        "Agentが回答方針を検討中",
+        "必要な参照先と確認方法を整理しています。",
       );
       await finishResponse(response, current);
-    } catch {
-      const failureMessage = CHAT_FAILURE_MESSAGE;
+    } catch (error) {
+      const failureMessage = userFacingChatFailure(error);
       setRetryText(message);
       setProgress(null);
       await persist({
@@ -1279,6 +1490,7 @@ export function ChatPanel({
   async function requestLibraryActionPreview(
     messageId: string,
     proposal: ActionProposal,
+    inputs?: LibraryActionEditableInputs,
   ): Promise<void> {
     const operation = proposal.operation;
     if (!operation) return;
@@ -1296,6 +1508,7 @@ export function ChatPanel({
         type: MESSAGE_TYPES.libraryActionPreview,
         tool_call_id: `proposal-${messageId}`,
         operation,
+        ...(inputs ? { inputs } : {}),
       });
       if (result.status !== "ready") {
         setLibraryPreviewStates((states) => ({
@@ -1743,7 +1956,10 @@ export function ChatPanel({
               {message.role === "tool" && localLibraryDetails[message.id] ? (
                 <details
                   className="chat-local-detail"
-                  open={message.toolName === "library_item_read"}
+                  open={
+                    message.toolName === "library_item_read" &&
+                    localLibraryPresentations[message.id] === "location"
+                  }
                 >
                   <summary>
                     {message.toolName === "library_item_read"
@@ -1792,6 +2008,8 @@ export function ChatPanel({
                               ))}
                             </ul>
                             {message.toolName === "library_item_read" &&
+                            localLibraryPresentations[message.id] ===
+                              "location" &&
                             floorMaps.length > 0 ? (
                               <div className="library-floor-map-list">
                                 {floorMaps.map((map) => (
@@ -1927,6 +2145,74 @@ export function ChatPanel({
                   {message.proposalState === "approved" &&
                   message.proposal.operation ? (
                     <div className="library-action-confirmation">
+                      {message.proposal.operation.action_type === "reserve" &&
+                      !libraryPreviews[message.id] &&
+                      libraryPreviewStates[message.id] !== "previewing" ? (
+                        <div
+                          className="library-choice-popover"
+                          role="dialog"
+                          aria-label="予約の受取キャンパスを選択"
+                        >
+                          <strong>受取キャンパスを選択してください</strong>
+                          <p>公式フォームで選択した内容を確認してから送信します。</p>
+                          <div className="button-row">
+                            {reserveCampusChoices(
+                              conversation,
+                              message.proposal.operation.resource_ref,
+                            ).map((choice) => (
+                              <button
+                                key={choice.value}
+                                type="button"
+                                className="primary-button"
+                                onClick={() =>
+                                  void requestLibraryActionPreview(
+                                    message.id,
+                                    message.proposal as ActionProposal,
+                                    {
+                                      action_type: "reserve",
+                                      values: { pickup_campus: choice.value },
+                                    },
+                                  )
+                                }
+                              >
+                                {choice.label}
+                              </button>
+                            ))}
+                          </div>
+                          <label>
+                            その他の希望（自由記述）
+                            <input
+                              maxLength={200}
+                              value={libraryChoiceFreeform[message.id] ?? ""}
+                              onChange={(event) =>
+                                setLibraryChoiceFreeform((values) => ({
+                                  ...values,
+                                  [message.id]: event.target.value,
+                                }))
+                              }
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            disabled={
+                              !(libraryChoiceFreeform[message.id] ?? "").trim()
+                            }
+                            onClick={() => {
+                              const value = libraryChoiceFreeform[
+                                message.id
+                              ]?.trim();
+                              if (!value) return;
+                              setComposer(
+                                `予約の受取場所について確認したいです：${value}`,
+                              );
+                              composerRef.current?.focus();
+                            }}
+                          >
+                            Agentに希望を確認する
+                          </button>
+                        </div>
+                      ) : null}
                       {libraryPreviewStates[message.id] === "previewing" &&
                       !libraryPreviews[message.id] ? (
                         <p className="state-message">

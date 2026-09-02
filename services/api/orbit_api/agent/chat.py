@@ -33,6 +33,7 @@ from orbit_api.models import (
     LibraryCatalogSearchResult,
     LibraryDiscoverySearchResult,
     LibraryItemReadResult,
+    ReserveOperation,
     MoodleReadResult,
     MyLibraryReadResult,
     MyLibraryScope,
@@ -64,6 +65,7 @@ from .pydantic_ai_backend import (
     SCOMBZ_READ_TOOL_NAME,
     SYLLABUS_SEARCH_TOOL_NAME,
     ChatAgentExecution,
+    ActionDraft,
     ChatDraft,
     DeferredChatRun,
     is_derived_cast_alumni_evidence,
@@ -122,6 +124,8 @@ class ChatBackend(Protocol):
         message: str,
         history: list[ChatHistoryMessage],
         context: list[EvidenceLink] | None = None,
+        library_context: list[ChatLibraryContextRecord] | None = None,
+        related_book_context: list[RelatedBookCandidate] | None = None,
         advertised_tools: set[str] | None = None,
     ) -> ChatAgentExecution: ...
 
@@ -297,11 +301,19 @@ class FixtureChatBackend:
         message: str,
         history: Sequence[ChatHistoryMessage],
         advertised_tools: set[str],
+        library_context: Sequence[ChatLibraryContextRecord] = (),
     ) -> bool:
         if LIBRARY_ACTION_OPTIONS_TOOL_NAME not in advertised_tools:
             return False
-        del history
-        return bool(re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message))
+        conversation_text = "\n".join(
+            [item.content for item in history[-20:]] + [message]
+        )
+        return bool(
+            re.search(
+                r"(?:orbit-library://record/[A-Za-z0-9_-]{16,128}|予約|予約したい|取寄|取り寄せ)",
+                conversation_text,
+            )
+        ) and bool(library_context)
 
     async def start_chat(
         self,
@@ -316,8 +328,29 @@ class FixtureChatBackend:
     ) -> ChatAgentExecution:
         del context, related_book_context
         advertised = set(advertised_tools or set())
-        if self._requests_library_action_options(message, history, advertised):
-            match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
+        library_context = library_context or []
+        if self._requests_library_action_options(
+            message, history, advertised, library_context
+        ):
+            conversation_text = "\n".join(
+                [item.content for item in history[-20:]] + [message]
+            )
+            match = re.search(
+                r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message
+            )
+            if match is None:
+                selected = next(
+                    (
+                        item
+                        for item in library_context
+                        if item.record.title and item.record.title in conversation_text
+                    ),
+                    library_context[0],
+                )
+                match = re.search(
+                    r"orbit-library://record/[A-Za-z0-9_-]{16,128}",
+                    selected.resource_ref,
+                )
             if match is not None:
                 return ChatAgentExecution(
                     deferred=DeferredChatRun(
@@ -332,7 +365,7 @@ class FixtureChatBackend:
             message,
             history,
             advertised,
-            library_context or (),
+            library_context,
         ):
             match = re.search(r"orbit-library://record/[A-Za-z0-9_-]{16,128}", message)
             if match is None and library_context:
@@ -526,6 +559,41 @@ class FixtureChatBackend:
                 for option in tool_result.options:
                     state = "利用可能" if option.available else "利用不可"
                     lines.append(f"- {option.action_type}: {state}")
+                reserve = next(
+                    (
+                        option
+                        for option in tool_result.options
+                        if option.action_type == "reserve"
+                    ),
+                    None,
+                )
+                if (
+                    reserve is not None
+                    and reserve.available
+                    and reserve.verification_level == "entry_visible"
+                ):
+                    operation = ReserveOperation(
+                        action_type="reserve",
+                        resource_ref=tool_result.resource_ref,
+                    )
+                    return ChatAgentExecution(
+                        draft=ChatDraft(
+                            content_markdown=(
+                                "公式OPACで予約・取寄の入口を確認しました。"
+                                "受取キャンパスを選ぶと、公式フォームの内容を確認できます。"
+                            ),
+                            evidence_ids=[evidence.evidence_id],
+                            action=ActionDraft(
+                                title="図書を予約する",
+                                reason="公式OPACの予約導線が確認できたため、受取場所を選んで予約内容を確認します。",
+                                duration_minutes=5,
+                                external_action="library_write",
+                                requires_confirmation=True,
+                                evidence_ids=[evidence.evidence_id],
+                                operation=operation,
+                            ),
+                        )
+                    )
             elif deferred.tool_name == LIBRARY_ITEM_READ_TOOL_NAME:
                 if not isinstance(tool_result, LibraryItemReadResult):
                     raise ValueError("The fixture item call requires a LibraryItemReadResult.")
