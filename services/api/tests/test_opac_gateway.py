@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from textwrap import dedent
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -12,6 +13,7 @@ from orbit_api.library.opac_gateway import (
     OpacGateway,
     OpacGatewayError,
     _Page,
+    _record_matches,
     _resource_ref,
 )
 from orbit_api.models import (
@@ -77,6 +79,21 @@ def availability_html() -> str:
     )
 
 
+def search_form_html() -> str:
+    return dedent(
+        """
+        <html><body>
+          <form method="post" action="/opc/xc/search">
+            <input type="text" name="keys" value="">
+            <input type="submit" name="op" value="検索">
+            <input type="hidden" name="form_build_id" value="form-build-public">
+            <input type="hidden" name="form_id" value="xc_search_form">
+          </form>
+        </body></html>
+        """
+    )
+
+
 @pytest.mark.asyncio
 async def test_gateway_parses_detail_rows_without_header_or_duplicate_holdings(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_OPAC_TRANSPORT", "server")
@@ -97,6 +114,21 @@ def test_resource_ref_matches_extension_hash_contract() -> None:
     )
 
 
+def test_record_match_accepts_detail_metadata_that_omits_edition() -> None:
+    common = {
+        "resource_ref": "orbit-library://record/9d206b152982e5c3",
+        "url": "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BC17652365",
+        "publication_year": 2022,
+        "holdings": [LibraryHoldingSummary(campus="unknown", status="unknown")],
+    }
+    expected = LibraryBibliographicRecord(title="強化学習. 第2版", **common)
+    actual = LibraryBibliographicRecord(title="強化学習", **common)
+    unrelated = LibraryBibliographicRecord(title="強化学習の歴史", **common)
+
+    assert _record_matches(expected, actual)
+    assert not _record_matches(expected, unrelated)
+
+
 @pytest.mark.asyncio
 async def test_zero_result_search_is_normal(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_OPAC_TRANSPORT", "server")
@@ -115,10 +147,10 @@ async def test_zero_result_search_is_normal(monkeypatch) -> None:
         kind="search",
     )
 
-    async def fake_get_page(_client, _url):
+    async def fake_search_page(_client, **_kwargs):
         return page
 
-    monkeypatch.setattr(gateway, "_get_page", fake_get_page)
+    monkeypatch.setattr(gateway, "_search_page", fake_search_page)
     result = await gateway.search(query="合成タイトル")
     assert result.status == "known"
     assert result.items == []
@@ -151,13 +183,13 @@ async def test_single_record_redirect_is_a_normal_one_item_search(monkeypatch) -
         kind="record",
     )
 
-    async def fake_get_page(_client, _url):
+    async def fake_search_page(_client, **_kwargs):
         return page
 
     async def fake_availability(*_args, **_kwargs):
         return {"content": availability_html(), "status": 0, "count": 2}
 
-    monkeypatch.setattr(gateway, "_get_page", fake_get_page)
+    monkeypatch.setattr(gateway, "_search_page", fake_search_page)
     monkeypatch.setattr(gateway, "_availability", fake_availability)
     result = await gateway.search(query="一件だけの書誌")
     assert result.status == "known"
@@ -185,10 +217,10 @@ async def test_search_without_availability_contract_is_unavailable(monkeypatch) 
         kind="search",
     )
 
-    async def fake_get_page(_client, _url):
+    async def fake_search_page(_client, **_kwargs):
         return page
 
-    monkeypatch.setattr(gateway, "_get_page", fake_get_page)
+    monkeypatch.setattr(gateway, "_search_page", fake_search_page)
     result = await gateway.search(query="契約不足")
     assert result.status == "unavailable"
     assert result.reason_code == "opac_token_missing"
@@ -282,6 +314,90 @@ async def test_gateway_follows_same_origin_redirect_without_replaying_query(monk
         "https://library.shibaura-it.ac.jp/opc/xc/search/public?os%5Bkeys%5D=public",
         "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BD03194521?caller=xc-search",
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_page_bootstraps_public_session_before_record(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_OPAC_TRANSPORT", "server")
+    gateway = OpacGateway()
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/opc/":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html", "set-cookie": "SESSpublic=test"},
+                content=search_form_html().encode(),
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=detail_html().encode(),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        page = await gateway._get_page(
+            client,
+            "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BD03194521",
+        )
+
+    assert page.kind == "record"
+    assert calls == ["/opc/", "/opc/recordID/catalog.bib/BD03194521"]
+
+
+@pytest.mark.asyncio
+async def test_search_page_submits_current_official_post_form(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_OPAC_TRANSPORT", "server")
+    gateway = OpacGateway()
+    calls: list[tuple[str, str, dict[str, list[str]]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = parse_qs(request.content.decode()) if request.content else {}
+        calls.append((request.method, request.url.path, body))
+        if request.method == "GET" and request.url.path == "/opc/":
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/html"},
+                content=search_form_html().encode(),
+                request=request,
+            )
+        if request.method == "POST" and request.url.path == "/opc/xc/search":
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "/opc/recordID/catalog.bib/BD03194521?caller=xc-search",
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=detail_html().encode(),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        page = await gateway._search_page(
+            client,
+            query="人工知能は人間を超えるか",
+            author="",
+            subject="",
+            isbn="",
+            pub_year=None,
+            campus="any",
+            format="book",
+        )
+
+    assert page.kind == "record"
+    assert calls[0][:2] == ("GET", "/opc/")
+    assert calls[1][:2] == ("POST", "/opc/xc/search")
+    assert calls[1][2]["keys"] == ["人工知能は人間を超えるか"]
+    assert calls[1][2]["form_build_id"] == ["form-build-public"]
+    assert calls[1][2]["format[Book]"] == ["Book"]
+    assert calls[2][:2] == ("GET", "/opc/recordID/catalog.bib/BD03194521")
 
 
 def test_gateway_rejects_untrusted_ncip_path() -> None:

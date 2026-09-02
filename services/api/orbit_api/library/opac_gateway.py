@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from html import unescape
 from typing import Any, Literal
-from urllib.parse import quote, unquote, urlencode, urljoin, urlparse
+from urllib.parse import unquote, urlencode, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
@@ -36,13 +36,17 @@ from orbit_api.models import (
 )
 
 OPAC_ORIGIN = "https://library.shibaura-it.ac.jp"
-SEARCH_PREFIX = "/opc/xc/search/"
+OPAC_ENTRY_PATH = "/opc/"
+SEARCH_PATH = "/opc/xc/search"
+SEARCH_PREFIX = f"{SEARCH_PATH}/"
 RECORD_PREFIX = "/opc/recordID/catalog.bib/"
 NCIP_MULTI_PATH = "/opc/xc_search/ajax/ncip_multi_info"
 NCIP_FULL_PATH = "/opc/xc_search/ajax/ncip_info_full"
 MAX_HTML_BYTES = 1_000_000
 MAX_JSON_BYTES = 2_000_000
 MAX_UPSTREAM_BIBS = 256
+OPAC_USER_AGENT = "SIT-ORBIT/0.1 (read-only public OPAC client)"
+OPAC_ACCEPT_LANGUAGE = "ja,en-US;q=0.9,en;q=0.8"
 _RECORD_ID = re.compile(r"^/opc/recordID/catalog\.bib/([^/?#\s]{1,200})$")
 _RESOURCE_REF = re.compile(r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$")
 logger = logging.getLogger("uvicorn.error")
@@ -83,18 +87,31 @@ def _match_text(value: str | None) -> str:
     return re.sub(r"[^\w]+", "", _normalized_text(value, 300).casefold())
 
 
-def _record_matches(expected: LibraryBibliographicRecord, actual: LibraryBibliographicRecord) -> bool:
+def _title_match_variants(value: str) -> set[str]:
+    """Return bounded variants for OPAC titles that omit edition text in metadata."""
+
+    variants = {
+        _match_text(value),
+        _match_text(value.split("=", 1)[0]),
+    }
+    for title in tuple(variants):
+        editionless = re.sub(r"(?:改訂)?第?\d+版$", "", title)
+        if editionless:
+            variants.add(editionless)
+    return {title for title in variants if title}
+
+
+def _record_matches(
+    expected: LibraryBibliographicRecord, actual: LibraryBibliographicRecord
+) -> bool:
     if expected.isbn and actual.isbn and _match_text(expected.isbn) != _match_text(actual.isbn):
         return False
-    expected_title = _match_text(expected.title)
-    actual_title = _match_text(actual.title)
-    if not expected_title or not actual_title:
+    expected_titles = _title_match_variants(expected.title)
+    actual_titles = _title_match_variants(actual.title)
+    if not expected_titles or not actual_titles:
         return False
-    if expected_title != actual_title:
-        expected_main = _match_text(expected.title.split("=", 1)[0])
-        actual_main = _match_text(actual.title.split("=", 1)[0])
-        if not expected_main or expected_main != actual_main:
-            return False
+    if expected_titles.isdisjoint(actual_titles):
+        return False
     if expected.authors and actual.authors:
         expected_authors = {_match_text(item) for item in expected.authors if _match_text(item)}
         actual_authors = {_match_text(item) for item in actual.authors if _match_text(item)}
@@ -240,7 +257,9 @@ def _holding_from_detail_row(row: Any) -> LibraryHoldingSummary:
     call_node = row.select_one(".bkCnu .spDisInl") or row.select_one(".bkCnu .xc-call-number")
     due_node = row.select_one(".bkDue dd")
     location = _normalized_text(location_node.get_text(" ") if location_node else "", 200)
-    status_text = _normalized_text(status_node.get_text(" ") if status_node else row.get_text(" "), 120)
+    status_text = _normalized_text(
+        status_node.get_text(" ") if status_node else row.get_text(" "), 120
+    )
     call_number = _normalized_text(call_node.get_text(" ") if call_node else "", 100) or None
     due_date = _date(due_node.get_text(" ") if due_node else None)
     due_text = _normalized_text(due_node.get_text(" ") if due_node else "", 80)
@@ -280,7 +299,9 @@ def _record_path(value: str) -> str | None:
 
 
 def _record_from_node(node: Any) -> tuple[str, str, list[str], str | None, int | None, str | None]:
-    link = node.select_one(".xc-title a[href]") or node.select_one("a[href*='/recordID/catalog.bib/']")
+    link = node.select_one(".xc-title a[href]") or node.select_one(
+        "a[href*='/recordID/catalog.bib/']"
+    )
     if link is None:
         raise OpacGatewayError("opac_contract_changed")
     path = _record_path(link.get("href", ""))
@@ -302,7 +323,9 @@ def _record_from_node(node: Any) -> tuple[str, str, list[str], str | None, int |
     return path, title, authors[:20], isbn, year, raw_text
 
 
-def _record_from_detail(soup: BeautifulSoup, path: str) -> tuple[str, list[str], str | None, int | None, str | None]:
+def _record_from_detail(
+    soup: BeautifulSoup, path: str
+) -> tuple[str, list[str], str | None, int | None, str | None]:
     heading = soup.select_one("h3.node-title, h1, h2, .xc-title")
     title = _normalized_text(heading.get_text(" ") if heading else "", 300)
     if not title:
@@ -310,7 +333,9 @@ def _record_from_detail(soup: BeautifulSoup, path: str) -> tuple[str, list[str],
         meta_value = meta_title.get("content") if meta_title else ""
         title = _normalized_text(meta_value if isinstance(meta_value, str) else "", 300)
     title = re.sub(r"^\s*\d+\s*[.)]?\s*", "", title).lstrip(". ")
-    authors = [_normalized_text(item.get_text(" "), 200) for item in soup.select("[class*='author'] a")]
+    authors = [
+        _normalized_text(item.get_text(" "), 200) for item in soup.select("[class*='author'] a")
+    ]
     if not authors:
         meta_author = soup.select_one('meta[name="author"]')
         if meta_author is not None:
@@ -319,7 +344,13 @@ def _record_from_detail(soup: BeautifulSoup, path: str) -> tuple[str, list[str],
     text = _normalized_text(soup.get_text(" "), 2500)
     isbn_match = re.search(r"(97[89]\d{10}|\d{9}[\dX])", text)
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", text)
-    return title, authors[:20], isbn_match.group(1) if isbn_match else None, int(year_match.group(1)) if year_match else None, text
+    return (
+        title,
+        authors[:20],
+        isbn_match.group(1) if isbn_match else None,
+        int(year_match.group(1)) if year_match else None,
+        text,
+    )
 
 
 class _MemoryCache:
@@ -399,13 +430,7 @@ class OpacGateway:
             if (
                 parsed.scheme != "https"
                 or parsed.netloc != urlparse(OPAC_ORIGIN).netloc
-                or (
-                    redirect_path is not None
-                    and (
-                        parsed.path != redirect_path
-                        or parsed.fragment
-                    )
-                )
+                or (redirect_path is not None and (parsed.path != redirect_path or parsed.fragment))
             ):
                 raise OpacGatewayError("opac_redirect_rejected")
             current = next_url
@@ -415,37 +440,65 @@ class OpacGateway:
             current_params = None
         raise OpacGatewayError("opac_redirect_rejected")
 
-    async def _get_page(self, client: httpx.AsyncClient, url: str) -> _Page:
-        response: httpx.Response | None = None
-        for attempt in range(2):
-            try:
-                response = await self._get_same_origin(client, url)
-            except httpx.TimeoutException as error:
-                logger.info("opac_upstream_exception phase=page kind=timeout type=%s", type(error).__name__)
-                if attempt == 0:
-                    await self._wait_turn()
-                    continue
-                raise OpacGatewayError("opac_timeout", retryable=True) from error
-            except httpx.HTTPError as error:
-                logger.info("opac_upstream_exception phase=page kind=http type=%s", type(error).__name__)
-                if attempt == 0:
-                    await self._wait_turn()
-                    continue
-                raise OpacGatewayError("opac_upstream_error", retryable=True) from error
-            if response.status_code in {429, 502, 503, 504}:
-                if attempt == 0:
-                    await asyncio.sleep(_retry_after(response))
-                    await self._wait_turn()
-                    continue
-                raise OpacGatewayError(
-                    "opac_rate_limited" if response.status_code == 429 else "opac_upstream_error",
-                    retryable=True,
+    async def _post_same_origin(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        *,
+        data: list[tuple[str, str]],
+    ) -> httpx.Response:
+        """Submit the verified public search form and follow safe redirects."""
+
+        current = url
+        method = "POST"
+        current_data: list[tuple[str, str]] | None = data
+        for _ in range(4):
+            headers = None
+            content = None
+            if method == "POST":
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": OPAC_ORIGIN,
+                    "Referer": f"{OPAC_ORIGIN}{OPAC_ENTRY_PATH}",
+                }
+                content = urlencode(current_data or []).encode()
+            response = await client.request(
+                method,
+                current,
+                content=content,
+                headers=headers,
+                follow_redirects=False,
+            )
+            if response.status_code not in {301, 302, 303, 307, 308}:
+                return response
+            location = response.headers.get("location")
+            if not location:
+                raise OpacGatewayError("opac_redirect_rejected")
+            next_url = urljoin(current, location)
+            parsed = urlparse(next_url)
+            if (
+                parsed.scheme != "https"
+                or parsed.netloc != urlparse(OPAC_ORIGIN).netloc
+                or parsed.fragment
+                or not (
+                    parsed.path == SEARCH_PATH
+                    or parsed.path.startswith(SEARCH_PREFIX)
+                    or _RECORD_ID.fullmatch(parsed.path)
                 )
-            break
-        if response is None:
-            raise OpacGatewayError("opac_upstream_error", retryable=True)
+            ):
+                raise OpacGatewayError("opac_redirect_rejected")
+            current = next_url
+            if response.status_code in {301, 302, 303}:
+                method = "GET"
+                current_data = None
+        raise OpacGatewayError("opac_redirect_rejected")
+
+    @staticmethod
+    def _parse_page_response(response: httpx.Response) -> _Page:
         if response.status_code >= 400:
-            logger.info("opac_upstream_response phase=page status_class=%d", response.status_code // 100)
+            logger.info(
+                "opac_upstream_response phase=page status_class=%d", response.status_code // 100
+            )
             raise OpacGatewayError("opac_upstream_error")
         if len(response.content) > MAX_HTML_BYTES:
             raise OpacGatewayError("opac_contract_changed")
@@ -463,7 +516,7 @@ class OpacGateway:
         soup = BeautifulSoup(response.content, "html.parser")
         if "/recordID/catalog.bib/" in parsed.path:
             kind: Literal["search", "record", "unknown"] = "record"
-        elif parsed.path.startswith(SEARCH_PREFIX):
+        elif parsed.path == SEARCH_PATH or parsed.path.startswith(SEARCH_PREFIX):
             kind = "search"
         else:
             kind = "unknown"
@@ -472,13 +525,202 @@ class OpacGateway:
         try:
             settings = _settings_from_html(soup)
         except OpacGatewayError:
-            # A genuine zero-result search page intentionally has no
-            # ``xc_search`` token block.  Keep the page so the caller can
-            # distinguish that normal result from a login/error page.
             if kind != "search":
                 raise
             settings = {}
         return _Page(response=response, soup=soup, settings=settings, kind=kind)
+
+    async def _get_page(self, client: httpx.AsyncClient, url: str) -> _Page:
+        response: httpx.Response | None = None
+        for attempt in range(2):
+            try:
+                # Direct record requests are rejected by the current OPAC
+                # unless the public entry page has first established its
+                # anonymous session cookies.
+                entry_response = await self._get_same_origin(
+                    client,
+                    f"{OPAC_ORIGIN}{OPAC_ENTRY_PATH}",
+                )
+                response = (
+                    entry_response
+                    if entry_response.status_code >= 400
+                    else await self._get_same_origin(client, url)
+                )
+            except httpx.TimeoutException as error:
+                logger.info(
+                    "opac_upstream_exception phase=page kind=timeout type=%s", type(error).__name__
+                )
+                if attempt == 0:
+                    await self._wait_turn()
+                    continue
+                raise OpacGatewayError("opac_timeout", retryable=True) from error
+            except httpx.HTTPError as error:
+                logger.info(
+                    "opac_upstream_exception phase=page kind=http type=%s", type(error).__name__
+                )
+                if attempt == 0:
+                    await self._wait_turn()
+                    continue
+                raise OpacGatewayError("opac_upstream_error", retryable=True) from error
+            if response.status_code in {429, 502, 503, 504}:
+                if attempt == 0:
+                    await asyncio.sleep(_retry_after(response))
+                    await self._wait_turn()
+                    continue
+                raise OpacGatewayError(
+                    "opac_rate_limited" if response.status_code == 429 else "opac_upstream_error",
+                    retryable=True,
+                )
+            break
+        if response is None:
+            raise OpacGatewayError("opac_upstream_error", retryable=True)
+        return self._parse_page_response(response)
+
+    async def _search_page(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        query: str,
+        author: str,
+        subject: str,
+        isbn: str,
+        pub_year: int | None,
+        campus: str,
+        format: str,
+    ) -> _Page:
+        """Load and submit the current official public OPAC search form."""
+
+        try:
+            entry_response = await self._get_same_origin(
+                client,
+                f"{OPAC_ORIGIN}{OPAC_ENTRY_PATH}",
+            )
+        except httpx.TimeoutException as error:
+            raise OpacGatewayError("opac_timeout", retryable=True) from error
+        except httpx.HTTPError as error:
+            raise OpacGatewayError("opac_upstream_error", retryable=True) from error
+        if entry_response.status_code >= 400 or len(entry_response.content) > MAX_HTML_BYTES:
+            raise OpacGatewayError("opac_upstream_error")
+        if "text/html" not in entry_response.headers.get("content-type", ""):
+            raise OpacGatewayError("opac_contract_changed")
+        entry_url = urlparse(str(entry_response.url))
+        if (
+            entry_url.scheme != "https"
+            or entry_url.netloc != urlparse(OPAC_ORIGIN).netloc
+            or entry_url.path != OPAC_ENTRY_PATH
+            or entry_url.query
+            or entry_url.fragment
+        ):
+            raise OpacGatewayError("opac_redirect_rejected")
+        soup = BeautifulSoup(entry_response.content, "html.parser")
+
+        def attribute_text(value: object) -> str:
+            return value if isinstance(value, str) else ""
+
+        form = next(
+            (
+                item
+                for item in soup.select("form[action]")
+                if urlparse(urljoin(OPAC_ORIGIN, attribute_text(item.get("action")))).path
+                == SEARCH_PATH
+            ),
+            None,
+        )
+        if (
+            form is None
+            or _normalized_text(attribute_text(form.get("method")), 10).lower() != "post"
+        ):
+            raise OpacGatewayError("opac_contract_changed")
+        action_url = urljoin(OPAC_ORIGIN, attribute_text(form.get("action")))
+        action = urlparse(action_url)
+        if (
+            action.scheme != "https"
+            or action.netloc != urlparse(OPAC_ORIGIN).netloc
+            or action.path != SEARCH_PATH
+            or action.query
+            or action.fragment
+            or form.select_one('input[name="keys"]') is None
+        ):
+            raise OpacGatewayError("opac_redirect_rejected")
+        allowed_fields = {
+            "keys",
+            "op",
+            "title",
+            "fullTitle",
+            "auth",
+            "pub",
+            "isbn",
+            "pubYear",
+            "subject",
+            "callNumber",
+            "localCollectionName",
+            "languages",
+            "kyushu_production",
+            "exclude_research_room",
+            "form_build_id",
+            "form_id",
+        }
+        allowed_group = re.compile(r"^(?:location|format|japaneseWestern)\[[^\]]{1,80}\]$")
+        data: list[tuple[str, str]] = []
+        for node in form.select("input[name], select[name]"):
+            if node.has_attr("disabled"):
+                continue
+            name = node.get("name")
+            if not isinstance(name, str) or (
+                name not in allowed_fields and allowed_group.fullmatch(name) is None
+            ):
+                continue
+            if node.name == "select":
+                options = node.select("option[selected]")
+                if not options:
+                    first = node.select_one("option")
+                    options = [first] if first is not None else []
+                for option in options[:20]:
+                    value = option.get("value", option.get_text())
+                    if not isinstance(value, str) or len(value) > 512:
+                        raise OpacGatewayError("opac_contract_changed")
+                    data.append((name, value))
+                continue
+            input_type = _normalized_text(attribute_text(node.get("type")), 20).lower() or "text"
+            if input_type in {"button", "reset", "file", "image"}:
+                continue
+            if input_type in {"checkbox", "radio"} and not node.has_attr("checked"):
+                continue
+            if input_type == "submit" and name != "op":
+                continue
+            value = node.get("value", "")
+            if not isinstance(value, str) or len(value) > 512:
+                raise OpacGatewayError("opac_contract_changed")
+            data.append((name, value))
+        form_values = {name: value for name, value in data}
+        if not form_values.get("form_build_id") or not form_values.get("form_id"):
+            raise OpacGatewayError("opac_contract_changed")
+        replacements: dict[str, str] = {"keys": query, "op": "検索"}
+        if author:
+            replacements["auth"] = author
+        if subject:
+            replacements["subject"] = subject
+        if isbn:
+            replacements["isbn"] = isbn
+        if pub_year is not None:
+            replacements["pubYear"] = str(pub_year)
+        if campus in {"toyosu", "omiya"}:
+            label = "Toyosu" if campus == "toyosu" else "Omiya"
+            replacements[f"location[{label}]"] = label
+        if format in {"book", "journal"}:
+            label = "Book" if format == "book" else "Journal"
+            replacements[f"format[{label}]"] = label
+        data = [(name, value) for name, value in data if name not in replacements]
+        data.extend(replacements.items())
+        if len(data) > 64:
+            raise OpacGatewayError("opac_contract_changed")
+        try:
+            response = await self._post_same_origin(client, action_url, data=data)
+        except httpx.TimeoutException as error:
+            raise OpacGatewayError("opac_timeout", retryable=True) from error
+        except httpx.HTTPError as error:
+            raise OpacGatewayError("opac_upstream_error", retryable=True) from error
+        return self._parse_page_response(response)
 
     async def _availability(
         self,
@@ -530,13 +772,19 @@ class OpacGateway:
                     redirect_path=expected,
                 )
             except httpx.TimeoutException as error:
-                logger.info("opac_upstream_exception phase=availability kind=timeout type=%s", type(error).__name__)
+                logger.info(
+                    "opac_upstream_exception phase=availability kind=timeout type=%s",
+                    type(error).__name__,
+                )
                 if attempt == 0:
                     await self._wait_turn()
                     continue
                 raise OpacGatewayError("opac_availability_failed", retryable=True) from error
             except httpx.HTTPError as error:
-                logger.info("opac_upstream_exception phase=availability kind=http type=%s", type(error).__name__)
+                logger.info(
+                    "opac_upstream_exception phase=availability kind=http type=%s",
+                    type(error).__name__,
+                )
                 if attempt == 0:
                     await self._wait_turn()
                     continue
@@ -582,9 +830,7 @@ class OpacGateway:
         else:
             # ``ncip_multi_info`` is keyed by public bibliographic IDs; each
             # value is an availability object or rendered HTML fragment.
-            valid_shape = any(
-                isinstance(value, (dict, str)) for value in payload.values()
-            )
+            valid_shape = any(isinstance(value, (dict, str)) for value in payload.values())
         if not valid_shape:
             raise OpacGatewayError("opac_availability_failed")
         return payload
@@ -633,7 +879,8 @@ class OpacGateway:
             publication_year=year,
             campus="any",
             url=_canonical_url(path),
-            holdings=holdings or [LibraryHoldingSummary(campus="unknown", location=None, status="unknown")],
+            holdings=holdings
+            or [LibraryHoldingSummary(campus="unknown", location=None, status="unknown")],
         )
 
     async def search(
@@ -649,7 +896,9 @@ class OpacGateway:
         limit: int = 10,
     ) -> LibraryCatalogSearchResult:
         if not self.enabled:
-            return LibraryCatalogSearchResult(status="unavailable", query=query, reason_code="opac_disabled")
+            return LibraryCatalogSearchResult(
+                status="unavailable", query=query, reason_code="opac_disabled"
+            )
         normalized = _normalized_text(query, 200)
         if not normalized:
             raise ValueError("OPAC query must not be empty.")
@@ -679,35 +928,34 @@ class OpacGateway:
             if isinstance(cached, LibraryCatalogSearchResult):
                 return cached.model_copy(deep=True)
             await self._wait_turn()
-            params: dict[str, str] = {"os[keys]": normalized}
-            for name, value in (("auth", author), ("subject", subject), ("isbn", isbn)):
-                normalized_value = _normalized_text(value, 200 if name != "isbn" else 32)
-                if normalized_value:
-                    params[f"os[{name}]"] = normalized_value
-            if pub_year is not None:
-                params["os[pubYearFrom]"] = str(pub_year)
-                params["os[pubYearTo]"] = str(pub_year)
-            if campus in {"toyosu", "omiya"}:
-                params["os[location]"] = "Toyosu" if campus == "toyosu" else "Omiya"
-            if format in {"book", "journal"}:
-                params["os[format]"] = "Book" if format == "book" else "Journal"
-            url = (
-                f"{OPAC_ORIGIN}{SEARCH_PREFIX}{quote(normalized, safe='')}"
-                f"?{urlencode(params)}"
-            )
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(20.0),
-                    headers={"Accept": "text/html"},
+                    headers={
+                        "Accept": "text/html",
+                        "Accept-Language": OPAC_ACCEPT_LANGUAGE,
+                        "User-Agent": OPAC_USER_AGENT,
+                    },
                     max_redirects=3,
                 ) as client:
-                    page = await self._get_page(client, url)
+                    page = await self._search_page(
+                        client,
+                        query=normalized,
+                        author=_normalized_text(author, 200),
+                        subject=_normalized_text(subject, 200),
+                        isbn=_normalized_text(isbn, 32),
+                        pub_year=pub_year,
+                        campus=campus,
+                        format=format,
+                    )
                     if page.kind == "record":
                         path = _record_path(str(page.response.url))
                         if path is None:
                             raise OpacGatewayError("opac_redirect_rejected")
                         item = await self._read_page_record(client, page, path)
-                        result = LibraryCatalogSearchResult(status="known", query=normalized, items=[item])
+                        result = LibraryCatalogSearchResult(
+                            status="known", query=normalized, items=[item]
+                        )
                     else:
                         rows = page.soup.select(".result-row")
                         if not rows and not page.soup.select_one("#xc-search-no-result"):
@@ -732,7 +980,9 @@ class OpacGateway:
                                 if not isinstance(node_values, dict):
                                     continue
                                 for node_id, bib_values in node_values.items():
-                                    for bib in bib_values if isinstance(bib_values, list) else [bib_values]:
+                                    for bib in (
+                                        bib_values if isinstance(bib_values, list) else [bib_values]
+                                    ):
                                         if len(ordered_bibs) >= MAX_UPSTREAM_BIBS:
                                             break
                                         ordered_bibs.append((str(node_id), str(bib)))
@@ -779,9 +1029,13 @@ class OpacGateway:
                                     availability_map.get(bib or "", {}),
                                 )
                             )
-                        result = LibraryCatalogSearchResult(status="known", query=normalized, items=items)
+                        result = LibraryCatalogSearchResult(
+                            status="known", query=normalized, items=items
+                        )
             except OpacGatewayError as error:
-                result = LibraryCatalogSearchResult(status="unavailable", query=normalized, reason_code=error.reason_code)
+                result = LibraryCatalogSearchResult(
+                    status="unavailable", query=normalized, reason_code=error.reason_code
+                )
             except ValueError:
                 result = LibraryCatalogSearchResult(
                     status="unavailable",
@@ -799,7 +1053,9 @@ class OpacGateway:
             )
             return result.model_copy(deep=True)
 
-    async def _read_page_record(self, client: httpx.AsyncClient, page: _Page, path: str) -> LibraryBibliographicRecord:
+    async def _read_page_record(
+        self, client: httpx.AsyncClient, page: _Page, path: str
+    ) -> LibraryBibliographicRecord:
         title, authors, isbn, year, _ = _record_from_detail(page.soup, path)
         xc = _settings_xc(page.settings)
         bibs = xc.get("ncip_bibs")
@@ -817,7 +1073,9 @@ class OpacGateway:
             bib_ids = [str(item) for item in bibs]
         if not bib_ids:
             raise OpacGatewayError("opac_token_missing")
-        availability = await self._availability(client, page.settings, detail=True, node_id=None, provider=provider, bib_ids=bib_ids)
+        availability = await self._availability(
+            client, page.settings, detail=True, node_id=None, provider=provider, bib_ids=bib_ids
+        )
         holdings = self._holdings_from_availability(availability)
         return LibraryBibliographicRecord(
             resource_ref=_resource_ref(path),
@@ -830,16 +1088,26 @@ class OpacGateway:
             holdings=holdings or [LibraryHoldingSummary(campus="unknown", status="unknown")],
         )
 
-    async def read(self, *, resource_ref: str, presentation: str = "summary", records: list[ChatLibraryContextRecord]) -> LibraryItemReadResult:
+    async def read(
+        self,
+        *,
+        resource_ref: str,
+        presentation: str = "summary",
+        records: list[ChatLibraryContextRecord],
+    ) -> LibraryItemReadResult:
         if presentation not in {"summary", "location"}:
             raise ValueError("Library item presentation must be summary or location.")
         if not _RESOURCE_REF.fullmatch(resource_ref):
             raise ValueError("Invalid library resource reference.")
         matching = next((record for record in records if record.resource_ref == resource_ref), None)
         if matching is None:
-            return LibraryItemReadResult(status="unavailable", resource_ref=resource_ref, reason_code="resource_ref_mismatch")
+            return LibraryItemReadResult(
+                status="unavailable", resource_ref=resource_ref, reason_code="resource_ref_mismatch"
+            )
         if not self.enabled:
-            return LibraryItemReadResult(status="unavailable", resource_ref=resource_ref, reason_code="opac_disabled")
+            return LibraryItemReadResult(
+                status="unavailable", resource_ref=resource_ref, reason_code="opac_disabled"
+            )
         path = urlparse(matching.record.url).path
         if not _RECORD_ID.fullmatch(path):
             raise OpacGatewayError("resource_ref_mismatch")
@@ -855,16 +1123,24 @@ class OpacGateway:
             try:
                 async with httpx.AsyncClient(
                     timeout=httpx.Timeout(20.0),
-                    headers={"Accept": "text/html"},
+                    headers={
+                        "Accept": "text/html",
+                        "Accept-Language": OPAC_ACCEPT_LANGUAGE,
+                        "User-Agent": OPAC_USER_AGENT,
+                    },
                     max_redirects=3,
                 ) as client:
                     page = await self._get_page(client, _canonical_url(path))
                     item = await self._read_page_record(client, page, path)
                     if not _record_matches(matching.record, item):
                         raise OpacGatewayError("resource_ref_mismatch")
-                    result = LibraryItemReadResult(status="known", resource_ref=resource_ref, item=item)
+                    result = LibraryItemReadResult(
+                        status="known", resource_ref=resource_ref, item=item
+                    )
             except OpacGatewayError as error:
-                result = LibraryItemReadResult(status="unavailable", resource_ref=resource_ref, reason_code=error.reason_code)
+                result = LibraryItemReadResult(
+                    status="unavailable", resource_ref=resource_ref, reason_code=error.reason_code
+                )
             except ValueError:
                 result = LibraryItemReadResult(
                     status="unavailable",
