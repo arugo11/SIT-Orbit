@@ -5,6 +5,7 @@ set -euo pipefail
 : "${ORBIT_AZURE_CONTAINER_APP:?Set ORBIT_AZURE_CONTAINER_APP to the Container App name.}"
 : "${ORBIT_AZURE_ENVIRONMENT_ID:?Set ORBIT_AZURE_ENVIRONMENT_ID to an existing Container Apps environment resource ID.}"
 : "${ORBIT_AZURE_REGISTRY:?Set ORBIT_AZURE_REGISTRY to an existing Azure Container Registry name.}"
+: "${ORBIT_CORS_ORIGINS:?Set ORBIT_CORS_ORIGINS to the exact demo extension origin.}"
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 identity_name="${ORBIT_AZURE_IDENTITY:-${ORBIT_AZURE_CONTAINER_APP}-pull}"
@@ -12,11 +13,20 @@ image_repository="${ORBIT_AZURE_IMAGE_REPOSITORY:-sit-orbit-api}"
 commit_sha="$(git -C "${project_root}" rev-parse HEAD)"
 image_tag="${ORBIT_AZURE_IMAGE_TAG:-${commit_sha}}"
 scombz_student_read_mode="${ORBIT_SCOMBZ_STUDENT_READ:-off}"
+sitrus_personal_context_mode="${ORBIT_SITRUS_PERSONAL_CONTEXT:-off}"
 case "${scombz_student_read_mode}" in
   off|fixture|live)
     ;;
   *)
     printf 'ORBIT_SCOMBZ_STUDENT_READ must be off, fixture, or live.\n' >&2
+    exit 1
+    ;;
+esac
+case "${sitrus_personal_context_mode}" in
+  off|fixture|live)
+    ;;
+  *)
+    printf 'ORBIT_SITRUS_PERSONAL_CONTEXT must be off, fixture, or live.\n' >&2
     exit 1
     ;;
 esac
@@ -158,6 +168,7 @@ if current_environment_id="$(az containerapp show \
     --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
     --image "${image}" \
     --set-env-vars \
+      ORBIT_RUNTIME_PROFILE=demo \
       ORBIT_AGENT_BACKEND=fixture \
       ORBIT_BOOK_DISCOVERY=off \
       ORBIT_OPAC_TRANSPORT=off \
@@ -166,7 +177,9 @@ if current_environment_id="$(az containerapp show \
       ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS=300 \
       ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS=30 \
       ORBIT_SCOMBZ_STUDENT_READ="${scombz_student_read_mode}" \
+      ORBIT_SITRUS_PERSONAL_CONTEXT="${sitrus_personal_context_mode}" \
       ORBIT_OBSERVABILITY=off \
+      ORBIT_CORS_ORIGINS="${ORBIT_CORS_ORIGINS}" \
     --min-replicas 0 \
     --max-replicas 1 \
     "${subscription_args[@]}" \
@@ -183,6 +196,7 @@ else
     --registry-identity "${identity_id}" \
     --registry-server "${registry_server}" \
     --env-vars \
+      ORBIT_RUNTIME_PROFILE=demo \
       ORBIT_AGENT_BACKEND=fixture \
       ORBIT_BOOK_DISCOVERY=off \
       ORBIT_OPAC_TRANSPORT=off \
@@ -191,21 +205,23 @@ else
       ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS=300 \
       ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS=30 \
       ORBIT_SCOMBZ_STUDENT_READ="${scombz_student_read_mode}" \
+      ORBIT_SITRUS_PERSONAL_CONTEXT="${sitrus_personal_context_mode}" \
       ORBIT_OBSERVABILITY=off \
+      ORBIT_CORS_ORIGINS="${ORBIT_CORS_ORIGINS}" \
     --min-replicas 0 \
     --max-replicas 1 \
     "${subscription_args[@]}" \
     --output none
 fi
 
-IFS='|' read -r deployed_image min_replicas max_replicas fqdn deployed_backend deployed_book_discovery deployed_opac_transport deployed_opac_base_url deployed_opac_min_interval deployed_opac_search_ttl deployed_opac_detail_ttl deployed_scombz_mode <<< "$(az containerapp show \
+IFS='|' read -r deployed_image min_replicas max_replicas fqdn deployed_profile deployed_backend deployed_book_discovery deployed_opac_transport deployed_opac_base_url deployed_opac_min_interval deployed_opac_search_ttl deployed_opac_detail_ttl deployed_scombz_mode deployed_sitrus_mode deployed_cors_origins <<< "$(az containerapp show \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   "${subscription_args[@]}" \
-  --query "join('|',[properties.template.containers[0].image,to_string(properties.template.scale.minReplicas),to_string(properties.template.scale.maxReplicas),properties.configuration.ingress.fqdn,properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_TRANSPORT'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_BASE_URL'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_MIN_INTERVAL_MS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_SCOMBZ_STUDENT_READ'].value | [0]])" \
+  --query "join('|',[properties.template.containers[0].image,to_string(properties.template.scale.minReplicas),to_string(properties.template.scale.maxReplicas),properties.configuration.ingress.fqdn,properties.template.containers[0].env[?name=='ORBIT_RUNTIME_PROFILE'].value | [0],properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_TRANSPORT'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_BASE_URL'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_MIN_INTERVAL_MS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_SCOMBZ_STUDENT_READ'].value | [0],properties.template.containers[0].env[?name=='ORBIT_SITRUS_PERSONAL_CONTEXT'].value | [0],properties.template.containers[0].env[?name=='ORBIT_CORS_ORIGINS'].value | [0]])" \
   --output tsv)"
 
-if [[ "${deployed_image}" != "${image}" || "${min_replicas}" != "0" || "${max_replicas}" != "1" || "${deployed_backend}" != "fixture" || "${deployed_book_discovery}" != "off" || "${deployed_opac_transport}" != "off" || "${deployed_opac_base_url}" != "https://library.shibaura-it.ac.jp" || "${deployed_opac_min_interval}" != "10000" || "${deployed_opac_search_ttl}" != "300" || "${deployed_opac_detail_ttl}" != "30" || "${deployed_scombz_mode}" != "${scombz_student_read_mode}" ]]; then
+if [[ "${deployed_image}" != "${image}" || "${min_replicas}" != "0" || "${max_replicas}" != "1" || "${deployed_profile}" != "demo" || "${deployed_backend}" != "fixture" || "${deployed_book_discovery}" != "off" || "${deployed_opac_transport}" != "off" || "${deployed_opac_base_url}" != "https://library.shibaura-it.ac.jp" || "${deployed_opac_min_interval}" != "10000" || "${deployed_opac_search_ttl}" != "300" || "${deployed_opac_detail_ttl}" != "30" || "${deployed_scombz_mode}" != "${scombz_student_read_mode}" || "${deployed_sitrus_mode}" != "${sitrus_personal_context_mode}" || "${deployed_cors_origins}" != "${ORBIT_CORS_ORIGINS}" ]]; then
   printf 'Container App deployment verification failed.\n' >&2
   exit 1
 fi

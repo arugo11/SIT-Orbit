@@ -18,12 +18,21 @@ opac_base_url="${ORBIT_OPAC_BASE_URL:-https://library.shibaura-it.ac.jp}"
 opac_min_interval_ms="${ORBIT_OPAC_MIN_INTERVAL_MS:-10000}"
 opac_search_cache_ttl="${ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS:-300}"
 opac_detail_cache_ttl="${ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS:-30}"
+sitrus_personal_context_mode="${ORBIT_SITRUS_PERSONAL_CONTEXT:-off}"
 
 case "${ORBIT_AZURE_BOOK_DISCOVERY_MODE}" in
   off|multi_query|semantic)
     ;;
   *)
     printf 'ORBIT_AZURE_BOOK_DISCOVERY_MODE must be off, multi_query, or semantic.\n' >&2
+    exit 1
+    ;;
+esac
+case "${sitrus_personal_context_mode}" in
+  off|live)
+    ;;
+  *)
+    printf 'Production ORBIT_SITRUS_PERSONAL_CONTEXT must be off or live.\n' >&2
     exit 1
     ;;
 esac
@@ -85,6 +94,7 @@ az containerapp update \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   --set-env-vars \
+    ORBIT_RUNTIME_PROFILE=production \
     ORBIT_AGENT_BACKEND=azure_openai \
     ORBIT_WEB_SEARCH=azure \
     ORBIT_BOOK_DISCOVERY="${ORBIT_AZURE_BOOK_DISCOVERY_MODE}" \
@@ -94,6 +104,7 @@ az containerapp update \
     ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS="${opac_search_cache_ttl}" \
     ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS="${opac_detail_cache_ttl}" \
     ORBIT_SCOMBZ_STUDENT_READ=live \
+    ORBIT_SITRUS_PERSONAL_CONTEXT="${sitrus_personal_context_mode}" \
     ORBIT_OBSERVABILITY=off \
     "AZURE_OPENAI_ENDPOINT=${endpoint%/}" \
     "AZURE_OPENAI_MODEL=${ORBIT_AZURE_OPENAI_DEPLOYMENT}" \
@@ -108,9 +119,9 @@ readback="$(az containerapp show \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   "${subscription_args[@]}" \
-  --query "join('|',[properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_WEB_SEARCH'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_TRANSPORT'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_BASE_URL'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_MIN_INTERVAL_MS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_SCOMBZ_STUDENT_READ'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OBSERVABILITY'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_MODEL'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_API_KEY'].secretRef | [0]])" \
+  --query "join('|',[properties.template.containers[0].env[?name=='ORBIT_RUNTIME_PROFILE'].value | [0],properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='ORBIT_WEB_SEARCH'].value | [0],properties.template.containers[0].env[?name=='ORBIT_BOOK_DISCOVERY'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_TRANSPORT'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_BASE_URL'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_MIN_INTERVAL_MS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS'].value | [0],properties.template.containers[0].env[?name=='ORBIT_SCOMBZ_STUDENT_READ'].value | [0],properties.template.containers[0].env[?name=='ORBIT_SITRUS_PERSONAL_CONTEXT'].value | [0],properties.template.containers[0].env[?name=='ORBIT_OBSERVABILITY'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_MODEL'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_API_KEY'].secretRef | [0]])" \
   --output tsv)"
-expected="azure_openai|azure|${ORBIT_AZURE_BOOK_DISCOVERY_MODE}|${opac_transport}|${opac_base_url}|${opac_min_interval_ms}|${opac_search_cache_ttl}|${opac_detail_cache_ttl}|live|off|${ORBIT_AZURE_OPENAI_DEPLOYMENT}|${secret_name}"
+expected="production|azure_openai|azure|${ORBIT_AZURE_BOOK_DISCOVERY_MODE}|${opac_transport}|${opac_base_url}|${opac_min_interval_ms}|${opac_search_cache_ttl}|${opac_detail_cache_ttl}|live|${sitrus_personal_context_mode}|off|${ORBIT_AZURE_OPENAI_DEPLOYMENT}|${secret_name}"
 if [[ "${readback}" != "${expected}" ]]; then
   printf 'Container App model configuration verification failed.\n' >&2
   exit 1

@@ -28,6 +28,8 @@ dist/
 coverage/
 apps/mobile/.expo/
 apps/mobile/web-build/
+.tmp/
+apps/extension/dist.*
 
 # Local logs and tool output
 .logs/
