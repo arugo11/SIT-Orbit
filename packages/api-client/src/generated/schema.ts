@@ -812,8 +812,14 @@ export interface components {
              * @enum {string}
              */
             scombz_student_read_mode: "off" | "fixture" | "live";
+            /**
+             * Sitrus Personal Context Mode
+             * @default off
+             * @enum {string}
+             */
+            sitrus_personal_context_mode: "off" | "fixture" | "live";
             /** Supported Client Tools */
-            supported_client_tools: ("scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options")[];
+            supported_client_tools: ("scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "cast_career_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options")[];
             /** Max Client Tools */
             max_client_tools: number;
         };
@@ -1892,14 +1898,30 @@ export interface components {
             reason_code: string | null;
         };
         /**
+         * SitrusCreditSummaryItem
+         * @description One minimized row from the SITRUS acquired-credit summary.
+         */
+        SitrusCreditSummaryItem: {
+            /** Category */
+            category: string;
+            /** Credit Type */
+            credit_type?: string | null;
+            /** Current Course Count */
+            current_course_count: number;
+            /** Current Credits */
+            current_credits: number;
+            /** Cumulative Course Count */
+            cumulative_course_count: number;
+            /** Cumulative Credits */
+            cumulative_credits: number;
+        };
+        /**
          * SitrusGradeItem
-         * @description One minimized grade row extracted from the displayed SITRUS notice.
+         * @description One minimized grade row returned by authenticated SITRUS APIs.
          */
         SitrusGradeItem: {
             /** Subject */
             subject: string;
-            /** Course Code */
-            course_code?: string | null;
             /** Credits */
             credits?: number | null;
             /**
@@ -1907,21 +1929,16 @@ export interface components {
              * @enum {string}
              */
             grade: "S" | "A" | "B" | "C" | "D" | "F" | "G" | "N" | "X" | "#";
+            /** Outcome */
+            outcome?: string | null;
             /** Year */
             year?: number | null;
             /** Term */
             term?: number | null;
-            /** Term Slot */
-            term_slot?: number | null;
-            /**
-             * Repeated
-             * @default false
-             */
-            repeated: boolean;
         };
         /**
          * SitrusGradeResult
-         * @description In-memory SITRUS projection; the PDF and student identity are omitted.
+         * @description Minimized SITRUS projection; identity and raw responses are omitted.
          */
         SitrusGradeResult: {
             /**
@@ -1934,13 +1951,15 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "known" | "unavailable";
+            status: "known" | "reauth_required" | "unavailable";
             /** Report Label */
             report_label?: string | null;
             /** Grades */
             grades?: components["schemas"]["SitrusGradeItem"][];
-            /** Cumulative Gpa */
-            cumulative_gpa?: number | null;
+            /** Credit Summaries */
+            credit_summaries?: components["schemas"]["SitrusCreditSummaryItem"][];
+            /** Observed At */
+            observed_at: string;
             /** Reason Code */
             reason_code?: string | null;
         };

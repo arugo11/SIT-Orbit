@@ -305,7 +305,7 @@ describe("chat context manifest", () => {
     await saveConversation(legacy as unknown as ChatConversation);
     const loaded = await loadConversation(legacy.conversationId as string);
     expect(loaded?.history_eligible).toBe(false);
-    expect(loaded?.provider_destination).toBe("none");
+    expect(loaded?.provider_destination).toBe("unknown");
     expect(loaded?.processing_scope).toBe("none");
   });
 });

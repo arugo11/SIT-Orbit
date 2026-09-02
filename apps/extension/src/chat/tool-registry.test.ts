@@ -3,12 +3,13 @@ import {
   advertiseReadOnlyTools,
   CHAT_TOOL_NAMES,
   isRegisteredReadOnlyTool,
+  PROVIDER_PSEUDONYMIZED_TOOL_NAMES,
   validateChatToolArguments,
 } from "./tool-registry";
 
 describe("chat tool registry", () => {
   it("exposes the complete read-only registry with stable intersections", () => {
-    expect(CHAT_TOOL_NAMES).toHaveLength(21);
+    expect(CHAT_TOOL_NAMES).toHaveLength(22);
     const advertised = advertiseReadOnlyTools({
       locallyAvailable: new Set([
         "scombz_course_list",
@@ -79,6 +80,12 @@ describe("chat tool registry", () => {
       validateChatToolArguments("cast_search", { kind: "person" }),
     ).toEqual({ ok: false, reason: "invalid_cast_search_arguments" });
     expect(
+      validateChatToolArguments("cast_search", {
+        kind: "hiring_record",
+        filters: { graduation_years: [2026, 2025] },
+      }).ok,
+    ).toBe(true);
+    expect(
       validateChatToolArguments("library_item_read", {
         resource_ref: libraryRef,
         presentation: "summary",
@@ -89,5 +96,23 @@ describe("chat tool registry", () => {
         resource_ref: "record-1",
       }),
     ).toEqual({ ok: false, reason: "invalid_library_ref" });
+  });
+
+  it("keeps every personal provider projection behind the named gateway", () => {
+    expect(PROVIDER_PSEUDONYMIZED_TOOL_NAMES).toEqual(
+      new Set([
+        "scombz_page_summary",
+        "scombz_read",
+        "scombz_course_list",
+        "scombz_portal_read",
+        "scombz_course_read",
+        "scombz_material_search",
+        "sitrus_read",
+        "cast_alumni_read",
+      ]),
+    );
+    expect(PROVIDER_PSEUDONYMIZED_TOOL_NAMES.has("syllabus_search")).toBe(
+      false,
+    );
   });
 });

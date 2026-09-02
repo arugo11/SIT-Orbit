@@ -15,11 +15,13 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
-    StrictFloat,
     StrictInt,
     StrictStr,
+    ValidationInfo,
+    field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from .domain import ActionProposal, EvidenceLink, LibraryActionOptionsResult, OrbitEvent
 
@@ -74,6 +76,7 @@ class ChatCapabilities(StrictApiModel):
     agent_backend: Literal["fixture", "openai", "azure_openai"]
     observability: Literal["off", "wandb"]
     scombz_student_read_mode: Literal["off", "fixture", "live"]
+    sitrus_personal_context_mode: Literal["off", "fixture", "live"] = "off"
     supported_client_tools: list["ChatToolName"] = Field(max_length=32)
     max_client_tools: StrictInt = Field(ge=1, le=32)
 
@@ -89,12 +92,31 @@ class ChatCapabilities(StrictApiModel):
             "scombz_course_read",
             "scombz_material_search",
         }
-        if not (
+        live_allowed = (
             self.agent_backend == "azure_openai"
             and self.observability == "off"
             and self.scombz_student_read_mode == "live"
-        ) and new_scombz.intersection(self.supported_client_tools):
-            raise ValueError("Live SCombZ tools require Azure OpenAI with observability off.")
+        )
+        fixture_allowed = (
+            self.agent_backend == "fixture"
+            and self.observability == "off"
+            and self.scombz_student_read_mode == "fixture"
+        )
+        if not (live_allowed or fixture_allowed) and new_scombz.intersection(
+            self.supported_client_tools
+        ):
+            raise ValueError("SCombZ student tools require an explicit live or fixture capability.")
+        sitrus_allowed = (
+            self.agent_backend == "azure_openai"
+            and self.observability == "off"
+            and self.sitrus_personal_context_mode == "live"
+        ) or (
+            self.agent_backend == "fixture"
+            and self.observability == "off"
+            and self.sitrus_personal_context_mode == "fixture"
+        )
+        if not sitrus_allowed and "sitrus_read" in self.supported_client_tools:
+            raise ValueError("SITRUS grades require an explicit Azure live or fixture capability.")
         return self
 
 
@@ -748,34 +770,66 @@ class LibraryDiscoverySearchResult(StrictApiModel):
 
 
 class SitrusGradeItem(StrictApiModel):
-    """One minimized grade row extracted from the displayed SITRUS notice."""
+    """One minimized grade row returned by authenticated SITRUS APIs."""
 
     subject: StrictStr = Field(min_length=1, max_length=200)
-    course_code: StrictStr | None = Field(default=None, max_length=20)
     credits: StrictInt | None = Field(default=None, ge=0, le=20)
     grade: Literal["S", "A", "B", "C", "D", "F", "G", "N", "X", "#"]
+    outcome: StrictStr | None = Field(default=None, max_length=40)
     year: StrictInt | None = Field(default=None, ge=2000, le=2100)
     term: StrictInt | None = Field(default=None, ge=1, le=3)
-    term_slot: StrictInt | None = Field(default=None, ge=1, le=4)
-    repeated: StrictBool = False
+
+
+class SitrusCreditSummaryItem(StrictApiModel):
+    """One minimized row from the SITRUS acquired-credit summary."""
+
+    category: StrictStr = Field(min_length=1, max_length=100)
+    credit_type: StrictStr | None = Field(default=None, max_length=40)
+    current_course_count: StrictInt = Field(ge=0, le=10_000)
+    current_credits: StrictInt = Field(ge=0, le=10_000)
+    cumulative_course_count: StrictInt = Field(ge=0, le=10_000)
+    cumulative_credits: StrictInt = Field(ge=0, le=10_000)
 
 
 class SitrusGradeResult(StrictApiModel):
-    """In-memory SITRUS projection; the PDF and student identity are omitted."""
+    """Minimized SITRUS projection; identity and raw responses are omitted."""
 
     schema_version: Literal["v1"] = "v1"
-    status: Literal["known", "unavailable"]
+    status: Literal["known", "reauth_required", "unavailable"]
     report_label: StrictStr | None = Field(default=None, max_length=100)
     grades: list[SitrusGradeItem] = Field(default_factory=list, max_length=200)
-    cumulative_gpa: StrictFloat | None = Field(default=None, ge=0, le=4)
+    credit_summaries: list[SitrusCreditSummaryItem] = Field(default_factory=list, max_length=200)
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
     reason_code: StrictStr | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
-    def unavailable_has_no_grade_data(self) -> "SitrusGradeResult":
-        if self.status == "unavailable" and (
-            self.report_label is not None or self.grades or self.cumulative_gpa is not None
+    def validates_status_and_timestamp(self) -> "SitrusGradeResult":
+        try:
+            observed_at = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise PydanticCustomError(
+                "sitrus_observed_at_invalid",
+                "SITRUS observed_at must use RFC3339.",
+            ) from None
+        if observed_at.tzinfo is None:
+            raise PydanticCustomError(
+                "sitrus_observed_at_timezone_missing",
+                "SITRUS observed_at must include a timezone.",
+            )
+        if self.status != "known" and (
+            self.report_label is not None or self.grades or self.credit_summaries
         ):
-            raise ValueError("Unavailable SITRUS results cannot include grade data.")
+            raise PydanticCustomError(
+                "sitrus_non_known_contains_data",
+                "Non-known SITRUS results cannot include academic data.",
+            )
+        if self.status == "known" and not (
+            self.report_label is not None or self.grades or self.credit_summaries
+        ):
+            raise PydanticCustomError(
+                "sitrus_known_empty",
+                "Known SITRUS results must include academic data.",
+            )
         return self
 
 
@@ -1422,9 +1476,7 @@ class CastCareerSearchResult(StrictApiModel):
         if len(set(self.evidence_ids)) != len(self.evidence_ids):
             raise ValueError("CAST career evidence IDs must be unique.")
         if any(
-            not re.fullmatch(
-                r"cast-career-search-v1-[A-Za-z0-9_-]{16,200}", evidence_id
-            )
+            not re.fullmatch(r"cast-career-search-v1-[A-Za-z0-9_-]{16,200}", evidence_id)
             for evidence_id in self.evidence_ids
         ):
             raise ValueError("CAST career evidence IDs must be opaque v1 IDs.")
@@ -1831,6 +1883,25 @@ class ChatToolResultRequest(StrictApiModel):
         | LibraryActionOptionsResult
     )
 
+    @field_validator("result", mode="before")
+    @classmethod
+    def validate_sitrus_result_before_union(
+        cls,
+        value: Any,
+        info: ValidationInfo,
+    ) -> Any:
+        """Select the strict SITRUS contract before evaluating the broad union.
+
+        Most client-tool results share ``schema_version`` and ``status``.  Letting
+        Pydantic try every union member first hides the actionable SITRUS error
+        behind failures from unrelated tools.  Returning a validated model keeps
+        the public union/OpenAPI contract unchanged and does not relax any field.
+        """
+
+        if info.data.get("name") == "sitrus_read":
+            return SitrusGradeResult.model_validate(value)
+        return value
+
     @model_validator(mode="after")
     def result_matches_tool(self) -> "ChatToolResultRequest":
         if self.name == "google_calendar_availability" and not isinstance(
@@ -2036,6 +2107,7 @@ __all__ = [
     "CastCareerAggregate",
     "CastCareerSearchResult",
     "CastSearchSort",
+    "SitrusCreditSummaryItem",
     "SitrusGradeItem",
     "SitrusGradeResult",
     "MoodleReadResult",

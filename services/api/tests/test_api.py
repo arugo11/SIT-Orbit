@@ -4,21 +4,48 @@ from pathlib import Path
 import orbit_api.main as orbit_main
 import pytest
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from orbit_api.main import app, configure_cors
 
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def test_validation_diagnostics_keep_only_contract_paths_and_types() -> None:
+    error = RequestValidationError(
+        [
+            {
+                "type": "int_type",
+                "loc": ("body", "result", "grades", 4, "credits"),
+                "msg": "Input should be a valid integer",
+                "input": "private-grade-value",
+            },
+            {
+                "type": "extra_forbidden",
+                "loc": ("body", "result", "private-student-name"),
+                "msg": "Extra inputs are not permitted",
+                "input": "private-student-value",
+            },
+        ]
+    )
+
+    diagnostics = orbit_main._safe_validation_diagnostics(error)
+
+    assert diagnostics == [
+        {
+            "location": ["result", "grades", 4, "credits"],
+            "error_type": "int_type",
+        },
+        {"location": ["result"], "error_type": "extra_forbidden"},
+    ]
+    encoded = json.dumps(diagnostics)
+    assert "private-grade-value" not in encoded
+    assert "private-student-name" not in encoded
+    assert "private-student-value" not in encoded
+
+
 def load_fixture(name: str):
     return json.loads((ROOT / "fixtures" / "b1_omiya" / name).read_text(encoding="utf-8"))
-
-
-def test_health() -> None:
-    with TestClient(app) as client:
-        response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
 
 
 def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
@@ -59,6 +86,7 @@ def test_capabilities_report_the_configured_personal_data_boundary(
     ("backend", "mode", "observability", "live_tools"),
     [
         ("fixture", "off", "off", False),
+        ("fixture", "fixture", "off", True),
         ("azure_openai", "fixture", "off", False),
         ("azure_openai", "live", "wandb", False),
         ("azure_openai", "live", "off", True),
@@ -74,6 +102,7 @@ def test_chat_capabilities_gate_live_scombz_tools(
     monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
     monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", mode)
+    monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", "off")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", observability)
     if observability == "wandb":
         monkeypatch.setattr(orbit_main, "init_observability", lambda: False)
@@ -91,6 +120,55 @@ def test_chat_capabilities_gate_live_scombz_tools(
         "scombz_material_search",
     }
     assert bool(names & live_names) is live_tools
+
+
+@pytest.mark.parametrize(
+    ("backend", "mode", "observability", "allowed"),
+    [
+        ("fixture", "off", "off", False),
+        ("fixture", "fixture", "off", True),
+        ("azure_openai", "fixture", "off", False),
+        ("azure_openai", "live", "wandb", False),
+        ("azure_openai", "live", "off", True),
+        ("openai", "live", "off", False),
+    ],
+)
+def test_chat_capabilities_gate_sitrus_personal_context(
+    monkeypatch,
+    backend: str,
+    mode: str,
+    observability: str,
+    allowed: bool,
+) -> None:
+    monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
+    monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", "off")
+    monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", mode)
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", observability)
+    if observability == "wandb":
+        monkeypatch.setattr(orbit_main, "init_observability", lambda: False)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/chat/capabilities")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["sitrus_personal_context_mode"] == mode
+    assert ("sitrus_read" in body["supported_client_tools"]) is allowed
+
+
+def test_chat_capabilities_reject_invalid_sitrus_mode(monkeypatch) -> None:
+    monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", "off")
+    monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", "invalid")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+
+    with TestClient(app) as client:
+        response = client.get("/v1/chat/capabilities")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "SITRUS personal context mode is not supported."
 
 
 def test_api_token_protects_v1_routes_but_not_health(monkeypatch) -> None:

@@ -6,6 +6,7 @@ import {
   type ChatRunResponse,
   type ChatToolResultRequest,
   classifyAgentApiError,
+  DEMO_FIXTURE_ENABLED,
   isBrowserReadResult,
   isCastAlumniReadResult,
   isCastCareerSearchResult,
@@ -55,10 +56,8 @@ import {
   rankCastCareerItems,
 } from "../content/cast-cross-search";
 import { CAST_ENTRY_URL, type CastLocalSnapshot } from "../content/cast-reader";
-import {
-  type CastSearchLocalKnownResult,
-  isCastSearchRequest,
-} from "../content/cast-search-api";
+import type { CastSearchLocalKnownResult } from "../content/cast-search-api";
+import { isCastSearchRequest } from "../content/cast-search-api";
 import {
   MOODLE_DASHBOARD_URL,
   type MoodleLocalSnapshot,
@@ -68,10 +67,10 @@ import {
   type MyLibraryLocalSnapshot,
 } from "../content/my-library-reader";
 import {
-  isSitrusGradeUrl,
   type PageContext,
   projectScombzPageSummary,
   projectScombzRead,
+  SITRUS_ORIGIN,
 } from "../content/page-context";
 import { hasScombzStudentSessionConsent } from "../content/scombz-consent";
 import { ConversationPseudonymizationGateway } from "../privacy/conversation-pseudonymization";
@@ -95,7 +94,12 @@ import type {
   SitrusReadResponse,
 } from "../shared/messages";
 import { MESSAGE_TYPES } from "../shared/messages";
-import { hostAccessRequest } from "./access-policy";
+import {
+  hostAccessRequest,
+  requiresLiveScombzStudentRead,
+  requiresSitrusPersonalContext,
+  requiresVerifiedCampusCapability,
+} from "./access-policy";
 import {
   type ChatConversation,
   type ChatTimelineMessage,
@@ -112,9 +116,11 @@ import {
   toChatHistory,
 } from "./chat-history";
 import { ChatRunner } from "./chat-runner";
+import { demoFixtureToolResult } from "./demo-fixture";
 import {
   advertiseReadOnlyTools,
   isRegisteredReadOnlyTool,
+  PROVIDER_PSEUDONYMIZED_TOOL_NAMES,
   toolDisplayLabel,
   validateChatToolArguments,
 } from "./tool-registry";
@@ -416,13 +422,15 @@ function mergeProcessingScope(
 ): ChatConversation {
   const nextScope = PERSONAL_SCOMBZ_TOOL_NAMES.has(toolName)
     ? "personal/scombz_student"
-    : toolName === "syllabus_search" || toolName === "syllabus_read"
-      ? "public/syllabus"
-      : (toolName === "cast_alumni_read" &&
-            dataClassification === "restricted") ||
-          toolName === "cast_career_search"
-        ? "restricted/cast_career"
-        : null;
+    : toolName === "sitrus_read"
+      ? "personal/sitrus_academic_record"
+      : toolName === "syllabus_search" || toolName === "syllabus_read"
+        ? "public/syllabus"
+        : (toolName === "cast_alumni_read" &&
+              dataClassification === "restricted") ||
+            toolName === "cast_career_search"
+          ? "restricted/cast_career"
+          : null;
   if (!nextScope || conversation.processing_scope === nextScope) {
     return conversation;
   }
@@ -431,7 +439,12 @@ function mergeProcessingScope(
     conversation.processing_scope !== nextScope
       ? "mixed"
       : nextScope;
-  return { ...conversation, processing_scope };
+  return {
+    ...conversation,
+    processing_scope,
+    history_eligible:
+      toolName === "sitrus_read" ? false : conversation.history_eligible,
+  };
 }
 
 function explicitBookCount(messages: ChatTimelineMessage[]): number | null {
@@ -1132,6 +1145,7 @@ export function ChatPanel({
   function clientTools(
     serverTools: ReadonlySet<string> | null = null,
     maxClientTools = 32,
+    fixtureScombz = false,
   ) {
     const liveScombzTools = new Set([
       "scombz_course_list",
@@ -1172,7 +1186,10 @@ export function ChatPanel({
     if (projectScombzRead(pageContext) && allows("scombz_read")) {
       tools.push({ name: "scombz_read", version: 1 });
     }
-    if (pageContext?.kind === "scombz" && serverTools !== null) {
+    if (
+      (pageContext?.kind === "scombz" || fixtureScombz) &&
+      serverTools !== null
+    ) {
       for (const name of liveScombzTools as Set<
         | "scombz_course_list"
         | "scombz_portal_read"
@@ -1195,7 +1212,7 @@ export function ChatPanel({
       tools.push({ name: "syllabus_read", version: 1 });
     if (allows("browser_read_url"))
       tools.push({ name: "browser_read_url", version: 1 });
-    if (isSitrusGradeUrl(pageContext?.url) && allows("sitrus_read")) {
+    if (serverTools !== null && allows("sitrus_read")) {
       tools.push({ name: "sitrus_read", version: 1 });
     }
     if (allows("moodle_read")) tools.push({ name: "moodle_read", version: 1 });
@@ -1232,7 +1249,7 @@ export function ChatPanel({
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
     progressLabel = toolLabel(response.calls[0]?.name ?? ""),
-    options: { submit?: boolean } = {},
+    options: { submit?: boolean; demoFixture?: boolean } = {},
   ): Promise<{
     response: ChatRunResponse;
     conversation: ChatConversation;
@@ -1546,7 +1563,13 @@ export function ChatPanel({
     };
 
     let request: ChatToolResultRequest;
-    if (call.name === "scombz_page_summary") {
+    const fixtureResult =
+      options.demoFixture && DEMO_FIXTURE_ENABLED
+        ? demoFixtureToolResult(call.name, argumentsObject)
+        : null;
+    if (fixtureResult) {
+      request = toolResultRequest(call.tool_call_id, call.name, fixtureResult);
+    } else if (call.name === "scombz_page_summary") {
       if (!pageSummary) {
         throw new Error("表示中のSCombZページを読み取れません。");
       }
@@ -1989,19 +2012,20 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "sitrus_read") {
-      if (!pageContext || !isSitrusGradeUrl(pageContext.url)) {
-        throw new Error("表示中のSITRUS成績ページを読み取れません。");
-      }
-      const access = hostAccessRequest(pageContext.url);
+      const access = hostAccessRequest(SITRUS_ORIGIN);
       if (!access) throw new Error("SITRUSの参照先URLを検証できません。");
       const sitrus = await sendExtensionMessage<SitrusReadResponse>({
         type: "sitrus-read",
         tool_call_id: call.tool_call_id,
-        page_url: pageContext.url,
       });
       if (sitrus.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
+        );
+      }
+      if (sitrus.status === "reauth_required") {
+        throw new Error(
+          "SITRUSへの再ログインが必要です。ログイン後、もう一度質問してください。",
         );
       }
       if (
@@ -2299,15 +2323,7 @@ export function ChatPanel({
         browser.projection,
       );
     }
-    if (
-      call.name === "scombz_page_summary" ||
-      call.name === "scombz_read" ||
-      call.name === "scombz_course_list" ||
-      call.name === "scombz_portal_read" ||
-      call.name === "scombz_course_read" ||
-      call.name === "scombz_material_search" ||
-      call.name === "cast_alumni_read"
-    ) {
+    if (PROVIDER_PSEUDONYMIZED_TOOL_NAMES.has(call.name)) {
       // Keep the provider-facing result behind the same conversation gateway
       // as the user message and history. The local display/detail state stays
       // untouched; only the request sent to the Agent is transformed.
@@ -2492,6 +2508,7 @@ export function ChatPanel({
     };
     if (
       current.processing_scope === "personal/scombz_student" ||
+      current.processing_scope === "personal/sitrus_academic_record" ||
       current.processing_scope === "restricted/cast_career" ||
       current.processing_scope === "mixed"
     ) {
@@ -2569,14 +2586,21 @@ export function ChatPanel({
       let maxClientTools = 32;
       let capabilitiesSnapshot: ChatCapabilities | null = null;
       let providerDestination: ChatConversation["provider_destination"] =
-        "local";
+        "unknown";
       let liveScombzGate = false;
+      let liveSitrusGate = false;
+      let demoFixtureGate = false;
+      const liveScombzReadRequired = requiresLiveScombzStudentRead(message, {
+        processingScope: current.processing_scope,
+      });
+      const sitrusReadRequired = requiresSitrusPersonalContext(message);
       const capabilityReader = (
         apiClient as AgentApiClient & {
           chatCapabilities?: () => Promise<{
             agent_backend: string;
             observability: string;
             scombz_student_read_mode: string;
+            sitrus_personal_context_mode: string;
             supported_client_tools: readonly string[];
             max_client_tools: number;
           }>;
@@ -2590,13 +2614,23 @@ export function ChatPanel({
             capabilities.agent_backend === "azure_openai" &&
             capabilities.observability === "off" &&
             capabilities.scombz_student_read_mode === "live";
+          liveSitrusGate =
+            capabilities.agent_backend === "azure_openai" &&
+            capabilities.observability === "off" &&
+            capabilities.sitrus_personal_context_mode === "live";
+          demoFixtureGate =
+            DEMO_FIXTURE_ENABLED &&
+            capabilities.agent_backend === "fixture" &&
+            capabilities.observability === "off" &&
+            (capabilities.scombz_student_read_mode === "fixture" ||
+              capabilities.sitrus_personal_context_mode === "fixture");
           providerDestination =
             capabilities.agent_backend === "azure_openai"
               ? "azure_openai"
               : "local";
           const allowed = new Set(capabilities.supported_client_tools);
           maxClientTools = capabilities.max_client_tools;
-          if (!liveScombzGate) {
+          if (!liveScombzGate && !demoFixtureGate) {
             for (const name of [
               "scombz_course_list",
               "scombz_portal_read",
@@ -2606,6 +2640,17 @@ export function ChatPanel({
               allowed.delete(name);
             }
           }
+          if (
+            !liveSitrusGate &&
+            !(
+              DEMO_FIXTURE_ENABLED &&
+              capabilities.agent_backend === "fixture" &&
+              capabilities.observability === "off" &&
+              capabilities.sitrus_personal_context_mode === "fixture"
+            )
+          ) {
+            allowed.delete("sitrus_read");
+          }
           serverTools = allowed;
         } catch {
           // Capability failure is fail-closed. The request may still answer
@@ -2613,9 +2658,39 @@ export function ChatPanel({
           // connector that the server has not explicitly approved.
           serverTools = new Set();
           capabilitiesSnapshot = null;
+          providerDestination = "unknown";
         }
       }
-      if (pageContext?.kind === "scombz") {
+      if (
+        sitrusReadRequired &&
+        typeof capabilityReader === "function" &&
+        !liveSitrusGate &&
+        !(
+          capabilitiesSnapshot?.agent_backend === "fixture" &&
+          capabilitiesSnapshot.sitrus_personal_context_mode === "fixture"
+        )
+      ) {
+        throw new Error(
+          "SITRUSの成績連携は現在利用できません。管理者設定とログイン状態を確認してください。",
+        );
+      }
+      if (
+        typeof capabilityReader === "function" &&
+        capabilitiesSnapshot === null &&
+        requiresVerifiedCampusCapability(message, {
+          onScombzPage: pageContext?.kind === "scombz",
+          processingScope: current.processing_scope,
+        })
+      ) {
+        throw new Error(
+          "学内データの利用可否を確認できません。再認証後にもう一度お試しください。",
+        );
+      }
+      if (
+        pageContext?.kind === "scombz" &&
+        liveScombzReadRequired &&
+        !demoFixtureGate
+      ) {
         if (!(await hasScombzStudentSessionConsent())) {
           throw new Error(
             "SCombZの授業情報をAzureへ送るには、設定で一度だけ共有同意が必要です。",
@@ -2676,7 +2751,9 @@ export function ChatPanel({
       current = {
         ...current,
         processing_scope:
-          pageContext?.kind === "scombz" && liveScombzGate
+          pageContext?.kind === "scombz" &&
+          liveScombzReadRequired &&
+          liveScombzGate
             ? mergeProcessingScope(current, "scombz_course_list")
                 .processing_scope
             : current.processing_scope,
@@ -2693,7 +2770,9 @@ export function ChatPanel({
         : null;
       if (
         providerContextManifest &&
+        providerDestination === "azure_openai" &&
         (current.processing_scope === "personal/scombz_student" ||
+          current.processing_scope === "personal/sitrus_academic_record" ||
           current.processing_scope === "restricted/cast_career" ||
           current.processing_scope === "mixed")
       ) {
@@ -2725,18 +2804,26 @@ export function ChatPanel({
             ? toChatHistory(beforeSend.messages, {
                 requireProviderContent:
                   current.processing_scope === "personal/scombz_student" ||
+                  current.processing_scope ===
+                    "personal/sitrus_academic_record" ||
                   current.processing_scope === "restricted/cast_career" ||
                   current.processing_scope === "mixed",
               })
             : [],
-          client_tools: clientTools(serverTools, maxClientTools),
+          client_tools: clientTools(
+            serverTools,
+            maxClientTools,
+            demoFixtureGate,
+          ),
           context_manifest: providerContextManifest,
         });
         await finishResponse(response, current);
         return;
       }
       const locallyAvailableTools = new Set(
-        clientTools(serverTools, maxClientTools).map((tool) => tool.name),
+        clientTools(serverTools, maxClientTools, demoFixtureGate).map(
+          (tool) => tool.name,
+        ),
       );
       let runnerConversation = current;
       const runner = new ChatRunner({
@@ -2750,7 +2837,7 @@ export function ChatPanel({
             },
             runnerConversation,
             toolLabel(call.name),
-            { submit: false },
+            { submit: false, demoFixture: demoFixtureGate },
           );
           runnerConversation = outcome.conversation;
           return { request: outcome.request };
@@ -2763,6 +2850,8 @@ export function ChatPanel({
           ? toChatHistory(beforeSend.messages, {
               requireProviderContent:
                 current.processing_scope === "personal/scombz_student" ||
+                current.processing_scope ===
+                  "personal/sitrus_academic_record" ||
                 current.processing_scope === "restricted/cast_career" ||
                 current.processing_scope === "mixed",
             })
@@ -2770,6 +2859,9 @@ export function ChatPanel({
         context_manifest: providerContextManifest,
         capabilities: capabilitiesSnapshot,
         locally_available_tools: locallyAvailableTools,
+        source_generation: pageContext
+          ? `${pageContext.kind}:${pageContext.url}`
+          : `conversation:${withUser.conversationId}`,
       });
       current = runnerConversation;
       await finishResponse(runnerResult.response, current);
@@ -2827,6 +2919,7 @@ export function ChatPanel({
     syllabusRefsRef.current.clear();
     const next = newConversation();
     await persist(next);
+    setProgress(null);
     setRetryText(null);
     setHistoryOpen(false);
   }
@@ -3265,6 +3358,12 @@ export function ChatPanel({
             ) : null}
             <div className="chat-message-content">
               <p>{message.content}</p>
+              {message.role === "assistant" &&
+              message.content.startsWith("SITRUSへの再ログインが必要です。") ? (
+                <a href={SITRUS_ORIGIN} target="_blank" rel="noreferrer">
+                  SITRUSログインページを開く
+                </a>
+              ) : null}
               {message.role === "assistant" &&
               message.relatedBooks &&
               message.relatedBooks.length > 0 ? (

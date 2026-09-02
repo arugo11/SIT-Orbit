@@ -93,7 +93,7 @@ export type LibraryActionOptionsResult =
   components["schemas"]["LibraryActionOptionsResult"];
 export type LibraryActionOption = components["schemas"]["LibraryActionOption"];
 
-export const AZURE_DEMO_AGENT_API_BASE =
+export const PRODUCTION_AGENT_API_BASE =
   "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io";
 const compiledAgentApiBase =
   typeof __ORBIT_AGENT_API_BASE__ === "undefined"
@@ -105,7 +105,11 @@ const compiledAgentApiBase =
  * extension against a local Agent without starting an OAuth flow.
  */
 export const DEFAULT_AGENT_API_BASE =
-  compiledAgentApiBase || AZURE_DEMO_AGENT_API_BASE;
+  compiledAgentApiBase || PRODUCTION_AGENT_API_BASE;
+/** Backwards-compatible name for older tests and embedders. */
+export const AZURE_DEMO_AGENT_API_BASE = DEFAULT_AGENT_API_BASE;
+export const DEMO_FIXTURE_ENABLED =
+  typeof __ORBIT_DEMO_FIXTURE__ !== "undefined" && __ORBIT_DEMO_FIXTURE__;
 
 export function isLocalAgentApiBase(baseUrl: string): boolean {
   try {
@@ -273,6 +277,7 @@ export function isChatCapabilities(value: unknown): value is ChatCapabilities {
       "agent_backend",
       "observability",
       "scombz_student_read_mode",
+      "sitrus_personal_context_mode",
       "supported_client_tools",
       "max_client_tools",
     ]) ||
@@ -280,6 +285,7 @@ export function isChatCapabilities(value: unknown): value is ChatCapabilities {
     !isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) ||
     !isOneOf(value.observability, ["off", "wandb"]) ||
     !isOneOf(value.scombz_student_read_mode, ["off", "fixture", "live"]) ||
+    !isOneOf(value.sitrus_personal_context_mode, ["off", "fixture", "live"]) ||
     !Array.isArray(value.supported_client_tools) ||
     value.supported_client_tools.length > 32 ||
     new Set(value.supported_client_tools).size !==
@@ -296,6 +302,10 @@ export function isChatCapabilities(value: unknown): value is ChatCapabilities {
     value.agent_backend === "azure_openai" &&
     value.observability === "off" &&
     value.scombz_student_read_mode === "live";
+  const demoFixtureScombz =
+    value.agent_backend === "fixture" &&
+    value.observability === "off" &&
+    value.scombz_student_read_mode === "fixture";
   const liveScombzTools = new Set([
     "scombz_course_list",
     "scombz_portal_read",
@@ -304,6 +314,7 @@ export function isChatCapabilities(value: unknown): value is ChatCapabilities {
   ]);
   return (
     liveScombz ||
+    demoFixtureScombz ||
     !value.supported_client_tools.some((item) => liveScombzTools.has(item))
   );
 }
@@ -1286,11 +1297,14 @@ export function isSitrusGradeResult(
       "status",
       "report_label",
       "grades",
-      "cumulative_gpa",
+      "credit_summaries",
+      "observed_at",
       "reason_code",
     ]) &&
     value.schema_version === "v1" &&
-    (value.status === "known" || value.status === "unavailable") &&
+    (value.status === "known" ||
+      value.status === "reauth_required" ||
+      value.status === "unavailable") &&
     Array.isArray(value.grades) &&
     value.grades.length <= 200 &&
     value.grades.every(
@@ -1298,19 +1312,14 @@ export function isSitrusGradeResult(
         isRecord(item) &&
         hasExactlyKeys(item, [
           "subject",
-          "course_code",
           "credits",
           "grade",
+          "outcome",
           "year",
           "term",
-          "term_slot",
-          "repeated",
         ]) &&
         isNonEmptyString(item.subject) &&
         item.subject.length <= 200 &&
-        (item.course_code === null ||
-          (isNonEmptyString(item.course_code) &&
-            item.course_code.length <= 20)) &&
         (item.credits === null ||
           (isIntegerInRange(item.credits, 0, 20) && item.credits >= 0)) &&
         isOneOf(item.grade, [
@@ -1325,19 +1334,40 @@ export function isSitrusGradeResult(
           "X",
           "#",
         ]) &&
+        (item.outcome === null ||
+          (typeof item.outcome === "string" && item.outcome.length <= 40)) &&
         (item.year === null || isIntegerInRange(item.year, 2000, 2100)) &&
-        (item.term === null || isIntegerInRange(item.term, 1, 3)) &&
-        (item.term_slot === null || isIntegerInRange(item.term_slot, 1, 4)) &&
-        typeof item.repeated === "boolean",
+        (item.term === null || isIntegerInRange(item.term, 1, 3)),
     ) &&
-    (value.cumulative_gpa === null ||
-      (typeof value.cumulative_gpa === "number" &&
-        Number.isFinite(value.cumulative_gpa) &&
-        value.cumulative_gpa >= 0 &&
-        value.cumulative_gpa <= 4)) &&
+    Array.isArray(value.credit_summaries) &&
+    value.credit_summaries.length <= 200 &&
+    value.credit_summaries.every(
+      (item) =>
+        isRecord(item) &&
+        hasExactlyKeys(item, [
+          "category",
+          "credit_type",
+          "current_course_count",
+          "current_credits",
+          "cumulative_course_count",
+          "cumulative_credits",
+        ]) &&
+        isNonEmptyString(item.category) &&
+        item.category.length <= 100 &&
+        (item.credit_type === null ||
+          (typeof item.credit_type === "string" &&
+            item.credit_type.length <= 40)) &&
+        isIntegerInRange(item.current_course_count, 0, 10_000) &&
+        isIntegerInRange(item.current_credits, 0, 10_000) &&
+        isIntegerInRange(item.cumulative_course_count, 0, 10_000) &&
+        isIntegerInRange(item.cumulative_credits, 0, 10_000),
+    ) &&
     (value.report_label === null ||
       (typeof value.report_label === "string" &&
         value.report_label.length <= 100)) &&
+    typeof value.observed_at === "string" &&
+    value.observed_at.length <= 40 &&
+    !Number.isNaN(Date.parse(value.observed_at)) &&
     (value.reason_code === null ||
       (typeof value.reason_code === "string" &&
         value.reason_code.length <= 100))
@@ -1345,7 +1375,7 @@ export function isSitrusGradeResult(
     const hasGradeData =
       value.report_label !== null ||
       value.grades.length > 0 ||
-      value.cumulative_gpa !== null;
+      value.credit_summaries.length > 0;
     return value.status === "known" ? hasGradeData : !hasGradeData;
   }
   return false;

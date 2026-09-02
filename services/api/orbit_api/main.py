@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
@@ -23,6 +24,8 @@ from orbit_api.agent.chat import (
     ChatRunUnknownError,
 )
 from orbit_api.agent.runs import ConsumedRunError, ExpiredRunError, UnknownRunError
+from orbit_api.agent.runtime_profile import validate_runtime_backend
+from orbit_api.agent.tool_catalog import capability_tool_names
 from orbit_api.auth import (
     AgentAuthenticationError,
     AgentAuthenticationUnavailable,
@@ -52,6 +55,8 @@ from orbit_api.models import (
     VerifyActionRequest,
 )
 from orbit_api.observability import init_observability
+
+logger = logging.getLogger("orbit_api.validation")
 
 
 @asynccontextmanager
@@ -95,6 +100,32 @@ _VALIDATION_FIELDS = {
     "result",
 }
 
+_VALIDATION_PATH_FIELDS = _VALIDATION_FIELDS | {
+    "schema_version",
+    "status",
+    "report_label",
+    "grades",
+    "credit_summaries",
+    "cumulative_gpa",
+    "observed_at",
+    "reason_code",
+    "subject",
+    "course_code",
+    "credits",
+    "grade",
+    "outcome",
+    "year",
+    "term",
+    "term_slot",
+    "repeated",
+    "category",
+    "credit_type",
+    "current_course_count",
+    "current_credits",
+    "cumulative_course_count",
+    "cumulative_credits",
+}
+
 
 def _safe_validation_detail(error: RequestValidationError) -> dict[str, str]:
     """Return only a stable field/type classification, never rejected values."""
@@ -132,6 +163,40 @@ def _safe_validation_detail(error: RequestValidationError) -> dict[str, str]:
     }
 
 
+def _safe_validation_diagnostics(
+    error: RequestValidationError,
+) -> list[dict[str, object]]:
+    """Return value-free validation locations for server-side diagnosis.
+
+    Pydantic locations can contain an unknown extra-field name supplied by a
+    client.  Only known contract fields and bounded list indexes are retained,
+    so diagnostics cannot become a side channel for student-record values.
+    """
+
+    diagnostics: list[dict[str, object]] = []
+    for item in error.errors()[:12]:
+        safe_location: list[str | int] = []
+        location = item.get("loc", ())
+        if isinstance(location, (tuple, list)):
+            for part in location:
+                if isinstance(part, str) and part in _VALIDATION_PATH_FIELDS:
+                    safe_location.append(part)
+                elif isinstance(part, int) and 0 <= part <= 200:
+                    safe_location.append(part)
+        error_type = item.get("type")
+        diagnostics.append(
+            {
+                "location": safe_location,
+                "error_type": (
+                    error_type[:80]
+                    if isinstance(error_type, str) and error_type
+                    else "validation_error"
+                ),
+            }
+        )
+    return diagnostics
+
+
 def _safe_chat_error_reason(error: Exception) -> str:
     """Map internal chat failures to a value-free public reason code."""
 
@@ -149,7 +214,7 @@ def _safe_chat_error_reason(error: Exception) -> str:
 
 @app.exception_handler(RequestValidationError)
 async def redact_request_validation_error(
-    _request: Request,
+    request: Request,
     _error: RequestValidationError,
 ) -> JSONResponse:
     """Reject malformed API input without reflecting its values.
@@ -161,6 +226,15 @@ async def redact_request_validation_error(
     the HTTP boundary exposes only a stable, value-free error.
     """
 
+    logger.warning(
+        "request_validation_failed path=%s diagnostics=%s",
+        request.url.path,
+        json.dumps(
+            _safe_validation_diagnostics(_error),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ),
+    )
     return JSONResponse(
         status_code=422,
         content={"detail": _safe_validation_detail(_error)},
@@ -254,6 +328,10 @@ async def capabilities() -> AgentCapabilities:
     backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
     if backend not in {"fixture", "openai", "azure_openai"}:
         raise HTTPException(status_code=503, detail="Agent backend is not supported.")
+    try:
+        validate_runtime_backend(backend)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     supported_backend = cast(Literal["fixture", "openai", "azure_openai"], backend)
     return AgentCapabilities(
         agent_backend=supported_backend,
@@ -273,49 +351,37 @@ async def chat_capabilities() -> ChatCapabilities:
     backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
     if backend not in {"fixture", "openai", "azure_openai"}:
         raise HTTPException(status_code=503, detail="Agent backend is not supported.")
+    try:
+        validate_runtime_backend(backend)
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
     observability = os.getenv("ORBIT_OBSERVABILITY", "off")
     if observability not in {"off", "wandb"}:
         raise HTTPException(status_code=503, detail="Observability mode is not supported.")
     scombz_mode = os.getenv("ORBIT_SCOMBZ_STUDENT_READ", "off")
     if scombz_mode not in {"off", "fixture", "live"}:
         raise HTTPException(status_code=503, detail="SCombZ student read mode is not supported.")
+    sitrus_mode = os.getenv("ORBIT_SITRUS_PERSONAL_CONTEXT", "off")
+    if sitrus_mode not in {"off", "fixture", "live"}:
+        raise HTTPException(
+            status_code=503,
+            detail="SITRUS personal context mode is not supported.",
+        )
 
-    supported: list[str] = [
-        "scombz_page_summary",
-        "scombz_read",
-        "google_calendar_availability",
-        "syllabus_search",
-        "syllabus_read",
-        "browser_read_url",
-        "sitrus_read",
-        "moodle_read",
-        "my_library_read",
-        "cast_read",
-        "cast_alumni_read",
-        "cast_search",
-        "library_catalog_search",
-        "library_item_read",
-        "library_catalog_browse",
-        "library_discovery_search",
-        "library_action_options",
-    ]
-    live_scombz = (
-        backend == "azure_openai"
-        and observability == "off"
-        and scombz_mode == "live"
+    supported = capability_tool_names(
+        backend=backend,
+        observability=observability,
+        scombz_student_read_mode=scombz_mode,
+        sitrus_personal_context_mode=sitrus_mode,
     )
-    if live_scombz:
-        supported[2:2] = [
-            "scombz_course_list",
-            "scombz_portal_read",
-            "scombz_course_read",
-            "scombz_material_search",
-        ]
     return ChatCapabilities(
         agent_backend=cast(Literal["fixture", "openai", "azure_openai"], backend),
         observability=cast(Literal["off", "wandb"], observability),
         scombz_student_read_mode=cast(Literal["off", "fixture", "live"], scombz_mode),
-        supported_client_tools=cast(list, supported),
+        sitrus_personal_context_mode=cast(
+            Literal["off", "fixture", "live"], sitrus_mode
+        ),
+        supported_client_tools=list(supported),
         max_client_tools=32,
     )
 

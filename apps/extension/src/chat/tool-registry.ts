@@ -1,3 +1,6 @@
+import { isCastCareerSearchRequest } from "../content/cast-career-source-runtime";
+import { isCastSearchRequest } from "../content/cast-search-api";
+
 export interface RegisteredChatClientTool {
   name: RegisteredChatToolName;
   version: 1;
@@ -26,6 +29,7 @@ export const CHAT_TOOL_NAMES = [
   "cast_read",
   "cast_alumni_read",
   "cast_search",
+  "cast_career_search",
   "library_catalog_search",
   "library_item_read",
   "library_catalog_browse",
@@ -45,6 +49,19 @@ export const LIVE_SCOMBZ_TOOL_NAMES = new Set<RegisteredChatToolName>([
   "scombz_course_read",
   "scombz_material_search",
 ]);
+
+/** Provider-bound projections that must pass the conversation pseudonymizer. */
+export const PROVIDER_PSEUDONYMIZED_TOOL_NAMES =
+  new Set<RegisteredChatToolName>([
+    "scombz_page_summary",
+    "scombz_read",
+    "scombz_course_list",
+    "scombz_portal_read",
+    "scombz_course_read",
+    "scombz_material_search",
+    "sitrus_read",
+    "cast_alumni_read",
+  ]);
 
 export interface ToolAdvertisementOptions {
   /** Tools available in the current page/connector context. */
@@ -119,6 +136,7 @@ const ARGUMENT_KEYS: Record<RegisteredChatToolName, readonly string[]> = {
   cast_read: [],
   cast_alumni_read: [],
   cast_search: ["kind", "filters", "sort", "cursor", "exhaustive"],
+  cast_career_search: ["query", "surfaces", "filters", "limit", "exhaustive"],
   library_catalog_search: [
     "query",
     "author",
@@ -185,10 +203,6 @@ export function validateChatToolArguments(
         value >= min &&
         value <= max)
     );
-  };
-  const optionalBoolean = (key: string): boolean => {
-    const value = args[key];
-    return value === undefined || value === null || typeof value === "boolean";
   };
   const optionalArray = (
     key: string,
@@ -329,26 +343,13 @@ export function validateChatToolArguments(
     }
   }
   if (name === "cast_search") {
-    if (
-      ![
-        "job",
-        "internship",
-        "company_session",
-        "company",
-        "hiring_record",
-      ].includes(args.kind as string) ||
-      (args.filters !== undefined &&
-        (typeof args.filters !== "object" ||
-          args.filters === null ||
-          Array.isArray(args.filters))) ||
-      (args.sort !== undefined &&
-        (typeof args.sort !== "object" ||
-          args.sort === null ||
-          Array.isArray(args.sort))) ||
-      !optionalString("cursor", 200, true) ||
-      !optionalBoolean("exhaustive")
-    ) {
+    if (!isCastSearchRequest(args)) {
       return { ok: false, reason: "invalid_cast_search_arguments" };
+    }
+  }
+  if (name === "cast_career_search") {
+    if (!isCastCareerSearchRequest(args)) {
+      return { ok: false, reason: "invalid_cast_career_search_arguments" };
     }
   }
   if (name === "my_library_read") {

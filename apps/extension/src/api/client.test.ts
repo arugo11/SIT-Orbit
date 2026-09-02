@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { B1_OMIYA_CONTEXT, B1_OMIYA_EVENT } from "../sidepanel/b1-fixture";
 import {
@@ -8,6 +10,7 @@ import {
   isActionProposal,
   isCastAlumniReadResult,
   isCastReadResult,
+  isChatCapabilities,
   isChatRunResponse,
   isLibraryCatalogBrowseResult,
   isLibraryCatalogSearchResult,
@@ -61,6 +64,22 @@ function jsonResponse(
     headers: new Headers(headers),
   } as unknown as Response;
 }
+
+describe("isChatCapabilities", () => {
+  it("accepts the explicit fixture SCombZ capability used by demo builds", () => {
+    expect(
+      isChatCapabilities({
+        schema_version: "v1",
+        agent_backend: "fixture",
+        observability: "off",
+        scombz_student_read_mode: "fixture",
+        sitrus_personal_context_mode: "off",
+        supported_client_tools: ["scombz_course_list", "scombz_course_read"],
+        max_client_tools: 32,
+      }),
+    ).toBe(true);
+  });
+});
 
 function createFetcher(response: Response): Fetcher & ReturnType<typeof vi.fn> {
   return vi.fn(async () => response) as unknown as Fetcher &
@@ -532,16 +551,24 @@ describe("AgentApiClient", () => {
       grades: [
         {
           subject: "合成科目",
-          course_code: "L0410100",
           credits: 2,
           grade: "A",
+          outcome: "合格",
           year: 2025,
           term: 2,
-          term_slot: 1,
-          repeated: false,
         },
       ],
-      cumulative_gpa: 3.1,
+      credit_summaries: [
+        {
+          category: "専門科目",
+          credit_type: "選択",
+          current_course_count: 1,
+          current_credits: 2,
+          cumulative_course_count: 10,
+          cumulative_credits: 20,
+        },
+      ],
+      observed_at: "2026-09-02T00:00:00Z",
       reason_code: null,
     };
     expect(isSitrusGradeResult(result)).toBe(true);
@@ -549,8 +576,7 @@ describe("AgentApiClient", () => {
       isSitrusGradeResult({
         ...result,
         report_label: "取得済み科目",
-        grades: [{ ...result.grades[0], course_code: null, credits: null }],
-        cumulative_gpa: null,
+        grades: [{ ...result.grades[0], credits: null }],
       }),
     ).toBe(true);
     expect(isSitrusGradeResult({ ...result, pdf_base64: "forbidden" })).toBe(
@@ -559,12 +585,26 @@ describe("AgentApiClient", () => {
     expect(isSitrusGradeResult({ ...result, student_number: "AL00000" })).toBe(
       false,
     );
+    for (const forbidden of [
+      "cumulative_gpa",
+      "course_code",
+      "term_slot",
+      "repeated",
+    ]) {
+      const candidate = structuredClone(result);
+      if (forbidden === "cumulative_gpa") {
+        Object.assign(candidate, { [forbidden]: 3.1 });
+      } else {
+        Object.assign(candidate.grades[0] ?? {}, { [forbidden]: "forbidden" });
+      }
+      expect(isSitrusGradeResult(candidate)).toBe(false);
+    }
     expect(
       isSitrusGradeResult({
         ...result,
         status: "unavailable",
         grades: [],
-        cumulative_gpa: null,
+        credit_summaries: [],
         report_label: null,
       }),
     ).toBe(true);
@@ -574,6 +614,22 @@ describe("AgentApiClient", () => {
         status: "unavailable",
       }),
     ).toBe(false);
+  });
+
+  it("accepts the shared Python/TypeScript SITRUS contract fixture", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            "../../../../fixtures/contracts/sitrus_tool_result_v1.json",
+            import.meta.url,
+          ),
+        ),
+        "utf8",
+      ),
+    ) as { result: unknown };
+
+    expect(isSitrusGradeResult(fixture.result)).toBe(true);
   });
 
   it("posts the generated proposal request to the explicit API base", async () => {

@@ -43,10 +43,11 @@ export interface ChatConversation {
   processing_scope:
     | "none"
     | "personal/scombz_student"
+    | "personal/sitrus_academic_record"
     | "restricted/cast_career"
     | "public/syllabus"
     | "mixed";
-  provider_destination: "local" | "azure_openai" | "none";
+  provider_destination: "local" | "azure_openai" | "none" | "unknown";
   history_eligible: boolean;
 }
 
@@ -427,6 +428,7 @@ function sanitizeConversation(
     contextManifest,
     processing_scope:
       conversation.processing_scope === "personal/scombz_student" ||
+      conversation.processing_scope === "personal/sitrus_academic_record" ||
       conversation.processing_scope === "restricted/cast_career" ||
       conversation.processing_scope === "public/syllabus" ||
       conversation.processing_scope === "mixed"
@@ -435,9 +437,10 @@ function sanitizeConversation(
     provider_destination:
       conversation.provider_destination === "azure_openai" ||
       conversation.provider_destination === "local" ||
+      conversation.provider_destination === "unknown" ||
       conversation.provider_destination === "none"
         ? conversation.provider_destination
-        : "none",
+        : "unknown",
     // Conversations written before the processing metadata existed are
     // deliberately ineligible for provider history.  They may still be
     // displayed locally, but their unclassified transcript/evidence must not
@@ -480,6 +483,13 @@ export async function saveConversation(
   conversation: ChatConversation,
 ): Promise<void> {
   const sanitized = sanitizeConversation(conversation);
+  if (
+    !sanitized.history_eligible &&
+    sanitized.messages.some((message) => message.toolName === "sitrus_read")
+  ) {
+    await deleteConversation(sanitized.conversationId);
+    return;
+  }
   const database = await openDatabase();
   if (!database) {
     fallbackStore.set(sanitized.conversationId, sanitized);

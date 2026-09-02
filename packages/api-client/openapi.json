@@ -1993,6 +1993,16 @@
             ],
             "title": "Scombz Student Read Mode"
           },
+          "sitrus_personal_context_mode": {
+            "type": "string",
+            "enum": [
+              "off",
+              "fixture",
+              "live"
+            ],
+            "title": "Sitrus Personal Context Mode",
+            "default": "off"
+          },
           "supported_client_tools": {
             "items": {
               "type": "string",
@@ -2013,6 +2023,7 @@
                 "cast_read",
                 "cast_alumni_read",
                 "cast_search",
+                "cast_career_search",
                 "library_catalog_search",
                 "library_item_read",
                 "library_catalog_browse",
@@ -5064,6 +5075,63 @@
         "title": "ScopedMyLibraryReadResult",
         "description": "A complete, bounded page for exactly one My Library scope."
       },
+      "SitrusCreditSummaryItem": {
+        "properties": {
+          "category": {
+            "type": "string",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Category"
+          },
+          "credit_type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credit Type"
+          },
+          "current_course_count": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Current Course Count"
+          },
+          "current_credits": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Current Credits"
+          },
+          "cumulative_course_count": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Cumulative Course Count"
+          },
+          "cumulative_credits": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Cumulative Credits"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "category",
+          "current_course_count",
+          "current_credits",
+          "cumulative_course_count",
+          "cumulative_credits"
+        ],
+        "title": "SitrusCreditSummaryItem",
+        "description": "One minimized row from the SITRUS acquired-credit summary."
+      },
       "SitrusGradeItem": {
         "properties": {
           "subject": {
@@ -5071,18 +5139,6 @@
             "maxLength": 200,
             "minLength": 1,
             "title": "Subject"
-          },
-          "course_code": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 20
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Course Code"
           },
           "credits": {
             "anyOf": [
@@ -5113,6 +5169,18 @@
             ],
             "title": "Grade"
           },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
           "year": {
             "anyOf": [
               {
@@ -5138,24 +5206,6 @@
               }
             ],
             "title": "Term"
-          },
-          "term_slot": {
-            "anyOf": [
-              {
-                "type": "integer",
-                "maximum": 4.0,
-                "minimum": 1.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Term Slot"
-          },
-          "repeated": {
-            "type": "boolean",
-            "title": "Repeated",
-            "default": false
           }
         },
         "additionalProperties": false,
@@ -5165,7 +5215,7 @@
           "grade"
         ],
         "title": "SitrusGradeItem",
-        "description": "One minimized grade row extracted from the displayed SITRUS notice."
+        "description": "One minimized grade row returned by authenticated SITRUS APIs."
       },
       "SitrusGradeResult": {
         "properties": {
@@ -5179,6 +5229,7 @@
             "type": "string",
             "enum": [
               "known",
+              "reauth_required",
               "unavailable"
             ],
             "title": "Status"
@@ -5203,18 +5254,19 @@
             "maxItems": 200,
             "title": "Grades"
           },
-          "cumulative_gpa": {
-            "anyOf": [
-              {
-                "type": "number",
-                "maximum": 4.0,
-                "minimum": 0.0
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cumulative Gpa"
+          "credit_summaries": {
+            "items": {
+              "$ref": "#/components/schemas/SitrusCreditSummaryItem"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "title": "Credit Summaries"
+          },
+          "observed_at": {
+            "type": "string",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Observed At"
           },
           "reason_code": {
             "anyOf": [
@@ -5232,10 +5284,11 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "status"
+          "status",
+          "observed_at"
         ],
         "title": "SitrusGradeResult",
-        "description": "In-memory SITRUS projection; the PDF and student identity are omitted."
+        "description": "Minimized SITRUS projection; identity and raw responses are omitted."
       },
       "SyllabusReadResult": {
         "properties": {

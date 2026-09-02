@@ -27,6 +27,7 @@ export interface ChatRunnerEvent {
 
 export interface ChatToolExecutionContext {
   conversation_id: string;
+  source_generation: string;
   signal?: AbortSignal;
 }
 
@@ -70,6 +71,8 @@ export interface ChatRunnerInput {
   locally_available_tools?: ReadonlySet<string> | null;
   /** Require the live SCombZ gate when the runner is used by the audit path. */
   require_live_scombz?: boolean;
+  /** Stable local source version; changing it invalidates exact-result reuse. */
+  source_generation?: string;
   signal?: AbortSignal;
 }
 
@@ -99,6 +102,17 @@ export class ChatRunnerError extends Error {
     this.name = "ChatRunnerError";
     this.code = code;
   }
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 /**
@@ -134,6 +148,21 @@ export class ChatRunner {
       capabilities.agent_backend === "azure_openai" &&
       capabilities.observability === "off" &&
       capabilities.scombz_student_read_mode === "live";
+    const fixtureScombzCapability =
+      capabilities !== null &&
+      capabilities.agent_backend === "fixture" &&
+      capabilities.observability === "off" &&
+      capabilities.scombz_student_read_mode === "fixture";
+    const liveSitrusCapability =
+      capabilities !== null &&
+      capabilities.agent_backend === "azure_openai" &&
+      capabilities.observability === "off" &&
+      capabilities.sitrus_personal_context_mode === "live";
+    const fixtureSitrusCapability =
+      capabilities !== null &&
+      capabilities.agent_backend === "fixture" &&
+      capabilities.observability === "off" &&
+      capabilities.sitrus_personal_context_mode === "fixture";
     if (input.require_live_scombz && !liveScombzCapability) {
       throw new ChatRunnerError(
         "capability_unavailable",
@@ -147,7 +176,7 @@ export class ChatRunner {
     const serverAllowed = capabilities
       ? new Set(capabilities.supported_client_tools)
       : new Set<string>();
-    if (!liveScombzCapability) {
+    if (!liveScombzCapability && !fixtureScombzCapability) {
       for (const tool of [
         "scombz_course_list",
         "scombz_portal_read",
@@ -156,6 +185,9 @@ export class ChatRunner {
       ]) {
         serverAllowed.delete(tool);
       }
+    }
+    if (!liveSitrusCapability && !fixtureSitrusCapability) {
+      serverAllowed.delete("sitrus_read");
     }
     const clientTools = advertiseReadOnlyTools({
       locallyAvailable: input.locally_available_tools,
@@ -173,6 +205,8 @@ export class ChatRunner {
     const calls: ChatRunnerResult["calls"] = [];
     const receipts: ChatToolReceipt[] = [];
     const seen = new Set<string>();
+    const sourceGeneration = input.source_generation ?? "run-local-v1";
+    const resultCache = new Map<string, ChatToolExecution>();
     for (let index = 0; response.status === "tool_required"; index += 1) {
       if (index >= this.maxToolCalls) {
         throw new ChatRunnerError(
@@ -207,10 +241,24 @@ export class ChatRunner {
         tool_name: call.name,
         detail: "read-only executor started",
       });
-      const execution = await this.executeTool(call, {
-        conversation_id: input.conversation_id,
-        signal: input.signal,
-      });
+      const cacheKey = `${call.name}:${stableJson(validation.arguments)}:${sourceGeneration}`;
+      const cached = resultCache.get(cacheKey);
+      const execution = cached
+        ? {
+            ...cached,
+            request: {
+              ...cached.request,
+              tool_call_id: call.tool_call_id,
+              name: call.name,
+            },
+            audit: { ...cached.audit, cache_hit: true },
+          }
+        : await this.executeTool(call, {
+            conversation_id: input.conversation_id,
+            source_generation: sourceGeneration,
+            signal: input.signal,
+          });
+      if (!cached) resultCache.set(cacheKey, execution);
       calls.push({
         tool_call_id: call.tool_call_id,
         name: call.name,

@@ -199,28 +199,24 @@ describe("page context message validation", () => {
       }),
     ).toBe(false);
   });
-  it("accepts only the observed SITRUS grade notice route", () => {
+  it("accepts only the page-independent SITRUS read command", () => {
     expect(
       isSitrusReadMessage({
         type: "sitrus-read",
         tool_call_id: "tool-1",
-        page_url:
-          "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/SeisekiTsutiSho.html?N=synthetic",
       }),
     ).toBe(true);
     expect(
       isSitrusReadMessage({
         type: "sitrus-read",
         tool_call_id: "tool-2",
-        page_url:
-          "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/ShutokuTaniShukei.html?N=synthetic",
+        page_url: "https://sitrus.sic.shibaura-it.ac.jp/forbidden",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isSitrusReadMessage({
         type: "sitrus-read",
-        tool_call_id: "tool-1",
-        page_url: "https://sitrus.sic.shibaura-it.ac.jp/404",
+        tool_call_id: "",
       }),
     ).toBe(false);
   });

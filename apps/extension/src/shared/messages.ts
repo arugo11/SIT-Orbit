@@ -398,12 +398,12 @@ export function isScombzStudentReadMessage(
 export interface SitrusReadMessage {
   type: typeof MESSAGE_TYPES.sitrusRead;
   tool_call_id: string;
-  page_url: string;
 }
 
 export type SitrusReadResponse =
   | { status: "known"; projection: unknown }
   | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "reauth_required"; reason_code: string }
   | { status: "unavailable"; reason_code: string };
 
 export interface MoodleReadMessage {
@@ -750,10 +750,7 @@ export function isSitrusReadMessage(
     message.type === MESSAGE_TYPES.sitrusRead &&
     typeof message.tool_call_id === "string" &&
     message.tool_call_id.length > 0 &&
-    typeof message.page_url === "string" &&
-    /^https:\/\/sitrus\.sic\.shibaura-it\.ac\.jp\/SITRUS\/login\/(?:SeisekiTsutiSho|ShutokuTaniShukei)\.html(?:\?|#|$)/u.test(
-      message.page_url,
-    )
+    Object.keys(message).every((key) => ["type", "tool_call_id"].includes(key))
   );
 }
 
