@@ -720,7 +720,6 @@
             "type": "string",
             "enum": [
               "fixture",
-              "openai",
               "azure_openai"
             ],
             "title": "Agent Backend"
@@ -1971,7 +1970,6 @@
             "type": "string",
             "enum": [
               "fixture",
-              "openai",
               "azure_openai"
             ],
             "title": "Agent Backend"

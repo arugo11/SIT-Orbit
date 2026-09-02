@@ -22,16 +22,15 @@ SIT ORBITは、芝浦工業大学で生じる授業・研究・課外活動を�
 
 ## Chat and campus evidence
 
-Chatは一般的な会話、推論、公開Web調査、公開ページ・PDF読解、下書き、計画作成をToolなしでも行える。認証済み学内情報が必要な場合だけAgent Harnessが利用可能なSCombZ、Calendar、Moodle、My Library、CAST、SITRUS、シラバス、図書館Toolを絞り込み、最小化したEvidenceを回答へ戻す。
+Chatは一般的な会話、推論、公開Web調査、公開ページ・PDF読解、下書き、計画作成をToolなしでも行える。認証済み学内情報が必要な場合だけAgent Harnessが、そのターンの可用性・認証・同意・データ分類を交差したToolカタログをAzure Responses Hosted Tool Searchへ渡す。モデルは日本語の概要から必要なToolを発見し、発見済みのToolだけを実行して最小化したEvidenceを回答へ戻す。
 
-SITRUSについては、「私の成績を教えて」「何単位取れている？」のような個人成績の意図をTool Routerが検出する。
-管理者がAzure OpenAI向けのlive personal contextを有効化し、利用者がSITRUSへログイン済みの場合だけ、取得済み科目と単位集計を回答へ利用する。
+SITRUSを含む個別サービスの選択は固定語句で判定しない。機能説明の質問では`describe_available_capabilities`の概要確認だけを許可し、実データの読取Toolは実行しない。管理者がAzure OpenAI向けのlive personal contextを有効化し、auth-only preflightで利用者の接続状態を確認できた場合だけ、取得済み科目と単位集計を回答へ利用する。
 
 学内Toolを利用できない場合は一般論を実取得結果として補わず、`partial`、`unavailable`、`reauth_required`または「学内情報を確認していない」と表示する。Extensionが認証済みConnectorの中心であり、WebとMobileのfixture画面を実連携として提示しない。
 
 ## Runtime profiles
 
-本番と収録用デモは、明示した実行プロファイルと別々のAPI originで分離する。本番は`ORBIT_RUNTIME_PROFILE=production`でfixture backendを拒否し、デモは`ORBIT_RUNTIME_PROFILE=demo`、`ORBIT_AGENT_BACKEND=fixture`、`ORBIT_SCOMBZ_STUDENT_READ=fixture`、observability無効の組合せだけを許可する。拡張機能もproduction buildからデモfixtureを除外し、demo buildでだけ合成結果を接続する。どちらのプロファイルも、失敗時に他方へ自動切替しない。
+本番と開発用fixtureは、明示した実行プロファイルと別々のAPI originで分離する。本番Chatは`ORBIT_AGENT_BACKEND=azure_openai`と、native Tool Searchを宣言したcanonical profileを必須にする。開発用fixtureのChatは自然文からToolを選ばず、一般回答だけを返す。`ORBIT_RUNTIME_PROFILE=demo`はAction Agentの合成デモ専用であり、Chatの脚本や自然文Tool選択を提供しない。どちらのプロファイルも、失敗時に他方へ自動切替しない。
 
 収録用デモでは画面上のモード表示を追加しない。モードの識別はデプロイ先、build profile、APIのread-backで行い、利用者向けChatは製品と同じ表示を保つ。
 

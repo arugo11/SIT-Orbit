@@ -11,6 +11,13 @@ from orbit_api.main import app, configure_cors
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def configure_azure_test_env(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "synthetic-test-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_MODEL", "gpt-5-6-terra")
+    monkeypatch.setenv("AZURE_OPENAI_BASE_MODEL", "gpt-5.6-terra")
+
+
 def test_validation_diagnostics_keep_only_contract_paths_and_types() -> None:
     error = RequestValidationError(
         [
@@ -49,7 +56,7 @@ def load_fixture(name: str):
 
 
 def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
-    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_MODEL", raising=False)
@@ -63,7 +70,7 @@ def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
 
 @pytest.mark.parametrize(
     ("backend", "allowed"),
-    [("fixture", False), ("openai", False), ("azure_openai", True)],
+    [("fixture", False), ("azure_openai", True)],
 )
 def test_capabilities_report_the_configured_personal_data_boundary(
     monkeypatch,
@@ -72,6 +79,8 @@ def test_capabilities_report_the_configured_personal_data_boundary(
 ) -> None:
     monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
+    if backend == "azure_openai":
+        configure_azure_test_env(monkeypatch)
     with TestClient(app) as client:
         response = client.get("/v1/capabilities")
 
@@ -86,7 +95,7 @@ def test_capabilities_report_the_configured_personal_data_boundary(
     ("backend", "mode", "observability", "live_tools"),
     [
         ("fixture", "off", "off", False),
-        ("fixture", "fixture", "off", True),
+            ("fixture", "fixture", "off", False),
         ("azure_openai", "fixture", "off", False),
         ("azure_openai", "live", "wandb", False),
         ("azure_openai", "live", "off", True),
@@ -101,6 +110,8 @@ def test_chat_capabilities_gate_live_scombz_tools(
 ) -> None:
     monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
+    if backend == "azure_openai":
+        configure_azure_test_env(monkeypatch)
     monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", mode)
     monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", "off")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", observability)
@@ -126,11 +137,10 @@ def test_chat_capabilities_gate_live_scombz_tools(
     ("backend", "mode", "observability", "allowed"),
     [
         ("fixture", "off", "off", False),
-        ("fixture", "fixture", "off", True),
+        ("fixture", "fixture", "off", False),
         ("azure_openai", "fixture", "off", False),
         ("azure_openai", "live", "wandb", False),
         ("azure_openai", "live", "off", True),
-        ("openai", "live", "off", False),
     ],
 )
 def test_chat_capabilities_gate_sitrus_personal_context(
@@ -145,6 +155,8 @@ def test_chat_capabilities_gate_sitrus_personal_context(
     monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", "off")
     monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", mode)
     monkeypatch.setenv("ORBIT_OBSERVABILITY", observability)
+    if backend == "azure_openai":
+        configure_azure_test_env(monkeypatch)
     if observability == "wandb":
         monkeypatch.setattr(orbit_main, "init_observability", lambda: False)
 
@@ -199,6 +211,7 @@ def test_api_token_protects_v1_routes_but_not_health(monkeypatch) -> None:
 def test_chat_capabilities_requires_the_same_authenticated_session(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_API_TOKEN", "test-chat-capability-token")
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    configure_azure_test_env(monkeypatch)
     monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", "live")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     with TestClient(app) as client:

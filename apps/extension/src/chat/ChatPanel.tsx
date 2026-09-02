@@ -6,7 +6,6 @@ import {
   type ChatRunResponse,
   type ChatToolResultRequest,
   classifyAgentApiError,
-  DEMO_FIXTURE_ENABLED,
   isBrowserReadResult,
   isCastAlumniReadResult,
   isCastCareerSearchResult,
@@ -94,12 +93,7 @@ import type {
   SitrusReadResponse,
 } from "../shared/messages";
 import { MESSAGE_TYPES } from "../shared/messages";
-import {
-  hostAccessRequest,
-  requiresLiveScombzStudentRead,
-  requiresSitrusPersonalContext,
-  requiresVerifiedCampusCapability,
-} from "./access-policy";
+import { hostAccessRequest } from "./access-policy";
 import {
   type ChatConversation,
   type ChatTimelineMessage,
@@ -116,7 +110,6 @@ import {
   toChatHistory,
 } from "./chat-history";
 import { ChatRunner } from "./chat-runner";
-import { demoFixtureToolResult } from "./demo-fixture";
 import {
   advertiseReadOnlyTools,
   isRegisteredReadOnlyTool,
@@ -445,44 +438,6 @@ function mergeProcessingScope(
     history_eligible:
       toolName === "sitrus_read" ? false : conversation.history_eligible,
   };
-}
-
-function explicitBookCount(messages: ChatTimelineMessage[]): number | null {
-  const latestUserMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "user")?.content;
-  if (!latestUserMessage) return null;
-  const match = latestUserMessage.match(
-    /([1-8１２３４５６７８一二三四五六七八])冊/u,
-  );
-  if (!match?.[1]) return null;
-  const countByText: Record<string, number> = {
-    "1": 1,
-    "2": 2,
-    "3": 3,
-    "4": 4,
-    "5": 5,
-    "6": 6,
-    "7": 7,
-    "8": 8,
-    "１": 1,
-    "２": 2,
-    "３": 3,
-    "４": 4,
-    "５": 5,
-    "６": 6,
-    "７": 7,
-    "８": 8,
-    一: 1,
-    二: 2,
-    三: 3,
-    四: 4,
-    五: 5,
-    六: 6,
-    七: 7,
-    八: 8,
-  };
-  return countByText[match[1]] ?? null;
 }
 
 function libraryFailureDetail(reasonCode: string): string {
@@ -971,6 +926,27 @@ function sendExtensionMessage<T>(message: unknown): Promise<T> {
   });
 }
 
+async function readChatAuthPreflight(): Promise<Set<string>> {
+  try {
+    const response = await sendExtensionMessage<{
+      schema_version?: unknown;
+      ready_tools?: unknown;
+    }>({ type: MESSAGE_TYPES.chatAuthPreflight });
+    if (
+      response.schema_version !== "v1" ||
+      !Array.isArray(response.ready_tools) ||
+      !response.ready_tools.every((name) => typeof name === "string")
+    ) {
+      return new Set();
+    }
+    return new Set(response.ready_tools);
+  } catch {
+    // Unknown auth state is fail-closed and therefore cannot enter the
+    // provider-side Tool Search corpus.
+    return new Set();
+  }
+}
+
 type ChatProgressPhase =
   | "sending"
   | "planning"
@@ -1145,111 +1121,60 @@ export function ChatPanel({
   function clientTools(
     serverTools: ReadonlySet<string> | null = null,
     maxClientTools = 32,
-    fixtureScombz = false,
+    authReadyTools: ReadonlySet<string> | null = null,
   ) {
-    const liveScombzTools = new Set([
-      "scombz_course_list",
-      "scombz_portal_read",
-      "scombz_course_read",
-      "scombz_material_search",
-    ]);
     const allows = (name: string): boolean => {
       if (serverTools === null) return true;
       return serverTools.has(name);
     };
-    const tools: Array<{
-      name:
-        | "scombz_page_summary"
-        | "scombz_read"
-        | "scombz_course_list"
-        | "scombz_portal_read"
-        | "scombz_course_read"
-        | "scombz_material_search"
-        | "google_calendar_availability"
-        | "syllabus_search"
-        | "syllabus_read"
-        | "browser_read_url"
-        | "sitrus_read"
-        | "moodle_read"
-        | "my_library_read"
-        | "cast_read"
-        | "cast_alumni_read"
-        | "cast_search"
-        | "cast_career_search"
-        | "library_catalog_search"
-        | "library_item_read"
-        | "library_catalog_browse"
-        | "library_discovery_search"
-        | "library_action_options";
-      version: 1;
-    }> = [];
+    const locallyAvailable = new Set<string>();
     if (projectScombzRead(pageContext) && allows("scombz_read")) {
-      tools.push({ name: "scombz_read", version: 1 });
+      locallyAvailable.add("scombz_read");
     }
-    if (
-      (pageContext?.kind === "scombz" || fixtureScombz) &&
-      serverTools !== null
-    ) {
-      for (const name of liveScombzTools as Set<
-        | "scombz_course_list"
-        | "scombz_portal_read"
-        | "scombz_course_read"
-        | "scombz_material_search"
-      >) {
-        if (allows(name)) tools.push({ name, version: 1 });
-      }
+    if (pageSummary && allows("scombz_page_summary")) {
+      locallyAvailable.add("scombz_page_summary");
     }
     if (
       calendarState.status === "connected" &&
       calendarState.snapshot &&
       allows("google_calendar_availability")
     ) {
-      tools.push({ name: "google_calendar_availability", version: 1 });
+      locallyAvailable.add("google_calendar_availability");
     }
-    if (allows("syllabus_search"))
-      tools.push({ name: "syllabus_search", version: 1 });
-    if (allows("syllabus_read"))
-      tools.push({ name: "syllabus_read", version: 1 });
-    if (allows("browser_read_url"))
-      tools.push({ name: "browser_read_url", version: 1 });
-    if (serverTools !== null && allows("sitrus_read")) {
-      tools.push({ name: "sitrus_read", version: 1 });
-    }
-    if (allows("moodle_read")) tools.push({ name: "moodle_read", version: 1 });
-    if (allows("my_library_read"))
-      tools.push({ name: "my_library_read", version: 1 });
-    if (allows("cast_read")) tools.push({ name: "cast_read", version: 1 });
-    if (allows("cast_alumni_read"))
-      tools.push({ name: "cast_alumni_read", version: 1 });
-    if (allows("cast_search")) tools.push({ name: "cast_search", version: 1 });
-    if (allows("cast_career_search"))
-      tools.push({ name: "cast_career_search", version: 1 });
-    // OPAC/SIT Search reads are public and read-only. Advertise them on every
-    // turn so the Agent can resolve elliptical follow-ups such as
-    // 「どこに配架されてる？」 from the conversation context instead of
-    // relying on a brittle latest-message keyword gate.
+    // Public search/catalog Tools are safe to advertise without a page read.
     for (const name of [
+      "syllabus_search",
+      "syllabus_read",
+      "browser_read_url",
       "library_catalog_search",
       "library_item_read",
       "library_catalog_browse",
       "library_discovery_search",
       "library_action_options",
     ] as const) {
-      if (allows(name)) tools.push({ name, version: 1 });
+      if (allows(name)) locallyAvailable.add(name);
+    }
+    // Auth-only preflight is the only source for private connector readiness.
+    // A missing/unknown result is intentionally not treated as available.
+    for (const name of authReadyTools ?? []) {
+      // A null server snapshot means the capability request failed.  Do not
+      // advertise connector tools in that case, even if a stale preflight
+      // result happens to be present locally.
+      if (serverTools !== null && allows(name)) locallyAvailable.add(name);
     }
     const advertised = advertiseReadOnlyTools({
-      locallyAvailable: new Set(tools.map((tool) => tool.name)),
+      locallyAvailable,
       serverAllowed: serverTools,
       maxClientTools,
     });
-    return advertised as typeof tools;
+    return advertised;
   }
 
   async function runTool(
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
     progressLabel = toolLabel(response.calls[0]?.name ?? ""),
-    options: { submit?: boolean; demoFixture?: boolean } = {},
+    options: { submit?: boolean } = {},
   ): Promise<{
     response: ChatRunResponse;
     conversation: ChatConversation;
@@ -1563,13 +1488,7 @@ export function ChatPanel({
     };
 
     let request: ChatToolResultRequest;
-    const fixtureResult =
-      options.demoFixture && DEMO_FIXTURE_ENABLED
-        ? demoFixtureToolResult(call.name, argumentsObject)
-        : null;
-    if (fixtureResult) {
-      request = toolResultRequest(call.tool_call_id, call.name, fixtureResult);
-    } else if (call.name === "scombz_page_summary") {
+    if (call.name === "scombz_page_summary") {
       if (!pageSummary) {
         throw new Error("表示中のSCombZページを読み取れません。");
       }
@@ -2451,8 +2370,6 @@ export function ChatPanel({
     let response = initialResponse;
     let current = initialConversation;
     const seenCallIds = initialSeenCallIds;
-    const requestedBookCount = explicitBookCount(initialConversation.messages);
-    let librarySearchIndex = 0;
     let previousCompleteCatalogQuery: string | null = null;
     for (let index = 0; response.status === "tool_required"; index += 1) {
       if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
@@ -2473,14 +2390,11 @@ export function ChatPanel({
           previousCompleteCatalogQuery.includes(catalogQuery),
       );
       if (catalogQuery && !isShortenedCatalogRetry) {
-        librarySearchIndex += 1;
         previousCompleteCatalogQuery = catalogQuery;
       }
       const progressLabel =
-        call.name === "library_catalog_search" && requestedBookCount
-          ? isShortenedCatalogRetry
-            ? `${librarySearchIndex}/${requestedBookCount}冊目を短い書名で再確認中`
-            : `${librarySearchIndex}/${requestedBookCount}冊目を確認中`
+        call.name === "library_catalog_search" && isShortenedCatalogRetry
+          ? `${toolLabel(call.name)}を短い書名で再確認中`
           : toolLabel(call.name);
       setChatProgress(
         "planning",
@@ -2587,13 +2501,7 @@ export function ChatPanel({
       let capabilitiesSnapshot: ChatCapabilities | null = null;
       let providerDestination: ChatConversation["provider_destination"] =
         "unknown";
-      let liveScombzGate = false;
-      let liveSitrusGate = false;
-      let demoFixtureGate = false;
-      const liveScombzReadRequired = requiresLiveScombzStudentRead(message, {
-        processingScope: current.processing_scope,
-      });
-      const sitrusReadRequired = requiresSitrusPersonalContext(message);
+      let authReadyTools = new Set<string>();
       const capabilityReader = (
         apiClient as AgentApiClient & {
           chatCapabilities?: () => Promise<{
@@ -2610,48 +2518,12 @@ export function ChatPanel({
         try {
           const capabilities = await capabilityReader.call(apiClient);
           capabilitiesSnapshot = capabilities as ChatCapabilities;
-          liveScombzGate =
-            capabilities.agent_backend === "azure_openai" &&
-            capabilities.observability === "off" &&
-            capabilities.scombz_student_read_mode === "live";
-          liveSitrusGate =
-            capabilities.agent_backend === "azure_openai" &&
-            capabilities.observability === "off" &&
-            capabilities.sitrus_personal_context_mode === "live";
-          demoFixtureGate =
-            DEMO_FIXTURE_ENABLED &&
-            capabilities.agent_backend === "fixture" &&
-            capabilities.observability === "off" &&
-            (capabilities.scombz_student_read_mode === "fixture" ||
-              capabilities.sitrus_personal_context_mode === "fixture");
           providerDestination =
             capabilities.agent_backend === "azure_openai"
               ? "azure_openai"
               : "local";
-          const allowed = new Set(capabilities.supported_client_tools);
+          serverTools = new Set(capabilities.supported_client_tools);
           maxClientTools = capabilities.max_client_tools;
-          if (!liveScombzGate && !demoFixtureGate) {
-            for (const name of [
-              "scombz_course_list",
-              "scombz_portal_read",
-              "scombz_course_read",
-              "scombz_material_search",
-            ]) {
-              allowed.delete(name);
-            }
-          }
-          if (
-            !liveSitrusGate &&
-            !(
-              DEMO_FIXTURE_ENABLED &&
-              capabilities.agent_backend === "fixture" &&
-              capabilities.observability === "off" &&
-              capabilities.sitrus_personal_context_mode === "fixture"
-            )
-          ) {
-            allowed.delete("sitrus_read");
-          }
-          serverTools = allowed;
         } catch {
           // Capability failure is fail-closed. The request may still answer
           // from already stored conversation evidence, but it advertises no
@@ -2661,35 +2533,11 @@ export function ChatPanel({
           providerDestination = "unknown";
         }
       }
-      if (
-        sitrusReadRequired &&
-        typeof capabilityReader === "function" &&
-        !liveSitrusGate &&
-        !(
-          capabilitiesSnapshot?.agent_backend === "fixture" &&
-          capabilitiesSnapshot.sitrus_personal_context_mode === "fixture"
-        )
-      ) {
-        throw new Error(
-          "SITRUSの成績連携は現在利用できません。管理者設定とログイン状態を確認してください。",
-        );
-      }
-      if (
-        typeof capabilityReader === "function" &&
-        capabilitiesSnapshot === null &&
-        requiresVerifiedCampusCapability(message, {
-          onScombzPage: pageContext?.kind === "scombz",
-          processingScope: current.processing_scope,
-        })
-      ) {
-        throw new Error(
-          "学内データの利用可否を確認できません。再認証後にもう一度お試しください。",
-        );
-      }
+
+      authReadyTools = await readChatAuthPreflight();
       if (
         pageContext?.kind === "scombz" &&
-        liveScombzReadRequired &&
-        !demoFixtureGate
+        authReadyTools.has("scombz_course_list")
       ) {
         if (!(await hasScombzStudentSessionConsent())) {
           throw new Error(
@@ -2708,17 +2556,6 @@ export function ChatPanel({
             pinResult.reason_code === "scombz_source_tab_changed"
               ? "SCombZの参照元タブが変わりました。元のタブを表示してから再試行してください。"
               : "SCombZの参照元タブを固定できませんでした。ログイン状態と表示中のタブを確認してください。",
-          );
-        }
-        // A production client must not send a personal SCombZ prompt when
-        // the authenticated live capability cannot be proven.  In
-        // particular, do not continue with the legacy `scombz_read` tool or
-        // an unclassified provider message after a capability fetch error.
-        if (typeof capabilityReader === "function" && !liveScombzGate) {
-          throw new Error(
-            capabilitiesSnapshot
-              ? "SCombZのlive読み取り機能は現在利用できません。"
-              : "SCombZのlive capabilityを確認できません。再認証後に再試行してください。",
           );
         }
       }
@@ -2750,13 +2587,6 @@ export function ChatPanel({
       }
       current = {
         ...current,
-        processing_scope:
-          pageContext?.kind === "scombz" &&
-          liveScombzReadRequired &&
-          liveScombzGate
-            ? mergeProcessingScope(current, "scombz_course_list")
-                .processing_scope
-            : current.processing_scope,
         provider_destination: providerDestination,
         // New conversations are eligible.  A legacy conversation loaded
         // without this metadata remains ineligible and is sent without its
@@ -2813,7 +2643,7 @@ export function ChatPanel({
           client_tools: clientTools(
             serverTools,
             maxClientTools,
-            demoFixtureGate,
+            authReadyTools,
           ),
           context_manifest: providerContextManifest,
         });
@@ -2821,7 +2651,7 @@ export function ChatPanel({
         return;
       }
       const locallyAvailableTools = new Set(
-        clientTools(serverTools, maxClientTools, demoFixtureGate).map(
+        clientTools(serverTools, maxClientTools, authReadyTools).map(
           (tool) => tool.name,
         ),
       );
@@ -2837,7 +2667,7 @@ export function ChatPanel({
             },
             runnerConversation,
             toolLabel(call.name),
-            { submit: false, demoFixture: demoFixtureGate },
+            { submit: false },
           );
           runnerConversation = outcome.conversation;
           return { request: outcome.request };

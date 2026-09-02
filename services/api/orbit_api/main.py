@@ -17,6 +17,7 @@ from orbit_api.agent import (
     get_agent_backend,
     get_chat_backend,
 )
+from orbit_api.agent.azure_openai_backend import validate_azure_runtime_configuration
 from orbit_api.agent.chat import (
     ChatEvidenceConflictError,
     ChatRunConsumedError,
@@ -61,6 +62,16 @@ logger = logging.getLogger("orbit_api.validation")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    backend_name = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
+    # Validate the backend/profile contract before clearing stores or serving
+    # requests.  This keeps removed backends (including ``openai``) from
+    # starting successfully and avoids a late, request-time failure.
+    validate_runtime_backend(backend_name)
+    if backend_name == "azure_openai":
+        # This is a local, no-network preflight.  It fails startup before an
+        # Azure Agent is built when the deployment/profile pair cannot use
+        # native Responses Tool Search.
+        validate_azure_runtime_configuration()
     agent_run_service.store.clear()
     chat_run_service.store.clear()
     chat_run_service.clear_background()
@@ -136,11 +147,7 @@ def _safe_validation_detail(error: RequestValidationError) -> dict[str, str]:
         location = item.get("loc", ())
         if isinstance(location, (tuple, list)):
             candidate = next(
-                (
-                    part
-                    for part in location
-                    if isinstance(part, str) and part in _VALIDATION_FIELDS
-                ),
+                (part for part in location if isinstance(part, str) and part in _VALIDATION_FIELDS),
                 None,
             )
             if candidate is not None:
@@ -254,10 +261,7 @@ async def require_api_token(request: Request, call_next):
             separator != " "
             or scheme.lower() != "bearer"
             or not provided
-            or not (
-                secrets.compare_digest(provided, expected)
-                or agent_sessions.verify(provided)
-            )
+            or not (secrets.compare_digest(provided, expected) or agent_sessions.verify(provided))
         ):
             return JSONResponse(
                 status_code=401,
@@ -326,13 +330,18 @@ async def create_agent_session(request: AgentSessionRequest) -> AgentSessionResp
 @app.get("/v1/capabilities", response_model=AgentCapabilities)
 async def capabilities() -> AgentCapabilities:
     backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
-    if backend not in {"fixture", "openai", "azure_openai"}:
+    if backend not in {"fixture", "azure_openai"}:
         raise HTTPException(status_code=503, detail="Agent backend is not supported.")
     try:
         validate_runtime_backend(backend)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
-    supported_backend = cast(Literal["fixture", "openai", "azure_openai"], backend)
+    if backend == "azure_openai":
+        try:
+            validate_azure_runtime_configuration()
+        except (RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+    supported_backend = cast(Literal["fixture", "azure_openai"], backend)
     return AgentCapabilities(
         agent_backend=supported_backend,
         my_library_personal_context=supported_backend == "azure_openai",
@@ -349,12 +358,17 @@ async def chat_capabilities() -> ChatCapabilities:
     """
 
     backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
-    if backend not in {"fixture", "openai", "azure_openai"}:
+    if backend not in {"fixture", "azure_openai"}:
         raise HTTPException(status_code=503, detail="Agent backend is not supported.")
     try:
         validate_runtime_backend(backend)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+    if backend == "azure_openai":
+        try:
+            validate_azure_runtime_configuration()
+        except (RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
     observability = os.getenv("ORBIT_OBSERVABILITY", "off")
     if observability not in {"off", "wandb"}:
         raise HTTPException(status_code=503, detail="Observability mode is not supported.")
@@ -375,12 +389,10 @@ async def chat_capabilities() -> ChatCapabilities:
         sitrus_personal_context_mode=sitrus_mode,
     )
     return ChatCapabilities(
-        agent_backend=cast(Literal["fixture", "openai", "azure_openai"], backend),
+        agent_backend=cast(Literal["fixture", "azure_openai"], backend),
         observability=cast(Literal["off", "wandb"], observability),
         scombz_student_read_mode=cast(Literal["off", "fixture", "live"], scombz_mode),
-        sitrus_personal_context_mode=cast(
-            Literal["off", "fixture", "live"], sitrus_mode
-        ),
+        sitrus_personal_context_mode=cast(Literal["off", "fixture", "live"], sitrus_mode),
         supported_client_tools=list(supported),
         max_client_tools=32,
     )

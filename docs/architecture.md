@@ -41,10 +41,9 @@ Extension Service Worker
 Chrome UI           FastAPI Agent API
 （Side Panel / 全画面タブ）
     │                    │
-    │                    ├── FixtureAgent
-    │                    ├── OpenAIAgent
-    │                    ├── AzureOpenAIAgent（明示設定時のみ）
-    │                    └── PydanticAI（導入条件を満たした後）
+    │                    ├── FixtureAgent（開発・CI。Chatは一般回答のみ）
+    │                    └── AzureOpenAIAgent
+    │                         └── PydanticAI Responses + Hosted Tool Search
     │
     └── 利用者の承認
              │
@@ -193,26 +192,25 @@ class AgentBackend(Protocol):
 
 `FixtureAgent`は、通常開発、CI、拡張機能のローカルデモで利用する。
 
-`OpenAIAgent`は、環境変数が設定された場合だけ有効になるデモ用Adapterである。
-
-Azureモデルを追加する場合も、アプリケーションへモデル名を埋め込まず、同じBackend境界へ追加する。
+本番providerは`AzureOpenAIAgent`に一本化する。`AZURE_OPENAI_MODEL`はAzureのdeployment名、
+`AZURE_OPENAI_BASE_MODEL`はPydanticAIのcanonical profile名として分離し、native Tool Searchを宣言しないprofileは起動前に拒否する。
 
 APIキーやモデルが設定されていない場合に、別Backendへ暗黙に切り替えない。
 
 ### PydanticAIとChatのAgent境界
 
-ChatはSIT ORBIT Agent Harnessを通る。一般的な会話・推論・公開調査にはclient Toolを広告せず、認証済み学内情報が必要なターンだけ、capability、データ分類、会話文脈、現在の参照元に一致する候補を最大5件へ絞る。明確な依頼は決定的にfamilyを選び、曖昧な追質問は直近2件と直前Evidenceのfamilyだけを補助文脈として使う。モデルは候補内の厳格なTool schemaから正確なToolと引数を選ぶ。
+ChatはSIT ORBIT Agent Harnessを通る。毎ターン、server設定、APIが広告したclient Tool、端末側auth-only preflight、同意、データ分類を交差してeligible catalog snapshotを作る。PydanticAIは全Toolを`defer_loading=true`で登録し、Azure Responses Hosted Tool Searchが名前と日本語概要から必要な定義だけを発見する。アプリ内の語句分類や固定件数の候補選択は行わない。
 
-Tool Catalogは公開`ChatToolName` 21件と同じ安定順序を持ち、family、結果型、read-only属性、live SCombZ gate、Evidence title／locator／classificationを一元管理する。`/v1/chat/capabilities`、PydanticAI handler、Evidence receiptはCatalogとの一致をテストする。外部送信のpayload変換は、個人データごとの明示的な分岐を維持する。
+Tool Catalogは公開`ChatToolName` 22件と同じ安定順序を持ち、用途、利用条件、取得内容、使わない場面、opaque ref依存、結果型、read-only属性、可用性、Evidence metadataを一元管理する。`/v1/chat/capabilities`、PydanticAI handler、Evidence receiptはCatalogとの一致をテストする。外部送信のpayload変換は、個人データごとの明示的な分岐を維持する。
 
 Side Panelと監査CLIは共通の`ChatRunner`を使い、1回1Tool、最大8回の線形ループを実行する。同一runで正規化したTool名・引数・source generationが完全一致したread-only結果だけを再利用できるが、各tool callには別のEvidence receiptを発行する。capabilityを確認できない場合は送信先を`unknown`とし、個人・学内依頼を`startChat`前に停止する。一般質問はToolなしで継続できる。
 
 PydanticAIは、Python、FastAPI、Pydantic、型付き出力、複数モデル対応の条件に合うため、最初に評価するAgent Frameworkである。[PydanticAI](https://github.com/pydantic/pydantic-ai)
 
-Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、OpenAI Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`またはChat用`ChatDraft`だけとし、`action_id`、message ID、EvidenceLinkはサーバーが正規化する。
-`OpenAIResponsesModel`には`OpenAIProvider`または`AzureProvider`を渡し、`openai_store=False`を固定する。
+Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、Azure Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`またはChat用`NativeOutput(ChatDraft)`だけとし、`action_id`、message ID、EvidenceLinkはサーバーが正規化する。
+`OpenAIResponsesModel`にはAzureProviderを渡し、`openai_store=False`と`parallel_tool_calls=False`を固定する。Tool Search未対応profileへのfallbackは行わない。
 
-外部ToolはTool Catalogに登録した21件のread-only client Toolである。実際にモデルへ見せるのは、そのターンで認証・データポリシー・Connector状態を満たす最大5件だけである。Tool引数と結果は厳格なSchemaで検証し、Chat runは同一Toolの再利用を許し、1ターン最大8回の線形Deferred Toolとして実行する。Web Readerは非アクティブな一時タブへページを開き、表示本文30,000文字・リンク50件までを抽出して閉じる。script、style、hidden要素、フォーム、Cookie、パスワードは除外し、ページ内の命令はデータとして扱う。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。
+外部ToolはTool Catalogに登録したread-only client/server Toolである。初期wireにはTool Searchとdeferされた名前・概要だけを送り、発見済みToolの定義だけをそのターンに追加する。Tool引数と結果は厳格なSchemaで検証し、Chat runは発見済みToolと未使用の検索対象を保持したまま、1ターン最大8回の直列Deferred Toolとして再開する。Web Readerは非アクティブな一時タブへページを開き、表示本文30,000文字・リンク50件までを抽出して閉じる。script、style、hidden要素、フォーム、Cookie、パスワードは除外し、ページ内の命令はデータとして扱う。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。
 
 Chat APIは`POST /v1/chat/runs`と`POST /v1/chat/runs/{run_id}/tool-results`である。入力履歴は直近20件・64,000文字まで、サーバー保存はTool待ちの600秒だけに限定する。完了メッセージはMarkdownとサーバー解決済みEvidenceを返し、ActionProposalが含まれる場合も従来どおり明示承認を要求する。
 
@@ -280,7 +278,7 @@ Branch 1では、公開ページの検索・閲覧だけを4つの型付きTool�
 
 Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命なopaque対応表から解決できた公開OPACまたは同意済みMy Libraryの参照だけを、現在の公式ページから再読して8操作の可否として返す。`ActionProposal.operation`はこのoptions evidenceの同じ`resource_ref`に結び付き、write操作は`external_action=library_write`かつ常に明示確認を要求する。提案承認は送信ではなく、Chrome内の短命previewを開始するだけである。previewでは公式origin/path、対象、現在状態、フォームとCSRFの形を再検証し、別UI操作の`この内容で送信`を経なければsubmitしない。読み取り専用の棚・公式viewer操作は再読込後に公式ページを開く。live providerのフォーム挙動を検証できないwrite操作は、previewも送信ボタンも出さず`write_form_not_verified`で停止する。fixtureのwrite state machine以外は、実送信・擬似成功・完了イベントを生成しない。
 
-現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。Azure本番の`library_catalog_search`と`library_item_read`は上記Server Toolを使い、OPAC検索用のChrome一時タブを作成しない。fixtureまたはServer Toolを利用できない旧クライアントでは、既存の公式ページ可視DOM経路を明示的に`off`として扱い、内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
+図書館Toolは質問文をローカル分類せず、同じeligible catalogからHosted Tool Searchで発見する。Azure本番の`library_catalog_search`と`library_item_read`は上記Server Toolを使い、OPAC検索用のChrome一時タブを作成しない。fixtureまたはServer Toolを利用できない旧クライアントでは、既存の公式ページ可視DOM経路を明示的に`off`として扱い、内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
 
 書誌レコードの`resource_ref`は安定した公開レコードIDから導出したopaque値であり、元IDはService Workerの短命なメモリ対応表にだけ保持する。対応表が失われた再起動後や衝突検出時は解決せず、推測で読み替えない。Holdingは表示されたcampus、location、call number、status、due date、reservation countだけを返し、未表示の値は`unknown`または`null`とする。通常の公開Evidenceは`source_type=library`、`classification=public`、`orbit-library://public/` locatorに限定し、Branch 3 action-options Evidenceは専用IDとopaque `resource_ref` locatorへ分離する。
 
@@ -305,7 +303,7 @@ URLやモデル入力から学籍番号を受け取らず、`Token`の`preferred
 Agentへ渡す投影は、科目名、判定、評価、単位数、年度、学期、単位区分別の当期と累計の科目数および単位数に限定する。
 学籍番号、氏名、教員、教室、科目コード、Cookie、トークン、生レスポンスにはAPI Schema上の表現を与えない。
 `ORBIT_SITRUS_PERSONAL_CONTEXT=live`、`ORBIT_AGENT_BACKEND=azure_openai`、`ORBIT_OBSERVABILITY=off`が同時に成立した場合だけ、実成績をAzure OpenAIへ送るToolを広告し、resume時にも同じ条件を再検証する。
-`fixture`は合成データ専用とし、OpenAI、W&B、別Providerへのfallbackは行わない。
+`fixture`は合成データ専用とし、通常のChatは入力にかかわらず一般回答を返す。Azure、W&B、別Providerへのfallbackは行わない。
 成績を含むTool Resultと回答ターンはChatPanelのメモリだけに保持し、IndexedDBや共有ログへ保存しない。
 未認証、HTMLログイン応答、構造変更、サイズ上限超過は`reauth_required`または`unavailable`として返す。
 
@@ -573,7 +571,7 @@ W&Bへ送るデータは`synthetic`または`public`だけとする。
 ### Phase 3：Agent API
 
 - 既存のAgentBackendを利用する
-- OpenAIまたはAzure Adapterを明示的な設定で切り替える
+- Azure Adapterを明示的な設定で有効化する（通常OpenAI backendは持たない）
 - 必要条件を満たした後にPydanticAIを追加する
 - W&B Weaveは合成デモだけで有効化する
 

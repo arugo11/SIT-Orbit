@@ -16,13 +16,13 @@ PYTHONPATH=services/api uv run python -m evals.run_eval
 - 提案にEvidenceが存在する
 - 外部操作に確認が必要と明示されている
 
-Agent Harnessのclient Tool shortlistは、別のsynthetic/public held-out setで確認する。
+Chat AgentのTool発見は、Azure ResponsesのHosted Tool Searchを使う実モデル評価で確認する。
 
 ```bash
 PYTHONPATH=services/api uv run python -m evals.run_tool_routing_eval
 ```
 
-この評価は外部モデルや認証済みConnectorを呼ばず、一般質問のno-tool判定、各学内familyの候補recall、追質問、混合依頼、prompt injectionを確認する。合格条件は、重要ケースのrecall 100%、全候補recall 95%以上、一般質問の学内Tool呼び出し0件、禁止・不正Tool 0件、候補数5件以下である。p50／p95はルーター処理時間であり、Connectorやモデル全体の高速化を表さない。
+通常のCIでは外部モデルを呼ばず、評価runnerはmanifest検査だけを行ってskipする。`ORBIT_ENABLE_AZURE_EVAL=1`を明示した実行では、Azure上の合成Tool結果を使い、Tool選択recall、不要Tool実行率、capability質問でのデータ読取抑止、言い換え、会話継続、サービス横断、一般会話、prompt injectionを測る。アプリの本番telemetryには検索文、ユーザー本文、Tool引数、結果本文、Evidence内容を保存せず、発見・実行Tool名、所要時間、成否だけを扱う。回帰ケースの引数一致は、別途作成した合成・allowlist済み観測の`executed_arguments`でのみ検査する。合格条件は重要ケース各3試行成功、選択recall 95%以上、不要Tool実行率5%以下、capability・一般会話・prompt injectionでの学内データTool実行0件である。
 
 ## W&B Weave evaluation
 
@@ -37,63 +37,25 @@ PYTHONPATH=services/api uv run python -m evals.run_eval --wandb
 
 W&BではDataset、モデル呼び出し、各Scorer、latencyを比較できる。
 
-OpenAI Backendを利用した場合は、対応するモデル呼び出しのtokenとcostもtraceへ記録される。
+Azure Responsesの利用量はAzure側の課金・クォータで確認し、Tool発見ログへtokenや本文を記録しない。
 
-## Azureモデル選定の暫定評価
+## Azure live acceptance
 
-モデルの初期順位は、実測前の暫定判断として次のように置く。
-
-| 役割 | Azure deploymentの候補 | 用途 |
-| --- | --- | --- |
-| Primary | GPT-5.6 Terra | 通常デモ |
-| Quality demo | GPT-5.6 Sol | 決勝など品質重視のデモ |
-| Challenger | GPT-5.6 Luna | 低コスト候補 |
-
-deployment名はAzure側で利用者が決めるため、アプリケーションへ埋め込まない。
-同じ16件の合成ケースを、明示したroleとdeploymentの組み合わせへ順番に実行して比較する。
+Chatの実モデル評価はAzure GPT-5.6 Terraだけを対象にする。`AZURE_OPENAI_MODEL`はdeployment alias（現行値`gpt-5-6-terra`）、`AZURE_OPENAI_BASE_MODEL`はPydanticAIのcanonical profile（現行値`gpt-5.6-terra`）であり、組み合わせを固定して検証する。native Tool Searchを宣言しないprofileやdeploymentは開始前に拒否し、別providerやローカル語句検索へ退避しない。
 
 ```bash
+ORBIT_ENABLE_AZURE_EVAL=1 \
 ORBIT_OBSERVABILITY=off \
-AZURE_OPENAI_ENDPOINT="https://<resource>.openai.azure.com" \
+AZURE_OPENAI_ENDPOINT="https://<existing-student-resource>.openai.azure.com" \
 AZURE_OPENAI_API_KEY="<secret>" \
-PYTHONPATH=services/api uv run python -m evals.run_model_selection \
-  --role terra=<terra-deployment> \
-  --role luna=<luna-deployment> \
-  --role sol=<sol-deployment> \
-  --output /tmp/sit-orbit-model-selection.json
+AZURE_OPENAI_MODEL=gpt-5-6-terra \
+AZURE_OPENAI_BASE_MODEL=gpt-5.6-terra \
+PYTHONPATH=services/api uv run python -m evals.run_tool_routing_eval
 ```
 
-このコマンドは通常の`run_eval`やCIとは別であり、環境変数、Azure endpoint、deployment mapping、`ORBIT_OBSERVABILITY=off`が揃わない場合は開始しない。
-実行対象は`evals/model_selection_cases.jsonl`のsynthetic/public dataだけである。
-モデルの応答をLLM Judgeで採点せず、次のhard failureと、ケースごとの提案本文、Evidence ID、経過時間、token、best-effort costを記録する。提案本文を残すのは合成・公開ケースだけであり、モデル間の定性的な差を人が確認するために使う。
+評価入力は`evals/tool_routing_cases.jsonl`の合成・公開データだけである。Azure側の本番観測には発見Tool名、実行Tool名、所要時間、成否だけを残し、ユーザー本文、検索文、引数、結果、Evidenceを保存しない。合成回帰の引数一致を確認する場合だけ、allowlist済みの`executed_arguments`を評価専用入力として渡す。重要ケースは各3試行を行い、選択recall 95%以上、不要Tool実行率5%以下、capability質問・一般会話・prompt injectionで学内データTool実行0件を合格条件とする。
 
-- Calendar Toolの予期しない呼び出し、未呼び出し、複数回呼び出し、未対応呼び出し
-- 未知のEvidence IDまたは根拠の完全性の破れ
-- 根拠にない事実の追加
-- 外部操作に対する利用者確認の欠落
-- 構造化出力の失敗
-- ケースに明示した利用可能時間を超える提案
-
-根拠外事実の自動判定は、各ケースの`forbidden_terms`に定義した既知のtrapだけを対象とする。別表現を含むすべての幻覚を機械的に判定するものではない。
-そのため、hard failureが0件であることはPrimary候補に残るための必要条件であり、十分条件ではない。JSONに記録された提案本文とEvidence IDを人が確認してから、Primaryを確定する。
-
-いずれかのdeploymentでhard failureが発生した場合、Runnerは非ゼロ終了する。
-結果は明確な`--output`を指定した場合だけJSONファイルへ保存し、指定しなければ標準出力に表示する。
-
-Azure Standard Globalの暫定単価は、入力／出力100万tokenあたりTerraが$2／$12、Lunaが$0.20／$1.20、Solが$5／$30である。
-PydanticAIがcostを返さない場合だけ、この単価から推定する。
-Global deploymentは複数リージョンで処理され得るため、実データ利用前にdeployment type、リージョン、データ処理条件を別途確認する。
-
-参考：
-[Microsoft FoundryのGPT-5.6発表](https://azure.microsoft.com/en-us/blog/gpt-5-6-now-available-in-microsoft-foundry/)、
-[Azureのデータ処理方針](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy)。
-
-Gemini 3.7 Flash Paidは、同じ合成ケースで比較する将来のchallenger候補とする。
-このbranchではGoogle用Adapterや依存を追加せず、実Calendar派生値を送信しない。
-Geminiの価格は2026年12月31日までは入力$0.75／出力$3.75、2027年1月1日から入力$1.50／出力$7.50（いずれも100万tokenあたり）と記録するが、実行時点の公式料金を再確認する。
-[Google公式リリースノート](https://ai.google.dev/gemini-api/docs/changelog)、
-[Gemini API料金表](https://ai.google.dev/gemini-api/docs/pricing)、
-[PydanticAI Googleモデル](https://pydantic.dev/docs/ai/models/google/)。
+Azureの利用量・クォータ・Student subscriptionのspending limitはAzure側で確認する。別subscriptionのresource、新規resource、SKU変更、role assignment作成は行わない。
 
 ## Metrics to observe
 

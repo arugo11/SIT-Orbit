@@ -256,7 +256,7 @@ verified_sha = <git rev-parse HEAD>
 ```text
 ORBIT_AGENT_BACKEND=fixture
 ORBIT_OBSERVABILITY=off
-OpenAI API disabled
+Azure OpenAI API disabled
 W&B disabled
 Google/Azure live API disabled
 synthetic/public fixture only
@@ -411,7 +411,7 @@ ReviewはCORE_VALUE、COMPLEXITY、OVERENGINEERING/YAGNI、UXだけを扱う。
 Local VerifyとReviewのPASSをHEAD SHAへ紐付け、Review後にSHAが変わった場合は再実行する。
 
 通常開発とCIではfixture、synthetic data、public dataだけを使用する。
-OpenAI、W&B、Google、Azureのlive APIは呼ばない。
+Azure OpenAI、W&B、Googleのlive APIは呼ばない。
 Provider確認が不可避なbranchだけ、通常CIと分離して確認する。
 
 failureは原因を分類して最小の段階へ戻す。全Researchをやり直さない。

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from orbit_api.agent.openai_backend import OpenAIAgent
+from orbit_api.agent.azure_openai_backend import AzureOpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_AVAILABILITY_LOCATOR_PREFIX,
     CALENDAR_TOOL_NAME,
@@ -37,6 +37,15 @@ from orbit_api.models import (
 from pydantic_ai import Agent, DeferredToolRequests, ModelMessage
 from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+
+
+def _backend() -> AzureOpenAIAgent:
+    return AzureOpenAIAgent(
+        api_key="synthetic-test-key",
+        model="gpt-5-6-terra",
+        endpoint="https://example.openai.azure.com",
+        base_model="gpt-5.6-terra",
+    )
 
 
 def make_event() -> OrbitEvent:
@@ -176,7 +185,7 @@ def make_two_stage_agent(
 async def test_function_model_two_stage_scombz_then_calendar_keeps_minimized_returns() -> None:
     requests: list[list[ModelMessage]] = []
     test_agent = make_two_stage_agent(requests)
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
+    backend = _backend()
     backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
 
     advertised = {SCOMBZ_TOOL_NAME, CALENDAR_TOOL_NAME}
@@ -276,7 +285,7 @@ async def test_function_model_two_stage_scombz_then_calendar_keeps_minimized_ret
 
 @pytest.mark.asyncio
 async def test_resume_execution_rejects_duplicate_tool_call_and_unadvertised_tool() -> None:
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
+    backend = _backend()
     result = SimpleNamespace(
         conversation_id="conversation-1",
         output=DeferredToolRequests(
@@ -314,7 +323,7 @@ def make_multi_tool_request() -> AgentRunRequest:
 
 def make_pending_multi_tool_run(store: RunStore) -> str:
     return store.put(
-        backend_name="openai",
+        backend_name="azure_openai",
         event=make_event(),
         context=[make_evidence()],
         deferred=DeferredActionRun(
@@ -334,10 +343,10 @@ def make_pending_multi_tool_run(store: RunStore) -> str:
 async def test_agent_run_service_keeps_one_run_id_across_scombz_calendar_and_final_action(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "openai")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     requests: list[list[ModelMessage]] = []
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
+    backend = _backend()
     test_agent = make_two_stage_agent(requests)
     backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
     service = AgentRunService(
@@ -493,12 +502,12 @@ def test_run_store_absolute_ttl_expires_even_after_claim_in_flight() -> None:
 async def test_result_returning_after_ttl_cannot_complete_or_publish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "openai")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     now = [0.0]
     store = RunStore(ttl_seconds=10, clock=lambda: now[0])
     run_id = store.put(
-        backend_name="openai",
+        backend_name="azure_openai",
         event=make_event(),
         context=[make_evidence()],
         deferred=DeferredActionRun(
@@ -507,7 +516,7 @@ async def test_result_returning_after_ttl_cannot_complete_or_publish(
             conversation_id="conversation-1",
         ),
     )
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
+    backend = _backend()
 
     async def late_resume(*args: object, **kwargs: object) -> AgentExecution:
         del args, kwargs

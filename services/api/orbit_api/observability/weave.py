@@ -87,14 +87,15 @@ def init_observability() -> bool:
     import weave
 
     backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
-    model_variable = "AZURE_OPENAI_MODEL" if backend == "azure_openai" else "OPENAI_MODEL"
     weave.init(
         f"{entity}/{project}",
         attributes={
             "application": "sit-orbit",
             "data_policy": "synthetic-public-only",
             "agent_backend": backend,
-            "model": os.getenv(model_variable, "fixture"),
+            "model": os.getenv(
+                "AZURE_OPENAI_BASE_MODEL", os.getenv("AZURE_OPENAI_MODEL", "fixture")
+            ),
         },
     )
     return True

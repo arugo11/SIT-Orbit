@@ -66,7 +66,7 @@ function jsonResponse(
 }
 
 describe("isChatCapabilities", () => {
-  it("accepts the explicit fixture SCombZ capability used by demo builds", () => {
+  it("rejects fixture capabilities that advertise private SCombZ tools", () => {
     expect(
       isChatCapabilities({
         schema_version: "v1",
@@ -77,7 +77,7 @@ describe("isChatCapabilities", () => {
         supported_client_tools: ["scombz_course_list", "scombz_course_read"],
         max_client_tools: 32,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 

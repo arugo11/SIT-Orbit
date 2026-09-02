@@ -4,10 +4,10 @@
 
 個人情報は会話単位の匿名化処理を通し、氏名、学籍番号、認証情報、Cookie、OAuth tokenを送信しない。
 
-SITRUSの成績は、管理者が`ORBIT_SITRUS_PERSONAL_CONTEXT=live`を明示し、Azure OpenAIを選択し、observabilityを無効化した組合せに限って送信できる。この`live`設定は管理者による有効化であり、利用者同意を意味しない。追加の同意UIは設けない。
+SITRUSの成績は、認証済みの画面を拡張機能がauth-only preflightで確認し、管理者が`ORBIT_SITRUS_PERSONAL_CONTEXT=live`を明示し、Azure OpenAIを選択し、observabilityを無効化した組合せに限って送信できる。この`live`設定は管理者による有効化であり、利用者同意を意味しない。追加の同意UIは設けない。
 
 送信項目は科目名、判定、評価、単位数、年度、学期、単位区分別集計と、`status`、`report_label`、`observed_at`、`reason_code`だけに限定する。GPA、科目コード、term slot、再履修情報、氏名、学籍番号、token、Cookie、生レスポンスは端末からAgent APIへ送信しない。Agent APIは未定義フィールドを拒否する。
-通常のOpenAIとW&BにはSITRUSの成績を送信しない。
+W&Bや他のProviderにはSITRUSの成績を送信しない。
 
 ## Data allowed in demo services
 
@@ -37,7 +37,7 @@ MVPの`OrbitEvent`と`EvidenceLink`は次の区分を持つ。
 - `personal`
 - `restricted`
 
-通常のOpenAI（非Azure）およびW&B経路へ送信できるのは`synthetic`と`public`だけである。Azure OpenAIを明示的に選択したAgent runでは、以下に定める狭い個人データ例外だけを追加で許可する。Providerを自動で切り替えたり、例外を一般のpersonalデータへ広げたりしない。
+fixture経路へ送信できるのは`synthetic`と`public`だけである。Azure OpenAIを明示的に選択したAgent runでは、以下に定める狭い個人データ例外だけを追加で許可する。Providerを自動で切り替えたり、例外を一般のpersonalデータへ広げたりしない。
 
 ただし、Branch 7のAgent runでは、次のサーバー生成EvidenceLinkだけを例外として扱える。
 
@@ -56,7 +56,7 @@ SCombZの授業情報・抽出済みPDF本文をAzure OpenAIへ送る前に、�
 
 CASTの`restricted/cast_career`例外を有効にできるのは、型付き仮名プロフィール（別名、役割、企業、一般化卒業年、技術領域、職種、地域、Evidence）だけであり、`ORBIT_AGENT_BACKEND=azure_openai`かつ`ORBIT_OBSERVABILITY=off`に限定する。自由記述、連絡先、成績、資格情報、元の人物名、内部ID、raw HTML、添付は外部へ送らない。現在のSCombZ監査CLIはSCombZ学生Toolと公式シラバスToolだけを広告し、CASTを暗黙に追加しない。
 
-My Libraryだけは、利用者が個人の貸出・予約などを尋ねるChatを明示的に送信した場合に限り、上記の最小item（タイトル等）をAzure Agentへ送れる狭い例外とする。これは一般のpersonalデータ規則を解除せず、OpenAI/W&Bや別Providerへの送信、Chat送信外の取得を許可しない。OAuth/SSO詳細やraw snapshotは保持しない。
+My Libraryだけは、利用者が個人の貸出・予約などを尋ねるChatを明示的に送信した場合に限り、上記の最小item（タイトル等）をAzure Agentへ送れる狭い例外とする。これは一般のpersonalデータ規則を解除せず、W&Bや別Providerへの送信、Chat送信外の取得を許可しない。OAuth/SSO詳細やraw snapshotは保持しない。
 
 Chat中心化branchでは、明示的なChat送信と必須host permissionの範囲内で、SCombZの構造化表示情報（`orbit-scombz://read/<opaque>`）、公式シラバス検索の公開結果（`orbit-syllabus://search/<opaque>`）、検証済みURLから抽出した表示本文とリンク（`orbit-browser://read/<opaque>`）も扱う。成績、出欠、個人評価の値は、SITRUS専用のローカル読取Toolを除きSchemaに含めない。
 
@@ -131,7 +131,7 @@ Composerにアクセスモードやサイト単位の承認状態は持たせな
 
 Chat APIへ送るTool結果は、Toolごとの厳密な最小Schemaだけにする。SCombZは表示項目の構造化値、Calendarは空き時間の区間と分数、シラバスは公式公開結果、Browser Readerは本文30,000文字とリンク50件までであり、予定名・ID・参加者・説明、SCombZのHTML、Cookie、パスワード、第三者のフォーム入力、OAuth tokenは表現できない。ページ中の命令文はTool命令として実行せず引用データとして扱う。Tool待ちのrunはAPIプロセス内に600秒だけ保持し、完了・失敗・期限切れで削除する。
 
-SITRUSの成績は保存・ダウンロードせず、利用者が実際に開いている画面を参照する。優先経路は、SITRUS画面から確認できた`/SITRUS/login/ShutokuTaniShukei.html`のHTML表である。Service Workerは表示中の表の「判定・評価・科目名」だけをメモリ上で抽出し、科目コードや単位数が表にない場合は`null`のまま扱い、値を推測しない。成績通知書の`/SITRUS/login/SeisekiTsutiSho.html`は、HTML表が利用できない場合のメモリ内PDF.jsテキスト層フォールバックであり、PDF本体やBase64を保存・返却しない。いずれも氏名、学籍番号、予定情報、Cookie、tokenは返さない。この個人データは現在のプロジェクト契約上、外部LLM、W&B、共有ログへ送信しない。`ORBIT_AGENT_BACKEND=fixture`のローカルChat/toolだけで表示し、外部Provider実行時はSITRUS Toolを広告しない。ページが閉じた、別URLへ遷移した、表やPDF.jsを利用できない場合は成功扱いにせず、利用者へ再表示を案内する。
+SITRUSの成績は保存・ダウンロードせず、利用者が実際に開いている画面を参照する。優先経路は、SITRUS画面から確認できた`/SITRUS/login/ShutokuTaniShukei.html`のHTML表である。Service Workerは表示中の表の「判定・評価・科目名」だけをメモリ上で抽出し、科目コードや単位数が表にない場合は`null`のまま扱い、値を推測しない。成績通知書の`/SITRUS/login/SeisekiTsutiSho.html`は、HTML表が利用できない場合のメモリ内PDF.jsテキスト層フォールバックであり、PDF本体やBase64を保存・返却しない。いずれも氏名、学籍番号、予定情報、Cookie、tokenは返さない。認証済みpreflight、`ORBIT_AGENT_BACKEND=azure_openai`、`ORBIT_SITRUS_PERSONAL_CONTEXT=live`、`ORBIT_OBSERVABILITY=off`がそろったChatだけが、氏名・学籍番号・GPA・生レスポンスを除いた最小projectionをAzureへ送る。fixtureは一般的なTool選択を再現せず、外部ProviderやW&Bへ送信しない。ページが閉じた、別URLへ遷移した、表やPDF.jsを利用できない場合は成功扱いにせず、`reauth_required`または`unavailable`を表示する。
 
 Moodleは、利用者がChatを明示送信したときだけ、確認済みの`/moodle/my/`を参照する。コース名と活動・課題名を含む詳細Snapshotは拡張機能のメモリ内でタイムラインへ表示し、Chat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存・送信しない。外部モデルへ送信できるのは`MoodleReadResult`の派生値だけであり、read-only取得に追加のChat確認は表示しない。氏名、コースID、教材本文、提出内容、private file、SSO token、query、fragmentにはSchema上の表現を与えない。ライブMoodle Toolを使うrunでは`ORBIT_OBSERVABILITY=off`を必須とする。
 
@@ -172,13 +172,13 @@ Career Vaultは、Argon2idで導出した鍵でレコードごとにAES-256-GCM�
 
 `confirmed`記録だけを、Chrome Prompt APIに渡すためのローカルprojectionへ変換する。projectionは`evidence_id`、主張、状況、行動、結果、出典種別、資料件数に限定し、`person_ref`、元URLのquery／fragment、ファイル本体、ファイル名、復号済みVault値、作成・更新時刻を除外する。入力された数値・成果はそのまま保持し、モデルが新しい成果、人数、割合、因果関係を生成することを許可しない。
 
-Career Evidence Bankの記録、資料locator、人物対応表は、Azure、OpenAI、W&B、FastAPI、Chat履歴、runtime messageへ送信しない。個人証拠を外部モデルで扱う必要が生じた場合は、この例外を暗黙に広げず、Pseudonymization Gateway、Context Manifest、大学の許可範囲を満たす別変更として再審査する。raw PDFや添付ファイルは保存・アップロードせず、利用者が明示した表示情報だけを端末内で参照する。
+Career Evidence Bankの記録、資料locator、人物対応表は、Azure、W&B、FastAPI、Chat履歴、runtime messageへ送信しない。個人証拠を外部モデルで扱う必要が生じた場合は、この例外を暗黙に広げず、Pseudonymization Gateway、Context Manifest、大学の許可範囲を満たす別変更として再審査する。raw PDFや添付ファイルは保存・アップロードせず、利用者が明示した表示情報だけを端末内で参照する。
 
 ### CAST Alumni Portal
 
 大学のキャリアサポート課または情報管理担当から、外部拡張機能によるCASTデータの読み取り許可を得ている。対象は就活サポーターの回答可能テーマ、面談可能頻度・形式、匿名共有可能な知見であり、読み取り専用とする。公式APIはないため、利用者が認証済みアカウントで開いた`https://shibaura.pita.services/career/`配下の表示DOMを、表示中のcontent scriptから必要最小限だけ抽出する。[大学公式FAQ](https://www.shibaura-it.ac.jp/career_support/guide/question.html)の案内と[CASTログイン](https://shibaura.pita.services/career/login)を起点にし、実画面に表示されていないURLやendpointは推測しない。
 
-氏名・連絡先は、利用者へ端末内の詳細を表示する目的と、必要な場合のマスキング判定のためだけに扱う。Chat API・Azure・OpenAI・W&B・FastAPI・Chat履歴へ送るallowlist projectionには、プロフィール件数、回答可能テーマのカテゴリ、面談頻度・形式、匿名共有知見のカテゴリ、連絡先の有無、発見リンク件数しか存在しない。Service WorkerとSide Panelのruntime messageには端末内詳細表示用の短命なlocal snapshotが含まれ得るが、外部へ転送せず、run終了時に破棄する。CAST内部ID、SSO token、メール、電話、自由記述、source URL、raw HTMLはSchema上表現できず、外部へ出ない。これは完全匿名化ではなく、端末内表示のためのマスキングと間接識別子の削減である。
+氏名・連絡先は、利用者へ端末内の詳細を表示する目的と、必要な場合のマスキング判定のためだけに扱う。Chat API・Azure・W&B・FastAPI・Chat履歴へ送るallowlist projectionには、プロフィール件数、回答可能テーマのカテゴリ、面談頻度・形式、匿名共有知見のカテゴリ、連絡先の有無、発見リンク件数しか存在しない。Service WorkerとSide Panelのruntime messageには端末内詳細表示用の短命なlocal snapshotが含まれ得るが、外部へ転送せず、run終了時に破棄する。CAST内部ID、SSO token、メール、電話、自由記述、source URL、raw HTMLはSchema上表現できず、外部へ出ない。これは完全匿名化ではなく、端末内表示のためのマスキングと間接識別子の削減である。
 
 人物単位の端末内Promptが必要な場合は、同じlocal snapshotを既存のPseudonymization Gatewayへ渡し、Career Vaultの暗号化対応表からmission固有の別名を生成する。現在のChat API経路は集計projectionだけを送るため、人物別名を外部へ送る必要はない。元の氏名、person_ref、HMAC、対応表、Vault鍵は外部へ出ない。
 
@@ -259,25 +259,18 @@ Google Driveの現行Connector境界は、利用者が明示的に選択した�
 token、認証コード、ファイル内容、Drive一覧は保存・runtime message・Side Panel・Agent APIへ渡さない。
 ライブPicker/OAuth Providerは未実装であり、既定状態は`unavailable`とする。
 
-## Model selection evaluation
+## Azure native Tool Search evaluation
 
-`evals.run_model_selection`は通常の開発・CIから分離した、明示的なAzure実Provider比較である。
-実行にはAzure API key、endpoint、deployment mapping、`ORBIT_OBSERVABILITY=off`が必要であり、条件不足時は停止する。
-入力は16件の合成・公開ケースだけとし、実学生データ、Google Calendarの派生値、私的Drive資料、OAuth tokenを送信しない。
-このRunnerではW&Bを有効にできない。
+`evals.run_tool_routing_eval`は通常の開発・CIから分離した、明示的なAzure実Provider評価である。`ORBIT_ENABLE_AZURE_EVAL=1`、Azure key/endpoint、`AZURE_OPENAI_MODEL=gpt-5-6-terra`、`AZURE_OPENAI_BASE_MODEL=gpt-5.6-terra`、`ORBIT_OBSERVABILITY=off`を要求し、native Tool Searchを宣言しないprofileは開始前に拒否する。
+入力は`evals/tool_routing_cases.jsonl`の合成・公開ケースだけとし、実学生データ、Google Calendarの派生値、私的資料、OAuth tokenを送信しない。評価観測は発見Tool名、実行Tool名、所要時間、成否だけであり、検索文、ユーザー本文、引数、結果、Evidence内容を保存しない。
 
-初期のモデル順位は測定前の暫定判断であり、Terraを通常デモのPrimary、Solを品質重視デモ、Lunaを低コストchallenger候補とする。
-Azure Standard Globalの暫定単価は入力／出力100万tokenあたりTerra $2／$12、Luna $0.20／$1.20、Sol $5／$30である。
-Global deploymentでは処理が複数リージョンに分散され得るため、実データを扱う前にdeployment typeとデータ処理条件を確認する。
-
-Gemini 3.7 Flash Paidは将来の比較候補だが、このbranchではAdapter、依存、実Calendar送信経路を追加しない。
-評価する場合もsynthetic/public dataだけを使い、公式料金（2026年12月31日まで入力$0.75／出力$3.75、2027年1月1日から入力$1.50／出力$7.50、100万tokenあたり）を実行時点で再確認する。
+重要ケースを各3試行し、Tool選択recall 95%以上、不要Tool実行率5%以下、capability質問・一般会話・prompt injectionで学内データTool実行0件を合格条件とする。別provider、通常OpenAI backend、ローカル語句検索、fallbackは使わない。
 
 ## Branch 7 resumable Agent run
 
 `POST /v1/agent/runs`は、Side Panelが明示的に提案ボタンを押した場合だけ開始する。
 表示中のページが実際に解析済みScombZコンテキストを持つ場合だけ`scombz_page_summary` v1を、Calendar接続中だけ`google_calendar_availability` v1を`client_tools`として広告する。
-Agentが要求したToolは1回ずつ、最大2種類を同じ`run_id`で線形に再開する。ScombZはService Workerを介さずSide Panel内で5項目へ投影し、CalendarはService Workerの非対話refresh結果から時間帯・分数・空き区間・理由コードだけを`/v1/agent/runs/{run_id}/tool-results`へ送る。
+Agentが要求した外部Toolは1回ずつ、1ターン最大8回を同じ`run_id`で線形に再開する。SCombZ、Calendar、各Connectorはauth-only preflightとclient advertisementの交差を満たした場合だけeligibleであり、Tool Search後に発見されたToolだけを呼び出す。SCombZは最小projection、Calendarは時間帯・分数・空き区間・理由コードだけを`/v1/chat/runs/{run_id}/tool-results`へ送る。
 runは単一APIプロセスのメモリに600秒だけ保持する。プロセス再起動、別worker、期限切れ、完了、失敗、再利用は410として扱い、provider待機中にlockを保持しない。OAuth token、Calendarの生イベント、ScombZのHTMLはAPI、ログ、run storeへ渡さない。
 
 Google DriveはToolとして登録しない。

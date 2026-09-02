@@ -432,6 +432,10 @@ def _default_backend_factory(
         api_key=os.environ["AZURE_OPENAI_API_KEY"],
         model=deployment,
         endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
+        # Model-selection evaluation belongs to the existing Action Agent
+        # path.  It does not register Chat's deferred catalog and therefore
+        # must not opt that path into Chat-only native Tool Search validation.
+        native_tool_search_required=False,
         usage_callback=usage_callback,
     )
 
