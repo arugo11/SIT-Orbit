@@ -85,15 +85,15 @@ if [[ "${authentication_as_arm}" != "enabled" ]]; then
 fi
 
 identity_name="${ORBIT_AZURE_IDENTITY:-${ORBIT_AZURE_CONTAINER_APP}-pull}"
-IFS='|' read -r identity_id identity_principal_id identity_state <<< "$(az identity show \
+IFS='|' read -r identity_id identity_principal_id <<< "$(az identity show \
   --name "${identity_name}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   "${subscription_args[@]}" \
-  --query "join('|',[id,principalId,provisioningState])" \
+  --query "join('|',[id,principalId])" \
   --output tsv)"
 assert_same_subscription "${identity_id}"
-if [[ -z "${identity_principal_id}" || "${identity_state}" != "Succeeded" ]]; then
-  printf 'The existing pull identity must be in Succeeded state.\n' >&2
+if [[ -z "${identity_principal_id}" ]]; then
+  printf 'The existing pull identity must expose a principal ID.\n' >&2
   exit 1
 fi
 

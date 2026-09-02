@@ -17,7 +17,7 @@ Azure操作は、利用者が明示したAzure for Students subscription内の�
 
 - `ORBIT_AZURE_SUBSCRIPTION`が設定され、対象subscriptionが`Enabled`
 - `quotaId`が`AzureForStudents_`系で、spending limitが有効
-- Resource Group、Container Apps environment、ACR、Managed Identity、Container App、Azure OpenAI account、deploymentが同じsubscription内で`Succeeded`
+- Resource Group、Container Apps environment、ACR、Container App、Azure OpenAI account、deploymentが同じsubscription内で`Succeeded`。Managed Identityは既存IDとprincipal IDをread-backする
 
 別subscriptionの利用、新規resource作成、SKU変更、role assignment作成は行わない。不足や不一致があれば停止し、既存resourceを変更しない。
 
