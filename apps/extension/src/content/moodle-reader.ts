@@ -1,3 +1,5 @@
+import { exactTrustedPagePath } from "./trusted-page-url";
+
 export const MOODLE_ORIGIN = "https://moodle.sic.shibaura-it.ac.jp";
 export const MOODLE_DASHBOARD_PATH = "/moodle/my/";
 export const MOODLE_LOGIN_URL = `${MOODLE_ORIGIN}/moodle/login/index.php`;
@@ -37,15 +39,12 @@ function compactText(
 export function isMoodleDashboardUrl(
   value: string | null | undefined,
 ): boolean {
-  if (!value) return false;
-  try {
-    const url = new URL(value);
-    return (
-      url.origin === MOODLE_ORIGIN && url.pathname === MOODLE_DASHBOARD_PATH
-    );
-  } catch {
-    return false;
-  }
+  return (
+    exactTrustedPagePath(value, {
+      origin: MOODLE_ORIGIN,
+      paths: new Set([MOODLE_DASHBOARD_PATH]),
+    }) !== null
+  );
 }
 
 function parseDueAt(element: Element): string | null {

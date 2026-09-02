@@ -8,10 +8,15 @@ __pycache__
 .ruff_cache
 .pyright
 node_modules
+dist
+.tmp
 .next
 apps/mobile/.expo
 apps/mobile/web-build
 apps/mobile/dist
+apps/extension/dist
+apps/extension/dist.*
+docs/assets
 private_sources
 evals/results
 *.pyc

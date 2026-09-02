@@ -29,6 +29,7 @@ export type LibraryActionOption = {
   available: boolean;
   reason_code: string;
   required_inputs: LibraryActionInput[];
+  verification_level: "none" | "entry_visible";
 };
 
 export type LibraryActionOptionsProjection = LibraryActionOptionsResult;

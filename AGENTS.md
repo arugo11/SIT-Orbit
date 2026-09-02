@@ -1,34 +1,41 @@
-# SIT ORBIT Agent Contract
+# SIT ORBITエージェント契約
 
-## Mission
+## ミッション
 
-SIT ORBIT is a Personal Campus Agent for Shibaura Institute of Technology.
-The current MVP converts one campus event into an evidence-backed action,
-records explicit user approval, and converts completion into a new event.
+SIT ORBITは、芝浦工業大学向けのパーソナルキャンパスエージェントです。
 
-## Current scope
+現在のMVPは、キャンパスイベントを証拠に基づいたアクションに変換し、
+ユーザーの明示的な承認を記録し、完了を新しいイベントに変換します。
 
-- FastAPI agent API in `services/api`.
-- Next.js web UI in `apps/web`.
-- Expo mobile UI in `apps/mobile`.
-- OpenAPI-generated TypeScript types in `packages/api-client`.
-- B1 Omiya is the release fixture.
-- B3 Toyosu is a draft fixture and must not be presented as validated.
+## 現在のスコープ
 
-Do not add a graph database, message broker, multi-agent framework, policy
-engine, or new service without a concrete current requirement.
+- `services/api`にあるFastAPIエージェントAPI。
 
-## Source of truth
+- `apps/web`にあるNext.js Web UI。
 
-- Pydantic models in `services/api/orbit_api/models` define the API contract.
-- `docs/product.md` defines the product intent.
-- `docs/data-policy.md` defines what may leave the local environment.
-- `docs/contest.md` reproduces the official judging perspectives without
-  inventing weights.
+- `apps/mobile`にあるExpoモバイルUI。
 
-## Development commands
+- `packages/api-client`にあるOpenAPIで生成されたTypeScript型。
 
-Use Python only through `uv`.
+
+具体的な現在の要件がない限り、グラフデータベース、メッセージブローカー、マルチエージェントフレームワーク、ポリシーエンジン、
+または新しいサービスを追加しないでください。
+
+
+## 信頼できる情報源
+
+- `services/api/orbit_api/models` にある Pydantic モデルが API 契約を定義します。
+
+- `docs/product.md` は製品の意図を定義します。
+
+- `docs/data-policy.md`に従ってください.
+
+- `docs/contest.md` は、独自の重み付けをすることなく、公式の審査基準を再現します。
+
+
+## 開発コマンド
+
+Python は `uv` を介してのみ使用してください。
 
 ```bash
 uv sync
@@ -38,7 +45,8 @@ uv run pytest
 PYTHONPATH=services/api uv run python -m evals.run_eval
 ```
 
-Use pnpm for Node.js work.
+Node.js の開発には pnpm を使用してください。
+
 
 ```bash
 pnpm install
@@ -49,47 +57,69 @@ pnpm test
 pnpm build
 ```
 
-## Model and observability policy
+## モデルと可観測性に関するポリシー
 
-- Normal development and CI use `ORBIT_AGENT_BACKEND=fixture`.
-- Do not call an external model while writing or running ordinary tests.
-- Never silently fall back from one model or backend to another.
-- OpenAI requires both `ORBIT_AGENT_BACKEND=openai` and an API key.
-- Azure OpenAI requires `ORBIT_AGENT_BACKEND=azure_openai`, an endpoint, a deployment name, and an API key.
-- W&B requires `ORBIT_OBSERVABILITY=wandb` and explicit W&B configuration.
-- Only `synthetic` or `public` data may be sent to OpenAI or W&B.
-- Never send student records, grades, private course material, unpublished
-  research, private Drive content, credentials, or OAuth tokens.
+- 通常の開発およびCIでは、`ORBIT_AGENT_BACKEND=fixture`を使用します。
 
-## Product invariants
+- 通常のテストの作成または実行中に、外部モデルを呼び出さないでください。
 
-- External writes remain proposals until the user explicitly confirms them.
-- AI-derived text is not an official university record.
-- Every action proposal names the evidence used to produce it.
-- Do not claim ScombZ, SIT Portfolio, My Library, or campus infrastructure is
-  integrated until a real authorized integration exists.
-- Do not retain continuous location history.
-- If a requested integration is unavailable, explain the limitation instead
-  of adding a hidden fallback or simulated success.
+- あるモデルまたはバックエンドから別のモデルまたはバックエンドに自動的にフォールバックしないでください。
 
-## Git workflow
+- OpenAIでは、`ORBIT_AGENT_BACKEND=openai`とAPIキーの両方が必要です。
 
-- Work on a `codex/` branch.
-- Do not push directly to `main`.
-- Preserve unrelated user changes.
-- Use prefixed commit subjects such as `chore:`, `feat:`, `docs:`, or `ci:`.
-- Confirm before destructive operations, force pushes, mass deletion, or
-  overwriting checkpoints.
+- Azure OpenAIでは、`ORBIT_AGENT_BACKEND=azure_openai`、エンドポイント、デプロイメント名、およびAPIキーが必要です。
 
-## Verification
+- W&Bでは、`ORBIT_OBSERVABILITY=wandb`と明示的なW&B構成が必要です。
 
-Run the smallest relevant checks after each change.
-Before a pull request, run the full Python and pnpm command sets above.
-API contract changes require `pnpm generate:api` and generated-type review.
-Long-running work must use a named tmux session and an explicit log path.
+- 個人データの外部送信は、`docs/data-policy.md`に明記した送信先・項目・実行条件を満たす例外だけを許可します。
 
-## Stop conditions
+- 匿名化する情報は匿名化の機能を用いて匿名化後送信してください. 
 
-Stop and report the reason when implementation would require unauthorized
-university access, real student data, unknown external write permissions, or a
-material expansion beyond the current MVP.
+## 製品の不変条件
+
+- 外部への書き込みは、ユーザーが明示的に承認するまで提案のままです。
+
+- AIによって生成されたテキストは、大学の公式記録ではありません。
+
+- すべてのアクション提案には、その生成に使用された証拠を明記してください。
+
+- 正式な承認済み統合が存在するまでは、ScombZ、SIT Portfolio、My Library、またはキャンパスインフラストラクチャが統合されていると主張しないでください。
+
+- 継続的な位置情報履歴を保持しないでください。
+
+- 要求された統合が利用できない場合は、隠されたフォールバックや成功をシミュレートするのではなく、制限事項を説明してください。
+
+## Gitワークフロー
+
+- `codex/`ブランチで作業してください。
+
+- `main`ブランチに直接プッシュしないでください。
+
+- 関連性のないユーザー変更は保持してください。
+
+- `chore:`、`feat:`、`docs:`、`ci:`などのプレフィックス付きコミットサブジェクトを使用してください。
+
+- 1タスクにつき1つの`codex/`ブランチとworktreeを使い、同じworktreeを並行共有しない。
+
+- タスク終了時は未コミット差分をコミットするか、引継ぎ先を明記する。
+
+- 統合済みと確認できたbranch/worktreeだけを削除する。
+
+破壊的な操作、強制プッシュ、一括削除、または
+チェックポイントの上書きを行う前に確認してください。
+
+## 検証
+
+変更後、必要最小限のチェックを実行してください。
+
+プルリクエストを送信する前に、上記のPythonおよびpnpmコマンドセットをすべて実行してください。
+
+APIコントラクトの変更には、`pnpm generate:api`と生成されたタイプのレビューが必要です。
+
+長時間実行される処理では、名前付きtmuxセッションと明示的なログパスを使用する必要があります。
+
+## 停止条件
+
+実装に、
+大学への不正アクセス、実際の学生データ、不明な外部書き込み権限、または
+現在のMVPを超える大幅な拡張が必要となる場合は、停止して理由を報告してください。

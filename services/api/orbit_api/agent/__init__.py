@@ -5,6 +5,7 @@ from .pydantic_ai_backend import (
     ChatDraft,
     DeferredChatRun,
     PydanticAIAgentBackend,
+    ResearchTrace,
 )
 from .runs import AgentRunService, RunStore
 from .service import AgentService
@@ -15,6 +16,7 @@ __all__ = [
     "ChatRunService",
     "ChatRunStore",
     "DeferredChatRun",
+    "ResearchTrace",
     "AgentRunService",
     "AgentService",
     "PydanticAIAgentBackend",

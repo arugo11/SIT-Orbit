@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SIT ORBIT",
   "description": "SIT ORBIT の ScombZ Side Panel 殻",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minimum_chrome_version": "116",
   "permissions": [
     "sidePanel",
@@ -36,6 +36,12 @@
       ],
       "js": ["content-script.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["pdf.worker.min.mjs", "ocr/*"],
+      "matches": ["https://scombz.shibaura-it.ac.jp/*"]
     }
   ]
 }

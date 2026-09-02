@@ -14,14 +14,17 @@ import { MESSAGE_TYPES } from "../shared/messages";
 type EventCallback = (...args: never[]) => void;
 
 function createEvent() {
-  let callback: EventCallback | undefined;
+  const callbacks = new Set<EventCallback>();
 
   return {
     addListener: vi.fn((listener: EventCallback) => {
-      callback = listener;
+      callbacks.add(listener);
+    }),
+    removeListener: vi.fn((listener: EventCallback) => {
+      callbacks.delete(listener);
     }),
     dispatch: (...args: unknown[]) => {
-      callback?.(...(args as never[]));
+      for (const callback of callbacks) callback(...(args as never[]));
     },
   };
 }
@@ -278,38 +281,6 @@ const inlineAuthorlessScopeCases = [
     title: "著者なし貸出",
     html: inlineCurrentLoansHtml("著者なし貸出", "2026/08/24"),
   },
-  {
-    scope: "reservations",
-    title: "著者なし予約",
-    html: inlineReservationsHtml("著者なし予約", "取置中", "2026/08/28"),
-  },
-  {
-    scope: "loan_history",
-    title: "著者なし履歴",
-    html: inlineGenericMyLibraryHtml(
-      "貸出履歴一覧",
-      ["書名", "貸出日", "状態"],
-      ["著者なし履歴", "2026/07/01", "返却済み"],
-    ),
-  },
-  {
-    scope: "purchase_requests",
-    title: "著者なし購入依頼",
-    html: inlineGenericMyLibraryHtml(
-      "購入依頼状況",
-      ["書名", "申請日", "状態", "申請種別"],
-      ["著者なし購入依頼", "2026/08/01", "受付済み", "図書購入"],
-    ),
-  },
-  {
-    scope: "interlibrary_requests",
-    title: "著者なしILL依頼",
-    html: inlineGenericMyLibraryHtml(
-      "ILL（文献複写・貸借）依頼",
-      ["書名", "受付日", "状態", "依頼種別"],
-      ["著者なしILL依頼", "2026/08/05", "処理中", "文献複写"],
-    ),
-  },
 ] as const;
 
 const inlineMarkedRequiredCellCases = [
@@ -323,46 +294,6 @@ const inlineMarkedRequiredCellCases = [
       "empty",
     )}</tr></tbody></table>`,
   },
-  {
-    scope: "reservations",
-    html: `<table id="reservationList"><tbody><tr>${inlineDefinitionCell(
-      "書名 / 著者名",
-      "必須列検証予約",
-    )}${inlineMarkedDefinitionCell("状態", "no-data")}${inlineDefinitionCell(
-      "受取館取置期限日",
-      "2026/08/28",
-    )}</tr></tbody></table>`,
-  },
-  {
-    scope: "loan_history",
-    html: inlineGenericMyLibraryHtml(
-      "貸出履歴一覧",
-      ["書名", "貸出日", "状態"],
-      ["必須列検証履歴", "", "返却済み"],
-    ).replace(
-      "<td></td><td>返却済み</td>",
-      '<td class="empty"></td><td>返却済み</td>',
-    ),
-  },
-  {
-    scope: "purchase_requests",
-    html: inlineGenericMyLibraryHtml(
-      "購入依頼状況",
-      ["書名", "申請日", "状態", "申請種別"],
-      ["必須列検証購入", "2026/08/01", "受付済み", ""],
-    ).replace("<td></td></tr>", '<td class="no-data"></td></tr>'),
-  },
-  {
-    scope: "interlibrary_requests",
-    html: inlineGenericMyLibraryHtml(
-      "ILL（文献複写・貸借）依頼",
-      ["書名", "受付日", "状態", "依頼種別"],
-      ["必須列検証ILL", "2026/08/05", "", "文献複写"],
-    ).replace(
-      "<td></td><td>文献複写</td>",
-      '<td class="empty"></td><td>文献複写</td>',
-    ),
-  },
 ] as const;
 
 const inlineEmptyBodyWithoutPlaceholderCases = [
@@ -370,28 +301,13 @@ const inlineEmptyBodyWithoutPlaceholderCases = [
     scope: "current_loans",
     html: '<table id="lendList"><tbody></tbody></table>',
   },
-  {
-    scope: "reservations",
-    html: '<table id="reservationList"><tbody></tbody></table>',
-  },
-  {
-    scope: "loan_history",
-    html: `<table><caption>貸出履歴一覧</caption><thead><tr><th>書名</th><th>貸出日</th><th>状態</th></tr></thead><tbody></tbody></table>`,
-  },
-  {
-    scope: "purchase_requests",
-    html: `<table><caption>購入依頼状況</caption><thead><tr><th>書名</th><th>申請日</th><th>状態</th><th>申請種別</th></tr></thead><tbody></tbody></table>`,
-  },
-  {
-    scope: "interlibrary_requests",
-    html: `<table><caption>ILL（文献複写・貸借）依頼</caption><thead><tr><th>書名</th><th>受付日</th><th>状態</th><th>依頼種別</th></tr></thead><tbody></tbody></table>`,
-  },
 ] as const;
 
 async function runInlineMyLibraryReader(
   scope: InlineMyLibraryScope,
   html: string,
   workerResult: Record<string, unknown>,
+  pageUrl?: string,
 ): Promise<unknown> {
   const menuId = {
     current_loans: 5,
@@ -428,7 +344,7 @@ async function runInlineMyLibraryReader(
   );
   await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
 
-  stubPage(html, liveStatusUrl);
+  stubPage(html, pageUrl ?? liveStatusUrl);
   const readStatusPage = capturedScript(1) as unknown as (
     requestedScope: InlineMyLibraryScope,
   ) => unknown;
@@ -986,6 +902,56 @@ describe("service worker side panel contract", () => {
     });
   });
 
+  it("fails closed for an unexpected My Library page URL", async () => {
+    const result = await runInlineMyLibraryReader(
+      "loan_history",
+      inlineGenericMyLibraryHtml(
+        "貸出履歴一覧",
+        ["書名", "貸出日", "状態"],
+        ["端末内資料", "2026/07/01", "返却済み"],
+      ),
+      { status: "unavailable", reason_code: "unexpected_page" },
+      "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu?query=query-secret",
+    );
+    expect(result).toEqual({
+      status: "unavailable",
+      reason_code: "unexpected_page",
+    });
+  });
+
+  it("keeps identity and provider form values out of the inline reader result", async () => {
+    const result = await runInlineMyLibraryReader(
+      "purchase_requests",
+      `<table>
+        <caption>購入依頼状況</caption>
+        <thead><tr><th>申請番号</th><th>書名 / 著者名</th><th>申請日</th><th>状態</th><th>申請種別</th></tr></thead>
+        <tbody><tr><td>tracking-secret-id</td><td>端末内資料 / 公開著者</td><td>2026/08/01</td><td>受付済み</td><td>図書購入</td><td>contact-note-secret</td></tr></tbody>
+      </table>
+      <form><input name="student_id" value="student-number-secret" /><input name="sso_token" value="sso-token-secret" /></form>`,
+      { status: "known", scope: "purchase_requests", items: [] },
+    );
+    expect(result).toMatchObject({
+      status: "known",
+      items: [
+        {
+          title: "端末内資料",
+          author: "公開著者",
+          status: "受付済み",
+          activity_date: "2026-08-01",
+          request_type: "図書購入",
+        },
+      ],
+    });
+    const serialized = JSON.stringify(result);
+    for (const marker of [
+      "contact-note-secret",
+      "student-number-secret",
+      "sso-token-secret",
+    ]) {
+      expect(serialized).not.toContain(marker);
+    }
+  });
+
   it("reads public catalog DOM in an inactive isolated-world tab", async () => {
     permissionsContains.mockResolvedValue(true);
     getTab.mockResolvedValue({
@@ -1103,7 +1069,7 @@ describe("service worker side panel contract", () => {
     await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
     const submitCatalog = capturedScript(0) as unknown as (filters: {
       query: string;
-    }) => { status: string };
+    }) => { status: string; expected_url?: string };
     stubPage(
       `
         <form action="/opc/xc/search" hidden><input name="keys"></form>
@@ -1121,6 +1087,8 @@ describe("service worker side panel contract", () => {
 
     expect(submitCatalog({ query: "可視フォーム" })).toEqual({
       status: "submitted",
+      expected_url:
+        "https://library.shibaura-it.ac.jp/opc/xc/search/%E5%8F%AF%E8%A6%96%E3%83%95%E3%82%A9%E3%83%BC%E3%83%A0?os%5Bkeys%5D=%E5%8F%AF%E8%A6%96%E3%83%95%E3%82%A9%E3%83%BC%E3%83%A0",
     });
     expect(
       forms[0]?.querySelector<HTMLInputElement>('[name="keys"]')?.value,
@@ -1131,6 +1099,280 @@ describe("service worker side panel contract", () => {
     expect(location.href).toBe(
       "https://library.shibaura-it.ac.jp/opc/xc/search/%E5%8F%AF%E8%A6%96%E3%83%95%E3%82%A9%E3%83%BC%E3%83%A0?os%5Bkeys%5D=%E5%8F%AF%E8%A6%96%E3%83%95%E3%82%A9%E3%83%BC%E3%83%A0",
     );
+  });
+
+  it("waits for the submitted OPAC URL instead of parsing the old entry page", async () => {
+    permissionsContains.mockResolvedValue(true);
+    const expectedUrl =
+      "https://library.shibaura-it.ac.jp/opc/xc/search/%E3%83%AD%E3%83%9C%E3%83%83%E3%83%88?os%5Bkeys%5D=%E3%83%AD%E3%83%9C%E3%83%83%E3%83%88";
+    let currentTab = {
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/opc/",
+    } as chrome.tabs.Tab;
+    getTab.mockImplementation(async () => currentTab);
+    executeScript
+      .mockResolvedValueOnce([
+        { result: { status: "submitted", expected_url: expectedUrl } },
+      ])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-navigation-race",
+        query: "ロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+
+    await vi.waitFor(() => expect(executeScript).toHaveBeenCalledTimes(1));
+    expect(response).not.toHaveBeenCalled();
+
+    currentTab = {
+      ...currentTab,
+      status: "loading",
+      url: expectedUrl,
+    };
+    onUpdated.dispatch(91, { url: expectedUrl, status: "loading" }, currentTab);
+    currentTab = { ...currentTab, status: "complete" };
+    onUpdated.dispatch(91, { status: "complete" }, currentTab);
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(executeScript).toHaveBeenCalledTimes(2);
+    expect(response).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "known" }),
+    );
+  });
+
+  it("accepts the official single-result redirect to a catalog record", async () => {
+    permissionsContains.mockResolvedValue(true);
+    const expectedUrl =
+      "https://library.shibaura-it.ac.jp/opc/xc/search/ROS2?os%5Bkeys%5D=ROS2";
+    const recordUrl =
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BD1056917X?caller=xc-search";
+    let currentTab = {
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/opc/",
+    } as chrome.tabs.Tab;
+    getTab.mockImplementation(async () => currentTab);
+    executeScript
+      .mockResolvedValueOnce([
+        { result: { status: "submitted", expected_url: expectedUrl } },
+      ])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            status: "known",
+            records: [
+              {
+                record_id: "BD1056917X",
+                title: "ROS 2とPythonで作って学ぶAIロボット入門. 改訂第2版",
+                authors: ["出村公成"],
+                subjects: [],
+                isbn: "9784065386163",
+                publisher: "講談社, 2025.2",
+                publication_year: 2025,
+                format: "book",
+                campus: "any",
+                url: recordUrl,
+                holdings: [],
+                related_records: [],
+              },
+            ],
+          },
+        },
+      ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-single-result-redirect",
+        query: "ROS2",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+
+    await vi.waitFor(() => expect(executeScript).toHaveBeenCalledTimes(1));
+    currentTab = {
+      ...currentTab,
+      status: "complete",
+      url: recordUrl,
+    };
+    onUpdated.dispatch(91, { url: recordUrl, status: "complete" }, currentTab);
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "known",
+        projection: expect.objectContaining({
+          items: [
+            expect.objectContaining({
+              title: "ROS 2とPythonで作って学ぶAIロボット入門. 改訂第2版",
+            }),
+          ],
+        }),
+      }),
+    );
+
+    const diagnosticResponse = vi.fn();
+    onMessage.dispatch(
+      { type: MESSAGE_TYPES.opacDiagnosticsGet },
+      { id: "orbit-extension-id" },
+      diagnosticResponse,
+    );
+    await vi.waitFor(() => expect(diagnosticResponse).toHaveBeenCalledTimes(1));
+    const diagnosticSnapshot = diagnosticResponse.mock.calls[0]?.[0] as {
+      events: Array<Record<string, unknown>>;
+    };
+    expect(diagnosticSnapshot.events.map((event) => event.phase)).toEqual([
+      "search_started",
+      "entry_ready",
+      "search_submitted",
+      "navigation_ready",
+      "projection_started",
+      "search_completed",
+    ]);
+    expect(diagnosticSnapshot.events.at(-1)).toMatchObject({
+      query: "ROS2",
+      route_kind: "single_record",
+      result_count: 1,
+      status: "known",
+      reason_code: null,
+    });
+    const serializedDiagnostics = JSON.stringify(diagnosticSnapshot);
+    expect(serializedDiagnostics).not.toContain("BD1056917X");
+    expect(serializedDiagnostics).not.toContain("resource_ref");
+    expect(serializedDiagnostics).not.toContain("holdings");
+  });
+
+  it("rejects a record redirect that is not attributed to OPAC search", async () => {
+    permissionsContains.mockResolvedValue(true);
+    const expectedUrl =
+      "https://library.shibaura-it.ac.jp/opc/xc/search/ROS2?os%5Bkeys%5D=ROS2";
+    let currentTab = {
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/opc/",
+    } as chrome.tabs.Tab;
+    getTab.mockImplementation(async () => currentTab);
+    executeScript.mockResolvedValueOnce([
+      { result: { status: "submitted", expected_url: expectedUrl } },
+    ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-invalid-record-redirect",
+        query: "ROS2",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+
+    await vi.waitFor(() => expect(executeScript).toHaveBeenCalledTimes(1));
+    currentTab = {
+      ...currentTab,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/UNRELATED",
+    };
+    onUpdated.dispatch(
+      91,
+      { url: currentTab.url, status: "complete" },
+      currentTab,
+    );
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({
+      status: "unavailable",
+      reason_code: "search_navigation_mismatch",
+    });
+    expect(executeScript).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when OPAC navigation settles on a different page", async () => {
+    permissionsContains.mockResolvedValue(true);
+    const expectedUrl =
+      "https://library.shibaura-it.ac.jp/opc/xc/search/%E3%83%AD%E3%83%9C%E3%83%83%E3%83%88?os%5Bkeys%5D=%E3%83%AD%E3%83%9C%E3%83%83%E3%83%88";
+    let currentTab = {
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/opc/",
+    } as chrome.tabs.Tab;
+    getTab.mockImplementation(async () => currentTab);
+    executeScript.mockResolvedValueOnce([
+      { result: { status: "submitted", expected_url: expectedUrl } },
+    ]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-navigation-mismatch",
+        query: "ロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+
+    await vi.waitFor(() => expect(executeScript).toHaveBeenCalledTimes(1));
+    currentTab = {
+      ...currentTab,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/login",
+    };
+    onUpdated.dispatch(
+      91,
+      { url: currentTab.url, status: "complete" },
+      currentTab,
+    );
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({
+      status: "unavailable",
+      reason_code: "search_navigation_mismatch",
+    });
+    expect(executeScript).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the detail navigation reason when a record redirects to login", async () => {
+    permissionsContains.mockResolvedValue(true);
+    getTab.mockResolvedValue({
+      id: 91,
+      windowId: 1,
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/portal/portal/selectLogin/",
+    } as chrome.tabs.Tab);
+    const recordUrl =
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/REDIRECT-1";
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryItemRead,
+        tool_call_id: "library-record-navigation-mismatch",
+        resource_ref: createLibraryResourceRef("REDIRECT-1"),
+        record_url: recordUrl,
+      },
+      {},
+      response,
+    );
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({
+      status: "unavailable",
+      reason_code: "record_navigation_mismatch",
+    });
+    expect(executeScript).not.toHaveBeenCalled();
   });
 
   it("reads the current OPAC detail record without requiring a self-link", async () => {
@@ -1409,11 +1651,14 @@ describe("service worker side panel contract", () => {
         <table>
           <tr class="result-row row-1">
             <td>
-              <div class="xc-title"><a href="/opc/recordID/catalog.bib/ROBOT-1?hit=1">ロボット基礎</a></div>
+              <div class="xc-title"><a href="/opc/recordID/catalog.bib/ROBOT-1?hit=1"><span class="spCovNum">1. </span>ロボット基礎</a></div>
               <div class="xc-creator">著者A</div>
               <a class="related" href="/opc/recordID/catalog.bib/SERIES-1">シリーズ名</a>
               <table class="xc-snippet"><tr class="xc-availability">
-                <td class="xc-availability">貸出可, 豊洲図書館 豊洲図書館, 548.3/A1</td>
+                <td class="snippet-label">所蔵情報:</td>
+                <td id="xc-availability-1" class="xc-availability">
+                  <div><table><tr><td class="xc-availability">貸出可, 豊洲図書館 豊洲図書館, 548.3/A1</td></tr></table></div>
+                </td>
               </tr></table>
             </td>
           </tr>
@@ -1463,6 +1708,43 @@ describe("service worker side panel contract", () => {
         call_number: "548.3/B2",
       }),
     ]);
+  });
+
+  it("fails closed instead of returning partial OPAC rows when a result structure is malformed", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-malformed-result-row",
+        query: "構造不一致",
+        limit: 10,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <table>
+          <tr class="result-row row-1"><td>壊れた検索結果</td></tr>
+          <tr class="result-row row-2">
+            <td><div class="xc-title"><a href="/opc/recordID/catalog.bib/VALID-1">有効な結果</a></div></td>
+          </tr>
+        </table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/xc/search/構造不一致",
+    );
+
+    expect(readCatalogPage()).toEqual({
+      status: "unavailable",
+      reason_code: "result_structure_not_found",
+    });
   });
 
   it("extracts every holding from the live OPAC detail table", async () => {
@@ -1541,6 +1823,111 @@ describe("service worker side panel contract", () => {
         }),
       ],
     });
+  });
+
+  it("extracts asynchronously rendered holdings from the official detail cell", async () => {
+    permissionsContains.mockResolvedValue(true);
+    executeScript
+      .mockResolvedValueOnce([{ result: { status: "submitted" } }])
+      .mockResolvedValueOnce([{ result: { status: "known", records: [] } }]);
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.libraryCatalogSearch,
+        tool_call_id: "library-async-detail-cell",
+        query: "ROS 2 AIロボット",
+        limit: 1,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+
+    const readCatalogPage = capturedScript(1);
+    stubPage(
+      `
+        <div id="xc-search-full-right"><h3>ROS 2とPythonで作って学ぶAIロボット入門</h3></div>
+        <dl class="mainTable">
+          <dt>責任表示</dt><dd>出村公成 [ほか] 著</dd>
+          <dt>出版情報</dt><dd>東京 : 講談社, 2025.2</dd>
+        </dl>
+        <table class="xc-full"><tr class="xc-availability xc-no-border">
+          <td id="xc-availability-629806">
+            <div class="loBook01">
+              <div class="bkAva"><dl><dt>状態</dt><dd>貸出中</dd></dl></div>
+              <div class="bkLoc"><dl><dt>所在</dt><dd>豊洲図書館 豊洲図書館</dd></dl></div>
+              <div class="bkCnu"><dl><dt>請求記号</dt><dd><span class="spDisInl">548.3/D56</span></dd></dl></div>
+              <div class="bkDue"><dl><dt>返却予定日(予約数)</dt><dd>2026/10/02 (予約数: 1)</dd></dl></div>
+            </div>
+          </td>
+        </tr></table>
+      `,
+      "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BD1056917X",
+    );
+
+    const projection = readCatalogPage() as {
+      status: string;
+      records?: Array<{
+        holdings: Array<{
+          campus: string;
+          location: string | null;
+          call_number: string | null;
+          status: string;
+          due_date: string | null;
+          reservation_count: number | null;
+        }>;
+      }>;
+    };
+    expect(projection).toEqual({
+      status: "known",
+      records: [
+        expect.objectContaining({
+          record_id: "BD1056917X",
+          holdings: [
+            expect.objectContaining({
+              campus: "toyosu",
+              location: "豊洲図書館 豊洲図書館",
+              call_number: "548.3/D56",
+              status: "unavailable",
+              due_date: "2026-10-02",
+              reservation_count: 1,
+            }),
+          ],
+        }),
+      ],
+    });
+  });
+
+  it("returns an explicit timeout when OPAC availability never leaves loading", async () => {
+    vi.useFakeTimers();
+    try {
+      permissionsContains.mockResolvedValue(true);
+      executeScript.mockResolvedValue([
+        { result: { status: "submitted" } },
+        { result: { status: "loading" } },
+      ]);
+      const response = vi.fn();
+      const completed = new Promise<unknown>((resolve) => {
+        response.mockImplementation(resolve);
+      });
+      onMessage.dispatch(
+        {
+          type: MESSAGE_TYPES.libraryCatalogSearch,
+          tool_call_id: "library-availability-timeout",
+          query: "遅延する所蔵情報",
+          limit: 1,
+        },
+        {},
+        response,
+      );
+      await vi.advanceTimersByTimeAsync(15_000);
+      await expect(completed).resolves.toEqual({
+        status: "unavailable",
+        reason_code: "availability_loading_timeout",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses the live OPAC title and creator instead of the cover anchor", async () => {
@@ -1646,6 +2033,11 @@ describe("service worker side panel contract", () => {
 
   it("re-resolves a manifest record URL after the worker map is empty", async () => {
     permissionsContains.mockResolvedValue(true);
+    getTab.mockImplementation(async (tabId: number) => ({
+      ...defaultTab(tabId),
+      status: "complete",
+      url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/RELOAD-1",
+    }));
     executeScript.mockResolvedValueOnce([
       {
         result: {
@@ -1912,6 +2304,67 @@ describe("service worker side panel contract", () => {
     expect(JSON.stringify(payload.projection)).not.toContain("山田太郎");
   });
 
+  it("returns conversation-scoped pseudonymous CAST profiles when requested", async () => {
+    permissionsContains.mockResolvedValue(true);
+    queryTabs.mockResolvedValue([
+      {
+        id: 79,
+        url: "https://shibaura.pita.services/career/supporter/list",
+      },
+    ] as chrome.tabs.Tab[]);
+    tabSendMessage.mockResolvedValue({
+      status: "known",
+      detail: {
+        schema_version: "v1",
+        page_path: "/career/supporter/list",
+        profiles: [
+          {
+            local_id: "cast-alumni-local-1",
+            display_name: "山田太郎",
+            role: "alumni",
+            answerable_topics: ["技術・研究"],
+            availability_frequency: "monthly",
+            meeting_modes: ["online"],
+            shareable_insights: ["選考体験"],
+            contact_present: true,
+          },
+        ],
+        discovered_links: [],
+      },
+    });
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.castAlumniRead,
+        tool_call_id: "cast-alumni-call-2",
+        conversation_id: "conversation-cast-pseudonymized",
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload.projection).toEqual(
+      expect.objectContaining({
+        data_classification: "restricted",
+        profile_count: 1,
+        contact_present: false,
+      }),
+    );
+    expect(payload.projection.profiles[0]).toEqual(
+      expect.objectContaining({
+        alias: expect.stringMatching(
+          /^\[\[ORBIT_PERSON_[A-Za-z0-9_-]{16,64}\]\]$/u,
+        ),
+        role: "alumni",
+        technical_domains: ["技術・研究"],
+        job_types: [],
+      }),
+    );
+    expect(JSON.stringify(payload.projection)).not.toContain("山田太郎");
+    expect(payload.detail.profiles[0].display_name).toBe("山田太郎");
+  });
+
   it("enables the panel per tab and preserves its path for ScombZ and other origins", async () => {
     onUpdated.dispatch(
       11,
@@ -2029,6 +2482,100 @@ describe("service worker side panel contract", () => {
     expect(payload.projection.anonymous_aggregates).toEqual([]);
     expect(JSON.stringify(payload.projection)).not.toContain("企業A");
     expect(payload.projection.evidence_ids).toEqual(["cast-search-v1-test"]);
+  });
+
+  it("runs the high-level CAST search once across all nine surfaces", async () => {
+    permissionsContains.mockResolvedValue(true);
+    queryTabs.mockResolvedValue([
+      {
+        id: 79,
+        url: "https://shibaura.pita.services/career/top/student",
+      },
+    ] as chrome.tabs.Tab[]);
+    const surfaces = [
+      "job",
+      "internship",
+      "company_session",
+      "company",
+      "hiring_record",
+      "selection_report",
+      "recording",
+      "career_event",
+      "counseling",
+    ] as const;
+    const localItems = surfaces.map((surface, index) => ({
+      result_ref: `opaque-result-${index}`,
+      surface,
+      title: `${surface}の端末内結果`,
+      company_name: "合成企業",
+      dates: [],
+      deadline: null,
+      locations: ["豊洲"],
+      industries: ["情報通信"],
+      occupations: ["組込み開発"],
+      academic_programs: ["機械工学"],
+      graduation_years: [2026],
+      relation_flags: [],
+      local_summary: "学生 太郎の詳細は端末内だけに保持",
+      source_url: "https://shibaura.pita.services/career/local-detail",
+    }));
+    tabSendMessage.mockResolvedValue({
+      schema_version: "v1",
+      status: "known",
+      query: "九面を一度に確認",
+      surfaces: [...surfaces],
+      surface_results: surfaces.map((surface, index) => ({
+        surface,
+        status: "known",
+        total_count: 8,
+        returned_count: 1,
+        coverage: { mode: "page", fetched_pages: 1, page_size: 10 },
+        items: [localItems[index]],
+        reason_code: null,
+        evidence_ids: [],
+      })),
+      items: localItems,
+      local_evidence: [],
+      discovered_support_links: [],
+      reason_codes: [],
+    });
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.castCareerSearch,
+        tool_call_id: "cast-career-call-9-surfaces",
+        query: "九面を一度に確認",
+        surfaces: [...surfaces],
+        filters: { locations: ["豊洲"] },
+        limit: 10,
+        exhaustive: false,
+      },
+      {},
+      response,
+    );
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(tabSendMessage).toHaveBeenCalledTimes(1);
+    expect(tabSendMessage).toHaveBeenCalledWith(
+      79,
+      expect.objectContaining({
+        type: MESSAGE_TYPES.castCareerSearch,
+        surfaces: [...surfaces],
+        filters: { locations: ["豊洲"] },
+      }),
+    );
+    const payload = response.mock.calls[0]?.[0];
+    expect(payload.status).toBe("known");
+    expect(payload.projection.searched_surfaces).toEqual([...surfaces]);
+    expect(payload.projection.surface_coverage).toHaveLength(9);
+    const serializedProjection = JSON.stringify(payload.projection);
+    expect(serializedProjection).not.toContain("合成企業");
+    expect(serializedProjection).not.toContain("学生 太郎");
+    expect(serializedProjection).not.toContain("shibaura.pita.services");
+    expect(JSON.stringify(payload)).toContain("合成企業");
+    // The test fixture has no person records and no unlocked Career Vault;
+    // detailed reasoning is therefore omitted instead of crossing the API
+    // boundary or entering chat history.
+    expect(payload.reasoning_projection).toBeUndefined();
   });
 
   it("does not rebroadcast a background tab context to the visible panel", async () => {
@@ -2337,6 +2884,12 @@ describe("service worker side panel contract", () => {
       );
 
       createTab.mockClear();
+      getTab.mockResolvedValue({
+        id: 91,
+        windowId: 1,
+        status: "complete",
+        url: "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ACTION-RECORD-1",
+      } as chrome.tabs.Tab);
       executeScript.mockReset();
       executeScript
         .mockResolvedValueOnce([
@@ -2392,4 +2945,63 @@ describe("service worker side panel contract", () => {
       });
     },
   );
+
+  it("reinjects the bundled content script when the pinned tab reports a stale identity", async () => {
+    queryTabs.mockResolvedValue([defaultTab(91)]);
+    tabSendMessage
+      .mockResolvedValueOnce({
+        generation: "old-generation",
+        adapter_version: "old-adapter",
+        authenticated: true,
+      })
+      .mockResolvedValueOnce({
+        generation: "current-generation",
+        adapter_version: "scombz-student-v1",
+        authenticated: true,
+      });
+
+    const response = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.scombzPin,
+        conversation_id: "audit-stale-identity",
+      },
+      {},
+      response,
+    );
+
+    await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
+    expect(response).toHaveBeenCalledWith({ status: "pinned" });
+    expect(executeScript).toHaveBeenCalledWith({
+      target: { tabId: 91 },
+      files: ["content-script.js"],
+    });
+    expect(tabSendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears conversation-bound SCombZ state only for a trusted extension page", async () => {
+    const untrustedResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.scombzClearConversation,
+        conversation_id: "audit-cleanup-1",
+      },
+      { id: "attacker-extension" },
+      untrustedResponse,
+    );
+    await vi.waitFor(() => expect(untrustedResponse).toHaveBeenCalledTimes(1));
+    expect(untrustedResponse).toHaveBeenCalledWith({ ok: false });
+
+    const trustedResponse = vi.fn();
+    onMessage.dispatch(
+      {
+        type: MESSAGE_TYPES.scombzClearConversation,
+        conversation_id: "audit-cleanup-1",
+      },
+      { id: "orbit-extension-id" },
+      trustedResponse,
+    );
+    await vi.waitFor(() => expect(trustedResponse).toHaveBeenCalledTimes(1));
+    expect(trustedResponse).toHaveBeenCalledWith({ ok: true });
+  });
 });

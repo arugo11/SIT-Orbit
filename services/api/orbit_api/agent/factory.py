@@ -1,31 +1,38 @@
 import os
 
-from .azure_openai_backend import build_azure_openai_agent
+from .azure_openai_backend import AzureOpenAIAgent, build_azure_openai_agent
 from .base import AgentBackend
 from .chat import ChatBackend, FixtureChatBackend
 from .fixture import FixtureAgent
-from .openai_backend import build_openai_agent
+from .openai_backend import OpenAIAgent, build_openai_agent
+from .runtime_profile import validate_runtime_backend
 
 
-def get_agent_backend() -> AgentBackend:
+def _backend_name() -> str:
     backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
-    if backend == "fixture":
-        return FixtureAgent()
+    validate_runtime_backend(backend)
+    return backend
+
+
+def _build_provider_backend(backend: str) -> OpenAIAgent | AzureOpenAIAgent:
     if backend == "openai":
         return build_openai_agent()
     if backend == "azure_openai":
         return build_azure_openai_agent()
     raise RuntimeError(f"Unsupported ORBIT_AGENT_BACKEND: {backend}")
+
+
+def get_agent_backend() -> AgentBackend:
+    backend = _backend_name()
+    if backend == "fixture":
+        return FixtureAgent()
+    return _build_provider_backend(backend)
 
 
 def get_chat_backend() -> ChatBackend:
     """Build the Chat adapter using the same explicit backend switch."""
 
-    backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
+    backend = _backend_name()
     if backend == "fixture":
         return FixtureChatBackend()
-    if backend == "openai":
-        return build_openai_agent()
-    if backend == "azure_openai":
-        return build_azure_openai_agent()
-    raise RuntimeError(f"Unsupported ORBIT_AGENT_BACKEND: {backend}")
+    return _build_provider_backend(backend)

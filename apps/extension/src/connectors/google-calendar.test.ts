@@ -10,6 +10,7 @@ import {
   GoogleCalendarConnector,
   type IdentityAdapter,
   parseCalendarEvent,
+  projectCalendarAvailability,
 } from "./google-calendar";
 
 function response(body: unknown, status = 200): Response {
@@ -139,6 +140,24 @@ describe("Google Calendar connector", () => {
     expect(availability.status).toBe("known");
     expect(availability.busyMinutes).toBe(60);
     expect(availability.availableMinutes).toBe(10020);
+
+    const projection = projectCalendarAvailability({
+      timeZone: "Asia/Tokyo",
+      timeMin: window.timeMinText,
+      timeMax: window.timeMaxText,
+      events,
+      availability,
+      truncated: false,
+      fetchedAt: "2026-08-15T03:00:00.000Z",
+    });
+    expect(projection).toMatchObject({
+      schema_version: "v1",
+      status: "known",
+      busy_minutes: 60,
+      available_minutes: 10020,
+    });
+    expect(JSON.stringify(projection)).not.toContain("opaque");
+    expect(JSON.stringify(projection)).not.toContain("transparent");
   });
 
   it("connects only with the explicit call and sends no token outside the request", async () => {
@@ -211,32 +230,40 @@ describe("Google Calendar connector", () => {
     expect(secondFetcher).toHaveBeenCalledTimes(2);
   });
 
-  it("marks rate limits retryable and permission failures unavailable without scope expansion", async () => {
-    const identity = identityWithTokens(["access-token"]);
-    const fetcher = vi.fn(async () =>
-      response(
-        {
-          error: {
-            status: "PERMISSION_DENIED",
-            errors: [{ reason: "rateLimitExceeded" }],
+  it.each([
+    [403, "rateLimitExceeded", true],
+    [429, "", true],
+    [403, "insufficientPermissions", false],
+  ] as const)(
+    "classifies Google failure status %i without broadening scope",
+    async (status, reason, retryable) => {
+      const identity = identityWithTokens(["access-token"]);
+      const fetcher = vi.fn(async () =>
+        response(
+          {
+            error: {
+              status: "PERMISSION_DENIED",
+              errors: [{ reason }],
+            },
           },
-        },
-        403,
-      ),
-    );
-    const connector = new GoogleCalendarConnector({
-      identity,
-      fetcher,
-      now: () => now,
-      timeZone: "Asia/Tokyo",
-    });
-    const result = await connector.connect();
-    expect(result).toMatchObject({ status: "unavailable", retryable: true });
-    expect(identity.getAuthToken).toHaveBeenCalledWith({
-      interactive: true,
-      scopes: [GOOGLE_CALENDAR_SCOPE],
-    });
-  });
+          status,
+        ),
+      );
+      const connector = new GoogleCalendarConnector({
+        identity,
+        fetcher,
+        now: () => now,
+        timeZone: "Asia/Tokyo",
+      });
+      const result = await connector.connect();
+      expect(result).toMatchObject({ status: "unavailable", retryable });
+      expect(identity.getAuthToken).toHaveBeenCalledWith({
+        interactive: true,
+        scopes: [GOOGLE_CALENDAR_SCOPE],
+      });
+      expect(identity.getAuthToken).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("follows at most three pages and fails closed for availability when truncated", async () => {
     const identity = identityWithTokens(["access-token"]);
@@ -257,6 +284,32 @@ describe("Google Calendar connector", () => {
     expect(result.snapshot?.truncated).toBe(true);
     expect(result.snapshot?.availability.status).toBe("unknown");
     expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not claim free time from an overlarge provider page", async () => {
+    const items = Array.from({ length: 101 }, (_, index) =>
+      event(
+        `event-${index}`,
+        { dateTime: "2026-08-15T09:00:00+09:00" },
+        { dateTime: "2026-08-15T10:00:00+09:00" },
+      ),
+    );
+    const connector = new GoogleCalendarConnector({
+      identity: identityWithTokens(["access-token"]),
+      fetcher: vi.fn(async () => response({ items })),
+      now: () => now,
+      timeZone: "Asia/Tokyo",
+    });
+
+    const result = await connector.connect();
+    expect(result.snapshot).toMatchObject({
+      truncated: true,
+      availability: {
+        status: "unknown",
+        availableMinutes: null,
+        busyMinutes: null,
+      },
+    });
   });
 
   it("revokes and removes a token on explicit disconnect, then clears state", async () => {

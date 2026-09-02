@@ -2,6 +2,8 @@
 
 この文書は、SIT ORBITをScombZ上のChrome拡張機能から利用する構成と、AgentをAzureへ段階的に配置する方針を記録する。
 
+実装とプライバシー境界の完成版図は、[SITRUS Chat UI](assets/sitrus-integration-chat-ui.png)と[会話単位の仮名化パイプライン](assets/poster-concepts/sit-orbit-pseudonymization-paper-pipeline.png)を参照する。
+
 調査時点は2026年8月14日である。
 
 実装ブランチの順序と完了条件は[implementation-plan.md](./implementation-plan.md)に記録する。
@@ -50,7 +52,7 @@ Chrome UI           FastAPI Agent API
        完了イベントの記録
 ```
 
-WebとMobileは既存のFastAPI OpenAPIから生成したTypeScript型を利用する。
+ExtensionはOpenAPIから生成したAPI Client型を利用する。WebとMobileは現時点では合成fixtureの表示面であり、認証済み学内ConnectorやAgent APIへ接続済みとは扱わない。
 
 Extensionは、ページから収集した情報をそのままAgentへ渡さず、最小限のページコンテキストへ変換する。
 
@@ -146,6 +148,26 @@ SIT ORBITでは、同プロジェクトのDOM Adapter、キャッシュ、メッ
 
 ただし、ScombZ Utilitiesはページ内へウィジェットを注入する構成であり、SIT ORBITのAgent UIはChrome標準Side Panelへ置く。
 
+### SCombZ Student Read Agent
+
+質問時に固定した認証済みSCombZタブから、`scombz_course_list`、`scombz_portal_read`、`scombz_course_read`、`scombz_material_search`をDeferred Toolとして実行する。Content Scriptは正規HTMLをsame-originで再取得し、Utilitiesが表示DOMへ加えた要素を入力にしない。年・学期の選択肢、可視leaf、read-only POSTだけをallowlist化し、提出・回答・出席・テスト開始系のactionは表現できない。
+
+各結果は`known | partial | reauth_required | unavailable`、`observed_at`、section別coverage、件数、cursorを持つ。内部ID・CSRF・Cookie・一時URLは30分以内の短命Private Handleへ隔離し、タブ、conversation、adapter versionに束縛する。Evidenceはpending call固有のIDへ直接結合し、同一Toolの再実行で取り違えない。
+
+教材PDFは拡張へ同梱したPDF.jsで端末内抽出し、文字層が不足するページだけローカルOCRを使う。1段の上限は20ファイル、100MB、300ページで、超過はpartialとcursorを返す。Azureへは関連上位本文のみを送る。公開シラバスは公式Namazuの`/namazu/namazu.cgi`へEUC-JP percent encodingで接続し、完全一致候補を`syllabus_search`、選択後の構造化詳細を`syllabus_read`で返す。
+
+CLI実認証監査では、監査buildのService WorkerがSCombZタブを会話開始時に固定し、`127.0.0.1`のCLI WebSocketへ監査命令・進捗・伏字済み結果だけを渡す。CLIはBearer token、Cookie、CSRF、タブID、内部ID、raw HTML、生PDFを受け取らない。ランダムなbuild secret、相互challenge／HMAC、連番、Origin制限、最大frame長、15秒未満のkeepaliveを使い、通常配布buildではブリッジのコードと設定をtree-shakeする。
+
+監査CLIとSide Panelは共通の`ChatRunner`、Tool Registry、capability gate、最大8回のread-only Tool loop、call-specific Evidence receiptを使う。conversationごとにopaqueな`source_ref`とprovider履歴をメモリへ保持し、同じconversationの追質問だけを同じ参照元へ送る。新Chat、固定タブの再読込、Service Worker再起動、TTL失効時はsource handleを再利用せず、`BLOCKED`、`reauth_required`、`partial`、`unavailable`の観測結果を返す。
+
+#### 会話単位の仮名化境界
+
+SCombZ／CASTのTyped Snapshotは、Azureへ渡す直前にConversationPseudonymizationGatewayを通る。Gatewayは会話固有token、フィールドallowlist、準識別子の一般化、漏えいスキャンを適用し、端末表示用`display_content`とprovider用`provider_content`を分ける。対応表は会話専用AES-GCMで暗号化した短命IndexedDB値、鍵は`chrome.storage.session`に限定し、新Chat、30分無操作、ブラウザ／Service Worker再起動、明示削除で破棄する。復元は通常Markdown本文の送信済み完全一致tokenだけで、URL、引用URI、Evidence ID、コード、Tool引数は対象外である。
+
+SCombZのlive送信は、設定画面で一度だけ取得した利用者同意（`chrome.storage.local`に付与時刻のみ保存）が存在する場合に限る。同意を解除すると次のlive Tool実行は`consent_required`で停止し、同意記録へ認証情報や教材本文を保存しない。
+
+この処理は匿名化ではなく仮名化であり、再識別不能を主張しない。`personal/scombz_student`は抽出済みPDF関連本文を含むAzure例外、`restricted/cast_career`は型付き仮名プロフィールだけを含むAzure例外とする。いずれもAzure backend、Observability off、明示同意、同一conversationの分類済み履歴という条件を同時に満たさない限り広告しない。
+
 ## Agentの境界
 
 既存のPydanticモデルをAPI契約の正本とする。
@@ -179,12 +201,18 @@ APIキーやモデルが設定されていない場合に、別Backendへ暗黙�
 
 ### PydanticAIとChatのAgent境界
 
+ChatはSIT ORBIT Agent Harnessを通る。一般的な会話・推論・公開調査にはclient Toolを広告せず、認証済み学内情報が必要なターンだけ、capability、データ分類、会話文脈、現在の参照元に一致する候補を最大5件へ絞る。明確な依頼は決定的にfamilyを選び、曖昧な追質問は直近2件と直前Evidenceのfamilyだけを補助文脈として使う。モデルは候補内の厳格なTool schemaから正確なToolと引数を選ぶ。
+
+Tool Catalogは公開`ChatToolName` 21件と同じ安定順序を持ち、family、結果型、read-only属性、live SCombZ gate、Evidence title／locator／classificationを一元管理する。`/v1/chat/capabilities`、PydanticAI handler、Evidence receiptはCatalogとの一致をテストする。外部送信のpayload変換は、個人データごとの明示的な分岐を維持する。
+
+Side Panelと監査CLIは共通の`ChatRunner`を使い、1回1Tool、最大8回の線形ループを実行する。同一runで正規化したTool名・引数・source generationが完全一致したread-only結果だけを再利用できるが、各tool callには別のEvidence receiptを発行する。capabilityを確認できない場合は送信先を`unknown`とし、個人・学内依頼を`startChat`前に停止する。一般質問はToolなしで継続できる。
+
 PydanticAIは、Python、FastAPI、Pydantic、型付き出力、複数モデル対応の条件に合うため、最初に評価するAgent Frameworkである。[PydanticAI](https://github.com/pydantic/pydantic-ai)
 
 Branch 7では、既存の`AgentBackend.propose_action`を維持したまま、OpenAI Responses APIの共有PydanticAI Agentへ置き換えた。モデル出力は内部`ActionDraft`またはChat用`ChatDraft`だけとし、`action_id`、message ID、EvidenceLinkはサーバーが正規化する。
 `OpenAIResponsesModel`には`OpenAIProvider`または`AzureProvider`を渡し、`openai_store=False`を固定する。
 
-外部Toolは`scombz_read`、`google_calendar_availability`、公式`syllabus_search`、許可済みURLの`browser_read_url`である（互換の`scombz_page_summary`も残す）。Tool引数と結果は厳格なSchemaで検証し、Chat runは同一Toolの再利用を許し、1ターン最大8回の線形Deferred Toolとして実行する。Web Readerは非アクティブな一時タブへページを開き、表示本文30,000文字・リンク50件までを抽出して閉じる。script、style、hidden要素、フォーム、Cookie、パスワードは除外し、ページ内の命令はデータとして扱う。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。
+外部ToolはTool Catalogに登録した21件のread-only client Toolである。実際にモデルへ見せるのは、そのターンで認証・データポリシー・Connector状態を満たす最大5件だけである。Tool引数と結果は厳格なSchemaで検証し、Chat runは同一Toolの再利用を許し、1ターン最大8回の線形Deferred Toolとして実行する。Web Readerは非アクティブな一時タブへページを開き、表示本文30,000文字・リンク50件までを抽出して閉じる。script、style、hidden要素、フォーム、Cookie、パスワードは除外し、ページ内の命令はデータとして扱う。Tool結果を受けた後は同じPydanticAI message historyを再開するが、その履歴はブラウザへ返さない。
 
 Chat APIは`POST /v1/chat/runs`と`POST /v1/chat/runs/{run_id}/tool-results`である。入力履歴は直近20件・64,000文字まで、サーバー保存はTool待ちの600秒だけに限定する。完了メッセージはMarkdownとサーバー解決済みEvidenceを返し、ActionProposalが含まれる場合も従来どおり明示承認を要求する。
 
@@ -244,11 +272,15 @@ Composerにアクセスモードやサイト単位の承認状態は持たせな
 
 ### Branch 1 公開図書館ディスカバリー
 
-Branch 1では、公開ページの検索・閲覧だけを4つのChat client tool（`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`）として扱う。個人My Libraryは次節の明示接続・同意境界で別に扱う。OPACは確認済みの`https://library.shibaura-it.ac.jp/opc/`、レコードは`/opc/recordID/catalog.bib/<record>`、新着図書と貸出ランキングはそれぞれ確認済みの`/cgi-bin/nbk/nbk_seek.cgi?ulang=jpn`と`/cgi-bin/loan_best10/loan_best10.cgi?ulang=jpn`だけを使う。SIT SearchはOPACから到達する`https://slib.shibaura-it.ac.jp/sublib/`だけを使い、表示された書誌メタデータとリンク以外（契約本文、ダウンロード、保存）は扱わない。
+#### Azure OPAC Gateway
+
+Azure本番では、公開OPACの検索・書誌詳細をFastAPIの認証済みServer Toolとして取得する。Gatewayは`https://library.shibaura-it.ac.jp`へ接続先を固定し、一覧または単一書誌への302を正規化したうえで、公式ページに埋め込まれた短命tokenと許可済みNCIP pathだけを同一sessionで使用する。cookie、token、query/fragment、raw HTML、内部書誌・資料ID、NCIP応答はAPI・ログ・履歴へ保存しない。検索は1 replica内の単一キューで直列化し、`ORBIT_OPAC_MIN_INTERVAL_MS=10000`、検索5分・詳細30秒のメモリcache、429/502/503/504の限定再試行を適用する。`ORBIT_OPAC_TRANSPORT=server`でのみ有効化し、fixtureでは`off`を明示する。構造変更、token欠落、redirect拒否、通信失敗は型付き`reason_code`の`unavailable`として返し、0件とは区別する。ChromeのOPAC検索用一時タブはServer Tool経路では作成しない。
+
+Branch 1では、公開ページの検索・閲覧だけを4つの型付きTool（`library_catalog_search`、`library_item_read`、`library_catalog_browse`、`library_discovery_search`）として扱う。Azure本番のOPAC検索・詳細読取はServer Tool、その他の公開ページ参照は既存のclient toolとして実行する。個人My Libraryは次節の明示接続・同意境界で別に扱う。OPACは確認済みの`https://library.shibaura-it.ac.jp/opc/`、レコードは`/opc/recordID/catalog.bib/<record>`、新着図書と貸出ランキングはそれぞれ確認済みの`/cgi-bin/nbk/nbk_seek.cgi?ulang=jpn`と`/cgi-bin/loan_best10/loan_best10.cgi?ulang=jpn`だけを使う。SIT SearchはOPACから到達する`https://slib.shibaura-it.ac.jp/sublib/`だけを使い、表示された書誌メタデータとリンク以外（契約本文、ダウンロード、保存）は扱わない。
 
 Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命なopaque対応表から解決できた公開OPACまたは同意済みMy Libraryの参照だけを、現在の公式ページから再読して8操作の可否として返す。`ActionProposal.operation`はこのoptions evidenceの同じ`resource_ref`に結び付き、write操作は`external_action=library_write`かつ常に明示確認を要求する。提案承認は送信ではなく、Chrome内の短命previewを開始するだけである。previewでは公式origin/path、対象、現在状態、フォームとCSRFの形を再検証し、別UI操作の`この内容で送信`を経なければsubmitしない。読み取り専用の棚・公式viewer操作は再読込後に公式ページを開く。live providerのフォーム挙動を検証できないwrite操作は、previewも送信ボタンも出さず`write_form_not_verified`で停止する。fixtureのwrite state machine以外は、実送信・擬似成功・完了イベントを生成しない。
 
-現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。必須host permissionの範囲内でService Workerは公式ページを非アクティブな一時タブで開き、`chrome.scripting.executeScript`のIsolated Worldで可視DOMを抽出し、完了後にタブを閉じる。OPAC検索は可視フォームを送信し、SIT Searchも可視フォームを送信する。内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
+現在のChatターンで図書館利用が明示された場合だけ該当Toolを広告する。Azure本番の`library_catalog_search`と`library_item_read`は上記Server Toolを使い、OPAC検索用のChrome一時タブを作成しない。fixtureまたはServer Toolを利用できない旧クライアントでは、既存の公式ページ可視DOM経路を明示的に`off`として扱い、内部AJAX、推測URL、Google検索スクレイピング、Cookie・session token・material/copy IDの利用は行わない。origin、path、フォーム、DOM、ログイン・エラー状態が一致しない場合やavailabilityがloadingのままの場合は、空の成功ではなく`unavailable`を返す。
 
 書誌レコードの`resource_ref`は安定した公開レコードIDから導出したopaque値であり、元IDはService Workerの短命なメモリ対応表にだけ保持する。対応表が失われた再起動後や衝突検出時は解決せず、推測で読み替えない。Holdingは表示されたcampus、location、call number、status、due date、reservation countだけを返し、未表示の値は`unknown`または`null`とする。通常の公開Evidenceは`source_type=library`、`classification=public`、`orbit-library://public/` locatorに限定し、Branch 3 action-options Evidenceは専用IDとopaque `resource_ref` locatorへ分離する。
 
@@ -266,9 +298,16 @@ Branch 3の`library_action_options(resource_ref)`は、Service Workerの短命�
 
 ### SITRUS成績通知書の参照
 
-SITRUSの成績は、実在する画面を利用者が開いている場合だけ、専用の`sitrus_read` Toolで参照する。Service Workerは接続元タブが同じorigin・pathnameであることを確認する。優先する`/SITRUS/login/ShutokuTaniShukei.html`では、`MAIN` worldから可視のHTML表を読み、判定・評価・科目名だけをメモリ上で投影する。表にない科目コードや単位数は`null`とし、推測しない。`/SITRUS/login/SeisekiTsutiSho.html`では、表が使えない場合に限り認証済みPDF.jsのテキスト層をメモリ上で処理する。PDFファイル、Base64、学籍番号、認証情報を保存・ダウンロード・APIログへ渡さず、取得できた科目名、科目コード、成績、単位、年度・期・ターム、再履修フラグ、累積GPAだけへ投影する。
+`sitrus_read`は、SITRUSへログイン済みのChromeセッションから、現在の利用者に対応する取得済み科目と単位集計を読む。
+成績画面を開いていることは要件にせず、Service Workerが固定した`Token`、`gakuseiInfoUser`、`risyu`、`JissekiSyukei`の4エンドポイントだけへ認証付きGETを行う。
+URLやモデル入力から学籍番号を受け取らず、`Token`の`preferred_username`から`gakuseiInfoUser`を介して端末内で対象学生を解決する。
 
-成績値は一般Agentへ渡さず、専用のローカルToolで表示するかfail closedとする。確認カードで外部送信の同意を取る経路は作らない。現行のAgent契約ではこの結果を外部LLMやW&Bへ送らず、`fixture` BackendのローカルChatでのみ回答に使う。ページが閉じた、別URLへ遷移した、またはPDF.jsを利用できない場合は成功扱いにしない。
+Agentへ渡す投影は、科目名、判定、評価、単位数、年度、学期、単位区分別の当期と累計の科目数および単位数に限定する。
+学籍番号、氏名、教員、教室、科目コード、Cookie、トークン、生レスポンスにはAPI Schema上の表現を与えない。
+`ORBIT_SITRUS_PERSONAL_CONTEXT=live`、`ORBIT_AGENT_BACKEND=azure_openai`、`ORBIT_OBSERVABILITY=off`が同時に成立した場合だけ、実成績をAzure OpenAIへ送るToolを広告し、resume時にも同じ条件を再検証する。
+`fixture`は合成データ専用とし、OpenAI、W&B、別Providerへのfallbackは行わない。
+成績を含むTool Resultと回答ターンはChatPanelのメモリだけに保持し、IndexedDBや共有ログへ保存しない。
+未認証、HTMLログイン応答、構造変更、サイズ上限超過は`reauth_required`または`unavailable`として返す。
 
 ### SIT Moodleダッシュボードの参照
 
@@ -298,7 +337,7 @@ SITRUSの成績は、実在する画面を利用者が開いている場合だ�
 
 ### CAST採用実績・選考記録の参照
 
-採用実績と選考記録は、実ログイン環境で確認した企業詳細`https://shibaura.pita.services/career/company_detail_view`の`#employment`、`#company_exam_entry`、`#company_obog`領域だけをread-onlyで読む。企業コードは端末内のローカルID生成にだけ使い、応募、OB・OG名簿の閲覧要求、添付・PDF取得、`published_company_exam_view`への推測遷移は行わない。ログイン画面、未知のpath、query/fragment、必須sectionやtableの構造不一致は成功扱いしない。
+採用実績と選考記録は、実ログイン環境で確認した企業詳細`https://shibaura.pita.services/career/company_detail_view`の`#employment`、`#company_exam_entry`、`#company_obog`領域だけをread-onlyで読む。企業コードは端末内の一時MapとローカルID生成にだけ使い、応募、OB・OG名簿の閲覧要求、添付・PDF取得は行わない。`/career/published_company_exam_view`は企業詳細DOMが実際に提示した、query・fragmentなしの同一originリンクである場合だけその完全一致URLを追跡し、企業コードやモデル引数からURLを合成しない。リンクが観測できない場合は既存の確認済みfragment経路を使い、未知のpath、query/fragment、必須sectionやtableの構造不一致は成功扱いしない。
 
 企業名、卒業年月、学科、職種、採用形態、選考記録の概要は端末内`CastHistoryLocalSnapshot`に保持する。行中の氏名・指導教員など人物らしい値はPseudonymization Gatewayへ渡し、Career Vaultで対応表を暗号化したうえでmission固有の別名へ置換する。Prompt projectionから元の氏名、企業コード、内部local_id、report href、raw HTML、フォーム値を除外し、外部Providerへ送る経路はこのprojectionに与えない。OB・OG名簿は有無だけを扱い、名簿本文や直接連絡先は取得しない。
 
@@ -328,9 +367,11 @@ CASTを横断する検索、比較、ES、OB・OG支援は、個人情報を含�
 
 内部人物IDと元の氏名の対応表は、Argon2idとAES-256-GCMを用いるCareer Vaultの暗号化レコードだけに保存する。鍵は`chrome.storage.session`とメモリに限り、15分の無操作またはChrome終了で破棄する。FastAPI、Azure、W&B、Chat履歴、ログへ、元の氏名、内部人物ID、対応表、HMAC、raw HTML、tokenを渡さない。Service WorkerとSide Panelのruntime messageには、利用者へ端末内詳細を表示するための短命なlocal snapshotが含まれ得るが、外部ページ・API・履歴へ転送せず、run終了時に破棄する。外部別名はmission nonceから生成し、同一mission内だけで安定させる。
 
-個人・第三者のCAST記録はChrome Prompt APIのオンデバイス実行へ固定し、APIが利用できない場合にAzureへfallbackしない。Azureへ送れるのは公開情報、匿名集計、一般化属性だけである。Context Manifestで処理先と送信payloadを表示し、外部書込み、応募、予約、添付、Calendar登録はpreview後の本人確認を必須とする。個人情報を安全に仮名化できない自由記述は送信せず、端末内で停止する。
+個人・第三者のCAST記録は、このDecision RoomとローカルPrompt経路ではChrome Prompt APIのオンデバイス実行へ固定し、APIが利用できない場合にAzureへfallbackしない。別のChat経路で`restricted/cast_career`を明示的に有効化する場合だけ、allowlist済みの型付き仮名projectionをAzure OpenAIかつ観測無効のrunへ送れる。Context Manifestで処理先と送信payloadを表示し、外部書込み、応募、予約、添付、Calendar登録はpreview後の本人確認を必須とする。個人情報を安全に仮名化できない自由記述は送信せず、端末内で停止する。
 
 ### CAST横断検索
+
+Chatからは低水準検索を面ごとに選ばせず、`cast_career_search` v1 Deferred Toolを一回だけ要求する。`query`、9面の`surfaces`、意味フィルター、1〜20件の`limit`、明示時だけの`exhaustive`を受け取り、URL、form field、hidden値、company code、POST bodyは受け付けない。content scriptが既存のallowlist経路を直列に実行し、面ごとのcoverageと失敗理由を保持したままローカル結果をMiniSearchへ渡す。Azureへはサーバー発行のopaque Evidence IDと5件以上の匿名集計だけを渡す。
 
 `cast-cross-search.ts`は、求人・インターン、採用実績・選考記録、支援リソースのtyped Snapshotを一つの端末内コーパスへまとめる。自然言語の質問はChrome Prompt APIへ質問文だけを渡して、検索語・必須語・勤務地・技術領域・職種・年度・OB・OG条件へ構造化する。Snapshotや人物情報をこのPromptへ渡す経路は用意しない。
 
@@ -394,7 +435,7 @@ ES生成はAzure、FastAPI、W&Bへ送信せず、Chrome Prompt APIが利用で�
 
 `buildCastDecisionRoom`は、求人またはインターンと、同一企業として確認できた採用実績・選考記録・OB・OG表示を端末内で比較する。技術領域、勤務地、職種、採用実績、選考記録、OB・OG支援、締切、不足情報を独立した判断軸として返し、単一の相性点や順位は生成しない。
 
-各軸は`match`、`partial`、`mismatch`、`unknown`のいずれかと、要約、ローカルEvidence ID、不足項目を持つ。企業名とCASTのlocal IDを含む`subject`、求人の締切、表示件数などの詳細は拡張機能のメモリ内UI専用であり、FastAPI、Azure、W&B、Chat履歴へ送らない。別企業の履歴Snapshotは企業名一致を確認できない限り紐付けず、未知として扱う。
+各軸は`match`、`partial`、`mismatch`、`unknown`のいずれかと、要約、ローカルEvidence ID、不足項目を持つ。企業名とCASTのlocal IDを含む`subject`、求人の締切、表示件数などの詳細は拡張機能のメモリ内UI専用であり、FastAPI、Azure、W&B、Chat履歴へ送らない。別企業の履歴Snapshotは企業名一致を確認できない限り紐付けず、未知として扱う。Decision Roomとは別のChat経路で`restricted/cast_career`を明示的に許可する場合も、Azure OpenAIかつ観測無効のrunへ送れるのは`cast_alumni_read`のallowlist済み型付き仮名projectionだけであり、元の人物名、内部ID、連絡先、自由記述、raw HTML、添付は表現できない。
 
 判断結果は、応募・予約・送信を実行する機能ではない。次の一歩は「不足情報を確認する」「締切と必要書類を本人が確認する」といった読み取り専用の案内に限定し、確定操作は後続のAction Adapterで本人確認を要求する。[Human and LLM-Based Resume Matching](https://aclanthology.org/2025.findings-naacl.270/)が示すLLM評価と人間評価の非互換性を踏まえ、説明可能な軸別Evidenceを優先し、総合スコアを採用しない。
 

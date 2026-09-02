@@ -15,13 +15,40 @@ from pydantic import (
     ConfigDict,
     Field,
     StrictBool,
-    StrictFloat,
     StrictInt,
     StrictStr,
+    ValidationInfo,
+    field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from .domain import ActionProposal, EvidenceLink, LibraryActionOptionsResult, OrbitEvent
+
+ChatToolName = Literal[
+    "scombz_page_summary",
+    "scombz_read",
+    "scombz_course_list",
+    "scombz_portal_read",
+    "scombz_course_read",
+    "scombz_material_search",
+    "google_calendar_availability",
+    "syllabus_search",
+    "syllabus_read",
+    "browser_read_url",
+    "sitrus_read",
+    "moodle_read",
+    "my_library_read",
+    "cast_read",
+    "cast_alumni_read",
+    "cast_search",
+    "cast_career_search",
+    "library_catalog_search",
+    "library_item_read",
+    "library_catalog_browse",
+    "library_discovery_search",
+    "library_action_options",
+]
 
 
 class StrictApiModel(BaseModel):
@@ -35,6 +62,62 @@ class AgentCapabilities(StrictApiModel):
 
     agent_backend: Literal["fixture", "openai", "azure_openai"]
     my_library_personal_context: StrictBool
+
+
+class ChatCapabilities(StrictApiModel):
+    """Authenticated capability advertisement for the Chat extension.
+
+    The legacy ``/v1/capabilities`` response intentionally remains stable for
+    older clients.  Chat clients use this richer projection to compute the
+    intersection of locally available tools and the deployed server contract.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    agent_backend: Literal["fixture", "openai", "azure_openai"]
+    observability: Literal["off", "wandb"]
+    scombz_student_read_mode: Literal["off", "fixture", "live"]
+    sitrus_personal_context_mode: Literal["off", "fixture", "live"] = "off"
+    supported_client_tools: list["ChatToolName"] = Field(max_length=32)
+    max_client_tools: StrictInt = Field(ge=1, le=32)
+
+    @model_validator(mode="after")
+    def validates_tool_capability(self) -> "ChatCapabilities":
+        if len(set(self.supported_client_tools)) != len(self.supported_client_tools):
+            raise ValueError("Chat capability tool names must be unique.")
+        if len(self.supported_client_tools) > self.max_client_tools:
+            raise ValueError("Chat capability tools exceed the advertised maximum.")
+        new_scombz = {
+            "scombz_course_list",
+            "scombz_portal_read",
+            "scombz_course_read",
+            "scombz_material_search",
+        }
+        live_allowed = (
+            self.agent_backend == "azure_openai"
+            and self.observability == "off"
+            and self.scombz_student_read_mode == "live"
+        )
+        fixture_allowed = (
+            self.agent_backend == "fixture"
+            and self.observability == "off"
+            and self.scombz_student_read_mode == "fixture"
+        )
+        if not (live_allowed or fixture_allowed) and new_scombz.intersection(
+            self.supported_client_tools
+        ):
+            raise ValueError("SCombZ student tools require an explicit live or fixture capability.")
+        sitrus_allowed = (
+            self.agent_backend == "azure_openai"
+            and self.observability == "off"
+            and self.sitrus_personal_context_mode == "live"
+        ) or (
+            self.agent_backend == "fixture"
+            and self.observability == "off"
+            and self.sitrus_personal_context_mode == "fixture"
+        )
+        if not sitrus_allowed and "sitrus_read" in self.supported_client_tools:
+            raise ValueError("SITRUS grades require an explicit Azure live or fixture capability.")
+        return self
 
 
 class AgentSessionRequest(StrictApiModel):
@@ -206,14 +289,195 @@ class ScombzReadResult(StrictApiModel):
         return self
 
 
+class ScombzCoverage(StrictApiModel):
+    """Bounded coverage report for cross-course SCombZ reads."""
+
+    scope: StrictStr = Field(min_length=1, max_length=80)
+    requested: StrictInt = Field(ge=0, le=1000)
+    attempted: StrictInt = Field(ge=0, le=1000)
+    succeeded: StrictInt = Field(ge=0, le=1000)
+    failed: StrictInt = Field(ge=0, le=1000)
+    truncated: StrictBool = False
+    next_cursor: StrictStr | None = Field(default=None, max_length=240)
+
+    @model_validator(mode="after")
+    def counts_are_consistent(self) -> "ScombzCoverage":
+        if self.attempted < self.succeeded + self.failed:
+            raise ValueError("SCombZ coverage counts are inconsistent.")
+        if not self.truncated and self.next_cursor is not None:
+            raise ValueError("A complete SCombZ coverage cannot have a cursor.")
+        return self
+
+
+ScombzSectionState = Literal["complete", "truncated", "failed", "not_requested"]
+
+
+class ScombzCourseSummary(StrictApiModel):
+    course_ref: StrictStr = Field(
+        min_length=1, max_length=160, pattern=r"^orbit-scombz://course/[A-Za-z0-9_-]{16,128}$"
+    )
+    display_name: StrictStr = Field(min_length=1, max_length=300)
+    academic_year: StrictInt | None = Field(default=None, ge=2000, le=2100)
+    term: StrictStr | None = Field(default=None, max_length=40)
+    weekday: StrictStr | None = Field(default=None, max_length=20)
+    period: StrictStr | None = Field(default=None, max_length=20)
+    citation_uri: StrictStr | None = Field(default=None, max_length=240)
+
+
+class ScombzCourseListResult(StrictApiModel):
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "partial", "reauth_required", "unavailable"]
+    courses: list[ScombzCourseSummary] = Field(default_factory=list, max_length=50)
+    coverage: ScombzCoverage
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_courses(self) -> "ScombzCourseListResult":
+        if self.status in {"reauth_required", "unavailable"} and self.courses:
+            raise ValueError("Unavailable SCombZ course lists cannot include courses.")
+        return self
+
+
+class ScombzPortalItem(StrictApiModel):
+    ref: StrictStr = Field(
+        min_length=1, max_length=160, pattern=r"^orbit-scombz://item/[A-Za-z0-9_-]{16,128}$"
+    )
+    section: StrictStr = Field(min_length=1, max_length=60)
+    title: StrictStr = Field(min_length=1, max_length=300)
+    detail: StrictStr | None = Field(default=None, max_length=3000)
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    citation_uri: StrictStr | None = Field(default=None, max_length=240)
+
+
+class ScombzPortalReadResult(StrictApiModel):
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "partial", "reauth_required", "unavailable"]
+    items: list[ScombzPortalItem] = Field(default_factory=list, max_length=200)
+    coverage: ScombzCoverage
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_items(self) -> "ScombzPortalReadResult":
+        if self.status in {"reauth_required", "unavailable"} and self.items:
+            raise ValueError("Unavailable SCombZ portal reads cannot include items.")
+        return self
+
+
+class ScombzCourseReadItem(StrictApiModel):
+    ref: StrictStr = Field(
+        min_length=1, max_length=160, pattern=r"^orbit-scombz://item/[A-Za-z0-9_-]{16,128}$"
+    )
+    course_ref: StrictStr = Field(
+        min_length=1, max_length=160, pattern=r"^orbit-scombz://course/[A-Za-z0-9_-]{16,128}$"
+    )
+    section: StrictStr = Field(min_length=1, max_length=60)
+    title: StrictStr = Field(min_length=1, max_length=300)
+    body: StrictStr | None = Field(default=None, max_length=6000)
+    due_at: StrictStr | None = Field(default=None, max_length=60)
+    state: StrictStr | None = Field(default=None, max_length=40)
+    has_pdf: StrictBool = False
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    citation_uri: StrictStr | None = Field(default=None, max_length=240)
+
+
+class ScombzCourseReadResult(StrictApiModel):
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "partial", "reauth_required", "unavailable"]
+    items: list[ScombzCourseReadItem] = Field(default_factory=list, max_length=250)
+    section_states: dict[StrictStr, ScombzSectionState] = Field(default_factory=dict, max_length=20)
+    coverage: ScombzCoverage
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_items(self) -> "ScombzCourseReadResult":
+        if self.status in {"reauth_required", "unavailable"} and (
+            self.items or self.section_states
+        ):
+            raise ValueError("Unavailable SCombZ course reads cannot include items.")
+        return self
+
+
+class ScombzMaterialSearchHit(StrictApiModel):
+    material_ref: StrictStr = Field(
+        min_length=1, max_length=160, pattern=r"^orbit-scombz://material/[A-Za-z0-9_-]{16,128}$"
+    )
+    course_ref: StrictStr = Field(
+        min_length=1, max_length=160, pattern=r"^orbit-scombz://course/[A-Za-z0-9_-]{16,128}$"
+    )
+    material_title: StrictStr = Field(min_length=1, max_length=300)
+    page: StrictInt = Field(ge=1, le=10000)
+    quote: StrictStr = Field(min_length=1, max_length=1800)
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    citation_uri: StrictStr | None = Field(default=None, max_length=240)
+
+
+class ScombzMaterialSearchResult(StrictApiModel):
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "partial", "reauth_required", "unavailable"]
+    hits: list[ScombzMaterialSearchHit] = Field(default_factory=list, max_length=24)
+    coverage: ScombzCoverage
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_hits(self) -> "ScombzMaterialSearchResult":
+        if self.status in {"reauth_required", "unavailable"} and self.hits:
+            raise ValueError("Unavailable SCombZ material reads cannot include hits.")
+        return self
+
+
+class SyllabusReadResult(StrictApiModel):
+    schema_version: Literal["v1"] = "v1"
+    status: Literal["known", "unavailable"]
+    syllabus_ref: StrictStr = Field(
+        min_length=1, max_length=160, pattern=r"^orbit-syllabus://result/[A-Za-z0-9_-]{16,128}$"
+    )
+    url: StrictStr = Field(min_length=1, max_length=500)
+    course_code: StrictStr | None = Field(default=None, max_length=100)
+    title: StrictStr | None = Field(default=None, max_length=300)
+    instructors: list[StrictStr] = Field(default_factory=list, max_length=20)
+    objectives: StrictStr | None = Field(default=None, max_length=6000)
+    weekly_plan: list[StrictStr] = Field(default_factory=list, max_length=60)
+    evaluation: StrictStr | None = Field(default=None, max_length=3000)
+    textbooks: list[StrictStr] = Field(default_factory=list, max_length=30)
+    prerequisites: StrictStr | None = Field(default=None, max_length=2000)
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+    citation_uri: StrictStr | None = Field(default=None, max_length=240)
+
+    @model_validator(mode="after")
+    def unavailable_has_no_detail(self) -> "SyllabusReadResult":
+        if self.status == "unavailable" and (
+            self.course_code is not None
+            or self.title is not None
+            or self.instructors
+            or self.objectives is not None
+            or self.weekly_plan
+            or self.evaluation is not None
+            or self.textbooks
+            or self.prerequisites is not None
+        ):
+            raise ValueError("Unavailable syllabus reads cannot include detail.")
+        return self
+
+
 class SyllabusResult(StrictApiModel):
     """One result from the official public syllabus search."""
 
+    syllabus_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-syllabus://result/[A-Za-z0-9_-]{16,128}$",
+    )
     title: StrictStr = Field(min_length=1, max_length=300)
     course_code: StrictStr | None = Field(default=None, max_length=100)
     faculty: StrictStr | None = Field(default=None, max_length=200)
     url: StrictStr = Field(min_length=1, max_length=500)
     snippet: StrictStr | None = Field(default=None, max_length=1000)
+    citation_uri: StrictStr | None = Field(default=None, max_length=240)
 
     @model_validator(mode="after")
     def official_https_url(self) -> "SyllabusResult":
@@ -236,6 +500,7 @@ class SyllabusSearchResult(StrictApiModel):
     year: StrictInt | None = Field(default=None, ge=2000, le=2100)
     faculty: StrictStr | None = Field(default=None, max_length=200)
     results: list[SyllabusResult] = Field(default_factory=list, max_length=20)
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
     reason_code: StrictStr | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
@@ -396,6 +661,19 @@ class LibraryCatalogSearchResult(StrictApiModel):
         return self
 
 
+class LibraryCatalogSearchRequest(StrictApiModel):
+    """Authenticated server-side OPAC search request."""
+
+    query: StrictStr = Field(min_length=1, max_length=200)
+    author: StrictStr | None = Field(default=None, max_length=200)
+    subject: StrictStr | None = Field(default=None, max_length=200)
+    isbn: StrictStr | None = Field(default=None, max_length=32)
+    pub_year: StrictInt | None = Field(default=None, ge=1000, le=2100)
+    campus: LibrarySearchCampus = "any"
+    format: LibrarySearchFormat = "any"
+    limit: StrictInt = Field(default=10, ge=1, le=10)
+
+
 class LibraryItemReadResult(StrictApiModel):
     """Detailed public OPAC record resolved from an opaque resource reference."""
 
@@ -492,34 +770,66 @@ class LibraryDiscoverySearchResult(StrictApiModel):
 
 
 class SitrusGradeItem(StrictApiModel):
-    """One minimized grade row extracted from the displayed SITRUS notice."""
+    """One minimized grade row returned by authenticated SITRUS APIs."""
 
     subject: StrictStr = Field(min_length=1, max_length=200)
-    course_code: StrictStr | None = Field(default=None, max_length=20)
     credits: StrictInt | None = Field(default=None, ge=0, le=20)
     grade: Literal["S", "A", "B", "C", "D", "F", "G", "N", "X", "#"]
+    outcome: StrictStr | None = Field(default=None, max_length=40)
     year: StrictInt | None = Field(default=None, ge=2000, le=2100)
     term: StrictInt | None = Field(default=None, ge=1, le=3)
-    term_slot: StrictInt | None = Field(default=None, ge=1, le=4)
-    repeated: StrictBool = False
+
+
+class SitrusCreditSummaryItem(StrictApiModel):
+    """One minimized row from the SITRUS acquired-credit summary."""
+
+    category: StrictStr = Field(min_length=1, max_length=100)
+    credit_type: StrictStr | None = Field(default=None, max_length=40)
+    current_course_count: StrictInt = Field(ge=0, le=10_000)
+    current_credits: StrictInt = Field(ge=0, le=10_000)
+    cumulative_course_count: StrictInt = Field(ge=0, le=10_000)
+    cumulative_credits: StrictInt = Field(ge=0, le=10_000)
 
 
 class SitrusGradeResult(StrictApiModel):
-    """In-memory SITRUS projection; the PDF and student identity are omitted."""
+    """Minimized SITRUS projection; identity and raw responses are omitted."""
 
     schema_version: Literal["v1"] = "v1"
-    status: Literal["known", "unavailable"]
+    status: Literal["known", "reauth_required", "unavailable"]
     report_label: StrictStr | None = Field(default=None, max_length=100)
     grades: list[SitrusGradeItem] = Field(default_factory=list, max_length=200)
-    cumulative_gpa: StrictFloat | None = Field(default=None, ge=0, le=4)
+    credit_summaries: list[SitrusCreditSummaryItem] = Field(default_factory=list, max_length=200)
+    observed_at: StrictStr = Field(min_length=1, max_length=40)
     reason_code: StrictStr | None = Field(default=None, max_length=100)
 
     @model_validator(mode="after")
-    def unavailable_has_no_grade_data(self) -> "SitrusGradeResult":
-        if self.status == "unavailable" and (
-            self.report_label is not None or self.grades or self.cumulative_gpa is not None
+    def validates_status_and_timestamp(self) -> "SitrusGradeResult":
+        try:
+            observed_at = datetime.fromisoformat(self.observed_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise PydanticCustomError(
+                "sitrus_observed_at_invalid",
+                "SITRUS observed_at must use RFC3339.",
+            ) from None
+        if observed_at.tzinfo is None:
+            raise PydanticCustomError(
+                "sitrus_observed_at_timezone_missing",
+                "SITRUS observed_at must include a timezone.",
+            )
+        if self.status != "known" and (
+            self.report_label is not None or self.grades or self.credit_summaries
         ):
-            raise ValueError("Unavailable SITRUS results cannot include grade data.")
+            raise PydanticCustomError(
+                "sitrus_non_known_contains_data",
+                "Non-known SITRUS results cannot include academic data.",
+            )
+        if self.status == "known" and not (
+            self.report_label is not None or self.grades or self.credit_summaries
+        ):
+            raise PydanticCustomError(
+                "sitrus_known_empty",
+                "Known SITRUS results must include academic data.",
+            )
         return self
 
 
@@ -792,6 +1102,59 @@ class CastReadResult(StrictApiModel):
         return self
 
 
+class CastAlumniProfile(StrictApiModel):
+    """Bounded pseudonymous CAST profile for the restricted career scope.
+
+    The alias is generated in the extension and is the only person-like
+    identifier accepted by the external Agent.  Names, contact values,
+    source IDs, free text, and URLs have no fields in this projection.
+    """
+
+    alias: StrictStr = Field(
+        min_length=1,
+        max_length=120,
+        pattern=r"^\[\[ORBIT_PERSON_[A-Za-z0-9_-]{16,64}\]\]$",
+    )
+    role: Literal["alumni", "supporter", "unknown"]
+    company: StrictStr | None = Field(default=None, max_length=160)
+    technical_domains: list[StrictStr] = Field(default_factory=list, max_length=12)
+    job_types: list[StrictStr] = Field(default_factory=list, max_length=12)
+    location_area: StrictStr | None = Field(default=None, max_length=80)
+    graduation_year_bucket: StrictStr | None = Field(
+        default=None,
+        max_length=24,
+        pattern=r"^(?:before-2010|20[0-9]{2}-20[0-9]{2})$",
+    )
+    evidence_id: StrictStr | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def contains_no_direct_identifiers(self) -> "CastAlumniProfile":
+        values = [
+            self.company,
+            *self.technical_domains,
+            *self.job_types,
+            self.location_area,
+            self.evidence_id,
+        ]
+        joined = "\n".join(value for value in values if value)
+        if re.search(
+            r"(?:@|https?://|orbit-[a-z0-9-]+://|(?:\+81|0)[-\d() ]{8,}|"
+            r"\b[A-Z]{1,5}[-_ ]?\d{5,}\b)",
+            joined,
+            re.IGNORECASE,
+        ):
+            raise ValueError("Restricted CAST profiles must not contain direct identifiers.")
+        if self.evidence_id is not None and not re.fullmatch(
+            r"[A-Za-z0-9_-]{3,200}", self.evidence_id
+        ):
+            raise ValueError("Restricted CAST profile evidence IDs must be opaque.")
+        if len(set(self.technical_domains)) != len(self.technical_domains):
+            raise ValueError("Restricted CAST profile domains must be unique.")
+        if len(set(self.job_types)) != len(self.job_types):
+            raise ValueError("Restricted CAST profile job types must be unique.")
+        return self
+
+
 class CastAlumniReadResult(StrictApiModel):
     """Generalized CAST supporter data with no person or contact fields.
 
@@ -802,8 +1165,9 @@ class CastAlumniReadResult(StrictApiModel):
 
     schema_version: Literal["v1"] = "v1"
     status: Literal["known", "reauth_required", "unavailable"]
-    data_classification: Literal["personal"] = "personal"
+    data_classification: Literal["personal", "restricted"] = "personal"
     profile_count: StrictInt = Field(ge=0, le=64)
+    profiles: list[CastAlumniProfile] = Field(default_factory=list, max_length=20)
     topic_categories: list[StrictStr] = Field(default_factory=list, max_length=32)
     availability_frequencies: list[Literal["weekly", "monthly", "occasional", "unknown"]] = Field(
         default_factory=list, max_length=4
@@ -826,8 +1190,16 @@ class CastAlumniReadResult(StrictApiModel):
             or self.shareable_insight_categories
             or self.contact_present
             or self.discovered_link_count
+            or self.profiles
         ):
             raise ValueError("Unavailable CAST alumni results cannot include derived data.")
+        if self.data_classification == "personal" and self.profiles:
+            raise ValueError("Personal CAST alumni results cannot carry provider profiles.")
+        if self.data_classification == "restricted":
+            if self.contact_present:
+                raise ValueError("Restricted CAST alumni results cannot expose contact presence.")
+            if self.profile_count != len(self.profiles):
+                raise ValueError("Restricted CAST profile count must match profiles.")
         if len(set(self.topic_categories)) != len(self.topic_categories):
             raise ValueError("CAST alumni topic categories must be unique.")
         if len(set(self.shareable_insight_categories)) != len(self.shareable_insight_categories):
@@ -913,11 +1285,15 @@ class CastSearchAppliedFilters(StrictApiModel):
             if key == "graduation_years":
                 if not isinstance(value, list):
                     raise ValueError(f"CAST search filter {key} contains invalid values.")
-                if not value or len(value) > 20 or not all(
-                    isinstance(item, int)
-                    and not isinstance(item, bool)
-                    and 1995 <= item <= 2100
-                    for item in value
+                if (
+                    not value
+                    or len(value) > 20
+                    or not all(
+                        isinstance(item, int)
+                        and not isinstance(item, bool)
+                        and 1995 <= item <= 2100
+                        for item in value
+                    )
                 ):
                     raise ValueError(f"CAST search filter {key} contains invalid values.")
                 continue
@@ -933,8 +1309,7 @@ class CastSearchAppliedFilters(StrictApiModel):
                 if not value or len(value) > 20:
                     raise ValueError(f"CAST search filter {key} contains invalid values.")
                 valid = all(
-                    isinstance(item, str) and item.strip() and len(item) <= 200
-                    for item in value
+                    isinstance(item, str) and item.strip() and len(item) <= 200 for item in value
                 )
                 if not valid:
                     raise ValueError(f"CAST search filter {key} contains invalid values.")
@@ -1006,6 +1381,116 @@ class CastSearchResult(StrictApiModel):
             or self.evidence_ids
         ):
             raise ValueError("Unavailable CAST search results cannot include derived data.")
+        return self
+
+
+CastCareerSurface = Literal[
+    "job",
+    "internship",
+    "company_session",
+    "company",
+    "hiring_record",
+    "selection_report",
+    "recording",
+    "career_event",
+    "counseling",
+]
+CastCareerStatus = Literal[
+    "known",
+    "partial",
+    "reauth_required",
+    "form_changed",
+    "rate_limited",
+    "local_model_unavailable",
+    "unavailable",
+]
+
+
+class CastCareerSurfaceCoverage(StrictApiModel):
+    surface: CastCareerSurface
+    status: CastCareerStatus
+    total_count: StrictInt | None = Field(default=None, ge=0, le=100_000)
+    returned_count: StrictInt = Field(ge=0, le=1_000)
+    fetched_pages: StrictInt = Field(ge=0, le=100)
+    page_size: StrictInt = Field(ge=0, le=50)
+    reason_code: StrictStr | None = Field(default=None, max_length=100)
+
+
+class CastCareerAggregate(StrictApiModel):
+    """Anonymized cell from the local nine-surface CAST result.
+
+    Values are intentionally category labels only.  A minimum cell size keeps
+    the projection from becoming a proxy for an individual record.
+    """
+
+    dimension: Literal[
+        "surface",
+        "industry",
+        "location",
+        "graduation_year",
+        "occupation",
+        "technical_domain",
+        "relation",
+    ]
+    value: StrictStr = Field(min_length=1, max_length=200)
+    count: StrictInt = Field(ge=5, le=100_000)
+
+
+class CastCareerSearchResult(StrictApiModel):
+    """Aggregate-only projection for one bounded CAST career search.
+
+    Detailed cards remain in the extension.  This model deliberately has no
+    query, company, person, date, URL, internal-id, or raw-HTML fields.
+    """
+
+    schema_version: Literal["v1"] = "v1"
+    status: CastCareerStatus
+    searched_surfaces: list[CastCareerSurface] = Field(min_length=1, max_length=9)
+    surface_coverage: list[CastCareerSurfaceCoverage] = Field(
+        min_length=1,
+        max_length=9,
+    )
+    total_count: StrictInt = Field(ge=0, le=900_000)
+    returned_count: StrictInt = Field(ge=0, le=9_000)
+    anonymous_aggregates: list[CastCareerAggregate] = Field(
+        default_factory=list,
+        max_length=200,
+    )
+    evidence_ids: list[StrictStr] = Field(default_factory=list, max_length=32)
+    reason_codes: list[StrictStr] = Field(default_factory=list, max_length=32)
+
+    @model_validator(mode="after")
+    def values_match_status(self) -> "CastCareerSearchResult":
+        if len(set(self.searched_surfaces)) != len(self.searched_surfaces):
+            raise ValueError("CAST career searched surfaces must be unique.")
+        coverage_surfaces = [item.surface for item in self.surface_coverage]
+        if len(set(coverage_surfaces)) != len(coverage_surfaces):
+            raise ValueError("CAST career surface coverage must be unique.")
+        if set(coverage_surfaces) != set(self.searched_surfaces):
+            raise ValueError("CAST career coverage must match searched surfaces.")
+        if self.returned_count > self.total_count:
+            raise ValueError("CAST career returned_count cannot exceed total_count.")
+        aggregate_keys = [(item.dimension, item.value) for item in self.anonymous_aggregates]
+        if len(set(aggregate_keys)) != len(aggregate_keys):
+            raise ValueError("CAST career aggregates must be unique.")
+        if len(set(self.evidence_ids)) != len(self.evidence_ids):
+            raise ValueError("CAST career evidence IDs must be unique.")
+        if any(
+            not re.fullmatch(r"cast-career-search-v1-[A-Za-z0-9_-]{16,200}", evidence_id)
+            for evidence_id in self.evidence_ids
+        ):
+            raise ValueError("CAST career evidence IDs must be opaque v1 IDs.")
+        if len(set(self.reason_codes)) != len(self.reason_codes):
+            raise ValueError("CAST career reason codes must be unique.")
+        if self.status == "known":
+            if any(item.status not in {"known"} for item in self.surface_coverage):
+                raise ValueError("Known CAST career results require known surface coverage.")
+        elif self.status == "partial":
+            if not any(item.status == "known" for item in self.surface_coverage):
+                raise ValueError("Partial CAST career results require one known surface.")
+        else:
+            if self.total_count or self.returned_count or self.anonymous_aggregates:
+                raise ValueError("Unavailable CAST career results cannot include derived data.")
         return self
 
 
@@ -1086,29 +1571,11 @@ class AgentToolCall(StrictApiModel):
 # can carry a short-lived, linear tool chain without exposing PydanticAI's
 # internal message objects to the browser.
 ChatRole = Literal["user", "assistant"]
-ChatToolName = Literal[
-    "scombz_page_summary",
-    "scombz_read",
-    "google_calendar_availability",
-    "syllabus_search",
-    "browser_read_url",
-    "sitrus_read",
-    "moodle_read",
-    "my_library_read",
-    "cast_read",
-    "cast_alumni_read",
-    "cast_search",
-    "library_catalog_search",
-    "library_item_read",
-    "library_catalog_browse",
-    "library_discovery_search",
-    "library_action_options",
-]
 
 
 class ChatHistoryMessage(StrictApiModel):
     role: ChatRole
-    content: StrictStr = Field(min_length=1, max_length=8000)
+    content: StrictStr = Field(min_length=1, max_length=12000)
 
 
 class ChatLibraryContextRecord(StrictApiModel):
@@ -1256,12 +1723,67 @@ class ChatContextManifest(StrictApiModel):
 
     @model_validator(mode="after")
     def validates_manifest(self) -> "ChatContextManifest":
-        evidence_ids = {item.evidence_id for item in self.evidence}
-        if len(evidence_ids) != len(self.evidence):
-            raise ValueError("Context manifest evidence IDs must be unique.")
+        # Older clients may have persisted the same completion evidence from
+        # both ``message.evidence`` and ``context_manifest.evidence``.  Treat
+        # byte-for-byte equivalent public links as one stable entry so a
+        # session upgrade repairs that legacy state at the API boundary.  A
+        # reused ID with different metadata is ambiguous and remains a hard
+        # failure; silently choosing one would risk carrying evidence from a
+        # different source into the next turn.
+        merged_evidence: list[EvidenceLink] = []
+        evidence_by_id: dict[str, EvidenceLink] = {}
+        for item in self.evidence:
+            previous = evidence_by_id.get(item.evidence_id)
+            if previous is None:
+                evidence_by_id[item.evidence_id] = item
+                merged_evidence.append(item)
+                continue
+            if (
+                previous.title,
+                previous.source_type,
+                previous.locator,
+                previous.data_classification,
+            ) != (
+                item.title,
+                item.source_type,
+                item.locator,
+                item.data_classification,
+            ):
+                raise ValueError("Context manifest contains conflicting evidence metadata.")
+        self.evidence = merged_evidence
+        evidence_ids = set(evidence_by_id)
         for item in self.evidence:
             if item.data_classification not in {"public", "synthetic"}:
-                raise ValueError("Personal evidence cannot be included in a context manifest.")
+                # A SCombZ follow-up may carry only the opaque, conversation-
+                # bound citation minted by the extension.  Other personal
+                # evidence (calendar, library accounts, grades, etc.) remains
+                # local and is never accepted in a provider context manifest.
+                if not (
+                    item.data_classification == "personal"
+                    and item.source_type == "scombz"
+                    and re.fullmatch(
+                        r"scombz-(?:page-summary|read|course-list|portal-read|course-read|material-search)-v1-[A-Za-z0-9_-]{16,200}",
+                        item.evidence_id,
+                    )
+                    and re.fullmatch(
+                        r"orbit-scombz://(?:read|citation)/[A-Za-z0-9_-]{16,128}",
+                        item.locator,
+                    )
+                ) and not (
+                    item.data_classification == "restricted"
+                    and item.source_type == "career"
+                    and re.fullmatch(
+                        r"cast-alumni-v1-[A-Za-z0-9_-]{16,200}",
+                        item.evidence_id,
+                    )
+                    and re.fullmatch(
+                        r"orbit-cast://alumni/[A-Za-z0-9_-]{16,128}",
+                        item.locator,
+                    )
+                ):
+                    raise ValueError(
+                        "Personal or restricted evidence cannot be included in a context manifest."
+                    )
             locator = urlparse(item.locator)
             if locator.scheme in {"http", "https"} and (
                 locator.username or locator.password or locator.query or locator.fragment
@@ -1287,6 +1809,18 @@ class ChatContextManifest(StrictApiModel):
         return self
 
 
+class LibraryItemReadRequest(StrictApiModel):
+    """Authenticated server-side OPAC detail request."""
+
+    resource_ref: StrictStr = Field(
+        min_length=1,
+        max_length=160,
+        pattern=r"^orbit-library://record/[A-Za-z0-9_-]{16,128}$",
+    )
+    presentation: Literal["summary", "location"] = "summary"
+    records: list[ChatLibraryContextRecord] = Field(default_factory=list, max_length=20)
+
+
 class ChatClientTool(StrictApiModel):
     name: ChatToolName
     version: Literal[1]
@@ -1295,8 +1829,12 @@ class ChatClientTool(StrictApiModel):
 class ChatRunRequest(StrictApiModel):
     conversation_id: StrictStr = Field(min_length=1, max_length=200)
     message: StrictStr = Field(min_length=1, max_length=8000)
+    execution_mode: Literal["sync", "background"] = "sync"
     history: list[ChatHistoryMessage] = Field(default_factory=list, max_length=20)
-    client_tools: list[ChatClientTool] = Field(default_factory=list, max_length=12)
+    # The extension may advertise every supported client capability on a run.
+    # Keeping this bound in sync with ChatToolName prevents a connected page
+    # from being rejected at the HTTP boundary with a misleading 422.
+    client_tools: list[ChatClientTool] = Field(default_factory=list, max_length=32)
     context_manifest: ChatContextManifest | None = None
 
     @model_validator(mode="after")
@@ -1324,7 +1862,12 @@ class ChatToolResultRequest(StrictApiModel):
         CalendarAvailabilityResult
         | ScombzPageSummaryResult
         | ScombzReadResult
+        | ScombzCourseListResult
+        | ScombzPortalReadResult
+        | ScombzCourseReadResult
+        | ScombzMaterialSearchResult
         | SyllabusSearchResult
+        | SyllabusReadResult
         | BrowserReadResult
         | SitrusGradeResult
         | MoodleReadResult
@@ -1332,12 +1875,32 @@ class ChatToolResultRequest(StrictApiModel):
         | CastReadResult
         | CastAlumniReadResult
         | CastSearchResult
+        | CastCareerSearchResult
         | LibraryCatalogSearchResult
         | LibraryItemReadResult
         | LibraryCatalogBrowseResult
         | LibraryDiscoverySearchResult
         | LibraryActionOptionsResult
     )
+
+    @field_validator("result", mode="before")
+    @classmethod
+    def validate_sitrus_result_before_union(
+        cls,
+        value: Any,
+        info: ValidationInfo,
+    ) -> Any:
+        """Select the strict SITRUS contract before evaluating the broad union.
+
+        Most client-tool results share ``schema_version`` and ``status``.  Letting
+        Pydantic try every union member first hides the actionable SITRUS error
+        behind failures from unrelated tools.  Returning a validated model keeps
+        the public union/OpenAPI contract unchanged and does not relax any field.
+        """
+
+        if info.data.get("name") == "sitrus_read":
+            return SitrusGradeResult.model_validate(value)
+        return value
 
     @model_validator(mode="after")
     def result_matches_tool(self) -> "ChatToolResultRequest":
@@ -1351,8 +1914,26 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("SCombZ tool results must use ScombzPageSummaryResult.")
         if self.name == "scombz_read" and not isinstance(self.result, ScombzReadResult):
             raise ValueError("SCombZ read results must use ScombzReadResult.")
+        if self.name == "scombz_course_list" and not isinstance(
+            self.result, ScombzCourseListResult
+        ):
+            raise ValueError("SCombZ course list results must use ScombzCourseListResult.")
+        if self.name == "scombz_portal_read" and not isinstance(
+            self.result, ScombzPortalReadResult
+        ):
+            raise ValueError("SCombZ portal results must use ScombzPortalReadResult.")
+        if self.name == "scombz_course_read" and not isinstance(
+            self.result, ScombzCourseReadResult
+        ):
+            raise ValueError("SCombZ course results must use ScombzCourseReadResult.")
+        if self.name == "scombz_material_search" and not isinstance(
+            self.result, ScombzMaterialSearchResult
+        ):
+            raise ValueError("SCombZ material results must use ScombzMaterialSearchResult.")
         if self.name == "syllabus_search" and not isinstance(self.result, SyllabusSearchResult):
             raise ValueError("Syllabus results must use SyllabusSearchResult.")
+        if self.name == "syllabus_read" and not isinstance(self.result, SyllabusReadResult):
+            raise ValueError("Syllabus detail results must use SyllabusReadResult.")
         if self.name == "browser_read_url" and not isinstance(self.result, BrowserReadResult):
             raise ValueError("Browser results must use BrowserReadResult.")
         if self.name == "sitrus_read" and not isinstance(self.result, SitrusGradeResult):
@@ -1367,6 +1948,10 @@ class ChatToolResultRequest(StrictApiModel):
             raise ValueError("CAST alumni results must use CastAlumniReadResult.")
         if self.name == "cast_search" and not isinstance(self.result, CastSearchResult):
             raise ValueError("CAST search results must use CastSearchResult.")
+        if self.name == "cast_career_search" and not isinstance(
+            self.result, CastCareerSearchResult
+        ):
+            raise ValueError("CAST career search results must use CastCareerSearchResult.")
         if self.name == "library_catalog_search" and not isinstance(
             self.result, LibraryCatalogSearchResult
         ):
@@ -1397,6 +1982,8 @@ class ChatAssistantMessage(StrictApiModel):
     @model_validator(mode="after")
     def validates_related_book_evidence(self) -> "ChatAssistantMessage":
         evidence_ids = {item.evidence_id for item in self.evidence}
+        if len(evidence_ids) != len(self.evidence):
+            raise ValueError("Assistant evidence IDs must be unique.")
         candidate_refs = {item.candidate_ref for item in self.related_books}
         if len(candidate_refs) != len(self.related_books):
             raise ValueError("Assistant related-book refs must be unique.")
@@ -1410,6 +1997,56 @@ class ChatRunCompleted(StrictApiModel):
     status: Literal["completed"]
     message: ChatAssistantMessage
     proposal: ActionProposal | None = None
+    context_manifest: ChatContextManifest | None = None
+
+    @model_validator(mode="after")
+    def validates_overlapping_evidence(self) -> "ChatRunCompleted":
+        """Allow mirrored evidence, but never conflicting metadata.
+
+        The assistant message and the context manifest intentionally carry the
+        same public evidence so older clients can render either projection.
+        Their overlap must represent one canonical link; otherwise the next
+        turn could not safely merge it.
+        """
+
+        if self.context_manifest is None:
+            return self
+        manifest_by_id = {item.evidence_id: item for item in self.context_manifest.evidence}
+        for item in self.message.evidence:
+            previous = manifest_by_id.get(item.evidence_id)
+            if previous is None:
+                continue
+            if (
+                previous.title,
+                previous.source_type,
+                previous.locator,
+                previous.data_classification,
+            ) != (
+                item.title,
+                item.source_type,
+                item.locator,
+                item.data_classification,
+            ):
+                raise ValueError("Chat completion contains conflicting evidence metadata.")
+        return self
+
+
+class ChatRunBackground(StrictApiModel):
+    """Acknowledgement for a bounded in-memory background chat run."""
+
+    status: Literal["background"]
+    run_id: StrictStr = Field(min_length=1, max_length=200)
+
+
+class ChatRunProgressEvent(StrictApiModel):
+    """Safe user-facing progress metadata; no prompts or tool arguments."""
+
+    sequence: StrictInt = Field(ge=1, le=1000)
+    stage: Literal["planning", "tool_call", "tool_result", "synthesizing"]
+    title: StrictStr = Field(min_length=1, max_length=80)
+    completed: StrictInt = Field(ge=0, le=8)
+    total: StrictInt | None = Field(default=None, ge=1, le=8)
+    elapsed_ms: StrictInt = Field(ge=0, le=600_000)
 
 
 class ChatRunToolRequired(StrictApiModel):
@@ -1424,6 +2061,12 @@ ChatRunResponse = Annotated[
 ]
 
 
+ChatRunStatusResponse = Annotated[
+    ChatRunCompleted | ChatRunToolRequired | ChatRunBackground,
+    Field(discriminator="status"),
+]
+
+
 AgentRunResponse = Annotated[
     AgentRunCompleted | AgentRunToolRequired,
     Field(discriminator="status"),
@@ -1432,6 +2075,7 @@ AgentRunResponse = Annotated[
 
 __all__ = [
     "AgentCapabilities",
+    "ChatCapabilities",
     "AgentRunCompleted",
     "AgentRunRequest",
     "AgentRunResponse",
@@ -1453,12 +2097,17 @@ __all__ = [
     "BrowserReadLink",
     "BrowserReadResult",
     "CastReadResult",
+    "CastAlumniProfile",
     "CastAlumniReadResult",
     "CastSearchAggregate",
     "CastSearchAppliedFilters",
     "CastSearchCoverage",
     "CastSearchResult",
+    "CastCareerSurfaceCoverage",
+    "CastCareerAggregate",
+    "CastCareerSearchResult",
     "CastSearchSort",
+    "SitrusCreditSummaryItem",
     "SitrusGradeItem",
     "SitrusGradeResult",
     "MoodleReadResult",

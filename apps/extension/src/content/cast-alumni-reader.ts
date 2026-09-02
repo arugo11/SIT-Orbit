@@ -45,8 +45,18 @@ export interface CastAlumniLocalSnapshot {
 export interface CastAlumniAgentProjection {
   schema_version: typeof CAST_ALUMNI_SCHEMA_VERSION;
   status: "known" | "reauth_required" | "unavailable";
-  data_classification: "personal";
+  data_classification: "personal" | "restricted";
   profile_count: number;
+  profiles?: Array<{
+    alias: string;
+    role: CastAlumniRole;
+    company?: string;
+    technical_domains: string[];
+    job_types: string[];
+    location_area?: string;
+    graduation_year_bucket?: string;
+    evidence_id?: string;
+  }>;
   topic_categories: string[];
   availability_frequencies: CastAlumniFrequency[];
   meeting_modes: CastAlumniMeetingMode[];

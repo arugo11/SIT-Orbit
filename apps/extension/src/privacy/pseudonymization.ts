@@ -42,6 +42,36 @@ export interface CastTypedSnapshot {
   public_aggregates?: CastPublicAggregateInput[];
 }
 
+/**
+ * Local-only CAST reasoning input.  This is intentionally a separate contract
+ * from CastTypedSnapshot: a model-facing caller cannot accidentally attach raw
+ * HTML, a URL, a form value, or a free-text report to a reasoning record.
+ *
+ * A person may be attached when a CAST detail page exposed a name.  The name
+ * is consumed by the gateway and is represented by a mission-scoped alias in
+ * the returned projection.  The snapshot must never leave the extension.
+ */
+export interface CastReasoningRecordInput {
+  surface: string;
+  title?: string;
+  company_name?: string;
+  dates?: string[];
+  deadline?: string | null;
+  locations?: string[];
+  technical_domains?: string[];
+  occupations?: string[];
+  employment_types?: string[];
+  graduation_years?: number[];
+  relation_flags?: string[];
+  result_ref?: string;
+  person?: CastPersonInput;
+}
+
+export interface CastReasoningSnapshot {
+  schema_version: "v2";
+  records: CastReasoningRecordInput[];
+}
+
 export interface PseudonymizedPerson {
   alias: string;
   role: CastPersonRole;
@@ -66,6 +96,46 @@ export interface PseudonymizedCastPayload {
   destination: PseudonymizationDestination;
   people: PseudonymizedPerson[];
   public_aggregates: PseudonymizedPublicAggregate[];
+}
+
+/** A local Prompt API record after person fields have been replaced. */
+export interface PseudonymizedReasoningRecord {
+  surface: string;
+  title?: string;
+  company_name?: string;
+  person_alias?: string;
+  dates: string[];
+  deadline: string | null;
+  locations: string[];
+  technical_domains: string[];
+  occupations: string[];
+  employment_types: string[];
+  graduation_year_buckets: string[];
+  relation_flags: string[];
+  result_ref?: string;
+}
+
+export interface PseudonymizedReasoningPayload {
+  schema_version: "v2";
+  destination: "local";
+  records: PseudonymizedReasoningRecord[];
+}
+
+export interface ReasoningContextManifest {
+  schema_version: "v2";
+  source: "CAST";
+  destination: "local";
+  record_count: number;
+  replaced_person_count: number;
+  removed_fields: string[];
+  generalized_fields: string[];
+  /** A safe preview for the local Prompt API; no raw input is retained. */
+  payload_preview: PseudonymizedReasoningPayload;
+}
+
+export interface PseudonymizedReasoningResult {
+  payload: PseudonymizedReasoningPayload;
+  manifest: ReasoningContextManifest;
 }
 
 export interface ContextManifestEntry {
@@ -129,8 +199,19 @@ export class ExternalPersonalDataError extends PseudonymizationError {
   }
 }
 
+export class LocalReasoningOnlyError extends PseudonymizationError {
+  constructor() {
+    super(
+      "Detailed CAST reasoning is local-only; the reasoning projection cannot be sent to an external provider.",
+    );
+    this.name = "LocalReasoningOnlyError";
+  }
+}
+
 const EMAIL_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu;
-const PHONE_PATTERN = /(?:\+81|0)[-\d() ]{8,}/u;
+// Count digits instead of just characters so ISO dates such as 2026-08-20
+// are not mistaken for phone numbers.
+const PHONE_PATTERN = /(?:\+81|0)(?:[-()\s]?\d){8,11}\b/u;
 const STUDENT_ID_PATTERN = /\b[A-Z]{1,5}[-_ ]?\d{5,}\b/iu;
 const CREDENTIAL_PATTERN =
   /(?:access[_-]?token|id[_-]?token|refresh[_-]?token|session|cookie|password|oauth|authorization)/iu;
@@ -308,6 +389,197 @@ function collectRemovedFields(input: CastPersonInput): string[] {
   return removed;
 }
 
+const REASONING_FIELDS = new Set([
+  "surface",
+  "title",
+  "company_name",
+  "dates",
+  "deadline",
+  "locations",
+  "technical_domains",
+  "occupations",
+  "employment_types",
+  "graduation_years",
+  "relation_flags",
+  "result_ref",
+  "person",
+]);
+
+function assertReasoningPersonShape(input: CastPersonInput): void {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new PseudonymizationError("CAST reasoning person is invalid.");
+  }
+  for (const field of [
+    "name",
+    "romanized_name",
+    "source_identifier",
+    "email",
+    "phone",
+    "student_id",
+    "url",
+    "file_name",
+    "free_text",
+    "company",
+    "location_area",
+    "evidence_id",
+  ] as const) {
+    const value = input[field];
+    if (value !== undefined && typeof value !== "string") {
+      throw new PseudonymizationError("CAST reasoning person is invalid.");
+    }
+  }
+  for (const field of ["technical_domains", "job_types"] as const) {
+    const values = input[field];
+    if (
+      values !== undefined &&
+      (!Array.isArray(values) ||
+        values.some((value) => typeof value !== "string"))
+    ) {
+      throw new PseudonymizationError("CAST reasoning person is invalid.");
+    }
+  }
+  if (
+    input.graduation_year !== undefined &&
+    !Number.isInteger(input.graduation_year)
+  ) {
+    throw new PseudonymizationError("CAST reasoning person is invalid.");
+  }
+  if (
+    input.role !== undefined &&
+    !["alumni", "recruiter", "interviewer", "student", "unknown"].includes(
+      input.role,
+    )
+  ) {
+    throw new PseudonymizationError("CAST reasoning person is invalid.");
+  }
+}
+
+function assertReasoningRecordShape(input: CastReasoningRecordInput): void {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new PseudonymizationError("CAST reasoning record is invalid.");
+  }
+  const unknownFields = Object.keys(input).filter(
+    (field) => !REASONING_FIELDS.has(field),
+  );
+  if (unknownFields.length > 0) {
+    throw new PseudonymizationError(
+      "CAST reasoning input contains an unsupported field.",
+    );
+  }
+  if (
+    typeof input.surface !== "string" ||
+    !/^[a-z][a-z0-9_]{0,39}$/u.test(input.surface)
+  ) {
+    throw new PseudonymizationError("CAST reasoning surface is invalid.");
+  }
+  if (
+    input.result_ref !== undefined &&
+    !/^orbit-cast-[a-z0-9_-]{8,120}$/u.test(input.result_ref)
+  ) {
+    throw new PseudonymizationError(
+      "CAST reasoning result reference is invalid.",
+    );
+  }
+  if (input.person !== undefined) assertReasoningPersonShape(input.person);
+}
+
+function safeReasoningText(
+  value: unknown,
+  field: string,
+  limit = 160,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    throw new PseudonymizationError(`CAST reasoning ${field} is invalid.`);
+  }
+  const normalized = compact(value, limit);
+  if (!normalized) return undefined;
+  if (
+    EMAIL_PATTERN.test(normalized) ||
+    PHONE_PATTERN.test(normalized) ||
+    STUDENT_ID_PATTERN.test(normalized) ||
+    CREDENTIAL_PATTERN.test(normalized) ||
+    /https?:\/\//iu.test(normalized)
+  ) {
+    throw new PseudonymizationError(
+      `CAST reasoning ${field} contains a prohibited identifier.`,
+    );
+  }
+  return normalized;
+}
+
+function safeReasoningTextArray(values: unknown, field: string): string[] {
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || values.length > 12) {
+    throw new PseudonymizationError(`CAST reasoning ${field} is invalid.`);
+  }
+  return Array.from(
+    new Set(
+      values
+        .map((value) => safeReasoningText(value, field, 100))
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+}
+
+function safeReasoningDate(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new PseudonymizationError(`CAST reasoning ${field} is invalid.`);
+  }
+  const normalized = value.normalize("NFKC").trim();
+  if (!/^20\d{2}-\d{2}-\d{2}$/u.test(normalized)) {
+    throw new PseudonymizationError(
+      `CAST reasoning ${field} contains an invalid date.`,
+    );
+  }
+  const date = new Date(`${normalized}T00:00:00Z`);
+  const [yearText, monthText, dayText] = normalized.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (
+    Number.isNaN(date.getTime()) ||
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    throw new PseudonymizationError(
+      `CAST reasoning ${field} contains an invalid date.`,
+    );
+  }
+  return normalized;
+}
+
+function safeReasoningDates(values: unknown, field: string): string[] {
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || values.length > 8) {
+    throw new PseudonymizationError(`CAST reasoning ${field} is invalid.`);
+  }
+  return Array.from(
+    new Set(values.map((value) => safeReasoningDate(value, field))),
+  );
+}
+
+function reasoningYearBucket(year: number): string {
+  if (!Number.isInteger(year) || year < 1900 || year > 2200) {
+    throw new PseudonymizationError(
+      "CAST reasoning graduation year is invalid.",
+    );
+  }
+  const start = Math.floor(year / 5) * 5;
+  return `${start}-${start + 4}`;
+}
+
+function safeReasoningYearBuckets(values: unknown): string[] {
+  if (values === undefined) return [];
+  if (!Array.isArray(values) || values.length > 8) {
+    throw new PseudonymizationError(
+      "CAST reasoning graduation years are invalid.",
+    );
+  }
+  return Array.from(new Set(values.map(reasoningYearBucket)));
+}
+
 function sanitizeAggregate(
   aggregate: CastPublicAggregateInput,
 ): PseudonymizedPublicAggregate {
@@ -362,6 +634,38 @@ function scanForLeakage(
   }
   if (EMAIL_PATTERN.test(serialized) || PHONE_PATTERN.test(serialized)) {
     throw new PseudonymizationError("Gateway payload contains contact data.");
+  }
+}
+
+function scanReasoningForLeakage(
+  payload: PseudonymizedReasoningPayload,
+  prohibitedValues: string[],
+): void {
+  const serialized = JSON.stringify(payload);
+  if (
+    /(?:person_ref|source_identifier|original_names|student_id|access_token|id_token|refresh_token|raw_html|company_code)/iu.test(
+      serialized,
+    )
+  ) {
+    throw new PseudonymizationError(
+      "CAST reasoning projection contains a prohibited field.",
+    );
+  }
+  if (
+    prohibitedValues.some((value) => {
+      if (!value) return false;
+      const normalized = normalizeIdentifier(value);
+      return serialized.includes(value) || serialized.includes(normalized);
+    })
+  ) {
+    throw new PseudonymizationError(
+      "CAST reasoning projection contains a detected identifier.",
+    );
+  }
+  if (EMAIL_PATTERN.test(serialized) || PHONE_PATTERN.test(serialized)) {
+    throw new PseudonymizationError(
+      "CAST reasoning projection contains contact data.",
+    );
   }
 }
 
@@ -557,6 +861,148 @@ export class PseudonymizationMission {
           },
         ],
         replaced_person_count: people.length,
+        removed_fields: Array.from(removedFields).sort(),
+        generalized_fields: Array.from(generalizedFields).sort(),
+        payload_preview: payload,
+      },
+    };
+  }
+
+  /**
+   * Build a mission-scoped, local-only reasoning projection.
+   *
+   * This method is deliberately not parameterized by a destination.  Detailed
+   * CAST records may help the on-device Prompt API reason about a result, but
+   * they are never an Azure/OpenAI payload.  Use `transform` with
+   * `destination: "azure"` for the aggregate-only v1 contract instead.
+   */
+  async transformReasoning(
+    snapshot: CastReasoningSnapshot,
+  ): Promise<PseudonymizedReasoningResult> {
+    if (
+      !snapshot ||
+      typeof snapshot !== "object" ||
+      snapshot.schema_version !== "v2"
+    ) {
+      throw new PseudonymizationError(
+        "Unsupported CAST reasoning snapshot schema.",
+      );
+    }
+    if (!Array.isArray(snapshot.records) || snapshot.records.length > 20) {
+      throw new PseudonymizationError(
+        "CAST reasoning snapshots are limited to 20 records.",
+      );
+    }
+
+    const removedFields = new Set<string>([
+      "raw_html",
+      "source_url",
+      "url_query",
+      "url_fragment",
+      "company_code",
+      "local_summary",
+      "free_text",
+      "email",
+      "phone",
+      "student_id",
+      "file_name",
+      "token",
+    ]);
+    const generalizedFields = new Set<string>();
+    const records: PseudonymizedReasoningRecord[] = [];
+    const prohibitedValues: string[] = [];
+    let replacedPersonCount = 0;
+
+    for (const input of snapshot.records) {
+      assertReasoningRecordShape(input);
+      const personResult = input.person
+        ? await this.transform(
+            { schema_version: "v1", records: [input.person] },
+            "local",
+          )
+        : null;
+      if (input.person) {
+        const personValues = [
+          input.person.name,
+          input.person.romanized_name,
+          input.person.source_identifier,
+          input.person.email,
+          input.person.phone,
+          input.person.student_id,
+          input.person.url,
+          input.person.file_name,
+          input.person.free_text,
+        ].filter((value): value is string => Boolean(value));
+        prohibitedValues.push(
+          ...personValues.flatMap((value) => [
+            value,
+            normalizeIdentifier(value),
+          ]),
+        );
+      }
+      if (personResult)
+        replacedPersonCount += personResult.manifest.replaced_person_count;
+
+      const title = safeReasoningText(input.title, "title");
+      const companyName = safeReasoningText(
+        input.company_name,
+        "company_name",
+        180,
+      );
+      const dates = safeReasoningDates(input.dates, "dates");
+      const deadline =
+        input.deadline === undefined || input.deadline === null
+          ? null
+          : safeReasoningDate(input.deadline, "deadline");
+      const graduationYearBuckets = safeReasoningYearBuckets(
+        input.graduation_years,
+      );
+      if (input.graduation_years?.length) {
+        generalizedFields.add("graduation_year");
+      }
+      const person = personResult?.payload.people[0];
+      const record: PseudonymizedReasoningRecord = {
+        surface: input.surface,
+        dates,
+        deadline,
+        locations: safeReasoningTextArray(input.locations, "locations"),
+        technical_domains: safeReasoningTextArray(
+          input.technical_domains,
+          "technical_domains",
+        ),
+        occupations: safeReasoningTextArray(input.occupations, "occupations"),
+        employment_types: safeReasoningTextArray(
+          input.employment_types,
+          "employment_types",
+        ),
+        graduation_year_buckets: graduationYearBuckets,
+        relation_flags: safeReasoningTextArray(
+          input.relation_flags,
+          "relation_flags",
+        ),
+      };
+      if (title) record.title = title;
+      if (companyName) record.company_name = companyName;
+      if (person?.alias) record.person_alias = person.alias;
+      if (input.result_ref) record.result_ref = input.result_ref;
+      records.push(record);
+    }
+
+    const payload: PseudonymizedReasoningPayload = {
+      schema_version: "v2",
+      destination: "local",
+      records,
+    };
+    scanReasoningForLeakage(payload, prohibitedValues);
+
+    return {
+      payload,
+      manifest: {
+        schema_version: "v2",
+        source: "CAST",
+        destination: "local",
+        record_count: records.length,
+        replaced_person_count: replacedPersonCount,
         removed_fields: Array.from(removedFields).sort(),
         generalized_fields: Array.from(generalizedFields).sort(),
         payload_preview: payload,

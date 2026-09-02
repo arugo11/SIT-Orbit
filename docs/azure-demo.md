@@ -38,6 +38,15 @@ az containerapp registry set --help
 
 Azure for Studentsの残額、有効期限、当月の利用額はAzure PortalのEducationまたはCost Managementを正本にします。Student Offerのクレジットを使い切ると契約状態が変わる可能性があるため、デモ後に必ず利用状況を確認します。[Azure for Studentsの利用状況](https://learn.microsoft.com/en-us/azure/education-hub/navigate-costs) · [FAQ](https://learn.microsoft.com/en-us/azure/education-hub/faq)
 
+## Student Offerの利用方針
+
+2026年8月28日の確認時点では、Student Offerの残額は$52.17、有効期限は2026年9月24日、8月の利用額は約2,460円、月末予測は約2,870円であり、現在の支払請求額と2026年3月以降の発行済み請求額は0円です。
+2026年2月の12,475円は旧Microsoft Azure Standardの支払済み請求であり、現在有効なサブスクリプションはAzure for Studentsだけです。
+
+残りのStudent OfferクレジットはSIT ORBITへ優先して使い、期限内かつクレジット内であれば、Azure OpenAIの比較評価、Provider Acceptance、デモ品質の改善に現在より多くのコストをかけて構いません。
+ただし、従量課金へのアップグレード、支出上限の解除、SIT ORBITと無関係な消費はこの方針に含めず、外部Providerへ送信できるデータの制約も変更しません。
+既存の月次budget `sit-copilot-students-monthly`は設定額`10.0`と実績通貨JPYが整合していないため、修正するまでは支出上限として扱いません。
+
 ## 合成fixture APIを配置する
 
 デプロイは明示したリソースグループとContainer Appだけを対象にします。次の環境変数は、シェルの一時環境やローカルの`.env`で設定し、リポジトリへ保存しません。
@@ -57,14 +66,14 @@ scripts/azure/deploy.sh
 scripts/azure/health.sh
 ```
 
-`ORBIT_AZURE_IMAGE_TAG`を省略した場合は、現在のGit commitの短縮SHAを使います。`deploy.sh`は次を順に行います。
+`ORBIT_AZURE_IMAGE_TAG`を省略した場合は、現在のGit commitの完全SHAを使います。ビルド後にACRのmanifest digestを読み戻し、Container Appへdigest pinしたimageを設定します。`deploy.sh`は次を順に行います。
 
 1. 既存environmentとACRを検証する
 2. ユーザー割り当てManaged Identityを作成または再利用する
 3. ACRの認可モードを確認し、Identityへimage pull用roleを付与する
 4. ACR上で`linux/amd64` imageをremote buildする
 5. Container Appを作成または新しいimageへ更新する
-6. image、最小レプリカ数0、最大レプリカ数1を読み戻す
+6. digest pinしたimage、最小レプリカ数0、最大レプリカ数1を読み戻す
 
 RBAC modeのACRでは`AcrPull`、ABAC repository permissions modeでは`Container Registry Repository Reader`を使用します。既存ACRの認可モード自体は変更しません。[ACRの組み込みRole](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-rbac-built-in-roles-overview)
 
@@ -90,6 +99,12 @@ Azure OpenAIの設定は、次の3つがすべて揃った場合だけ有効で�
 ORBIT_AGENT_BACKEND=azure_openai
 ORBIT_WEB_SEARCH=azure
 ORBIT_BOOK_DISCOVERY=multi_query
+ORBIT_OPAC_TRANSPORT=server
+ORBIT_OPAC_BASE_URL=https://library.shibaura-it.ac.jp
+ORBIT_OPAC_MIN_INTERVAL_MS=10000
+ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS=300
+ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS=30
+ORBIT_SCOMBZ_STUDENT_READ=live
 AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
 AZURE_OPENAI_MODEL=<deployment-name>
 AZURE_OPENAI_API_KEY=<secret>
@@ -132,6 +147,7 @@ export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
 export ORBIT_AZURE_OPENAI_ACCOUNT="<azure-openai-account-name>"
 export ORBIT_AZURE_OPENAI_DEPLOYMENT="<deployment-name>"
 export ORBIT_AZURE_BOOK_DISCOVERY_MODE="multi_query"
+export ORBIT_SCOMBZ_STUDENT_READ="live"
 # 必要な場合だけ指定
 export ORBIT_AZURE_SUBSCRIPTION="<subscription-name-or-id>"
 
@@ -140,7 +156,7 @@ scripts/azure/health.sh
 ```
 
 `configure-openai.sh`はAzure OpenAI accountとdeploymentが`Succeeded`であることを確認し、API keyをContainer Apps Secretへ登録する。
-その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_BOOK_DISCOVERY`、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。`deploy.sh`で配置したイメージのSHAと、公開OpenAPIの`ChatContextManifest.related_books`も確認してから、拡張機能でChatを送信する。
+その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_BOOK_DISCOVERY`、OPAC Gatewayのserver transport・公式base URL・間隔・cache TTL、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。`deploy.sh`で配置したイメージのSHAと、公開OpenAPIの`ChatContextManifest.related_books`、OPAC検索・詳細エンドポイントを確認してから、拡張機能でChatを送信する。Azure本番ではOPAC検索用Chromeタブを作成せず、上流の構造変更や通信障害を未所蔵へ変換しない。
 
 ### Chrome拡張機能から接続する
 

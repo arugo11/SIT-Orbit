@@ -16,6 +16,14 @@ PYTHONPATH=services/api uv run python -m evals.run_eval
 - 提案にEvidenceが存在する
 - 外部操作に確認が必要と明示されている
 
+Agent Harnessのclient Tool shortlistは、別のsynthetic/public held-out setで確認する。
+
+```bash
+PYTHONPATH=services/api uv run python -m evals.run_tool_routing_eval
+```
+
+この評価は外部モデルや認証済みConnectorを呼ばず、一般質問のno-tool判定、各学内familyの候補recall、追質問、混合依頼、prompt injectionを確認する。合格条件は、重要ケースのrecall 100%、全候補recall 95%以上、一般質問の学内Tool呼び出し0件、禁止・不正Tool 0件、候補数5件以下である。p50／p95はルーター処理時間であり、Connectorやモデル全体の高速化を表さない。
+
 ## W&B Weave evaluation
 
 合成データをW&Bへ送信してよい場合だけ実行する。

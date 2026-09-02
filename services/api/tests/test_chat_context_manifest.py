@@ -1,9 +1,16 @@
+import json
+from pathlib import Path
+
 import pytest
+from fastapi.testclient import TestClient
 from orbit_api.agent.chat import ChatRunService, FixtureChatBackend
+from orbit_api.main import app
 from orbit_api.models import (
+    ChatAssistantMessage,
     ChatClientTool,
     ChatContextManifest,
     ChatLibraryContextRecord,
+    ChatRunCompleted,
     ChatRunRequest,
     ChatToolResultRequest,
     EvidenceLink,
@@ -89,6 +96,158 @@ def test_manifest_rejects_unknown_evidence_and_query_url() -> None:
             ),
             url="https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/ABC?x=1",
         )
+
+
+def test_completed_response_allows_identical_mirrored_evidence() -> None:
+    evidence = EvidenceLink(
+        evidence_id="web-evidence-1",
+        title="公開書誌",
+        source_type="web",
+        locator="https://example.com/book",
+        data_classification="public",
+    )
+    completed = ChatRunCompleted(
+        status="completed",
+        message=ChatAssistantMessage(
+            message_id="message-1",
+            content_markdown="確認しました。",
+            evidence=[evidence],
+        ),
+        context_manifest=ChatContextManifest(evidence=[evidence]),
+    )
+    assert completed.context_manifest is not None
+    assert completed.message.evidence == completed.context_manifest.evidence
+
+
+def test_completed_response_rejects_conflicting_mirrored_evidence() -> None:
+    message_evidence = EvidenceLink(
+        evidence_id="web-evidence-conflict",
+        title="公開書誌",
+        source_type="web",
+        locator="https://example.com/book",
+        data_classification="public",
+    )
+    manifest_evidence = EvidenceLink(
+        evidence_id=message_evidence.evidence_id,
+        title="別の書誌",
+        source_type="web",
+        locator=message_evidence.locator,
+        data_classification="public",
+    )
+    with pytest.raises(ValidationError, match="conflicting evidence"):
+        ChatRunCompleted(
+            status="completed",
+            message=ChatAssistantMessage(
+                message_id="message-conflict",
+                content_markdown="確認しました。",
+                evidence=[message_evidence],
+            ),
+            context_manifest=ChatContextManifest(evidence=[manifest_evidence]),
+        )
+
+
+def test_manifest_repairs_identical_duplicate_evidence() -> None:
+    evidence = EvidenceLink(
+        evidence_id="context-duplicate",
+        title="公開書誌",
+        source_type="web",
+        locator="https://example.com/book",
+        data_classification="public",
+    )
+    manifest = ChatContextManifest(evidence=[evidence, evidence.model_copy()])
+    assert manifest.evidence == [evidence]
+
+
+def test_manifest_allows_only_opaque_scombz_personal_evidence() -> None:
+    evidence = EvidenceLink(
+        evidence_id="scombz-course-read-v1-1234567890abcdef",
+        title="SCombZ授業情報（確認時点）",
+        source_type="scombz",
+        locator="orbit-scombz://citation/1234567890abcdef",
+        data_classification="personal",
+    )
+    manifest = ChatContextManifest(evidence=[evidence])
+    assert manifest.evidence == [evidence]
+
+    with pytest.raises(ValidationError):
+        ChatContextManifest(
+            evidence=[
+                evidence.model_copy(
+                    update={"locator": "https://scombz.shibaura-it.ac.jp/lms/course"}
+                )
+            ]
+        )
+
+
+def test_chat_request_repairs_identical_duplicate_manifest_evidence() -> None:
+    evidence = {
+        "evidence_id": "context-request-duplicate",
+        "title": "公開書誌",
+        "source_type": "web",
+        "locator": "https://example.com/book",
+        "data_classification": "public",
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "context-request-duplicate",
+                "message": "質問",
+                "context_manifest": {
+                    "schema_version": "v1",
+                    "evidence": [evidence, {**evidence}],
+                    "library_records": [],
+                    "related_books": [],
+                },
+            },
+        )
+    assert response.status_code == 200
+
+
+def test_manifest_conflict_is_classified_without_reflecting_values() -> None:
+    evidence = {
+        "evidence_id": "context-secret-id",
+        "title": "公開書誌",
+        "source_type": "web",
+        "locator": "https://example.com/book",
+        "data_classification": "public",
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "context-validation",
+                "message": "質問",
+                "context_manifest": {
+                    "schema_version": "v1",
+                    "evidence": [evidence, {**evidence, "title": "別の書誌"}],
+                    "library_records": [],
+                    "related_books": [],
+                },
+            },
+        )
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["detail"]["field"] == "context_manifest"
+    assert payload["detail"]["error_type"] == "value_error"
+    assert "context-secret-id" not in response.text
+    assert "公開書誌" not in response.text
+
+
+def test_shared_completed_response_fixture_is_accepted_by_python_request_model() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[3]
+        / "packages"
+        / "api-client"
+        / "fixtures"
+        / "chat_context_roundtrip.json"
+    )
+    payload = json.loads(fixture_path.read_text(encoding="utf-8"))
+    completed = ChatRunCompleted.model_validate(payload["completed_response"])
+    request = ChatRunRequest.model_validate(payload["next_request"])
+    assert completed.context_manifest is not None
+    assert request.context_manifest is not None
+    assert len(request.context_manifest.evidence) == 1
 
 
 @pytest.mark.asyncio

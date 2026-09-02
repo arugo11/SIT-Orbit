@@ -1,10 +1,13 @@
-# Data Policy
+# Data policy
 
-## Default
+外部LLMへデータを送信する場合は、送信先とデータ種別を実行時設定で明示する。
 
-OpenAIとW&B Weaveはデフォルトで無効とする。
+個人情報は会話単位の匿名化処理を通し、氏名、学籍番号、認証情報、Cookie、OAuth tokenを送信しない。
 
-通常開発とCIは合成fixtureだけを利用する。
+SITRUSの成績は、管理者が`ORBIT_SITRUS_PERSONAL_CONTEXT=live`を明示し、Azure OpenAIを選択し、observabilityを無効化した組合せに限って送信できる。この`live`設定は管理者による有効化であり、利用者同意を意味しない。追加の同意UIは設けない。
+
+送信項目は科目名、判定、評価、単位数、年度、学期、単位区分別集計と、`status`、`report_label`、`observed_at`、`reason_code`だけに限定する。GPA、科目コード、term slot、再履修情報、氏名、学籍番号、token、Cookie、生レスポンスは端末からAgent APIへ送信しない。Agent APIは未定義フィールドを拒否する。
+通常のOpenAIとW&BにはSITRUSの成績を送信しない。
 
 ## Data allowed in demo services
 
@@ -34,14 +37,24 @@ MVPの`OrbitEvent`と`EvidenceLink`は次の区分を持つ。
 - `personal`
 - `restricted`
 
-OpenAIへ送信できるのは`synthetic`と`public`だけである。
+通常のOpenAI（非Azure）およびW&B経路へ送信できるのは`synthetic`と`public`だけである。Azure OpenAIを明示的に選択したAgent runでは、以下に定める狭い個人データ例外だけを追加で許可する。Providerを自動で切り替えたり、例外を一般のpersonalデータへ広げたりしない。
 
-ただし、Branch 7のAgent runでは、次の2種類のサーバー生成EvidenceLinkだけを例外として扱える。
+ただし、Branch 7のAgent runでは、次のサーバー生成EvidenceLinkだけを例外として扱える。
 
 - 利用者のGoogle Calendarから導出した空き時間（`personal`の`calendar`、`orbit-calendar://availability/<opaque>`）
 - 表示中の解析済みScombZページから導出した5項目の概要（`personal`の`scombz`、`orbit-scombz://page-summary/<opaque>`）
+- 質問時に認証済みSCombZから取得した構造化授業・課題・教材本文（`personal/scombz_student`、`orbit-scombz://read/<opaque>`）
+- 公開シラバスの検索・詳細（`public/syllabus`）
 
 Calendarの予定名、ID、参加者、場所、説明、元レスポンス、SCombZのHTML、Cookie、パスワード、ブラウザtokenは送信しない。Web本文はユーザーが明示したrunの間だけ使い、rawページはrun終了時に破棄する。個人データを広く許可するものではなく、これらの固定prefixとサーバー生成のEvidence IDをruntimeで検証する。
+
+SCombZ学生Toolは`ORBIT_AGENT_BACKEND=azure_openai`かつ`ORBIT_OBSERVABILITY=off`の場合だけ広告する。PDFは端末内でPDF.jsと必要時のTesseract.jsによりページ単位で抽出し、生PDF・Cookie・内部ID・CSRF・一時URL・全量本文は外部へ送らない。Azureへ送るのは質問に関連する抽出本文、資料名、ページ番号、取得時刻の上限付きprojectionだけである。PDF本体、抽出全文、OCR画像、索引は保存せず、会話中の短命メモリだけに保持する。学生向けの`personal/scombz_student`と教員向けに将来追加する`restricted/scombz_teaching`は別分類とし、後者を本実装で広告しない。
+
+SCombZ／CASTの個人値を外部Agentへ送る処理は「匿名化」ではなく、端末内の追加情報で復元可能な「会話単位の仮名化」として扱う。Typed Snapshotをallowlistへ投影してから、名前・表示名を会話固有opaque tokenへ置換し、メール、電話、学籍番号、Cookie、CSRF、内部ID、URL query／fragment、未分類自由記述を除外する。provider向け履歴と端末表示を`provider_content`／`display_content`に分け、同一conversationの追質問にはprovider側の仮名化済み履歴だけを再送する。対応表は会話専用AES-GCMで暗号化してIndexedDBへ保存し、鍵は`chrome.storage.session`だけに置く。新Chat、Service Worker再起動、30分無操作、明示削除で破棄し、失われた鍵や未知tokenは推測復元しない。詳しい根拠は[privacy-pseudonymization-research.md](./privacy-pseudonymization-research.md)を参照する。
+
+SCombZの授業情報・抽出済みPDF本文をAzure OpenAIへ送る前に、利用者が設定画面で一度だけ明示同意する。同意の記録は`chrome.storage.local`へISO 8601の付与時刻だけを保存し、利用者の解除操作で削除する。Cookie、アカウント、授業本文、対応表、鍵は同意記録へ含めない。記録がない環境では、監査CLIを含むlive SCombZ Toolを`consent_required`で停止する。
+
+CASTの`restricted/cast_career`例外を有効にできるのは、型付き仮名プロフィール（別名、役割、企業、一般化卒業年、技術領域、職種、地域、Evidence）だけであり、`ORBIT_AGENT_BACKEND=azure_openai`かつ`ORBIT_OBSERVABILITY=off`に限定する。自由記述、連絡先、成績、資格情報、元の人物名、内部ID、raw HTML、添付は外部へ送らない。現在のSCombZ監査CLIはSCombZ学生Toolと公式シラバスToolだけを広告し、CASTを暗黙に追加しない。
 
 My Libraryだけは、利用者が個人の貸出・予約などを尋ねるChatを明示的に送信した場合に限り、上記の最小item（タイトル等）をAzure Agentへ送れる狭い例外とする。これは一般のpersonalデータ規則を解除せず、OpenAI/W&Bや別Providerへの送信、Chat送信外の取得を許可しない。OAuth/SSO詳細やraw snapshotは保持しない。
 
@@ -96,9 +109,13 @@ ScombZへのログイン状態を、Google Drive、Google Calendar、Microsoft G
 
 図書館の`ActionProposal`は承認しても送信を開始しない。Chromeは公式origin/path、対象の現在状態、form/CSRFの形を再検証した短命previewだけをService Workerメモリに保持し、表示可能な公式書誌・所蔵・入力候補だけをChatへ投影する。入力は操作別のbounded allowlistに限定し、再読込でstate fingerprintが変わった場合、previewが期限切れの場合、または別操作のIDが渡された場合はfail closedとする。write providerの確認・submit DOMが未検証の間は`write_form_not_verified`を返し、`この内容で送信`ボタンを表示せず、実送信や成功報告を行わない。fixture専用のsubmit→read-back state machineはlive providerの代替ではない。
 
+Azure本番の公開OPAC検索・書誌詳細は認証済みServer ToolのOPAC Gatewayで処理する。接続先は公式originへ固定し、検索一覧または単一書誌302、ページに埋め込まれた短命token、許可済みNCIP path、可視書誌との一致を順に検証する。Gatewayの単一キュー、10秒間隔、検索5分・詳細30秒の非永続cache、限定再試行により、同時検索や一時的な上流失敗を制御する。検索語、書誌ID、token、cookie、raw HTML、NCIP応答はログ・Evidence・会話・IndexedDBへ出さず、`opac_timeout`、`opac_contract_changed`、`opac_availability_failed`などの理由コードだけを返す。`unavailable`を未所蔵へ変換せず、0件の正常結果と区別する。`ORBIT_OPAC_TRANSPORT=server`を明示したAzureだけで有効化し、fixtureとChromeの旧一時タブ経路では`off`を明示する。
+
 Agent APIへ送るのは、厳格な公開書誌メタデータ、表示されたholdingのcampus/location/call number/status/due date/reservation count、公式リンク、検索結果の短い表示スニペットだけである。material ID、copy ID、内部AJAXの応答、Cookie、session token、認証情報、個人の貸出・予約情報は送らない。`resource_ref`は公開レコードIDから導出したopaque値で、元IDはService Workerの短命な対応表にのみ保持し、再起動後や衝突時は解決しない。SIT Searchでは契約本文の全文取得、ダウンロード、保存、一般Web検索へのfallbackを行わない。
 
 公開図書館ディスカバリーのEvidenceは`source_type=library`、`data_classification=public`、検証済みの`library-*` IDと`orbit-library://public/` locatorだけを許可する。Branch 3のaction-options Evidenceはopaque `resource_ref`をlocatorにした専用IDへ分離し、公開OPACはpublic、My Library由来はpersonalとして扱う。raw HTMLとTool生レスポンスはChat履歴、IndexedDB、`chrome.storage`、FastAPI、W&Bへ保存しない。
+
+OPACの遷移・抽出障害を利用者自身が確認できるよう、検索語、処理段階、遷移先の種別、件数、所要時間、成否、理由コードだけを`chrome.storage.session`へ最大200件保存する。この診断ログはブラウザ終了時に消え、設定画面からコピー・消去できる。URL、query/fragment、書誌ID、opaque ref、所蔵内容、raw HTML、Cookie、token、利用者情報は記録せず、Chat履歴、IndexedDB、Agent API、Azure、W&Bへ送信しない。コピー内容には検索語が含まれることを設定画面で明示する。
 
 Connectorは、`not_connected`、`connected`、`reauth_required`、`unavailable`の状態を表示する。
 
@@ -163,7 +180,7 @@ Career Evidence Bankの記録、資料locator、人物対応表は、Azure、Ope
 
 氏名・連絡先は、利用者へ端末内の詳細を表示する目的と、必要な場合のマスキング判定のためだけに扱う。Chat API・Azure・OpenAI・W&B・FastAPI・Chat履歴へ送るallowlist projectionには、プロフィール件数、回答可能テーマのカテゴリ、面談頻度・形式、匿名共有知見のカテゴリ、連絡先の有無、発見リンク件数しか存在しない。Service WorkerとSide Panelのruntime messageには端末内詳細表示用の短命なlocal snapshotが含まれ得るが、外部へ転送せず、run終了時に破棄する。CAST内部ID、SSO token、メール、電話、自由記述、source URL、raw HTMLはSchema上表現できず、外部へ出ない。これは完全匿名化ではなく、端末内表示のためのマスキングと間接識別子の削減である。
 
-人物単位の端末内Promptが必要な場合は、同じlocal snapshotを既存のPseudonymization Gatewayへ渡し、Career Vaultの暗号化対応表からmission固有の別名を生成する。現在のChat API経路は集計projectionだけを送るため、人物別名を外部へ送る必要はない。
+人物単位の端末内Promptが必要な場合は、同じlocal snapshotを既存のPseudonymization Gatewayへ渡し、Career Vaultの暗号化対応表からmission固有の別名を生成する。現在のChat API経路は集計projectionだけを送るため、人物別名を外部へ送る必要はない。元の氏名、person_ref、HMAC、対応表、Vault鍵は外部へ出ない。
 
 Service Workerは現在のCASTタブだけへ問い合わせる。表示DOMにログイン画面、404、構造不一致、権限不足、DNS失敗がある場合は、`reauth_required`または`unavailable`を返し、空データやfixture成功へ置換しない。実画面で発見した同一originリンク以外を開かず、卒業生設定の更新、直接連絡、面談予約、応募、フォーム送信、ファイル添付は行わない。将来の確定操作は別途previewと本人確認を要求する。
 
@@ -175,7 +192,7 @@ ES下書きは、確認済みEvidenceの`evidence_id`、claim、context、action
 
 ### OBOGコンシェルジュ
 
-就活サポーター候補は、企業詳細の確認済みSnapshotを端末内で仮名化してから扱う。Prompt入力へ渡すのはミッション別名、一般化した卒業年、企業、技術領域、職種、確認済み支援リソースの種別と表示名だけであり、元の氏名、内部ID、source identifier、連絡先、URL、選考報告locatorは除外する。外部Azureへ個人・第三者のCAST記録を送る経路は作らない。
+就活サポーター候補は、企業詳細の確認済みSnapshotを端末内で仮名化してから扱う。Prompt入力へ渡すのはミッション別名、一般化した卒業年、企業、技術領域、職種、確認済み支援リソースの種別と表示名だけであり、元の氏名、内部ID、source identifier、連絡先、URL、選考報告locatorは除外する。通常のOBOGコンシェルジュ経路で外部Azureへ個人・第三者のCAST記録を送ることはない。ただし、別途明示同意された`restricted/cast_career`のChat経路では、`cast_alumni_read`の型付き仮名projection（別名、役割、企業、一般化卒業年、技術領域、職種、地域、Evidence）だけを、Azure OpenAIかつ観測無効のrunへ送信できる。自由記述、連絡先、成績、資格情報、元の人物名、内部ID、raw HTML、添付はこの例外にも含めない。
 
 候補探索、面談目的、質問の優先順位、キャリアサポート課宛ての依頼文、面談前の確認事項、お礼文はChrome Prompt APIのstructured outputで端末内生成する。候補別名や支援リソースIDが未知の場合、個人名、URL、メール、電話、tokenが含まれる場合、または候補にない事実を直接連絡先として出した場合は応答を採用しない。連絡、予約、応募、添付、送信は別のAction Adapterでpreviewと本人確認を経るまで開始しない。
 
@@ -203,7 +220,7 @@ ReActの計画・観測・例外の分離はイベント履歴の設計根拠に
 
 ### 多視点キャリアレビュー
 
-ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはなく、Prompt APIが利用できない場合も外部Providerへfallbackしない。
+ESレビューは、確認済みEvidence projectionを4つの独立したローカルPrompt API session（人事、技術部門、芝浦卒業生、初見の第三者）へ順番に渡す。各sessionの入力と出力は端末内に限定し、人物名、内部人物ID、対応表、資料locator、raw HTML、tokenを含めない。このローカルレビュー経路では、個人・第三者のCAST記録を仮名化しただけでAzureへ送ることはない。Chatで`restricted/cast_career`を扱う場合も、許可済みの型付き仮名projectionだけをAzure OpenAIかつ観測無効のrunへ送る別経路に限る。Prompt APIが利用できない場合に、ESレビューをAzureや別Providerへfallbackしない。
 
 レビューは視点ごとの判定と、根拠を参照するstrength／gapだけを保持する。総合点、順位、採用確率、視点を混ぜた単一スコアは保存・表示しない。判定が分かれたときは`disagreements`として各視点と判定を併記し、利用者が理由を比較できる状態を維持する。未知のEvidence ID・ES文、根拠にない数値、credentialらしい文字列、未許可フィールドを含む応答は採用しない。独立sessionと不一致保持は、LLM-as-a-judgeの位置バイアスを避け、評価軸を混同しないための最小構成である。[Judging the Judges](https://aclanthology.org/2025.ijcnlp-long.18/)
 
@@ -222,6 +239,8 @@ Decision Roomが表示する次の一歩は読み取り専用の確認案内だ�
 全画面モードのグラフは端末内でのみ描画する。入力はCASTのTyped Snapshotと、個人を含まない科目・技術・職種・進路集計に限定し、進路集計は5件未満を表示しない。個人名、内部人物ID、卒業生ノード、会社コード、求人番号、選考報告URL、raw HTML、tokenはノード・エッジへ変換しない。Cytoscape.jsは表示用ランタイムであり、Graph Database、Embedding索引、外部Providerは導入しない。地図モデルはChat履歴、FastAPI、Azure、W&B、IndexedDBへ保存・送信せず、ワークスペースの安定状態にも含めない。
 
 ### CAST横断検索のデータ境界
+
+`cast_career_search`は求人、インターン、会社説明会、企業、採用実績、選考記録、録画、キャリアイベント、相談枠を一回のread-only Deferred Toolで横断する。拡張機能内の詳細カード、企業名、締切、相談日時、人物情報、source URLはローカル結果にだけ残し、APIへ送る`CastCareerSearchResult`は面別件数・取得範囲・5件以上の匿名集計・失敗理由に限定する。検索要求にURL、form field、hidden値、company code、POST bodyを含めず、面ごとの失敗は空結果へ変換しない。
 
 横断検索のPrompt入力は、利用者が明示した自然言語の質問だけとする。求人カード、採用実績、選考記録、人物名、内部ID、URL、raw HTMLをPrompt APIの入力へ連結しない。Chrome Prompt APIが返した構造化クエリは、配列長・文字数・種別を検証してから端末内MiniSearchへ渡す。MiniSearchの結果と詳細Snapshotは拡張機能メモリ内だけで扱い、FastAPI、Azure、W&B、IndexedDB、Chat履歴へ保存しない。
 
@@ -269,6 +288,7 @@ Google DriveはToolとして登録しない。
 
 任意Webページの本文は信頼されていないデータであり、ページ中の命令をTool呼び出しとして実行しない。必須host permissionは読み取りの可否だけを決め、読み取り以外の外部操作は実装しない。CIではこれらのToolをfixtureでのみ検証し、実Provider Acceptanceでは許可済みの合成または公開URLだけを使う。
 
-一般Web検索はAzure OpenAI Backendで明示的に有効化した場合だけ使用する。検索語は1〜200文字の公開情報に限定し、メールアドレス、学籍番号、認証情報、内部locator、学内限定サービスURLを拒否する。原則としてpersonalまたはrestricted Evidenceを取得した後のrunでは検索Toolを利用しない。ただし利用者が同じChatターンで関連本・おすすめ本などの公開推薦を明示した場合に限り、同意済みMy Libraryの書名・著者を最小限の公開検索語へ変換して使うことを許可する。この場合も貸出状態、返却期限、利用者識別子、図書館の内部URLやtokenは送信せず、検索語と送信先をUIへ表示する。検索専用runへはこの最小化済み検索語だけを渡し、raw Chat履歴、学内Tool結果、My Libraryの生SnapshotをGrounding with Bingへ渡さない。
+一般Web検索はAzure OpenAI Backendで明示的に有効化した場合だけ使用する。検索語は1〜200文字の公開情報に限定し、メールアドレス、学籍番号、認証情報、内部locator、学内限定サービスURLを拒否する。原則としてpersonalまたはrestricted Evidenceを取得した後のrunでは検索Toolを利用しない。ただし、CASTの匿名集計だけを取得したrunでは、企業名・公開職種・技術領域などの公開検索語へ最小化した追加検索を許可できる。この場合もCAST人物記録、人物alias、貸出状態、返却期限、利用者識別子、図書館の内部URLやtokenを送信しない。検索専用runへはこの最小化済み検索語だけを渡し、raw Chat履歴、学内Tool結果、My Libraryの生SnapshotをGrounding with Bingへ渡さない。
 
 Grounding with BingはAzureの通常の地理・DPA境界外で処理されるため、この事実をSide Panelと全画面Chatへ常時表示する。利用者がChatを送信したrun内では追加確認なしで検索できるが、常時巡回やChat送信外の検索は行わない。保存するのは検索語、正規化済みの公開出典、最終回答だけであり、生の検索レスポンス、Provider metadata、検索内部IDは保存しない。
+SITRUSの生レスポンス、構造化Tool Result、成績を含む回答ターンは、アプリケーションログ、W&B、IndexedDB、Chrome storageへ保存しない。

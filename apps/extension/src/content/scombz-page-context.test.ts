@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
 import { parseHTML } from "linkedom";
-import { describe, expect, it } from "vitest";
-import { parseScombzPageContext } from "./page-context";
+import { describe, expect, it, vi } from "vitest";
+import {
+  parseScombzPageContext,
+  projectScombzPageSummary,
+} from "./page-context";
 
 const SCOMBZ_URL = "https://scombz.shibaura-it.ac.jp";
 
@@ -18,6 +21,116 @@ function documentFromHtml(html: string): Document {
 }
 
 describe("ScombZ page context extraction", () => {
+  it("projects only bounded counts from parsed personal context", () => {
+    const context = {
+      title: "private page title",
+      url: `${SCOMBZ_URL}/lms/task/private-1`,
+      kind: "scombz" as const,
+      scombz: {
+        route: "tasks" as const,
+        tasks: [
+          {
+            course: "private course",
+            title: "private task",
+            deadline: "2026-08-20",
+            url: `${SCOMBZ_URL}/task/private-1`,
+          },
+        ],
+        announcements: [
+          { title: "private notice", url: `${SCOMBZ_URL}/notice/private-1` },
+        ],
+        calendar: { googleCalendarUrl: null, icsUrl: null },
+        currentCourse: {
+          name: "private course",
+          url: `${SCOMBZ_URL}/course/private-1`,
+        },
+        relatedLinks: [
+          { label: "private link", url: `${SCOMBZ_URL}/link/private-1` },
+        ],
+      },
+    };
+
+    expect(projectScombzPageSummary(context)).toEqual({
+      route: "tasks",
+      task_count: 1,
+      announcement_count: 1,
+      related_link_count: 1,
+      has_current_course: true,
+    });
+    expect(JSON.stringify(projectScombzPageSummary(context))).not.toContain(
+      "private",
+    );
+  });
+
+  it("does not project unparsed or non-ScombZ pages", () => {
+    expect(
+      projectScombzPageSummary({
+        title: "ScombZ",
+        url: `${SCOMBZ_URL}/unknown`,
+        kind: "scombz",
+      }),
+    ).toBeNull();
+    expect(
+      projectScombzPageSummary({
+        title: "Other",
+        url: "https://example.com/page",
+        kind: "other",
+      }),
+    ).toBeNull();
+  });
+
+  it("falls back to the notification list when the home root has no visible rows", () => {
+    const context = parseScombzPageContext(
+      {
+        title: "お知らせ一覧",
+        url: `${SCOMBZ_URL}/portal/home/information/list`,
+      },
+      documentFromHtml(`
+        <section id="top_information3">
+          <div class="portal-info-content-part" hidden>
+            <a href="/notice/hidden">非表示のお知らせ</a>
+          </div>
+          <div class="portal-info-content-part">一覧へ</div>
+        </section>
+        <main id="informationDataList">
+          <div class="result-list">
+            <div class="portal-information-list-title">
+              <span class="link-txt">通知一覧の表示項目</span>
+            </div>
+          </div>
+        </main>
+      `),
+    );
+
+    expect(context.scombz?.announcements).toEqual([
+      { title: "通知一覧の表示項目", url: null },
+    ]);
+  });
+
+  it("reads only the supplied DOM", () => {
+    const fetchMock = vi.fn(() => {
+      throw new Error("network access is forbidden in this adapter");
+    });
+    const storageGetMock = vi.fn(() => {
+      throw new Error("storage access is forbidden in this adapter");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("chrome", { storage: { local: { get: storageGetMock } } });
+
+    try {
+      expect(() =>
+        parseScombzPageContext(
+          { title: "ホーム", url: `${SCOMBZ_URL}/portal/home` },
+          documentFromHtml('<main><a href="/local">端末内DOM</a></main>'),
+        ),
+      ).not.toThrow();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(storageGetMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("extracts home data deterministically and excludes the footer", () => {
     const snapshot = {
       title: "  ScombZ ホーム  ",

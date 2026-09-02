@@ -7,6 +7,8 @@ from typing import Literal, cast
 from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import RunUsage
 
+from orbit_api.library import get_shared_opac_gateway
+
 from .book_discovery import AzureRelatedBookDiscoveryExecutor
 from .pydantic_ai_backend import PydanticAIAgentBackend
 from .web_search import AzureNativeWebSearchExecutor
@@ -40,6 +42,7 @@ class AzureOpenAIAgent(PydanticAIAgentBackend):
             provider_name="Azure OpenAI",
             action_id_prefix="act-azure-openai",
             usage_callback=usage_callback,
+            opac_gateway=get_shared_opac_gateway(),
         )
         web_search_mode = os.getenv("ORBIT_WEB_SEARCH", "off")
         if web_search_mode not in {"off", "azure"}:

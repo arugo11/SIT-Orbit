@@ -7,6 +7,7 @@ import {
 import {
   type CastTypedSnapshot,
   ExternalPersonalDataError,
+  LocalReasoningOnlyError,
   PseudonymizationError,
   PseudonymizationGateway,
 } from "./pseudonymization";
@@ -165,6 +166,136 @@ describe("CAST pseudonymization gateway", () => {
         year_bucket: "2020-2024",
       },
     ]);
+  });
+
+  it("builds a local-only v2 reasoning projection with a mission-scoped alias", async () => {
+    const { vault, mission } = await createMission("reasoning-mission-a");
+    vaults.push(vault);
+    const result = await mission.transformReasoning({
+      schema_version: "v2",
+      records: [
+        {
+          surface: "selection_report",
+          title: "入社試験・選考記録",
+          company_name: "サンプル技研",
+          dates: ["2026-08-20"],
+          deadline: null,
+          locations: ["東京都"],
+          technical_domains: ["機械学習"],
+          occupations: ["MLエンジニア"],
+          employment_types: ["正社員"],
+          graduation_years: [2024],
+          relation_flags: ["obog", "selection_report"],
+          result_ref: "orbit-cast-selection-12345678",
+          person: {
+            name: "山田 太郎",
+            romanized_name: "Yamada Taro",
+            source_identifier: "cast-alumni-123",
+            role: "alumni",
+          },
+        },
+      ],
+    });
+    const record = result.payload.records[0];
+    expect(result.payload.schema_version).toBe("v2");
+    expect(result.payload.destination).toBe("local");
+    expect(record?.person_alias).toMatch(/^先輩-[A-Z2-7]{8}$/u);
+    expect(record?.graduation_year_buckets).toEqual(["2020-2024"]);
+    expect(record?.result_ref).toBe("orbit-cast-selection-12345678");
+    expect(JSON.stringify(result)).not.toContain("山田");
+    expect(JSON.stringify(result)).not.toContain("Yamada");
+    expect(JSON.stringify(result)).not.toContain("cast-alumni-123");
+    expect(result.manifest.destination).toBe("local");
+    expect(result.manifest.replaced_person_count).toBe(1);
+    expect(result.manifest.generalized_fields).toContain("graduation_year");
+    expect(result.manifest.removed_fields).toEqual(
+      expect.arrayContaining(["raw_html", "source_url", "company_code"]),
+    );
+  });
+
+  it("keeps local reasoning aliases stable within a mission and changes them across missions", async () => {
+    const first = await createMission("reasoning-mission-a");
+    const second = await createMission("reasoning-mission-b");
+    vaults.push(first.vault, second.vault);
+    const snapshot = {
+      schema_version: "v2" as const,
+      records: [
+        {
+          surface: "hiring_record",
+          title: "採用実績",
+          person: {
+            name: "佐藤 花子",
+            source_identifier: "cast-alumni-456",
+            role: "alumni" as const,
+          },
+        },
+      ],
+    };
+    const firstAlias = (await first.mission.transformReasoning(snapshot))
+      .payload.records[0]?.person_alias;
+    const repeatAlias = (await first.mission.transformReasoning(snapshot))
+      .payload.records[0]?.person_alias;
+    const secondAlias = (await second.mission.transformReasoning(snapshot))
+      .payload.records[0]?.person_alias;
+    expect(firstAlias).toBe(repeatAlias);
+    expect(secondAlias).not.toBe(firstAlias);
+  });
+
+  it("rejects unsupported local reasoning fields and credential-like labels", async () => {
+    const { vault, mission } = await createMission();
+    vaults.push(vault);
+    await expect(
+      mission.transformReasoning({
+        schema_version: "v2",
+        records: [
+          {
+            surface: "job",
+            title: "公開求人",
+            raw_html: "<p>do not include</p>",
+          } as never,
+        ],
+      }),
+    ).rejects.toBeInstanceOf(PseudonymizationError);
+    await expect(
+      mission.transformReasoning({
+        schema_version: "v2",
+        records: [
+          {
+            surface: "job",
+            title: "公開求人 https://example.invalid/?token=secret",
+          },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(PseudonymizationError);
+    await expect(
+      mission.transformReasoning({
+        schema_version: "v2",
+        records: [
+          {
+            surface: "selection_report",
+            title: "山田 太郎の選考記録",
+            person: {
+              name: "山田 太郎",
+              source_identifier: "cast-alumni-123",
+              role: "alumni",
+            },
+          },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(PseudonymizationError);
+    await expect(
+      mission.transformReasoning({
+        schema_version: "v2",
+        records: [
+          {
+            surface: "selection_report",
+            title: "日付検証",
+            dates: ["2026-02-31"],
+          },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(PseudonymizationError);
+    expect(LocalReasoningOnlyError).toBeDefined();
   });
 
   it("fails closed on URL credentials, query strings, tokens, and unknown schemas", async () => {

@@ -1,4 +1,8 @@
 import type { components } from "@sit-orbit/api-client";
+import {
+  CHAT_TOOL_NAMES,
+  type RegisteredChatToolName,
+} from "../chat/tool-registry";
 
 export type ActionProposal = components["schemas"]["ActionProposal"];
 export type OrbitEvent = components["schemas"]["OrbitEvent"];
@@ -7,6 +11,7 @@ export type ProposeActionRequest =
 export type VerifyActionRequest = components["schemas"]["VerifyActionRequest"];
 export type AgentRunRequest = components["schemas"]["AgentRunRequest"];
 export type AgentCapabilities = components["schemas"]["AgentCapabilities"];
+export type ChatCapabilities = components["schemas"]["ChatCapabilities"];
 export type AgentSessionRequest = components["schemas"]["AgentSessionRequest"];
 export type AgentSessionResponse =
   components["schemas"]["AgentSessionResponse"];
@@ -15,7 +20,17 @@ export type AgentRunResponse =
   | components["schemas"]["AgentRunToolRequired"];
 export type AgentToolResultRequest =
   components["schemas"]["AgentToolResultRequest"];
-export type ChatRunRequest = components["schemas"]["ChatRunRequest"];
+type GeneratedChatRunRequest = components["schemas"]["ChatRunRequest"];
+/**
+ * The API defaults to a synchronous run when execution_mode is omitted.
+ * Keep that field optional at the client boundary so a newly built extension
+ * can still talk to an older API image whose strict request model predates
+ * background runs.  Callers that explicitly use background execution may
+ * continue to provide the field.
+ */
+export type ChatRunRequest = Omit<GeneratedChatRunRequest, "execution_mode"> & {
+  execution_mode?: GeneratedChatRunRequest["execution_mode"];
+};
 export type ChatRunResponse =
   | components["schemas"]["ChatRunCompleted"]
   | components["schemas"]["ChatRunToolRequired"];
@@ -34,6 +49,15 @@ export type CalendarAvailabilityResult =
 export type ScombzPageSummaryResult =
   components["schemas"]["ScombzPageSummaryResult"];
 export type ScombzReadResult = components["schemas"]["ScombzReadResult"];
+export type ScombzCourseListResult =
+  components["schemas"]["ScombzCourseListResult"];
+export type ScombzPortalReadResult =
+  components["schemas"]["ScombzPortalReadResult"];
+export type ScombzCourseReadResult =
+  components["schemas"]["ScombzCourseReadResult"];
+export type ScombzMaterialSearchResult =
+  components["schemas"]["ScombzMaterialSearchResult"];
+export type SyllabusReadResult = components["schemas"]["SyllabusReadResult"];
 export type SyllabusSearchResult =
   components["schemas"]["SyllabusSearchResult"];
 export type BrowserReadResult = components["schemas"]["BrowserReadResult"];
@@ -49,6 +73,8 @@ export type CastReadResult = components["schemas"]["CastReadResult"];
 export type CastAlumniReadResult =
   components["schemas"]["CastAlumniReadResult"];
 export type CastSearchResult = components["schemas"]["CastSearchResult"];
+export type CastCareerSearchResult =
+  components["schemas"]["CastCareerSearchResult"];
 export type LibraryHoldingSummary =
   components["schemas"]["LibraryHoldingSummary"];
 export type LibraryRelatedRecordRef =
@@ -67,9 +93,37 @@ export type LibraryActionOptionsResult =
   components["schemas"]["LibraryActionOptionsResult"];
 export type LibraryActionOption = components["schemas"]["LibraryActionOption"];
 
-export const AZURE_DEMO_AGENT_API_BASE =
+export const PRODUCTION_AGENT_API_BASE =
   "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io";
-export const DEFAULT_AGENT_API_BASE = AZURE_DEMO_AGENT_API_BASE;
+const compiledAgentApiBase =
+  typeof __ORBIT_AGENT_API_BASE__ === "undefined"
+    ? ""
+    : __ORBIT_AGENT_API_BASE__.trim();
+/**
+ * Production uses the managed Azure endpoint.  A local endpoint is selected
+ * only by an explicit build-time override so acceptance can exercise the
+ * extension against a local Agent without starting an OAuth flow.
+ */
+export const DEFAULT_AGENT_API_BASE =
+  compiledAgentApiBase || PRODUCTION_AGENT_API_BASE;
+/** Backwards-compatible name for older tests and embedders. */
+export const AZURE_DEMO_AGENT_API_BASE = DEFAULT_AGENT_API_BASE;
+export const DEMO_FIXTURE_ENABLED =
+  typeof __ORBIT_DEMO_FIXTURE__ !== "undefined" && __ORBIT_DEMO_FIXTURE__;
+
+export function isLocalAgentApiBase(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl);
+    return (
+      url.protocol === "http:" &&
+      (url.hostname === "localhost" ||
+        url.hostname === "127.0.0.1" ||
+        url.hostname === "[::1]")
+    );
+  } catch {
+    return false;
+  }
+}
 
 export type Fetcher = (
   input: RequestInfo | URL,
@@ -85,6 +139,57 @@ export class AgentApiError extends Error {
     this.name = "AgentApiError";
     this.status = status;
     this.body = body;
+  }
+}
+
+export type AgentApiErrorReason =
+  | "network"
+  | "auth"
+  | "context_invalid"
+  | "history_invalid"
+  | "tools_invalid"
+  | "tool_result_invalid"
+  | "agent_output_invalid"
+  | "run_invalid"
+  | "contract_invalid"
+  | "upstream";
+
+function errorReasonCode(body: unknown): string | null {
+  if (!isRecord(body)) return null;
+  if (typeof body.category === "string") return body.category;
+  const detail = body.detail;
+  if (typeof detail === "string") return detail;
+  if (isRecord(detail) && typeof detail.reason_code === "string") {
+    return detail.reason_code;
+  }
+  return null;
+}
+
+/** Classify an API failure without exposing response values to the UI. */
+export function classifyAgentApiError(error: unknown): AgentApiErrorReason {
+  if (!(error instanceof AgentApiError)) return "contract_invalid";
+  if (error.status === 0) return "network";
+  if (error.status === 401 || error.status === 403) return "auth";
+  if (error.status >= 500) return "upstream";
+  if (error.status !== 422) return "contract_invalid";
+  const reason = errorReasonCode(error.body);
+  switch (reason) {
+    case "chat_context_invalid":
+      return "context_invalid";
+    case "chat_history_invalid":
+      return "history_invalid";
+    case "chat_tools_invalid":
+      return "tools_invalid";
+    case "tool_result_invalid":
+      return "tool_result_invalid";
+    case "agent_output_invalid":
+      return "agent_output_invalid";
+    case "chat_run_invalid":
+      return "run_invalid";
+    case "context_evidence_conflict":
+      return "context_invalid";
+    default:
+      return "contract_invalid";
   }
 }
 
@@ -118,6 +223,21 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+/**
+ * Header receipts are opaque correlation values, not arbitrary response text.
+ * Keep the compatibility reader permissive about the exact prefix, while
+ * rejecting whitespace/control characters and unbounded values before they
+ * can enter the local evidence map.
+ */
+function isReceiptIdentifier(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= 200 &&
+    value.length > 0 &&
+    /^[A-Za-z0-9._:-]+$/u.test(value)
+  );
+}
+
 function isIntegerInRange(
   value: unknown,
   minimum: number,
@@ -144,6 +264,58 @@ function isAgentCapabilities(value: unknown): value is AgentCapabilities {
     hasExactlyKeys(value, ["agent_backend", "my_library_personal_context"]) &&
     isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) &&
     typeof value.my_library_personal_context === "boolean"
+  );
+}
+
+export type ChatToolName = RegisteredChatToolName;
+
+export function isChatCapabilities(value: unknown): value is ChatCapabilities {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "agent_backend",
+      "observability",
+      "scombz_student_read_mode",
+      "sitrus_personal_context_mode",
+      "supported_client_tools",
+      "max_client_tools",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) ||
+    !isOneOf(value.observability, ["off", "wandb"]) ||
+    !isOneOf(value.scombz_student_read_mode, ["off", "fixture", "live"]) ||
+    !isOneOf(value.sitrus_personal_context_mode, ["off", "fixture", "live"]) ||
+    !Array.isArray(value.supported_client_tools) ||
+    value.supported_client_tools.length > 32 ||
+    new Set(value.supported_client_tools).size !==
+      value.supported_client_tools.length ||
+    !value.supported_client_tools.every((item) =>
+      isOneOf(item, CHAT_TOOL_NAMES),
+    ) ||
+    !isIntegerInRange(value.max_client_tools, 1, 32) ||
+    value.supported_client_tools.length > value.max_client_tools
+  ) {
+    return false;
+  }
+  const liveScombz =
+    value.agent_backend === "azure_openai" &&
+    value.observability === "off" &&
+    value.scombz_student_read_mode === "live";
+  const demoFixtureScombz =
+    value.agent_backend === "fixture" &&
+    value.observability === "off" &&
+    value.scombz_student_read_mode === "fixture";
+  const liveScombzTools = new Set([
+    "scombz_course_list",
+    "scombz_portal_read",
+    "scombz_course_read",
+    "scombz_material_search",
+  ]);
+  return (
+    liveScombz ||
+    demoFixtureScombz ||
+    !value.supported_client_tools.some((item) => liveScombzTools.has(item))
   );
 }
 
@@ -385,6 +557,309 @@ export function isScombzReadResult(value: unknown): value is ScombzReadResult {
   );
 }
 
+const scombzStudentStatuses = [
+  "known",
+  "partial",
+  "reauth_required",
+  "unavailable",
+] as const;
+const scombzCourseRefPattern =
+  /^orbit-scombz:\/\/course\/[A-Za-z0-9_-]{16,128}$/u;
+const scombzItemRefPattern = /^orbit-scombz:\/\/item\/[A-Za-z0-9_-]{16,128}$/u;
+const scombzMaterialRefPattern =
+  /^orbit-scombz:\/\/material\/[A-Za-z0-9_-]{16,128}$/u;
+const syllabusRefPattern =
+  /^orbit-syllabus:\/\/result\/[A-Za-z0-9_-]{16,128}$/u;
+
+function isScombzCoverage(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "scope",
+      "requested",
+      "attempted",
+      "succeeded",
+      "failed",
+      "truncated",
+      "next_cursor",
+    ]) &&
+    isNonEmptyString(value.scope) &&
+    isIntegerInRange(value.requested, 0, 1000) &&
+    isIntegerInRange(value.attempted, 0, 1000) &&
+    isIntegerInRange(value.succeeded, 0, 1000) &&
+    isIntegerInRange(value.failed, 0, 1000) &&
+    typeof value.truncated === "boolean" &&
+    (value.next_cursor === null || typeof value.next_cursor === "string") &&
+    value.attempted >= value.succeeded + value.failed &&
+    (value.truncated || value.next_cursor === null)
+  );
+}
+
+function isScombzStudentEnvelope(value: unknown): value is JsonRecord {
+  return (
+    isRecord(value) &&
+    value.schema_version === "v1" &&
+    isOneOf(value.status, scombzStudentStatuses) &&
+    isScombzCoverage(value.coverage) &&
+    isNonEmptyString(value.observed_at) &&
+    (value.reason_code === null || typeof value.reason_code === "string")
+  );
+}
+
+function isScombzCitation(value: unknown): boolean {
+  return value === null || (typeof value === "string" && value.length <= 240);
+}
+
+function isScombzCourseSummary(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "course_ref",
+      "display_name",
+      "academic_year",
+      "term",
+      "weekday",
+      "period",
+      "citation_uri",
+    ]) &&
+    typeof value.course_ref === "string" &&
+    scombzCourseRefPattern.test(value.course_ref) &&
+    isNonEmptyString(value.display_name) &&
+    (value.academic_year === null ||
+      isIntegerInRange(value.academic_year, 2000, 2100)) &&
+    (value.term === null || typeof value.term === "string") &&
+    (value.weekday === null || typeof value.weekday === "string") &&
+    (value.period === null || typeof value.period === "string") &&
+    isScombzCitation(value.citation_uri)
+  );
+}
+
+function isScombzPortalItem(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "ref",
+      "section",
+      "title",
+      "detail",
+      "observed_at",
+      "citation_uri",
+    ]) &&
+    typeof value.ref === "string" &&
+    scombzItemRefPattern.test(value.ref) &&
+    isNonEmptyString(value.section) &&
+    isNonEmptyString(value.title) &&
+    (value.detail === null || typeof value.detail === "string") &&
+    isNonEmptyString(value.observed_at) &&
+    isScombzCitation(value.citation_uri)
+  );
+}
+
+function isScombzCourseReadItem(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "ref",
+      "course_ref",
+      "section",
+      "title",
+      "body",
+      "due_at",
+      "state",
+      "has_pdf",
+      "observed_at",
+      "citation_uri",
+    ]) &&
+    typeof value.ref === "string" &&
+    scombzItemRefPattern.test(value.ref) &&
+    typeof value.course_ref === "string" &&
+    scombzCourseRefPattern.test(value.course_ref) &&
+    isNonEmptyString(value.section) &&
+    isNonEmptyString(value.title) &&
+    (value.body === null || typeof value.body === "string") &&
+    (value.due_at === null || typeof value.due_at === "string") &&
+    (value.state === null || typeof value.state === "string") &&
+    typeof value.has_pdf === "boolean" &&
+    isNonEmptyString(value.observed_at) &&
+    isScombzCitation(value.citation_uri)
+  );
+}
+
+export function isScombzCourseListResult(
+  value: unknown,
+): value is ScombzCourseListResult {
+  return (
+    isScombzStudentEnvelope(value) &&
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "courses",
+      "coverage",
+      "observed_at",
+      "reason_code",
+    ]) &&
+    Array.isArray(value.courses) &&
+    value.courses.length <= 50 &&
+    (!["reauth_required", "unavailable"].includes(value.status as string) ||
+      value.courses.length === 0) &&
+    value.courses.every(isScombzCourseSummary)
+  );
+}
+
+export function isScombzPortalReadResult(
+  value: unknown,
+): value is ScombzPortalReadResult {
+  return (
+    isScombzStudentEnvelope(value) &&
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "items",
+      "coverage",
+      "observed_at",
+      "reason_code",
+    ]) &&
+    Array.isArray(value.items) &&
+    value.items.length <= 200 &&
+    (!["reauth_required", "unavailable"].includes(value.status as string) ||
+      value.items.length === 0) &&
+    value.items.every(isScombzPortalItem)
+  );
+}
+
+export function isScombzCourseReadResult(
+  value: unknown,
+): value is ScombzCourseReadResult {
+  return (
+    isScombzStudentEnvelope(value) &&
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "items",
+      "section_states",
+      "coverage",
+      "observed_at",
+      "reason_code",
+    ]) &&
+    Array.isArray(value.items) &&
+    value.items.length <= 250 &&
+    value.items.every(isScombzCourseReadItem) &&
+    isRecord(value.section_states) &&
+    Object.keys(value.section_states).length <= 20 &&
+    (!["reauth_required", "unavailable"].includes(value.status as string) ||
+      (value.items.length === 0 &&
+        Object.keys(value.section_states).length === 0)) &&
+    Object.values(value.section_states).every((state) =>
+      isOneOf(state, ["complete", "truncated", "failed", "not_requested"]),
+    )
+  );
+}
+
+function isScombzMaterialHit(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasExactlyKeys(value, [
+      "material_ref",
+      "course_ref",
+      "material_title",
+      "page",
+      "quote",
+      "observed_at",
+      "citation_uri",
+    ]) &&
+    typeof value.material_ref === "string" &&
+    scombzMaterialRefPattern.test(value.material_ref) &&
+    typeof value.course_ref === "string" &&
+    scombzCourseRefPattern.test(value.course_ref) &&
+    isNonEmptyString(value.material_title) &&
+    isIntegerInRange(value.page, 1, 10000) &&
+    isNonEmptyString(value.quote) &&
+    value.quote.length <= 1800 &&
+    isNonEmptyString(value.observed_at) &&
+    isScombzCitation(value.citation_uri)
+  );
+}
+
+export function isScombzMaterialSearchResult(
+  value: unknown,
+): value is ScombzMaterialSearchResult {
+  return (
+    isScombzStudentEnvelope(value) &&
+    hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "hits",
+      "coverage",
+      "observed_at",
+      "reason_code",
+    ]) &&
+    Array.isArray(value.hits) &&
+    value.hits.length <= 24 &&
+    (!["reauth_required", "unavailable"].includes(value.status as string) ||
+      value.hits.length === 0) &&
+    value.hits.every(isScombzMaterialHit)
+  );
+}
+
+export function isSyllabusReadResult(
+  value: unknown,
+): value is SyllabusReadResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "syllabus_ref",
+      "url",
+      "course_code",
+      "title",
+      "instructors",
+      "objectives",
+      "weekly_plan",
+      "evaluation",
+      "textbooks",
+      "prerequisites",
+      "observed_at",
+      "reason_code",
+      "citation_uri",
+    ]) ||
+    value.schema_version !== "v1" ||
+    (value.status !== "known" && value.status !== "unavailable") ||
+    typeof value.syllabus_ref !== "string" ||
+    !syllabusRefPattern.test(value.syllabus_ref) ||
+    typeof value.url !== "string" ||
+    !value.url.startsWith("https://syllabus.sic.shibaura-it.ac.jp/") ||
+    !isNonEmptyString(value.observed_at) ||
+    (value.reason_code !== null && typeof value.reason_code !== "string") ||
+    !isScombzCitation(value.citation_uri) ||
+    !Array.isArray(value.instructors) ||
+    !value.instructors.every((item) => typeof item === "string") ||
+    !Array.isArray(value.weekly_plan) ||
+    !value.weekly_plan.every((item) => typeof item === "string") ||
+    !Array.isArray(value.textbooks) ||
+    !value.textbooks.every((item) => typeof item === "string")
+  ) {
+    return false;
+  }
+  return (
+    ["course_code", "title", "objectives", "evaluation", "prerequisites"].every(
+      (key) => {
+        const item = value[key];
+        return item === null || typeof item === "string";
+      },
+    ) &&
+    (value.status === "known" ||
+      (value.course_code === null &&
+        value.title === null &&
+        value.instructors.length === 0 &&
+        value.objectives === null &&
+        value.weekly_plan.length === 0 &&
+        value.evaluation === null &&
+        value.textbooks.length === 0 &&
+        value.prerequisites === null))
+  );
+}
+
 export function isSyllabusSearchResult(
   value: unknown,
 ): value is SyllabusSearchResult {
@@ -397,6 +872,7 @@ export function isSyllabusSearchResult(
       "year",
       "faculty",
       "results",
+      "observed_at",
       "reason_code",
     ]) &&
     value.schema_version === "v1" &&
@@ -405,22 +881,30 @@ export function isSyllabusSearchResult(
     (value.year === null || typeof value.year === "number") &&
     (value.faculty === null || typeof value.faculty === "string") &&
     Array.isArray(value.results) &&
+    typeof value.observed_at === "string" &&
     value.results.every(
       (item) =>
         isRecord(item) &&
         hasExactlyKeys(item, [
+          "syllabus_ref",
           "title",
           "course_code",
           "faculty",
           "url",
           "snippet",
+          "citation_uri",
         ]) &&
         typeof item.title === "string" &&
+        typeof item.syllabus_ref === "string" &&
+        /^orbit-syllabus:\/\/result\/[A-Za-z0-9_-]{16,128}$/u.test(
+          item.syllabus_ref,
+        ) &&
         (item.course_code === null || typeof item.course_code === "string") &&
         (item.faculty === null || typeof item.faculty === "string") &&
         typeof item.url === "string" &&
         item.url.startsWith("https://syllabus.sic.shibaura-it.ac.jp/") &&
-        (item.snippet === null || typeof item.snippet === "string"),
+        (item.snippet === null || typeof item.snippet === "string") &&
+        isScombzCitation(item.citation_uri),
     )
   );
 }
@@ -714,14 +1198,21 @@ function isLibraryActionOption(value: unknown): boolean {
       "available",
       "reason_code",
       "required_inputs",
+      "verification_level",
     ]) &&
     isOneOf(value.action_type, libraryActionTypes) &&
     typeof value.available === "boolean" &&
     typeof value.reason_code === "string" &&
     /^[a-z][a-z0-9_]*$/u.test(value.reason_code) &&
+    isOneOf(value.verification_level, ["none", "entry_visible"]) &&
     Array.isArray(value.required_inputs) &&
     value.required_inputs.length <= 8 &&
-    value.required_inputs.every((item) => isOneOf(item, libraryActionInputs))
+    value.required_inputs.every((item) => isOneOf(item, libraryActionInputs)) &&
+    (value.available
+      ? value.reason_code === "available" &&
+        value.verification_level === "entry_visible"
+      : value.reason_code !== "available" &&
+        value.verification_level === "none")
   );
 }
 
@@ -806,11 +1297,14 @@ export function isSitrusGradeResult(
       "status",
       "report_label",
       "grades",
-      "cumulative_gpa",
+      "credit_summaries",
+      "observed_at",
       "reason_code",
     ]) &&
     value.schema_version === "v1" &&
-    (value.status === "known" || value.status === "unavailable") &&
+    (value.status === "known" ||
+      value.status === "reauth_required" ||
+      value.status === "unavailable") &&
     Array.isArray(value.grades) &&
     value.grades.length <= 200 &&
     value.grades.every(
@@ -818,19 +1312,14 @@ export function isSitrusGradeResult(
         isRecord(item) &&
         hasExactlyKeys(item, [
           "subject",
-          "course_code",
           "credits",
           "grade",
+          "outcome",
           "year",
           "term",
-          "term_slot",
-          "repeated",
         ]) &&
         isNonEmptyString(item.subject) &&
         item.subject.length <= 200 &&
-        (item.course_code === null ||
-          (isNonEmptyString(item.course_code) &&
-            item.course_code.length <= 20)) &&
         (item.credits === null ||
           (isIntegerInRange(item.credits, 0, 20) && item.credits >= 0)) &&
         isOneOf(item.grade, [
@@ -845,19 +1334,40 @@ export function isSitrusGradeResult(
           "X",
           "#",
         ]) &&
+        (item.outcome === null ||
+          (typeof item.outcome === "string" && item.outcome.length <= 40)) &&
         (item.year === null || isIntegerInRange(item.year, 2000, 2100)) &&
-        (item.term === null || isIntegerInRange(item.term, 1, 3)) &&
-        (item.term_slot === null || isIntegerInRange(item.term_slot, 1, 4)) &&
-        typeof item.repeated === "boolean",
+        (item.term === null || isIntegerInRange(item.term, 1, 3)),
     ) &&
-    (value.cumulative_gpa === null ||
-      (typeof value.cumulative_gpa === "number" &&
-        Number.isFinite(value.cumulative_gpa) &&
-        value.cumulative_gpa >= 0 &&
-        value.cumulative_gpa <= 4)) &&
+    Array.isArray(value.credit_summaries) &&
+    value.credit_summaries.length <= 200 &&
+    value.credit_summaries.every(
+      (item) =>
+        isRecord(item) &&
+        hasExactlyKeys(item, [
+          "category",
+          "credit_type",
+          "current_course_count",
+          "current_credits",
+          "cumulative_course_count",
+          "cumulative_credits",
+        ]) &&
+        isNonEmptyString(item.category) &&
+        item.category.length <= 100 &&
+        (item.credit_type === null ||
+          (typeof item.credit_type === "string" &&
+            item.credit_type.length <= 40)) &&
+        isIntegerInRange(item.current_course_count, 0, 10_000) &&
+        isIntegerInRange(item.current_credits, 0, 10_000) &&
+        isIntegerInRange(item.cumulative_course_count, 0, 10_000) &&
+        isIntegerInRange(item.cumulative_credits, 0, 10_000),
+    ) &&
     (value.report_label === null ||
       (typeof value.report_label === "string" &&
         value.report_label.length <= 100)) &&
+    typeof value.observed_at === "string" &&
+    value.observed_at.length <= 40 &&
+    !Number.isNaN(Date.parse(value.observed_at)) &&
     (value.reason_code === null ||
       (typeof value.reason_code === "string" &&
         value.reason_code.length <= 100))
@@ -865,7 +1375,7 @@ export function isSitrusGradeResult(
     const hasGradeData =
       value.report_label !== null ||
       value.grades.length > 0 ||
-      value.cumulative_gpa !== null;
+      value.credit_summaries.length > 0;
     return value.status === "known" ? hasGradeData : !hasGradeData;
   }
   return false;
@@ -1158,21 +1668,24 @@ export function isCastAlumniReadResult(
 ): value is CastAlumniReadResult {
   if (
     !isRecord(value) ||
-    !hasExactlyKeys(value, [
-      "schema_version",
-      "status",
-      "data_classification",
-      "profile_count",
-      "topic_categories",
-      "availability_frequencies",
-      "meeting_modes",
-      "shareable_insight_categories",
-      "contact_present",
-      "discovered_link_count",
-      "reason_code",
-    ]) ||
+    !Object.keys(value).every((key) =>
+      [
+        "schema_version",
+        "status",
+        "data_classification",
+        "profile_count",
+        "profiles",
+        "topic_categories",
+        "availability_frequencies",
+        "meeting_modes",
+        "shareable_insight_categories",
+        "contact_present",
+        "discovered_link_count",
+        "reason_code",
+      ].includes(key),
+    ) ||
     value.schema_version !== "v1" ||
-    value.data_classification !== "personal" ||
+    !isOneOf(value.data_classification, ["personal", "restricted"]) ||
     !isOneOf(value.status, ["known", "reauth_required", "unavailable"]) ||
     !isIntegerInRange(value.profile_count, 0, 64) ||
     !Array.isArray(value.topic_categories) ||
@@ -1203,6 +1716,90 @@ export function isCastAlumniReadResult(
   ) {
     return false;
   }
+  if (
+    value.data_classification === "restricted" &&
+    value.profiles === undefined &&
+    value.profile_count !== 0
+  ) {
+    return false;
+  }
+  if (value.profiles !== undefined) {
+    if (
+      !Array.isArray(value.profiles) ||
+      value.profiles.length > 20 ||
+      value.data_classification !== "restricted" ||
+      value.contact_present ||
+      value.profile_count !== value.profiles.length ||
+      !value.profiles.every((profile) => {
+        if (!isRecord(profile)) return false;
+        if (
+          Object.keys(profile).some(
+            (key) =>
+              ![
+                "alias",
+                "role",
+                "company",
+                "technical_domains",
+                "job_types",
+                "location_area",
+                "graduation_year_bucket",
+                "evidence_id",
+              ].includes(key),
+          )
+        ) {
+          return false;
+        }
+        const directIdentifier =
+          /(?:@|https?:\/\/|orbit-[a-z0-9-]+:\/\/|(?:\+81|0)[-\d() ]{8,}|\b[A-Z]{1,5}[-_ ]?\d{5,}\b)/iu;
+        const safeText = (item: unknown, max: number): boolean =>
+          item === undefined ||
+          item === null ||
+          (typeof item === "string" &&
+            item.length <= max &&
+            !directIdentifier.test(item));
+        return (
+          typeof profile.alias === "string" &&
+          /^\[\[ORBIT_PERSON_[A-Za-z0-9_-]{16,64}\]\]$/u.test(profile.alias) &&
+          isOneOf(profile.role, ["alumni", "supporter", "unknown"]) &&
+          safeText(profile.company, 160) &&
+          Array.isArray(profile.technical_domains) &&
+          profile.technical_domains.length <= 12 &&
+          new Set(profile.technical_domains).size ===
+            profile.technical_domains.length &&
+          profile.technical_domains.every(
+            (item) =>
+              typeof item === "string" &&
+              item.length > 0 &&
+              item.length <= 120 &&
+              !directIdentifier.test(item),
+          ) &&
+          Array.isArray(profile.job_types) &&
+          profile.job_types.length <= 12 &&
+          new Set(profile.job_types).size === profile.job_types.length &&
+          profile.job_types.every(
+            (item) =>
+              typeof item === "string" &&
+              item.length > 0 &&
+              item.length <= 120 &&
+              !directIdentifier.test(item),
+          ) &&
+          safeText(profile.location_area, 80) &&
+          (profile.graduation_year_bucket === undefined ||
+            profile.graduation_year_bucket === null ||
+            (typeof profile.graduation_year_bucket === "string" &&
+              /^(?:before-2010|20[0-9]{2}-20[0-9]{2})$/u.test(
+                profile.graduation_year_bucket,
+              ))) &&
+          (profile.evidence_id === undefined ||
+            profile.evidence_id === null ||
+            (typeof profile.evidence_id === "string" &&
+              /^[A-Za-z0-9_-]{3,200}$/u.test(profile.evidence_id)))
+        );
+      })
+    ) {
+      return false;
+    }
+  }
   if (value.status === "known") return true;
   return (
     value.profile_count === 0 &&
@@ -1211,7 +1808,8 @@ export function isCastAlumniReadResult(
     value.meeting_modes.length === 0 &&
     value.shareable_insight_categories.length === 0 &&
     !value.contact_present &&
-    value.discovered_link_count === 0
+    value.discovered_link_count === 0 &&
+    (value.profiles === undefined || value.profiles.length === 0)
   );
 }
 
@@ -1425,6 +2023,145 @@ export function isCastSearchResult(value: unknown): value is CastSearchResult {
   );
 }
 
+export function isCastCareerSearchResult(
+  value: unknown,
+): value is CastCareerSearchResult {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "status",
+      "searched_surfaces",
+      "surface_coverage",
+      "total_count",
+      "returned_count",
+      "anonymous_aggregates",
+      "evidence_ids",
+      "reason_codes",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !isOneOf(value.status, [
+      "known",
+      "partial",
+      "reauth_required",
+      "form_changed",
+      "rate_limited",
+      "local_model_unavailable",
+      "unavailable",
+    ]) ||
+    !Array.isArray(value.searched_surfaces) ||
+    value.searched_surfaces.length < 1 ||
+    value.searched_surfaces.length > 9 ||
+    new Set(value.searched_surfaces).size !== value.searched_surfaces.length ||
+    !value.searched_surfaces.every((item) =>
+      isOneOf(item, [
+        "job",
+        "internship",
+        "company_session",
+        "company",
+        "hiring_record",
+        "selection_report",
+        "recording",
+        "career_event",
+        "counseling",
+      ]),
+    ) ||
+    !Array.isArray(value.surface_coverage) ||
+    value.surface_coverage.length !== value.searched_surfaces.length ||
+    !value.surface_coverage.every((item) => {
+      if (
+        !isRecord(item) ||
+        !hasExactlyKeys(item, [
+          "surface",
+          "status",
+          "total_count",
+          "returned_count",
+          "fetched_pages",
+          "page_size",
+          "reason_code",
+        ]) ||
+        !isOneOf(item.surface, value.searched_surfaces as string[]) ||
+        !isOneOf(item.status, [
+          "known",
+          "partial",
+          "reauth_required",
+          "form_changed",
+          "rate_limited",
+          "local_model_unavailable",
+          "unavailable",
+        ]) ||
+        (item.total_count !== null &&
+          !isIntegerInRange(item.total_count, 0, 100_000)) ||
+        !isIntegerInRange(item.returned_count, 0, 1_000) ||
+        !isIntegerInRange(item.fetched_pages, 0, 100) ||
+        !isIntegerInRange(item.page_size, 0, 50) ||
+        (item.reason_code !== null && typeof item.reason_code !== "string")
+      ) {
+        return false;
+      }
+      return (
+        item.total_count === null || item.returned_count <= item.total_count
+      );
+    }) ||
+    new Set(
+      value.surface_coverage.map((item) =>
+        isRecord(item) ? String(item.surface) : "",
+      ),
+    ).size !== value.surface_coverage.length ||
+    new Set(value.surface_coverage.map((item) => String(item.surface))).size !==
+      value.searched_surfaces.length ||
+    !isIntegerInRange(value.total_count, 0, 900_000) ||
+    !isIntegerInRange(value.returned_count, 0, 9_000) ||
+    value.returned_count > value.total_count ||
+    !Array.isArray(value.anonymous_aggregates) ||
+    value.anonymous_aggregates.length > 200 ||
+    !value.anonymous_aggregates.every((item) => {
+      return (
+        isRecord(item) &&
+        hasExactlyKeys(item, ["dimension", "value", "count"]) &&
+        isOneOf(item.dimension, [
+          "surface",
+          "industry",
+          "location",
+          "graduation_year",
+          "occupation",
+          "technical_domain",
+          "relation",
+        ]) &&
+        isNonEmptyString(item.value) &&
+        isIntegerInRange(item.count, 5, 100_000)
+      );
+    }) ||
+    !Array.isArray(value.evidence_ids) ||
+    value.evidence_ids.length > 32 ||
+    new Set(value.evidence_ids).size !== value.evidence_ids.length ||
+    !value.evidence_ids.every(
+      (item) =>
+        typeof item === "string" &&
+        /^cast-career-search-v1-[A-Za-z0-9_-]{16,200}$/u.test(item),
+    ) ||
+    !Array.isArray(value.reason_codes) ||
+    value.reason_codes.length > 32 ||
+    !value.reason_codes.every(
+      (item) =>
+        typeof item === "string" && item.length > 0 && item.length <= 100,
+    )
+  ) {
+    return false;
+  }
+  if (value.status === "known") {
+    return value.surface_coverage.every((item) => item.status === "known");
+  }
+  if (value.status === "partial") {
+    return value.surface_coverage.some((item) => item.status === "known");
+  }
+  return (
+    value.total_count === 0 &&
+    value.returned_count === 0 &&
+    value.anonymous_aggregates.length === 0
+  );
+}
+
 export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
@@ -1449,25 +2186,6 @@ export function isAgentRunResponse(value: unknown): value is AgentRunResponse {
     value.calls[0].version === 1
   );
 }
-
-const chatToolNames = [
-  "scombz_page_summary",
-  "scombz_read",
-  "google_calendar_availability",
-  "syllabus_search",
-  "browser_read_url",
-  "sitrus_read",
-  "moodle_read",
-  "my_library_read",
-  "cast_read",
-  "cast_alumni_read",
-  "cast_search",
-  "library_catalog_search",
-  "library_item_read",
-  "library_catalog_browse",
-  "library_discovery_search",
-  "library_action_options",
-] as const;
 
 function isChatEvidenceMessage(value: unknown): boolean {
   if (!isRecord(value)) return false;
@@ -1496,6 +2214,9 @@ function isChatEvidenceMessage(value: unknown): boolean {
   const messageEvidenceIds = new Set(
     (value.evidence as EvidenceLink[]).map((item) => item.evidence_id),
   );
+  if (messageEvidenceIds.size !== (value.evidence as unknown[]).length) {
+    return false;
+  }
   const relatedBooks = Array.isArray(value.related_books)
     ? (value.related_books as RelatedBookCandidate[])
     : [];
@@ -1569,15 +2290,90 @@ function isRelatedBookCandidate(value: unknown): value is RelatedBookCandidate {
   );
 }
 
+export function isChatContextManifest(
+  value: unknown,
+): value is ChatContextManifest {
+  if (
+    !isRecord(value) ||
+    !hasExactlyKeys(value, [
+      "schema_version",
+      "evidence",
+      "library_records",
+      "related_books",
+    ]) ||
+    value.schema_version !== "v1" ||
+    !Array.isArray(value.evidence) ||
+    !value.evidence.every(isEvidenceLink) ||
+    value.evidence.length > 100 ||
+    !Array.isArray(value.library_records) ||
+    value.library_records.length > 20 ||
+    !Array.isArray(value.related_books) ||
+    value.related_books.length > 20 ||
+    !value.related_books.every(isRelatedBookCandidate)
+  ) {
+    return false;
+  }
+  const evidenceIds = new Set(
+    (value.evidence as EvidenceLink[]).map((item) => item.evidence_id),
+  );
+  if (evidenceIds.size !== value.evidence.length) return false;
+  const resourceRefs = new Set<string>();
+  for (const item of value.library_records) {
+    if (
+      !isRecord(item) ||
+      !hasExactlyKeys(item, [
+        "resource_ref",
+        "record",
+        "evidence_ids",
+        "observed_at",
+      ]) ||
+      !isOpaqueLibraryResourceRef(item.resource_ref) ||
+      !isLibraryBibliographicRecord(item.record) ||
+      !Array.isArray(item.evidence_ids) ||
+      !item.evidence_ids.every(
+        (evidenceId) =>
+          typeof evidenceId === "string" && evidenceIds.has(evidenceId),
+      ) ||
+      !isNonEmptyString(item.observed_at)
+    ) {
+      return false;
+    }
+    const record = item.record as unknown as LibraryBibliographicRecord;
+    if (record.resource_ref !== item.resource_ref) return false;
+    resourceRefs.add(item.resource_ref);
+  }
+  return value.related_books.every((candidate) => {
+    if (!candidate.evidence_ids.every((id) => evidenceIds.has(id))) {
+      return false;
+    }
+    const verification = candidate.catalog_verification;
+    if (!verification) return false;
+    return (
+      verification.status !== "verified" ||
+      (typeof verification.resource_ref === "string" &&
+        resourceRefs.has(verification.resource_ref))
+    );
+  });
+}
+
 export function isChatRunResponse(value: unknown): value is ChatRunResponse {
   if (!isRecord(value) || typeof value.status !== "string") {
     return false;
   }
   if (value.status === "completed") {
     return (
-      hasExactlyKeys(value, ["status", "message", "proposal"]) &&
+      (hasExactlyKeys(value, ["status", "message", "proposal"]) ||
+        hasExactlyKeys(value, [
+          "status",
+          "message",
+          "proposal",
+          "context_manifest",
+        ])) &&
       isChatEvidenceMessage(value.message) &&
-      (value.proposal === null || isActionProposal(value.proposal))
+      (value.proposal === null || isActionProposal(value.proposal)) &&
+      (value.context_manifest === undefined ||
+        value.context_manifest === null ||
+        isChatContextManifest(value.context_manifest))
     );
   }
   if (value.status !== "tool_required") {
@@ -1596,7 +2392,7 @@ export function isChatRunResponse(value: unknown): value is ChatRunResponse {
     isRecord(call) &&
     hasExactlyKeys(call, ["tool_call_id", "name", "version", "arguments"]) &&
     isNonEmptyString(call.tool_call_id) &&
-    isOneOf(call.name, chatToolNames) &&
+    isOneOf(call.name, CHAT_TOOL_NAMES) &&
     call.version === 1 &&
     isRecord(call.arguments)
   );
@@ -1748,6 +2544,37 @@ export class AgentApiClient {
     return payload;
   }
 
+  async chatCapabilities(): Promise<ChatCapabilities> {
+    const requestInit = { method: "GET" } satisfies RequestInit;
+    let response = await this.authorizedFetch(
+      "/v1/chat/capabilities",
+      requestInit,
+    );
+    if (response.status === 401 && this.sessionProvider) {
+      response = await this.authorizedFetch(
+        "/v1/chat/capabilities",
+        requestInit,
+        true,
+      );
+    }
+    const payload = await readJson(response);
+    if (!responseIsOk(response)) {
+      throw new AgentApiError(
+        `Agent API returned HTTP ${response.status}.`,
+        response.status,
+        payload,
+      );
+    }
+    if (!isChatCapabilities(payload)) {
+      throw new AgentApiError(
+        "Agent API returned invalid Chat capabilities.",
+        response.status,
+        payload,
+      );
+    }
+    return payload;
+  }
+
   propose(request: ProposeActionRequest): Promise<ActionProposal> {
     return this.post(
       "/v1/actions/propose",
@@ -1782,7 +2609,13 @@ export class AgentApiClient {
   }
 
   startChat(request: ChatRunRequest): Promise<ChatRunResponse> {
-    return this.post("/v1/chat/runs", request, isChatRunResponse, "chat run");
+    // The server defaults to a synchronous run.  Do not send the default
+    // value to older strict API images that predate `execution_mode`; an
+    // explicitly requested background run still carries the field.
+    const { execution_mode, ...requestWithoutExecutionMode } = request;
+    const body =
+      execution_mode === "sync" ? requestWithoutExecutionMode : request;
+    return this.post("/v1/chat/runs", body, isChatRunResponse, "chat run");
   }
 
   submitChatToolResult(
@@ -1798,6 +2631,85 @@ export class AgentApiClient {
       isChatRunResponse,
       "chat run",
     );
+  }
+
+  /**
+   * Submit one deferred result and retain the server's call-specific evidence
+   * receipt.  The regular method remains unchanged for older deployments;
+   * audit and multi-turn runners use this method when the headers are
+   * available and otherwise receive a null receipt.
+   */
+  async submitChatToolResultWithReceipt(
+    runId: string,
+    request: ChatToolResultRequest,
+  ): Promise<{ response: ChatRunResponse; evidence_id: string | null }> {
+    if (!runId.trim()) {
+      throw new TypeError("Chat run ID must not be empty.");
+    }
+    const requestInit = {
+      method: "POST",
+      body: JSON.stringify(request),
+    } satisfies RequestInit;
+    let response = await this.authorizedFetch(
+      `/v1/chat/runs/${encodeURIComponent(runId)}/tool-results`,
+      requestInit,
+    );
+    if (response.status === 401 && this.sessionProvider) {
+      response = await this.authorizedFetch(
+        `/v1/chat/runs/${encodeURIComponent(runId)}/tool-results`,
+        requestInit,
+        true,
+      );
+    }
+    const payload = await readJson(response);
+    if (!responseIsOk(response)) {
+      throw new AgentApiError(
+        `Agent API returned HTTP ${response.status}.`,
+        response.status,
+        payload,
+      );
+    }
+    if (!isChatRunResponse(payload)) {
+      throw new AgentApiError(
+        "Agent API returned an invalid chat run.",
+        response.status,
+        payload,
+      );
+    }
+    // Older test hosts and pre-receipt deployments may not expose a Headers
+    // object at all.  Treat that as the documented compatibility case; once
+    // either receipt header is present, however, the pair must be complete.
+    const headerCallId = response.headers?.get("X-Orbit-Tool-Call-Id") ?? null;
+    const headerEvidenceId =
+      response.headers?.get("X-Orbit-Evidence-Id") ?? null;
+    const hasCallReceipt = headerCallId !== null;
+    const hasEvidenceReceipt = headerEvidenceId !== null;
+    // A receipt is an atomic pair.  Accepting one header without the other
+    // would make a later retry fall back to positional matching and could
+    // attach evidence from a repeated read-only call to the wrong request.
+    if (hasCallReceipt !== hasEvidenceReceipt) {
+      throw new AgentApiError(
+        "Agent API returned an incomplete tool receipt.",
+        response.status,
+        { category: "tool_result_invalid" },
+      );
+    }
+    if (
+      hasCallReceipt &&
+      (!isReceiptIdentifier(headerCallId) ||
+        !isReceiptIdentifier(headerEvidenceId) ||
+        headerCallId !== request.tool_call_id)
+    ) {
+      throw new AgentApiError(
+        "Agent API returned a mismatched tool receipt.",
+        response.status,
+        { category: "tool_result_invalid" },
+      );
+    }
+    return {
+      response: payload,
+      evidence_id: hasEvidenceReceipt ? headerEvidenceId : null,
+    };
   }
 
   async verify(

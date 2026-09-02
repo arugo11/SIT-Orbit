@@ -5,6 +5,7 @@ from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_TOOL_NAME,
     CAST_ALUMNI_TOOL_NAME,
+    CAST_CAREER_SEARCH_TOOL_NAME,
     CAST_SEARCH_TOOL_NAME,
     CAST_TOOL_NAME,
     LIBRARY_CATALOG_SEARCH_TOOL_NAME,
@@ -16,6 +17,9 @@ from orbit_api.agent.pydantic_ai_backend import (
     ChatAgentExecution,
     ChatDraft,
     DeferredChatRun,
+    ToolName,
+    _normalize_cast_career_search_arguments,
+    cast_career_search,
     cast_read,
     cast_search,
     google_calendar_availability,
@@ -24,20 +28,28 @@ from orbit_api.agent.pydantic_ai_backend import (
     moodle_read,
     my_library_read,
     scombz_page_summary,
+    sitrus_read,
 )
 from orbit_api.main import app
 from orbit_api.models import (
     CalendarAvailabilityResult,
+    CastAlumniProfile,
     CastAlumniReadResult,
+    CastCareerAggregate,
+    CastCareerSearchResult,
+    CastCareerSurfaceCoverage,
     CastReadResult,
     CastSearchAggregate,
     CastSearchAppliedFilters,
     CastSearchCoverage,
     CastSearchResult,
+    ChatCapabilities,
     ChatClientTool,
+    ChatContextManifest,
     ChatHistoryMessage,
     ChatRunRequest,
     ChatRunToolRequired,
+    ChatToolName,
     ChatToolResultRequest,
     EvidenceLink,
     LegacyMyLibraryReadResult,
@@ -50,14 +62,19 @@ from orbit_api.models import (
     ScombzPageSummaryResult,
     ScombzReadResult,
     ScopedMyLibraryReadResult,
+    SitrusCreditSummaryItem,
+    SitrusGradeItem,
+    SitrusGradeResult,
 )
+from orbit_api.models.agent import CastCareerSurface
 from pydantic_ai import Agent, DeferredToolRequests, ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
 
 class StubChatBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, deferred_tool_name: ToolName = MY_LIBRARY_TOOL_NAME) -> None:
         self.resume_calls = 0
+        self.deferred_tool_name: ToolName = deferred_tool_name
 
     async def start_chat(
         self,
@@ -66,21 +83,34 @@ class StubChatBackend:
         message: str,
         history: list[ChatHistoryMessage],
         context: list[EvidenceLink] | None = None,
+        library_context=None,
+        related_book_context=None,
         advertised_tools: set[str] | None = None,
     ) -> ChatAgentExecution:
-        del message, history, context, advertised_tools
+        del (
+            message,
+            history,
+            context,
+            library_context,
+            related_book_context,
+            advertised_tools,
+        )
         return ChatAgentExecution(
             deferred=DeferredChatRun(
                 messages=[],
                 tool_call_id="stub-my-library-call",
                 conversation_id=conversation_id,
-                tool_name=MY_LIBRARY_TOOL_NAME,
-                arguments={
-                    "scope": "current_loans",
-                    "query": "",
-                    "offset": 0,
-                    "limit": 20,
-                },
+                tool_name=self.deferred_tool_name,
+                arguments=(
+                    {
+                        "scope": "current_loans",
+                        "query": "",
+                        "offset": 0,
+                        "limit": 20,
+                    }
+                    if self.deferred_tool_name == MY_LIBRARY_TOOL_NAME
+                    else {}
+                ),
             )
         )
 
@@ -120,14 +150,69 @@ def scoped_chat_result() -> ScopedMyLibraryReadResult:
 
 
 def test_chat_request_limits_history() -> None:
+    accepted = ChatRunRequest(
+        conversation_id="conversation-long-history",
+        message="質問",
+        history=[ChatHistoryMessage(role="assistant", content="x" * 12000)],
+    )
+    assert len(accepted.history[0].content) == 12000
     with pytest.raises(ValueError, match="64000"):
         ChatRunRequest(
             conversation_id="conversation-1",
             message="質問",
-            history=[
-                ChatHistoryMessage(role="user", content="x" * 8000)
+            history=[ChatHistoryMessage(role="user", content="x" * 8000)] * 9,
+        )
+
+
+def test_chat_capabilities_accept_explicit_scombz_fixture_tools() -> None:
+    capabilities = ChatCapabilities(
+        agent_backend="fixture",
+        observability="off",
+        scombz_student_read_mode="fixture",
+        supported_client_tools=["scombz_course_list"],
+        max_client_tools=32,
+    )
+    assert capabilities.supported_client_tools == ["scombz_course_list"]
+
+
+def test_chat_capabilities_reject_scombz_tools_without_explicit_mode() -> None:
+    with pytest.raises(ValueError, match="SCombZ"):
+        ChatCapabilities(
+            agent_backend="fixture",
+            observability="off",
+            scombz_student_read_mode="off",
+            supported_client_tools=["scombz_course_list"],
+            max_client_tools=32,
+        )
+
+
+def test_chat_context_manifest_accepts_restricted_cast_alumni_projection() -> None:
+    manifest = ChatContextManifest(
+        evidence=[
+            EvidenceLink(
+                evidence_id="cast-alumni-v1-1234567890abcdef",
+                title="CASTから取得した就活サポーター情報（一般化）",
+                source_type="career",
+                locator="orbit-cast://alumni/1234567890abcdef",
+                data_classification="restricted",
+            )
+        ]
+    )
+    assert manifest.evidence[0].data_classification == "restricted"
+
+
+def test_chat_context_manifest_rejects_unscoped_restricted_projection() -> None:
+    with pytest.raises(ValueError, match="restricted evidence"):
+        ChatContextManifest(
+            evidence=[
+                EvidenceLink(
+                    evidence_id="cast-alumni-v1-1234567890abcdef",
+                    title="未許可の制限データ",
+                    source_type="career",
+                    locator="orbit-cast://summary/1234567890abcdef",
+                    data_classification="restricted",
+                )
             ]
-            * 9,
         )
 
 
@@ -151,6 +236,38 @@ def test_fixture_chat_route_returns_completed_message(monkeypatch) -> None:
     assert "今日の学習を相談したい" in payload["message"]["content_markdown"]
     assert "接続設定" not in payload["message"]["content_markdown"]
     assert "許可を確認" not in payload["message"]["content_markdown"]
+
+
+def test_fixture_background_chat_exposes_bounded_progress_sse(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        started = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-background",
+                "message": "今日は何を進めればいい？",
+                "execution_mode": "background",
+                "history": [],
+                "client_tools": [],
+            },
+        )
+        assert started.status_code == 200
+        acknowledgement = started.json()
+        assert acknowledgement["status"] == "background"
+        run_id = acknowledgement["run_id"]
+
+        status = client.get(f"/v1/chat/runs/{run_id}")
+        assert status.status_code == 200
+        assert status.json()["status"] == "completed"
+
+        events = client.get(f"/v1/chat/runs/{run_id}/events")
+        assert events.status_code == 200
+        assert events.headers["content-type"].startswith("text/event-stream")
+        assert "event: progress" in events.text
+        assert "会話文脈を整理中" in events.text
+        assert "回答をまとめています" in events.text
+        assert "event: done" in events.text
 
 
 @pytest.mark.asyncio
@@ -213,6 +330,90 @@ async def test_chat_service_accepts_scoped_my_library_for_azure_stub(monkeypatch
     assert backend.resume_calls == 1
 
 
+def restricted_cast_alumni_result() -> CastAlumniReadResult:
+    return CastAlumniReadResult(
+        status="known",
+        data_classification="restricted",
+        profile_count=1,
+        profiles=[
+            CastAlumniProfile(
+                alias="[[ORBIT_PERSON_0123456789abcdef]]",
+                role="supporter",
+                company="合成企業",
+                technical_domains=["技術・研究"],
+                job_types=["ソフトウェア"],
+                location_area="関東",
+                graduation_year_bucket="2020-2024",
+                evidence_id="cast-evidence-opaque-abc",
+            )
+        ],
+        topic_categories=["技術・研究"],
+        availability_frequencies=["monthly"],
+        meeting_modes=["online"],
+        shareable_insight_categories=["技術・学習"],
+        contact_present=False,
+        discovered_link_count=1,
+        reason_code=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend_name", ["fixture", "openai"])
+async def test_chat_service_rejects_restricted_cast_alumni_before_backend_resume(
+    monkeypatch,
+    backend_name: str,
+) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend_name)
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    backend = StubChatBackend(deferred_tool_name=CAST_ALUMNI_TOOL_NAME)
+    service = ChatRunService(backend_factory=lambda: backend)
+    pending = await service.start(
+        ChatRunRequest(
+            conversation_id=f"chat-cast-boundary-{backend_name}",
+            message="就活サポーターの情報を確認して",
+            client_tools=[ChatClientTool(name=CAST_ALUMNI_TOOL_NAME, version=1)],
+        )
+    )
+    assert isinstance(pending, ChatRunToolRequired)
+
+    with pytest.raises(ValueError, match="Restricted CAST alumni data"):
+        await service.submit_tool_result(
+            pending.run_id,
+            ChatToolResultRequest(
+                tool_call_id=pending.calls[0].tool_call_id,
+                name=CAST_ALUMNI_TOOL_NAME,
+                version=1,
+                result=restricted_cast_alumni_result(),
+            ),
+        )
+    assert backend.resume_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_openai_backend_rejects_restricted_cast_alumni() -> None:
+    backend = OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    first = DeferredChatRun(
+        messages=[],
+        tool_call_id="cast-alumni-boundary-call",
+        conversation_id="conversation-cast-alumni-boundary",
+        tool_name=CAST_ALUMNI_TOOL_NAME,
+    )
+    evidence = EvidenceLink(
+        evidence_id="cast-evidence-opaque-abc",
+        title="CASTから取得した就活サポーター情報（一般化）",
+        source_type="career",
+        locator="orbit-cast://alumni/0123456789abcdef",
+        data_classification="restricted",
+    )
+    with pytest.raises(ValueError, match="Restricted CAST alumni data"):
+        await backend.resume_chat(
+            deferred=first,
+            tool_result=restricted_cast_alumni_result(),
+            context=[evidence],
+            advertised_tools={CAST_ALUMNI_TOOL_NAME},
+        )
+
+
 def test_fixture_chat_route_runs_scombz_tool_loop(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
@@ -252,6 +453,8 @@ def test_fixture_chat_route_runs_scombz_tool_loop(monkeypatch) -> None:
         )
 
     assert second.status_code == 200
+    assert second.headers["x-orbit-tool-call-id"] == call["tool_call_id"]
+    assert second.headers["x-orbit-evidence-id"].startswith("scombz-read-v1-")
     completed = second.json()
     assert completed["status"] == "completed"
     assert "組込みシステム" in completed["message"]["content_markdown"]
@@ -262,6 +465,7 @@ def test_fixture_chat_route_runs_scombz_tool_loop(monkeypatch) -> None:
 def test_fixture_chat_route_runs_sitrus_grade_tool_loop(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", "fixture")
     with TestClient(app) as client:
         first = client.post(
             "/v1/chat/runs",
@@ -288,16 +492,24 @@ def test_fixture_chat_route_runs_sitrus_grade_tool_loop(monkeypatch) -> None:
                     "grades": [
                         {
                             "subject": "線形代数第１",
-                            "course_code": "L0410100",
                             "credits": 2,
                             "grade": "A",
+                            "outcome": "合格",
                             "year": 2024,
                             "term": 2,
-                            "term_slot": 1,
-                            "repeated": False,
                         }
                     ],
-                    "cumulative_gpa": 3.1,
+                    "credit_summaries": [
+                        {
+                            "category": "専門科目",
+                            "credit_type": "選択",
+                            "current_course_count": 1,
+                            "current_credits": 2,
+                            "cumulative_course_count": 10,
+                            "cumulative_credits": 20,
+                        }
+                    ],
+                    "observed_at": "2026-09-02T00:00:00Z",
                     "reason_code": None,
                 },
             },
@@ -306,16 +518,15 @@ def test_fixture_chat_route_runs_sitrus_grade_tool_loop(monkeypatch) -> None:
     completed = second.json()
     assert completed["status"] == "completed"
     assert "線形代数第１" in completed["message"]["content_markdown"]
-    assert "累積GPA: 3.1" in completed["message"]["content_markdown"]
+    assert "GPAはAgent APIへの送信対象外" in completed["message"]["content_markdown"]
     assert completed["message"]["evidence"][0]["source_type"] == "learning_history"
-    assert completed["message"]["evidence"][0]["evidence_id"].startswith(
-        "sitrus-grades-v1-"
-    )
+    assert completed["message"]["evidence"][0]["evidence_id"].startswith("sitrus-grades-v1-")
 
 
 def test_sitrus_unavailable_result_cannot_resume(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", "fixture")
     with TestClient(app) as client:
         first = client.post(
             "/v1/chat/runs",
@@ -324,7 +535,7 @@ def test_sitrus_unavailable_result_cannot_resume(monkeypatch) -> None:
                 "message": "成績を確認して",
                 "history": [],
                 "client_tools": [{"name": "sitrus_read", "version": 1}],
-            }
+            },
         ).json()
         call = first["calls"][0]
         response = client.post(
@@ -338,12 +549,172 @@ def test_sitrus_unavailable_result_cannot_resume(monkeypatch) -> None:
                     "status": "unavailable",
                     "report_label": None,
                     "grades": [],
-                    "cumulative_gpa": None,
+                    "credit_summaries": [],
+                    "observed_at": "2026-09-02T00:00:00Z",
                     "reason_code": "grade_page_not_active",
                 },
             },
         )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_azure_chat_receives_only_minimized_sitrus_projection(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", "live")
+    turns = [0]
+    captured = [""]
+
+    def model_function(messages, _info):
+        turns[0] += 1
+        if turns[0] == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "sitrus_read",
+                        {},
+                        tool_call_id="sitrus-live-call-1",
+                    )
+                ]
+            )
+        captured[0] = str(messages)
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "取得済み科目と単位数を確認しました。",
+                        "evidence_ids": ["sitrus-grades-v1-1234567890abcdef"],
+                    },
+                    tool_call_id="sitrus-live-final-1",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="sitrus-live-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[sitrus_read],
+    )
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend._chat_agent = lambda **_kwargs: agent  # type: ignore[method-assign]
+
+    first = await backend.start_chat(
+        conversation_id="conversation-sitrus-live",
+        message="私の成績を教えて",
+        history=[],
+        advertised_tools={"sitrus_read"},
+    )
+    assert first.deferred is not None
+    result = SitrusGradeResult(
+        status="known",
+        report_label="取得済み科目・単位数",
+        grades=[
+            SitrusGradeItem(
+                subject="合成科目",
+                credits=2,
+                grade="A",
+                outcome="合格",
+                year=2025,
+                term=2,
+            )
+        ],
+        credit_summaries=[
+            SitrusCreditSummaryItem(
+                category="専門科目",
+                credit_type="選択",
+                current_course_count=1,
+                current_credits=2,
+                cumulative_course_count=10,
+                cumulative_credits=20,
+            )
+        ],
+        observed_at="2026-09-02T00:00:00Z",
+        reason_code=None,
+    )
+    evidence = EvidenceLink(
+        evidence_id="sitrus-grades-v1-1234567890abcdef",
+        title="SITRUSから取得した成績の最小化表示",
+        source_type="learning_history",
+        locator="orbit-sitrus://grades/1234567890abcdef",
+        data_classification="personal",
+    )
+
+    completed = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=result,
+        context=[evidence],
+        tool_evidence=evidence,
+        advertised_tools={"sitrus_read"},
+    )
+
+    assert completed.draft is not None
+    assert "合成科目" in captured[0]
+    assert "cumulative_credits" in captured[0]
+    assert "gakuseki" not in captured[0].lower()
+    assert "student_number" not in captured[0].lower()
+    assert "course_code" not in captured[0]
+    assert "term_slot" not in captured[0]
+    assert "repeated" not in captured[0]
+    assert "cumulative_gpa" not in captured[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_name", "mode", "observability"),
+    [
+        ("OpenAI", "live", "off"),
+        ("Azure OpenAI", "off", "off"),
+        ("Azure OpenAI", "live", "wandb"),
+    ],
+)
+async def test_sitrus_resume_fails_closed_outside_azure_live_off(
+    monkeypatch,
+    provider_name: str,
+    mode: str,
+    observability: str,
+) -> None:
+    monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", mode)
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", observability)
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name=provider_name,
+    )
+    deferred = DeferredChatRun(
+        messages=[],
+        tool_call_id="sitrus-guard-call",
+        conversation_id="conversation-sitrus-guard",
+        tool_name="sitrus_read",
+    )
+    result = SitrusGradeResult(
+        status="known",
+        report_label="取得済み科目",
+        grades=[
+            SitrusGradeItem(
+                subject="合成科目",
+                credits=2,
+                grade="A",
+                outcome="合格",
+            )
+        ],
+        credit_summaries=[],
+        observed_at="2026-09-02T00:00:00Z",
+        reason_code=None,
+    )
+
+    with pytest.raises(ValueError, match="Azure OpenAI"):
+        await backend.resume_chat(
+            deferred=deferred,
+            tool_result=result,
+            context=[],
+            advertised_tools={"sitrus_read"},
+        )
 
 
 def test_fixture_chat_route_runs_moodle_derived_tool_loop(monkeypatch) -> None:
@@ -465,7 +836,7 @@ def test_fixture_chat_route_rejects_scoped_my_library_result(monkeypatch) -> Non
             },
         )
     assert second.status_code == 422
-    assert "requires the explicitly consented Azure Agent" in second.text
+    assert second.json() == {"detail": {"reason_code": "chat_contract_invalid"}}
 
 
 def test_my_library_projection_rejects_detail_and_unavailable_data() -> None:
@@ -602,9 +973,7 @@ def test_cast_search_result_rejects_person_fields_and_small_cells() -> None:
         CastSearchResult.model_validate(
             {
                 **result.model_dump(mode="json"),
-                "anonymous_aggregates": [
-                    {"dimension": "industry", "value": "小規模", "count": 4}
-                ],
+                "anonymous_aggregates": [{"dimension": "industry", "value": "小規模", "count": 4}],
             }
         )
     with pytest.raises(ValueError):
@@ -662,11 +1031,36 @@ def test_fixture_chat_route_runs_cast_search_loop(monkeypatch) -> None:
     completed = second.json()
     assert completed["status"] == "completed"
     assert "該当件数: 22件" in completed["message"]["content_markdown"]
-    assert completed["message"]["evidence"][0]["evidence_id"].startswith(
-        "cast-search-v1-"
-    )
+    assert completed["message"]["evidence"][0]["evidence_id"].startswith("cast-search-v1-")
     assert "company_code" not in second.text
     assert "person_name" not in second.text
+
+
+@pytest.mark.asyncio
+async def test_fixture_cast_search_prioritizes_current_work_experience_intent() -> None:
+    backend = FixtureChatBackend()
+    first = await backend.start_chat(
+        conversation_id="conversation-cast-search-work-experience",
+        message="それを仕事として体験するなら、今参加できるものはある？",
+        history=[
+            ChatHistoryMessage(
+                role="assistant",
+                content="前の話題は学内イベントの予定についてでした。",
+            )
+        ],
+        advertised_tools={CAST_SEARCH_TOOL_NAME},
+    )
+
+    assert first.deferred is not None
+    assert first.deferred.tool_name == CAST_SEARCH_TOOL_NAME
+    assert first.deferred.arguments["kind"] == "internship"
+    assert first.deferred.arguments["filters"]["include_closed"] is False
+
+
+def test_fixture_cast_search_keeps_explicit_internship_kind() -> None:
+    arguments = FixtureChatBackend._cast_search_arguments("インターンを検索して")
+
+    assert arguments["kind"] == "internship"
 
 
 def test_cast_search_error_does_not_resume_chat(monkeypatch) -> None:
@@ -703,6 +1097,172 @@ def test_cast_search_error_does_not_resume_chat(monkeypatch) -> None:
             },
         )
     assert second.status_code == 422
+
+
+def cast_career_search_fixture_result() -> CastCareerSearchResult:
+    surfaces: list[CastCareerSurface] = ["job", "company", "hiring_record"]
+    return CastCareerSearchResult(
+        status="known",
+        searched_surfaces=surfaces,
+        surface_coverage=[
+            CastCareerSurfaceCoverage(
+                surface=surface,
+                status="known",
+                total_count=8,
+                returned_count=8,
+                fetched_pages=1,
+                page_size=10,
+                reason_code=None,
+            )
+            for surface in surfaces
+        ],
+        total_count=32,
+        returned_count=32,
+        anonymous_aggregates=[
+            CastCareerAggregate(dimension="surface", value="company", count=8),
+            CastCareerAggregate(dimension="industry", value="情報通信", count=8),
+        ],
+        evidence_ids=[],
+        reason_codes=[],
+    )
+
+
+def test_fixture_chat_route_runs_one_cast_career_cross_search(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        first = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-cast-career-search",
+                "message": (
+                    "豊洲から通いやすく、機械系とプログラミングを使い、"
+                    "過去5年の採用実績とOB・OGがある企業"
+                ),
+                "history": [],
+                "client_tools": [{"name": CAST_CAREER_SEARCH_TOOL_NAME, "version": 1}],
+            },
+        ).json()
+        assert first["status"] == "tool_required"
+        call = first["calls"][0]
+        assert call["name"] == CAST_CAREER_SEARCH_TOOL_NAME
+        assert call["arguments"]["surfaces"] == [
+            "job",
+            "company",
+            "hiring_record",
+        ]
+        assert call["arguments"]["filters"]["graduation_years"] == [
+            2026,
+            2025,
+            2024,
+            2023,
+            2022,
+        ]
+        second = client.post(
+            f"/v1/chat/runs/{first['run_id']}/tool-results",
+            json={
+                "tool_call_id": call["tool_call_id"],
+                "name": CAST_CAREER_SEARCH_TOOL_NAME,
+                "version": 1,
+                "result": cast_career_search_fixture_result().model_dump(mode="json"),
+            },
+        )
+    assert second.status_code == 200
+    completed = second.json()
+    assert completed["status"] == "completed"
+    assert "横断検索しました" in completed["message"]["content_markdown"]
+    assert "合計件数: 32件" in completed["message"]["content_markdown"]
+    assert completed["message"]["evidence"][0]["evidence_id"].startswith("cast-career-search-v1-")
+    assert "company_name" not in second.text
+    assert "company_code" not in second.text
+
+
+def test_campus_career_question_does_not_complete_without_cast_capability(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/runs",
+            json={
+                "conversation_id": "conversation-route-cast-capability-missing",
+                "message": ("MLエンジニアとしては芝浦工業大学は今までどのような人がいましたか?"),
+                "history": [],
+                "client_tools": [{"name": "browser_read_url", "version": 1}],
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert "CAST" in payload["message"]["content_markdown"]
+    assert payload["message"]["evidence"] == []
+
+
+def test_chat_request_accepts_the_extension_read_only_capability_set() -> None:
+    names: list[ChatToolName] = [
+        "scombz_page_summary",
+        "scombz_read",
+        "google_calendar_availability",
+        "syllabus_search",
+        "browser_read_url",
+        "sitrus_read",
+        "moodle_read",
+        "my_library_read",
+        "cast_read",
+        "cast_alumni_read",
+        "cast_search",
+        "cast_career_search",
+        "library_catalog_search",
+        "library_item_read",
+        "library_catalog_browse",
+        "library_discovery_search",
+        "library_action_options",
+    ]
+    request = ChatRunRequest(
+        conversation_id="capability-set",
+        message="質問",
+        client_tools=[ChatClientTool(name=name, version=1) for name in names],
+    )
+    assert len(request.client_tools) == len(names)
+
+
+def test_cast_career_search_result_rejects_detail_and_small_cells() -> None:
+    result = cast_career_search_fixture_result()
+    assert "company_name" not in result.model_dump_json()
+    with pytest.raises(ValueError):
+        CastCareerSearchResult.model_validate(
+            {
+                **result.model_dump(mode="json"),
+                "company_name": "must stay local",
+            }
+        )
+    with pytest.raises(ValueError):
+        CastCareerSearchResult.model_validate(
+            {
+                **result.model_dump(mode="json"),
+                "anonymous_aggregates": [{"dimension": "industry", "value": "small", "count": 4}],
+            }
+        )
+
+
+def test_cast_career_search_drops_empty_optional_filters() -> None:
+    normalized = _normalize_cast_career_search_arguments(
+        {
+            "query": "情報系の採用実績",
+            "surfaces": ["hiring_record"],
+            "filters": {
+                "company_name": "  ",
+                "locations": [" 豊洲 ", ""],
+                "graduation_years": [2025],
+                "obog_required": None,
+            },
+        }
+    )
+
+    assert normalized["filters"] == {
+        "locations": ["豊洲"],
+        "graduation_years": [2025],
+    }
 
 
 def test_fixture_chat_route_runs_cast_alumni_aggregate_loop(monkeypatch) -> None:
@@ -745,9 +1305,7 @@ def test_fixture_chat_route_runs_cast_alumni_aggregate_loop(monkeypatch) -> None
     completed = second.json()
     assert completed["status"] == "completed"
     assert "登録プロフィール: 2件" in completed["message"]["content_markdown"]
-    assert completed["message"]["evidence"][0]["evidence_id"].startswith(
-        "cast-alumni-v1-"
-    )
+    assert completed["message"]["evidence"][0]["evidence_id"].startswith("cast-alumni-v1-")
     assert "氏名" not in second.text
     assert "連絡先" in completed["message"]["content_markdown"]
 
@@ -770,6 +1328,8 @@ def test_cast_alumni_result_has_no_person_fields() -> None:
                 "names": ["must stay local"],
             }
         )
+
+
 @pytest.mark.asyncio
 async def test_fixture_chat_replays_local_scombz_read_without_exposing_restricted_values() -> None:
     backend = FixtureChatBackend()
@@ -1008,12 +1568,8 @@ async def test_function_model_reads_authoritative_opac_detail_after_catalog_disc
                 ToolCallPart(
                     "final_result",
                     {
-                        "content_markdown": (
-                            "豊洲図書館の配架場所と請求記号を確認しました。"
-                        ),
-                        "evidence_ids": [
-                            "library-item-read-v1-0123456789abcdef"
-                        ],
+                        "content_markdown": ("豊洲図書館の配架場所と請求記号を確認しました。"),
+                        "evidence_ids": ["library-item-read-v1-0123456789abcdef"],
                     },
                     tool_call_id="final-location-1",
                 )
@@ -1053,9 +1609,7 @@ async def test_function_model_reads_authoritative_opac_detail_after_catalog_disc
         publication_year=2017,
         format="book",
         campus="toyosu",
-        url=(
-            "https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB23092122"
-        ),
+        url=("https://library.shibaura-it.ac.jp/opc/recordID/catalog.bib/BB23092122"),
         holdings=[
             LibraryHoldingSummary(
                 campus="toyosu",
@@ -1072,9 +1626,7 @@ async def test_function_model_reads_authoritative_opac_detail_after_catalog_disc
     first = await backend.start_chat(
         conversation_id="conversation-library-location",
         message="この本はどこに配架されていますか？",
-        history=[
-            ChatHistoryMessage(role="user", content="ロボット解体新書は大学にありますか？")
-        ],
+        history=[ChatHistoryMessage(role="user", content="ロボット解体新書は大学にありますか？")],
         advertised_tools=advertised,
     )
     assert first.deferred is not None
@@ -1116,11 +1668,113 @@ async def test_function_model_reads_authoritative_opac_detail_after_catalog_disc
     )
     assert completed.draft is not None
     assert "library-item-read-v1-0123456789abcdef" in captured[-1]
-    assert completed.draft.evidence_ids == [
-        "library-item-read-v1-0123456789abcdef"
-    ]
+    assert completed.draft.evidence_ids == ["library-item-read-v1-0123456789abcdef"]
     assert "豊洲図書館" in completed.draft.content_markdown
     assert "配架場所" in completed.draft.content_markdown
+
+
+@pytest.mark.asyncio
+async def test_function_model_searches_three_named_books_individually(
+    monkeypatch,
+) -> None:
+    """A multi-book holding check must preserve one query per original title."""
+
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    titles = [
+        "ROS2とPythonで作って学ぶAIロボット入門 改訂第2版",
+        "改訂新版 ROS 2ではじめよう 次世代ロボットプログラミング",
+        "機械学習入門 ボルツマン機械学習から深層学習まで",
+    ]
+    model_turn = [0]
+    requested_queries: list[str] = []
+
+    def model_function(_messages, _info):
+        index = model_turn[0]
+        model_turn[0] += 1
+        if index < len(titles):
+            query = titles[index]
+            requested_queries.append(query)
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        LIBRARY_CATALOG_SEARCH_TOOL_NAME,
+                        {"query": query, "limit": 10},
+                        tool_call_id=f"catalog-multi-{index + 1}",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "3冊を個別に確認しました。",
+                        "evidence_ids": [],
+                    },
+                    tool_call_id="final-multi-book",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="multi-book-catalog-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[library_catalog_search],
+    )
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    advertised = {LIBRARY_CATALOG_SEARCH_TOOL_NAME}
+
+    execution = await backend.start_chat(
+        conversation_id="conversation-three-library-books",
+        message="その3冊は大学にある？",
+        history=[
+            ChatHistoryMessage(
+                role="assistant",
+                content="\n".join(f"{index + 1}. {title}" for index, title in enumerate(titles)),
+            )
+        ],
+        advertised_tools=advertised,
+    )
+    seen_call_ids: set[str] = set()
+    evidence_context: list[EvidenceLink] = []
+    for index, title in enumerate(titles):
+        assert execution.deferred is not None
+        assert execution.deferred.tool_name == LIBRARY_CATALOG_SEARCH_TOOL_NAME
+        assert execution.deferred.arguments["query"] == title
+        current_call_id = execution.deferred.tool_call_id
+        evidence_context.append(
+            EvidenceLink(
+                evidence_id=f"library-catalog-search-v1-{index + 1:016x}",
+                title="芝浦工業大学公式OPACの公開カタログ検索",
+                source_type="library",
+                locator=f"orbit-library://public/{index + 1:032x}",
+                data_classification="public",
+            )
+        )
+        execution = await backend.resume_chat(
+            deferred=execution.deferred,
+            tool_result=LibraryCatalogSearchResult(
+                status="known",
+                query=title,
+                items=[],
+                reason_code=None,
+            ),
+            context=evidence_context,
+            advertised_tools=advertised,
+            seen_tool_call_ids=seen_call_ids,
+        )
+        seen_call_ids.add(current_call_id)
+
+    assert execution.draft is not None
+    assert requested_queries == titles
+    assert all("\n" not in query for query in requested_queries)
+    assert len(set(requested_queries)) == 3
 
 
 @pytest.mark.asyncio
@@ -1133,9 +1787,7 @@ async def test_function_model_sends_only_moodle_derived_projection(monkeypatch) 
         calls[0] += 1
         if calls[0] == 1:
             return ModelResponse(
-                parts=[
-                    ToolCallPart(MOODLE_TOOL_NAME, {}, tool_call_id="moodle-call-1")
-                ]
+                parts=[ToolCallPart(MOODLE_TOOL_NAME, {}, tool_call_id="moodle-call-1")]
             )
         captured[0] = str(messages)
         return ModelResponse(
@@ -1323,9 +1975,7 @@ async def test_function_model_runs_moodle_library_cast_sequence_with_derived_val
                 ]
             )
         if calls[0] == 3:
-            return ModelResponse(
-                parts=[ToolCallPart(CAST_TOOL_NAME, {}, tool_call_id="cast-1")]
-            )
+            return ModelResponse(parts=[ToolCallPart(CAST_TOOL_NAME, {}, tool_call_id="cast-1")])
         return ModelResponse(
             parts=[
                 ToolCallPart(
@@ -1532,8 +2182,7 @@ async def test_function_model_deferred_cast_search_accepts_semantic_filters_only
     )
     completed = await backend.resume_chat(
         deferred=first.deferred,
-        tool_result=cast_search_fixture_result()
-        .model_copy(
+        tool_result=cast_search_fixture_result().model_copy(
             update={
                 "evidence_ids": ["cast-search-v1-local1234567890"],
                 "applied_filters": CastSearchAppliedFilters(
@@ -1551,3 +2200,132 @@ async def test_function_model_deferred_cast_search_accepts_semantic_filters_only
     assert completed.draft.evidence_ids == ["cast-search-v1-server1234567890abcd"]
     assert "cast-search-v1-local1234567890" not in captured[-1]
     assert "個人名は外部へ出さない" not in captured[-1]
+
+
+@pytest.mark.asyncio
+async def test_function_model_runs_one_cast_career_search_across_nine_surfaces() -> None:
+    """The high-level CAST tool is one deferred call for every career surface."""
+
+    calls = [0]
+    captured: list[str] = []
+
+    surfaces: list[CastCareerSurface] = [
+        "job",
+        "internship",
+        "company_session",
+        "company",
+        "hiring_record",
+        "selection_report",
+        "recording",
+        "career_event",
+        "counseling",
+    ]
+
+    def model_function(messages, _info):
+        calls[0] += 1
+        captured.append(str(messages))
+        if calls[0] == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        CAST_CAREER_SEARCH_TOOL_NAME,
+                        {
+                            "query": (
+                                "求人、インターン、説明会、企業、採用実績、選考記録、"
+                                "録画、イベント、相談枠を一度に確認して"
+                            ),
+                            "surfaces": surfaces,
+                            "filters": {
+                                "locations": ["豊洲"],
+                                "technical_domains": ["機械工学", "プログラミング"],
+                                "graduation_years": [2026, 2025, 2024, 2023, 2022],
+                                "obog_required": True,
+                                "recording_required": True,
+                            },
+                            "limit": 10,
+                            "exhaustive": False,
+                        },
+                        tool_call_id="cast-career-call-1",
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "final_result",
+                    {
+                        "content_markdown": "CASTの複数面を順番に確認しました。",
+                        "evidence_ids": ["cast-career-search-v1-server1234567890abcd"],
+                    },
+                    tool_call_id="cast-career-final-1",
+                )
+            ]
+        )
+
+    agent = Agent(
+        FunctionModel(model_function, model_name="cast-career-cross-search-test"),
+        output_type=[ChatDraft, DeferredToolRequests],
+        instructions="test",
+        tools=[cast_career_search],
+    )
+    backend = OpenAIAgent(
+        api_key="synthetic-key",
+        model="synthetic-model",
+        provider_name="Azure OpenAI",
+    )
+    backend._chat_agent = lambda *, advertised_tools: agent  # type: ignore[method-assign]
+    advertised = {CAST_CAREER_SEARCH_TOOL_NAME}
+    first = await backend.start_chat(
+        conversation_id="conversation-cast-career-cross-search-function-model",
+        message="求人、インターン、説明会、企業、採用実績、選考記録、録画、イベント、相談枠を一度に確認して",
+        history=[],
+        advertised_tools=advertised,
+    )
+    assert first.deferred is not None
+    assert first.deferred.tool_name == CAST_CAREER_SEARCH_TOOL_NAME
+    assert first.deferred.arguments["surfaces"] == surfaces
+    assert first.deferred.arguments["filters"]["obog_required"] is True
+
+    evidence = EvidenceLink(
+        evidence_id="cast-career-search-v1-server1234567890abcd",
+        title="CAST横断検索から導出した匿名集計",
+        source_type="career",
+        locator="orbit-cast://career-search/1234567890abcdef",
+        data_classification="personal",
+    )
+    completed = await backend.resume_chat(
+        deferred=first.deferred,
+        tool_result=CastCareerSearchResult(
+            status="partial",
+            searched_surfaces=surfaces,
+            surface_coverage=[
+                CastCareerSurfaceCoverage(
+                    surface=surface,
+                    status="known" if surface != "recording" else "unavailable",
+                    total_count=8 if surface != "recording" else None,
+                    returned_count=8 if surface != "recording" else 0,
+                    fetched_pages=1,
+                    page_size=10,
+                    reason_code=None if surface != "recording" else "support_read_pending",
+                )
+                for surface in surfaces
+            ],
+            total_count=40,
+            returned_count=40,
+            anonymous_aggregates=[
+                CastCareerAggregate(dimension="surface", value="job", count=8),
+                CastCareerAggregate(dimension="industry", value="情報通信", count=8),
+            ],
+            evidence_ids=[],
+            reason_codes=["support_read_pending"],
+        ),
+        context=[evidence],
+        advertised_tools=advertised,
+    )
+    assert completed.draft is not None
+    assert completed.draft.evidence_ids == [evidence.evidence_id]
+    serialized = "\n".join(captured)
+    assert "cast_career_search" in serialized
+    assert "company_code" not in serialized
+    assert "source_url" not in serialized
+    assert "CAST横断検索から導出した匿名集計" not in serialized

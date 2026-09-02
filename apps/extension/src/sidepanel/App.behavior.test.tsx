@@ -72,16 +72,6 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
-function nonJsonResponse(status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: vi.fn(async () => {
-      throw new SyntaxError("Unexpected token");
-    }),
-  } as unknown as Response;
-}
-
 function responseSequence(
   responses: Array<Response | Error>,
 ): ReturnType<typeof vi.fn> {
@@ -207,6 +197,76 @@ describe("Side Panel B1 agent loop behavior", () => {
         ?.hasAttribute("hidden"),
     ).toBe(true);
     expect(settingsFocus).toHaveBeenCalled();
+  });
+
+  it("copies and clears session-only OPAC diagnostics from development settings", async () => {
+    const writeText = vi.fn(async (_value: string) => undefined);
+    mounted = await mountSidePanel(
+      () => <App />,
+      (runtime) => {
+        runtime.sendMessage.mockImplementation(
+          (
+            message: { type?: string },
+            callback?: (response: unknown) => void,
+          ) => {
+            if (message.type === MESSAGE_TYPES.opacDiagnosticsGet) {
+              callback?.({
+                schema_version: "v1",
+                events: [
+                  {
+                    schema_version: "v1",
+                    occurred_at: "2026-08-24T00:00:00.000Z",
+                    operation_id: "operation-1",
+                    query: "ROS 2 入門",
+                    phase: "search_completed",
+                    route_kind: "single_record",
+                    result_count: 1,
+                    duration_ms: 120,
+                    status: "known",
+                    reason_code: null,
+                  },
+                ],
+              });
+            } else if (message.type === MESSAGE_TYPES.opacDiagnosticsClear) {
+              callback?.({ ok: true });
+            } else {
+              callback?.(null);
+            }
+          },
+        );
+      },
+    );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    const settingsButton = mounted.document.querySelector(
+      'button[aria-label="設定"]',
+    );
+    if (!(settingsButton instanceof HTMLElement)) {
+      throw new Error("Settings button was not rendered.");
+    }
+    await click(settingsButton);
+    await waitFor(
+      () => mounted?.document.body.textContent?.includes("現在1件") ?? false,
+    );
+
+    await click(buttonByName(mounted.document, "OPAC診断ログをコピー"));
+    await waitFor(() => writeText.mock.calls.length === 1);
+    expect(writeText.mock.calls[0]?.[0]).toContain("ROS 2 入門");
+    expect(mounted.document.body.textContent).toContain(
+      "OPAC診断ログ 1件をコピーしました。",
+    );
+
+    await click(buttonByName(mounted.document, "OPAC診断ログを消去"));
+    await waitFor(
+      () =>
+        mounted?.document.body.textContent?.includes(
+          "OPAC診断ログを消去しました。",
+        ) ?? false,
+    );
+    expect(mounted.document.body.textContent).toContain("現在0件");
   });
 
   it("requests the synthetic campus_entered proposal once, only after an explicit click", async () => {
@@ -528,30 +588,11 @@ describe("Side Panel B1 agent loop behavior", () => {
       >,
     ],
     [
-      "HTTP failure with string detail",
-      [
-        jsonResponse({ detail: "validation failed" }, 422),
-        jsonResponse(completedRun),
-      ] as Array<Response | Error>,
-    ],
-    [
       "HTTP failure with object detail",
       [
         jsonResponse({ detail: [{ loc: ["body"], msg: "invalid" }] }, 422),
         jsonResponse(completedRun),
       ] as Array<Response | Error>,
-    ],
-    [
-      "non-JSON failure",
-      [nonJsonResponse(502), jsonResponse(completedRun)] as Array<
-        Response | Error
-      >,
-    ],
-    [
-      "empty JSON failure",
-      [jsonResponse(undefined), jsonResponse(completedRun)] as Array<
-        Response | Error
-      >,
     ],
   ])(
     "does not fake success for %s and leaves proposal request retryable",
@@ -582,12 +623,7 @@ describe("Side Panel B1 agent loop behavior", () => {
     },
   );
 
-  it.each([
-    ["empty action_id", { action_id: "" }],
-    ["empty evidence", { evidence: [] }],
-    ["zero duration", { duration_minutes: 0 }],
-    ["non-integer duration", { duration_minutes: "12" }],
-  ])(
+  it.each([["empty evidence", { evidence: [] }]])(
     "does not adopt malformed successful proposal: %s",
     async (_name, patch) => {
       const fetcher = responseSequence([

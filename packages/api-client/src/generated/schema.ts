@@ -55,6 +55,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/chat/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat Capabilities
+         * @description Return the authenticated Chat contract used for capability intersection.
+         *
+         *     The legacy capabilities endpoint above is intentionally untouched.  This
+         *     endpoint is a stricter, versioned advertisement for the extension and is
+         *     fail-closed for live SCombZ student reads.
+         */
+        get: operations["chat_capabilities_v1_chat_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agent/runs": {
         parameters: {
             query?: never;
@@ -100,6 +124,74 @@ export interface paths {
         put?: never;
         /** Start Chat Run */
         post: operations["start_chat_run_v1_chat_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/chat/runs/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Chat Run */
+        get: operations["get_chat_run_v1_chat_runs__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/chat/runs/{run_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Chat Run Events */
+        get: operations["get_chat_run_events_v1_chat_runs__run_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/library/catalog/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Search Library Catalog */
+        post: operations["search_library_catalog_v1_library_catalog_search_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/library/items/read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Read Library Item */
+        post: operations["read_library_item_v1_library_items_read_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -404,6 +496,35 @@ export interface components {
             reason_code?: string | null;
         };
         /**
+         * CastAlumniProfile
+         * @description Bounded pseudonymous CAST profile for the restricted career scope.
+         *
+         *     The alias is generated in the extension and is the only person-like
+         *     identifier accepted by the external Agent.  Names, contact values,
+         *     source IDs, free text, and URLs have no fields in this projection.
+         */
+        CastAlumniProfile: {
+            /** Alias */
+            alias: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "alumni" | "supporter" | "unknown";
+            /** Company */
+            company?: string | null;
+            /** Technical Domains */
+            technical_domains?: string[];
+            /** Job Types */
+            job_types?: string[];
+            /** Location Area */
+            location_area?: string | null;
+            /** Graduation Year Bucket */
+            graduation_year_bucket?: string | null;
+            /** Evidence Id */
+            evidence_id?: string | null;
+        };
+        /**
          * CastAlumniReadResult
          * @description Generalized CAST supporter data with no person or contact fields.
          *
@@ -426,11 +547,13 @@ export interface components {
             /**
              * Data Classification
              * @default personal
-             * @constant
+             * @enum {string}
              */
-            data_classification: "personal";
+            data_classification: "personal" | "restricted";
             /** Profile Count */
             profile_count: number;
+            /** Profiles */
+            profiles?: components["schemas"]["CastAlumniProfile"][];
             /** Topic Categories */
             topic_categories?: string[];
             /** Availability Frequencies */
@@ -446,6 +569,81 @@ export interface components {
             contact_present: boolean;
             /** Discovered Link Count */
             discovered_link_count: number;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /**
+         * CastCareerAggregate
+         * @description Anonymized cell from the local nine-surface CAST result.
+         *
+         *     Values are intentionally category labels only.  A minimum cell size keeps
+         *     the projection from becoming a proxy for an individual record.
+         */
+        CastCareerAggregate: {
+            /**
+             * Dimension
+             * @enum {string}
+             */
+            dimension: "surface" | "industry" | "location" | "graduation_year" | "occupation" | "technical_domain" | "relation";
+            /** Value */
+            value: string;
+            /** Count */
+            count: number;
+        };
+        /**
+         * CastCareerSearchResult
+         * @description Aggregate-only projection for one bounded CAST career search.
+         *
+         *     Detailed cards remain in the extension.  This model deliberately has no
+         *     query, company, person, date, URL, internal-id, or raw-HTML fields.
+         */
+        CastCareerSearchResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "form_changed" | "rate_limited" | "local_model_unavailable" | "unavailable";
+            /** Searched Surfaces */
+            searched_surfaces: ("job" | "internship" | "company_session" | "company" | "hiring_record" | "selection_report" | "recording" | "career_event" | "counseling")[];
+            /** Surface Coverage */
+            surface_coverage: components["schemas"]["CastCareerSurfaceCoverage"][];
+            /** Total Count */
+            total_count: number;
+            /** Returned Count */
+            returned_count: number;
+            /** Anonymous Aggregates */
+            anonymous_aggregates?: components["schemas"]["CastCareerAggregate"][];
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /** Reason Codes */
+            reason_codes?: string[];
+        };
+        /** CastCareerSurfaceCoverage */
+        CastCareerSurfaceCoverage: {
+            /**
+             * Surface
+             * @enum {string}
+             */
+            surface: "job" | "internship" | "company_session" | "company" | "hiring_record" | "selection_report" | "recording" | "career_event" | "counseling";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "form_changed" | "rate_limited" | "local_model_unavailable" | "unavailable";
+            /** Total Count */
+            total_count?: number | null;
+            /** Returned Count */
+            returned_count: number;
+            /** Fetched Pages */
+            fetched_pages: number;
+            /** Page Size */
+            page_size: number;
             /** Reason Code */
             reason_code?: string | null;
         };
@@ -584,13 +782,54 @@ export interface components {
             /** Related Books */
             related_books?: components["schemas"]["RelatedBookCandidate"][];
         };
+        /**
+         * ChatCapabilities
+         * @description Authenticated capability advertisement for the Chat extension.
+         *
+         *     The legacy ``/v1/capabilities`` response intentionally remains stable for
+         *     older clients.  Chat clients use this richer projection to compute the
+         *     intersection of locally available tools and the deployed server contract.
+         */
+        ChatCapabilities: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Agent Backend
+             * @enum {string}
+             */
+            agent_backend: "fixture" | "openai" | "azure_openai";
+            /**
+             * Observability
+             * @enum {string}
+             */
+            observability: "off" | "wandb";
+            /**
+             * Scombz Student Read Mode
+             * @enum {string}
+             */
+            scombz_student_read_mode: "off" | "fixture" | "live";
+            /**
+             * Sitrus Personal Context Mode
+             * @default off
+             * @enum {string}
+             */
+            sitrus_personal_context_mode: "off" | "fixture" | "live";
+            /** Supported Client Tools */
+            supported_client_tools: ("scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "cast_career_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options")[];
+            /** Max Client Tools */
+            max_client_tools: number;
+        };
         /** ChatClientTool */
         ChatClientTool: {
             /**
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "cast_career_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -642,6 +881,19 @@ export interface components {
             /** Observed At */
             observed_at: string;
         };
+        /**
+         * ChatRunBackground
+         * @description Acknowledgement for a bounded in-memory background chat run.
+         */
+        ChatRunBackground: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "background";
+            /** Run Id */
+            run_id: string;
+        };
         /** ChatRunCompleted */
         ChatRunCompleted: {
             /**
@@ -651,6 +903,7 @@ export interface components {
             status: "completed";
             message: components["schemas"]["ChatAssistantMessage"];
             proposal?: components["schemas"]["ActionProposal"] | null;
+            context_manifest?: components["schemas"]["ChatContextManifest"] | null;
         };
         /** ChatRunRequest */
         ChatRunRequest: {
@@ -658,6 +911,12 @@ export interface components {
             conversation_id: string;
             /** Message */
             message: string;
+            /**
+             * Execution Mode
+             * @default sync
+             * @enum {string}
+             */
+            execution_mode: "sync" | "background";
             /** History */
             history?: components["schemas"]["ChatHistoryMessage"][];
             /** Client Tools */
@@ -684,7 +943,7 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "cast_career_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
@@ -703,14 +962,14 @@ export interface components {
              * Name
              * @enum {string}
              */
-            name: "scombz_page_summary" | "scombz_read" | "google_calendar_availability" | "syllabus_search" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
+            name: "scombz_page_summary" | "scombz_read" | "scombz_course_list" | "scombz_portal_read" | "scombz_course_read" | "scombz_material_search" | "google_calendar_availability" | "syllabus_search" | "syllabus_read" | "browser_read_url" | "sitrus_read" | "moodle_read" | "my_library_read" | "cast_read" | "cast_alumni_read" | "cast_search" | "cast_career_search" | "library_catalog_search" | "library_item_read" | "library_catalog_browse" | "library_discovery_search" | "library_action_options";
             /**
              * Version
              * @constant
              */
             version: 1;
             /** Result */
-            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["CastSearchResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
+            result: components["schemas"]["CalendarAvailabilityResult"] | components["schemas"]["ScombzPageSummaryResult"] | components["schemas"]["ScombzReadResult"] | components["schemas"]["ScombzCourseListResult"] | components["schemas"]["ScombzPortalReadResult"] | components["schemas"]["ScombzCourseReadResult"] | components["schemas"]["ScombzMaterialSearchResult"] | components["schemas"]["SyllabusSearchResult"] | components["schemas"]["SyllabusReadResult"] | components["schemas"]["BrowserReadResult"] | components["schemas"]["SitrusGradeResult"] | components["schemas"]["MoodleReadResult"] | components["schemas"]["LegacyMyLibraryReadResult"] | components["schemas"]["ScopedMyLibraryReadResult"] | components["schemas"]["CastReadResult"] | components["schemas"]["CastAlumniReadResult"] | components["schemas"]["CastSearchResult"] | components["schemas"]["CastCareerSearchResult"] | components["schemas"]["LibraryCatalogSearchResult"] | components["schemas"]["LibraryItemReadResult"] | components["schemas"]["LibraryCatalogBrowseResult"] | components["schemas"]["LibraryDiscoverySearchResult"] | components["schemas"]["LibraryActionOptionsResult"];
         };
         /**
          * ClientTool
@@ -831,6 +1090,12 @@ export interface components {
             reason_code: string;
             /** Required Inputs */
             required_inputs?: ("pickup_campus" | "reason" | "receiver" | "payment" | "fee" | "page_range")[];
+            /**
+             * Verification Level
+             * @default none
+             * @enum {string}
+             */
+            verification_level: "none" | "entry_visible";
         };
         /**
          * LibraryActionOptionsResult
@@ -932,6 +1197,39 @@ export interface components {
             reason_code?: string | null;
         };
         /**
+         * LibraryCatalogSearchRequest
+         * @description Authenticated server-side OPAC search request.
+         */
+        LibraryCatalogSearchRequest: {
+            /** Query */
+            query: string;
+            /** Author */
+            author?: string | null;
+            /** Subject */
+            subject?: string | null;
+            /** Isbn */
+            isbn?: string | null;
+            /** Pub Year */
+            pub_year?: number | null;
+            /**
+             * Campus
+             * @default any
+             * @enum {string}
+             */
+            campus: "toyosu" | "omiya" | "any";
+            /**
+             * Format
+             * @default any
+             * @enum {string}
+             */
+            format: "book" | "journal" | "ebook" | "any";
+            /**
+             * Limit
+             * @default 10
+             */
+            limit: number;
+        };
+        /**
          * LibraryCatalogSearchResult
          * @description Bounded public results from the official OPAC search form.
          */
@@ -1023,6 +1321,22 @@ export interface components {
             due_date?: string | null;
             /** Reservation Count */
             reservation_count?: number | null;
+        };
+        /**
+         * LibraryItemReadRequest
+         * @description Authenticated server-side OPAC detail request.
+         */
+        LibraryItemReadRequest: {
+            /** Resource Ref */
+            resource_ref: string;
+            /**
+             * Presentation
+             * @default summary
+             * @enum {string}
+             */
+            presentation: "summary" | "location";
+            /** Records */
+            records?: components["schemas"]["ChatLibraryContextRecord"][];
         };
         /**
          * LibraryItemReadResult
@@ -1255,6 +1569,156 @@ export interface components {
             /** Resource Ref */
             resource_ref: string;
         };
+        /** ScombzCourseListResult */
+        ScombzCourseListResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "unavailable";
+            /** Courses */
+            courses?: components["schemas"]["ScombzCourseSummary"][];
+            coverage: components["schemas"]["ScombzCoverage"];
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /** ScombzCourseReadItem */
+        ScombzCourseReadItem: {
+            /** Ref */
+            ref: string;
+            /** Course Ref */
+            course_ref: string;
+            /** Section */
+            section: string;
+            /** Title */
+            title: string;
+            /** Body */
+            body?: string | null;
+            /** Due At */
+            due_at?: string | null;
+            /** State */
+            state?: string | null;
+            /**
+             * Has Pdf
+             * @default false
+             */
+            has_pdf: boolean;
+            /** Observed At */
+            observed_at: string;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
+        /** ScombzCourseReadResult */
+        ScombzCourseReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "unavailable";
+            /** Items */
+            items?: components["schemas"]["ScombzCourseReadItem"][];
+            /** Section States */
+            section_states?: {
+                [key: string]: "complete" | "truncated" | "failed" | "not_requested";
+            };
+            coverage: components["schemas"]["ScombzCoverage"];
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
+        /** ScombzCourseSummary */
+        ScombzCourseSummary: {
+            /** Course Ref */
+            course_ref: string;
+            /** Display Name */
+            display_name: string;
+            /** Academic Year */
+            academic_year?: number | null;
+            /** Term */
+            term?: string | null;
+            /** Weekday */
+            weekday?: string | null;
+            /** Period */
+            period?: string | null;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
+        /**
+         * ScombzCoverage
+         * @description Bounded coverage report for cross-course SCombZ reads.
+         */
+        ScombzCoverage: {
+            /** Scope */
+            scope: string;
+            /** Requested */
+            requested: number;
+            /** Attempted */
+            attempted: number;
+            /** Succeeded */
+            succeeded: number;
+            /** Failed */
+            failed: number;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** ScombzMaterialSearchHit */
+        ScombzMaterialSearchHit: {
+            /** Material Ref */
+            material_ref: string;
+            /** Course Ref */
+            course_ref: string;
+            /** Material Title */
+            material_title: string;
+            /** Page */
+            page: number;
+            /** Quote */
+            quote: string;
+            /** Observed At */
+            observed_at: string;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
+        /** ScombzMaterialSearchResult */
+        ScombzMaterialSearchResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "unavailable";
+            /** Hits */
+            hits?: components["schemas"]["ScombzMaterialSearchHit"][];
+            coverage: components["schemas"]["ScombzCoverage"];
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
+        };
         /**
          * ScombzPageSummaryResult
          * @description A minimized summary of the currently displayed ScombZ page.
@@ -1277,6 +1741,42 @@ export interface components {
             related_link_count: number;
             /** Has Current Course */
             has_current_course: boolean;
+        };
+        /** ScombzPortalItem */
+        ScombzPortalItem: {
+            /** Ref */
+            ref: string;
+            /** Section */
+            section: string;
+            /** Title */
+            title: string;
+            /** Detail */
+            detail?: string | null;
+            /** Observed At */
+            observed_at: string;
+            /** Citation Uri */
+            citation_uri?: string | null;
+        };
+        /** ScombzPortalReadResult */
+        ScombzPortalReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "partial" | "reauth_required" | "unavailable";
+            /** Items */
+            items?: components["schemas"]["ScombzPortalItem"][];
+            coverage: components["schemas"]["ScombzCoverage"];
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
         };
         /**
          * ScombzReadAnnouncement
@@ -1398,14 +1898,30 @@ export interface components {
             reason_code: string | null;
         };
         /**
+         * SitrusCreditSummaryItem
+         * @description One minimized row from the SITRUS acquired-credit summary.
+         */
+        SitrusCreditSummaryItem: {
+            /** Category */
+            category: string;
+            /** Credit Type */
+            credit_type?: string | null;
+            /** Current Course Count */
+            current_course_count: number;
+            /** Current Credits */
+            current_credits: number;
+            /** Cumulative Course Count */
+            cumulative_course_count: number;
+            /** Cumulative Credits */
+            cumulative_credits: number;
+        };
+        /**
          * SitrusGradeItem
-         * @description One minimized grade row extracted from the displayed SITRUS notice.
+         * @description One minimized grade row returned by authenticated SITRUS APIs.
          */
         SitrusGradeItem: {
             /** Subject */
             subject: string;
-            /** Course Code */
-            course_code?: string | null;
             /** Credits */
             credits?: number | null;
             /**
@@ -1413,21 +1929,16 @@ export interface components {
              * @enum {string}
              */
             grade: "S" | "A" | "B" | "C" | "D" | "F" | "G" | "N" | "X" | "#";
+            /** Outcome */
+            outcome?: string | null;
             /** Year */
             year?: number | null;
             /** Term */
             term?: number | null;
-            /** Term Slot */
-            term_slot?: number | null;
-            /**
-             * Repeated
-             * @default false
-             */
-            repeated: boolean;
         };
         /**
          * SitrusGradeResult
-         * @description In-memory SITRUS projection; the PDF and student identity are omitted.
+         * @description Minimized SITRUS projection; identity and raw responses are omitted.
          */
         SitrusGradeResult: {
             /**
@@ -1440,21 +1951,65 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "known" | "unavailable";
+            status: "known" | "reauth_required" | "unavailable";
             /** Report Label */
             report_label?: string | null;
             /** Grades */
             grades?: components["schemas"]["SitrusGradeItem"][];
-            /** Cumulative Gpa */
-            cumulative_gpa?: number | null;
+            /** Credit Summaries */
+            credit_summaries?: components["schemas"]["SitrusCreditSummaryItem"][];
+            /** Observed At */
+            observed_at: string;
             /** Reason Code */
             reason_code?: string | null;
+        };
+        /** SyllabusReadResult */
+        SyllabusReadResult: {
+            /**
+             * Schema Version
+             * @default v1
+             * @constant
+             */
+            schema_version: "v1";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "known" | "unavailable";
+            /** Syllabus Ref */
+            syllabus_ref: string;
+            /** Url */
+            url: string;
+            /** Course Code */
+            course_code?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Instructors */
+            instructors?: string[];
+            /** Objectives */
+            objectives?: string | null;
+            /** Weekly Plan */
+            weekly_plan?: string[];
+            /** Evaluation */
+            evaluation?: string | null;
+            /** Textbooks */
+            textbooks?: string[];
+            /** Prerequisites */
+            prerequisites?: string | null;
+            /** Observed At */
+            observed_at: string;
+            /** Reason Code */
+            reason_code?: string | null;
+            /** Citation Uri */
+            citation_uri?: string | null;
         };
         /**
          * SyllabusResult
          * @description One result from the official public syllabus search.
          */
         SyllabusResult: {
+            /** Syllabus Ref */
+            syllabus_ref: string;
             /** Title */
             title: string;
             /** Course Code */
@@ -1465,6 +2020,8 @@ export interface components {
             url: string;
             /** Snippet */
             snippet?: string | null;
+            /** Citation Uri */
+            citation_uri?: string | null;
         };
         /**
          * SyllabusSearchResult
@@ -1490,6 +2047,8 @@ export interface components {
             faculty?: string | null;
             /** Results */
             results?: components["schemas"]["SyllabusResult"][];
+            /** Observed At */
+            observed_at: string;
             /** Reason Code */
             reason_code?: string | null;
         };
@@ -1619,6 +2178,26 @@ export interface operations {
             };
         };
     };
+    chat_capabilities_v1_chat_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatCapabilities"];
+                };
+            };
+        };
+    };
     start_agent_run_v1_agent_runs_post: {
         parameters: {
             query?: never;
@@ -1706,7 +2285,135 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ChatRunCompleted"] | components["schemas"]["ChatRunToolRequired"];
+                    "application/json": components["schemas"]["ChatRunCompleted"] | components["schemas"]["ChatRunToolRequired"] | components["schemas"]["ChatRunBackground"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chat_run_v1_chat_runs__run_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatRunCompleted"] | components["schemas"]["ChatRunToolRequired"] | components["schemas"]["ChatRunBackground"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chat_run_events_v1_chat_runs__run_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-sent progress events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_library_catalog_v1_library_catalog_search_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryCatalogSearchRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryCatalogSearchResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_library_item_v1_library_items_read_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryItemReadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryItemReadResult"];
                 };
             };
             /** @description Validation Error */

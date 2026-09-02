@@ -1,6 +1,7 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentApiClient, ChatRunResponse } from "../api/client";
+import { AgentApiError } from "../api/client";
 import {
   buttonByName,
   type MountedSidePanel,
@@ -9,7 +10,7 @@ import {
   waitFor,
 } from "../sidepanel/ui-test-helpers";
 import { ChatPanel } from "./ChatPanel";
-import { deleteAllConversations } from "./chat-history";
+import { deleteAllConversations, listConversations } from "./chat-history";
 
 function toolRequired(
   name: string,
@@ -198,6 +199,204 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(permissionsRequest).not.toHaveBeenCalled();
   });
 
+  it("reads SITRUS without an active grade tab and keeps the result ephemeral", async () => {
+    const apiClient = createApiClient(toolRequired("sitrus_read", {}));
+    Object.assign(apiClient, {
+      chatCapabilities: vi.fn(async () => ({
+        schema_version: "v1",
+        agent_backend: "azure_openai",
+        observability: "off",
+        scombz_student_read_mode: "off",
+        sitrus_personal_context_mode: "live",
+        supported_client_tools: ["sitrus_read"],
+        max_client_tools: 32,
+      })),
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    const sessionValues: Record<string, unknown> = {};
+    Object.assign(chrome, {
+      storage: {
+        session: {
+          get: vi.fn(async (key: string | string[] | null) => {
+            if (key === null) return { ...sessionValues };
+            const keys = Array.isArray(key) ? key : [key];
+            return Object.fromEntries(
+              keys
+                .filter((item) => item in sessionValues)
+                .map((item) => [item, sessionValues[item]]),
+            );
+          }),
+          set: vi.fn(async (values: Record<string, unknown>) => {
+            Object.assign(sessionValues, values);
+          }),
+          remove: vi.fn(async (key: string | string[]) => {
+            for (const item of Array.isArray(key) ? key : [key]) {
+              delete sessionValues[item];
+            }
+          }),
+        },
+      },
+    });
+    mounted.chromeRuntime.sendMessage.mockImplementation(
+      (request: unknown, callback?: (response: unknown) => void) => {
+        if (
+          typeof request === "object" &&
+          request !== null &&
+          (request as { type?: string }).type === "sitrus-read"
+        ) {
+          callback?.({
+            status: "known",
+            projection: {
+              schema_version: "v1",
+              status: "known",
+              report_label: "取得済み科目・単位数",
+              grades: [
+                {
+                  subject: "合成科目",
+                  credits: 2,
+                  grade: "A",
+                  outcome: "合格",
+                  year: 2025,
+                  term: 2,
+                },
+              ],
+              credit_summaries: [],
+              observed_at: "2026-09-02T00:00:00Z",
+              reason_code: null,
+            },
+          });
+          return;
+        }
+        callback?.({ ok: true });
+      },
+    );
+
+    await sendMessage(mounted, "私の成績を教えて");
+    await waitFor(() => apiClient.startChat.mock.calls.length === 1);
+    expect(apiClient.startChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "私の成績を教えて",
+        client_tools: [{ name: "sitrus_read", version: 1 }],
+      }),
+    );
+    await waitFor(
+      () => apiClient.submitChatToolResult.mock.calls.length === 1,
+      3_000,
+    );
+    const runtimeRequest = mounted.chromeRuntime.sendMessage.mock.calls.find(
+      ([request]) =>
+        typeof request === "object" &&
+        request !== null &&
+        (request as { type?: string }).type === "sitrus-read",
+    )?.[0] as Record<string, unknown> | undefined;
+    expect(runtimeRequest).toEqual({
+      type: "sitrus-read",
+      tool_call_id: "chat-read-only-sitrus_read",
+    });
+    const submitted = apiClient.submitChatToolResult.mock.calls[0]?.[1];
+    expect(JSON.stringify(submitted)).not.toMatch(
+      /student_number|gakuseki|teacher|classroom|cookie|token/iu,
+    );
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes("確認しました。"),
+    );
+    expect(await listConversations()).toHaveLength(0);
+  });
+
+  it("does not require a live SCombZ read for public OPAC from a SCombZ workspace", async () => {
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "public-opac-from-scombz",
+        content_markdown: "3冊をOPACで確認します。",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    Object.assign(apiClient, {
+      chatCapabilities: vi.fn(async () => ({
+        agent_backend: "fixture",
+        observability: "off",
+        scombz_student_read_mode: "off",
+        my_library_personal_context: true,
+        supported_client_tools: ["library_catalog_search", "library_item_read"],
+        max_client_tools: 32,
+      })),
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={{
+          title: "SCombZ Home",
+          url: "https://scombz.shibaura-it.ac.jp/portal/home",
+          kind: "scombz",
+        }}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "この3冊の中で図書館で借りれるものはある?");
+    await waitFor(() => apiClient.startChat.mock.calls.length === 1);
+
+    expect(
+      mounted.chromeRuntime.sendMessage.mock.calls.some(
+        ([request]) =>
+          typeof request === "object" &&
+          request !== null &&
+          (request as { type?: string }).type === "scombz-pin",
+      ),
+    ).toBe(false);
+    expect(apiClient.startChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "この3冊の中で図書館で借りれるものはある?",
+        client_tools: expect.arrayContaining([
+          { name: "library_catalog_search", version: 1 },
+          { name: "library_item_read", version: 1 },
+        ]),
+      }),
+    );
+  });
+
+  it("does not retain failed OPAC progress rows in the transcript", async () => {
+    const apiClient = createApiClient(
+      toolRequired("library_catalog_search", { query: "対象書籍" }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    mounted.chromeRuntime.sendMessage.mockImplementation(
+      (_request: unknown, callback?: (response: unknown) => void) => {
+        callback?.({
+          status: "unavailable",
+          reason_code: "search_navigation_timeout",
+        });
+      },
+    );
+
+    await sendMessage(mounted, "対象書籍は大学にある？");
+    await waitFor(() => apiClient.submitChatToolResult.mock.calls.length === 1);
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes("確認しました。"),
+    );
+
+    expect(
+      mounted.document.querySelectorAll(".chat-message-tool"),
+    ).toHaveLength(0);
+  });
+
   it("renders public OPAC holding location and loan status in the tool timeline", async () => {
     const apiClient = createApiClient(
       toolRequired("library_catalog_search", { query: "ロボット" }),
@@ -280,6 +479,7 @@ describe("ChatPanel read-only execution boundary", () => {
     const apiClient = createApiClient(
       toolRequired("library_item_read", {
         resource_ref: item.resource_ref,
+        presentation: "location",
       }),
     );
     mounted = await mountSidePanel(() => (
@@ -339,7 +539,9 @@ describe("ChatPanel read-only execution boundary", () => {
     );
     const request = apiClient.startChat.mock.calls[0]?.[0] as {
       client_tools?: Array<{ name: string }>;
+      execution_mode?: string;
     };
+    expect(request.execution_mode).toBeUndefined();
     expect(request.client_tools?.map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         "library_catalog_search",
@@ -349,6 +551,97 @@ describe("ChatPanel read-only execution boundary", () => {
       ]),
     );
     expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
+  it("does not send a campus-private message when capabilities cannot be verified", async () => {
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "must-not-send",
+        content_markdown: "unexpected",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    Object.assign(apiClient, {
+      chatCapabilities: vi.fn(async () => {
+        throw new Error("capability unavailable");
+      }),
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "SCombZの履修情報 PRIVATE_MARKER を確認して");
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes(
+        "学内データの利用可否を確認できません",
+      ),
+    );
+
+    expect(apiClient.startChat).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates evidence mirrored by message and context manifest before the next turn", async () => {
+    const mirroredEvidence = {
+      evidence_id: "web-search-v1-mirrored",
+      title: "公開書誌",
+      source_type: "web" as const,
+      locator: "https://books.example/llm",
+      data_classification: "public" as const,
+    };
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "mirrored-completed",
+        content_markdown: "最初の回答です。",
+        evidence: [mirroredEvidence],
+      },
+      proposal: null,
+      context_manifest: {
+        schema_version: "v1",
+        evidence: [mirroredEvidence],
+        library_records: [],
+        related_books: [],
+      },
+    });
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "LLMの本を教えて");
+    await waitFor(() =>
+      (mounted?.document.body.textContent ?? "").includes("最初の回答です。"),
+    );
+    apiClient.startChat.mockResolvedValueOnce({
+      status: "completed",
+      message: {
+        message_id: "mirrored-follow-up",
+        content_markdown: "続きの回答です。",
+        evidence: [],
+      },
+      proposal: null,
+    });
+
+    await sendMessage(mounted, "その本は大学にある？");
+    await waitFor(() => apiClient.startChat.mock.calls.length === 2);
+    const secondRequest = apiClient.startChat.mock.calls[1]?.[0] as {
+      context_manifest?: { evidence?: Array<{ evidence_id: string }> };
+    };
+    expect(secondRequest.context_manifest?.evidence).toHaveLength(1);
+    expect(secondRequest.context_manifest?.evidence?.[0]?.evidence_id).toBe(
+      mirroredEvidence.evidence_id,
+    );
   });
 
   it("renders compact related-book cards and reuses them in the next turn", async () => {
@@ -487,6 +780,39 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(mounted.document.body.textContent).not.toContain("許可を確認");
   });
 
+  it("does not describe a read-only 422 as a reservation failure", async () => {
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "unused-422",
+        content_markdown: "unused",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    apiClient.startChat.mockRejectedValue(
+      new AgentApiError("Agent API returned HTTP 422.", 422, {
+        detail: "validation failed",
+      }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "LLMに関するおすすめの本はある？");
+    await waitFor(
+      () => mounted?.document.querySelector(".chat-retry-button") !== null,
+    );
+
+    expect(mounted.document.body.textContent).toContain("接続仕様");
+    expect(mounted.document.body.textContent).not.toContain("予約や送信");
+  });
+
   it("shows a concise Agent progress status while the request is pending", async () => {
     let resolveStart: ((value: ChatRunResponse) => void) | undefined;
     const apiClient = createApiClient({
@@ -517,7 +843,7 @@ describe("ChatPanel read-only execution boundary", () => {
     await waitFor(() =>
       (
         mounted?.document.querySelector(".chat-progress")?.textContent ?? ""
-      ).includes("Agentに質問を送信中"),
+      ).includes("Agentが回答方針を検討中"),
     );
     expect(
       mounted.document.querySelector(".chat-progress")?.textContent,

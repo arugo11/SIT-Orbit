@@ -17,6 +17,13 @@ import type {
   LibraryDiscoverySearchArguments,
 } from "../connectors/library-discovery";
 import { isLibraryResourceRef } from "../connectors/library-discovery";
+import type { OpacDiagnosticSnapshot } from "../connectors/opac-diagnostics";
+import {
+  type CastCareerAgentProjection,
+  type CastCareerLocalResult,
+  type CastCareerSearchRequest,
+  isCastCareerSearchRequest,
+} from "../content/cast-career-source-runtime";
 import {
   type CastSearchAgentProjection,
   type CastSearchLocalKnownResult,
@@ -37,6 +44,7 @@ import {
   type ScombzTask,
   type ScombzTimetableItem,
 } from "../content/page-context";
+import type { PseudonymizedReasoningResult } from "../privacy/pseudonymization";
 import type { StableAgentLoopSnapshot } from "../sidepanel/loop-state";
 import type { WorkspaceSession, WorkspaceStatus } from "./workspace-session";
 
@@ -60,6 +68,10 @@ export const MESSAGE_TYPES = {
   workspaceSourceUnavailable: "workspace-source-unavailable",
   browserRead: "browser-read",
   syllabusSearch: "syllabus-search",
+  scombzPin: "scombz-pin",
+  scombzClearConversation: "scombz-clear-conversation",
+  scombzSourceIdentity: "scombz-source-identity",
+  scombzStudentRead: "scombz-student-read",
   sitrusRead: "sitrus-read",
   moodleRead: "moodle-read",
   moodleOpen: "moodle-open",
@@ -70,6 +82,7 @@ export const MESSAGE_TYPES = {
   castOpen: "cast-open",
   castAlumniRead: "cast-alumni-read",
   castSearch: "cast-search",
+  castCareerSearch: "cast-career-search",
   libraryCatalogSearch: "library-catalog-search",
   libraryItemRead: "library-item-read",
   libraryCatalogBrowse: "library-catalog-browse",
@@ -77,6 +90,8 @@ export const MESSAGE_TYPES = {
   libraryActionOptions: "library-action-options",
   libraryActionPreview: "library-action-preview",
   libraryActionSubmit: "library-action-submit",
+  opacDiagnosticsGet: "opac-diagnostics-get",
+  opacDiagnosticsClear: "opac-diagnostics-clear",
 } as const;
 
 export interface OpenWorkspaceMessage {
@@ -139,15 +154,256 @@ export interface SyllabusSearchMessage {
   faculty?: string | null;
 }
 
+export type ScombzStudentAction =
+  | "course_list"
+  | "portal_read"
+  | "course_read"
+  | "material_search";
+
+export interface ScombzStudentReadMessage {
+  type: typeof MESSAGE_TYPES.scombzStudentRead;
+  tool_call_id: string;
+  conversation_id: string;
+  action: ScombzStudentAction;
+  arguments: Record<string, unknown>;
+  /** Internal binding fields added by the service worker only. */
+  content_script_generation?: string;
+  adapter_version?: "scombz-student-v1";
+}
+
+export interface ScombzPinMessage {
+  type: typeof MESSAGE_TYPES.scombzPin;
+  conversation_id: string;
+}
+
+export interface ScombzClearConversationMessage {
+  type: typeof MESSAGE_TYPES.scombzClearConversation;
+  conversation_id: string;
+}
+
+export interface ScombzSourceIdentityMessage {
+  type: typeof MESSAGE_TYPES.scombzSourceIdentity;
+}
+
+export interface ScombzSourceIdentityResponse {
+  generation: string;
+  adapter_version: "scombz-student-v1";
+  /** False on the official login page or another unauthenticated route. */
+  authenticated?: boolean;
+}
+
+export function isScombzSourceIdentityMessage(
+  value: unknown,
+): value is ScombzSourceIdentityMessage {
+  return isRecord(value) && value.type === MESSAGE_TYPES.scombzSourceIdentity;
+}
+
+export type ScombzPinResponse =
+  | { status: "pinned" }
+  | { status: "unavailable"; reason_code: string };
+
+export function isScombzPinMessage(value: unknown): value is ScombzPinMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ScombzPinMessage>;
+  return (
+    candidate.type === MESSAGE_TYPES.scombzPin &&
+    typeof candidate.conversation_id === "string" &&
+    candidate.conversation_id.length > 0
+  );
+}
+
+export function isScombzClearConversationMessage(
+  value: unknown,
+): value is ScombzClearConversationMessage {
+  if (!isRecord(value)) return false;
+  return (
+    value.type === MESSAGE_TYPES.scombzClearConversation &&
+    typeof value.conversation_id === "string" &&
+    /^[A-Za-z0-9_-]{8,200}$/u.test(value.conversation_id) &&
+    Object.keys(value).every((key) => ["type", "conversation_id"].includes(key))
+  );
+}
+
+export interface ScombzStudentReadProjection {
+  schema_version: "v1";
+  status: "known" | "partial" | "reauth_required" | "unavailable";
+  coverage: {
+    scope: string;
+    requested: number;
+    attempted: number;
+    succeeded: number;
+    failed: number;
+    truncated: boolean;
+    next_cursor: string | null;
+  };
+  [key: string]: unknown;
+}
+
+export type ScombzStudentReadResponse = {
+  status: "known" | "partial" | "reauth_required" | "unavailable";
+  projection: ScombzStudentReadProjection;
+  reason_code?: string | null;
+};
+
+export function isScombzStudentReadResponse(
+  value: unknown,
+): value is ScombzStudentReadResponse {
+  if (!isRecord(value)) return false;
+  if (
+    !["known", "partial", "reauth_required", "unavailable"].includes(
+      value.status as string,
+    ) ||
+    !isRecord(value.projection) ||
+    value.projection.schema_version !== "v1" ||
+    value.projection.status !== value.status ||
+    !isScombzCoverageProjection(value.projection.coverage) ||
+    typeof value.projection.observed_at !== "string" ||
+    Object.keys(value.projection).some(
+      (key) =>
+        ![
+          "schema_version",
+          "status",
+          "coverage",
+          "observed_at",
+          "reason_code",
+          "courses",
+          "items",
+          "hits",
+          "section_states",
+        ].includes(key),
+    )
+  ) {
+    return false;
+  }
+  const projection = value.projection;
+  const courses = Array.isArray(projection.courses) ? projection.courses : null;
+  const items = Array.isArray(projection.items) ? projection.items : null;
+  const hits = Array.isArray(projection.hits) ? projection.hits : null;
+  const sectionStates =
+    isRecord(projection.section_states) &&
+    !Array.isArray(projection.section_states)
+      ? projection.section_states
+      : null;
+  const hasCourses = courses !== null;
+  const hasItems = items !== null;
+  const hasHits = hits !== null;
+  const hasSectionStates = sectionStates !== null;
+  const payloadKinds =
+    Number(hasCourses) +
+    Number(hasHits) +
+    Number(hasItems && !hasSectionStates) +
+    Number(hasItems && hasSectionStates);
+  if (payloadKinds !== 1) return false;
+  if (
+    (courses !== null && courses.length > 50) ||
+    (hits !== null && hits.length > 24) ||
+    (items !== null && items.length > 250) ||
+    (hasSectionStates && Object.keys(sectionStates).length > 20) ||
+    (hasSectionStates &&
+      !Object.values(sectionStates).every((state) =>
+        ["complete", "truncated", "failed", "not_requested"].includes(
+          String(state),
+        ),
+      ))
+  ) {
+    return false;
+  }
+  if (value.status === "reauth_required" || value.status === "unavailable") {
+    if (
+      (courses !== null && courses.length > 0) ||
+      (items !== null && items.length > 0) ||
+      (hits !== null && hits.length > 0) ||
+      (hasSectionStates && Object.keys(sectionStates).length > 0)
+    ) {
+      return false;
+    }
+  }
+  return (
+    value.reason_code === undefined ||
+    value.reason_code === null ||
+    typeof value.reason_code === "string"
+  );
+}
+
+function isScombzCoverageProjection(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const scope = value.scope;
+  const requested = value.requested;
+  const attempted = value.attempted;
+  const succeeded = value.succeeded;
+  const failed = value.failed;
+  const truncated = value.truncated;
+  const nextCursor = value.next_cursor;
+  if (
+    typeof scope !== "string" ||
+    scope.length === 0 ||
+    scope.length > 80 ||
+    typeof requested !== "number" ||
+    !Number.isInteger(requested) ||
+    requested < 0 ||
+    requested > 1000 ||
+    typeof attempted !== "number" ||
+    !Number.isInteger(attempted) ||
+    attempted < 0 ||
+    attempted > 1000 ||
+    typeof succeeded !== "number" ||
+    !Number.isInteger(succeeded) ||
+    succeeded < 0 ||
+    succeeded > 1000 ||
+    typeof failed !== "number" ||
+    !Number.isInteger(failed) ||
+    failed < 0 ||
+    failed > 1000 ||
+    typeof truncated !== "boolean" ||
+    (nextCursor !== null &&
+      (typeof nextCursor !== "string" ||
+        !/^orbit-scombz:\/\/cursor\/[A-Za-z0-9_-]{16,128}$/u.test(
+          nextCursor,
+        ))) ||
+    attempted < succeeded + failed ||
+    (!truncated && nextCursor !== null)
+  ) {
+    return false;
+  }
+  return Object.keys(value).every((key) =>
+    [
+      "scope",
+      "requested",
+      "attempted",
+      "succeeded",
+      "failed",
+      "truncated",
+      "next_cursor",
+    ].includes(key),
+  );
+}
+
+export function isScombzStudentReadMessage(
+  value: unknown,
+): value is ScombzStudentReadMessage {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ScombzStudentReadMessage>;
+  return (
+    candidate.type === MESSAGE_TYPES.scombzStudentRead &&
+    typeof candidate.tool_call_id === "string" &&
+    typeof candidate.conversation_id === "string" &&
+    ["course_list", "portal_read", "course_read", "material_search"].includes(
+      candidate.action as string,
+    ) &&
+    typeof candidate.arguments === "object" &&
+    candidate.arguments !== null
+  );
+}
+
 export interface SitrusReadMessage {
   type: typeof MESSAGE_TYPES.sitrusRead;
   tool_call_id: string;
-  page_url: string;
 }
 
 export type SitrusReadResponse =
   | { status: "known"; projection: unknown }
   | { status: "permission_required"; origin: string; pattern: string }
+  | { status: "reauth_required"; reason_code: string }
   | { status: "unavailable"; reason_code: string };
 
 export interface MoodleReadMessage {
@@ -209,11 +465,27 @@ export interface CastOpenMessage {
 export interface CastAlumniReadMessage {
   type: typeof MESSAGE_TYPES.castAlumniRead;
   tool_call_id: string;
+  conversation_id?: string;
 }
 
 export interface CastSearchMessage extends CastSearchRequest {
   type: typeof MESSAGE_TYPES.castSearch;
   tool_call_id: string;
+}
+
+export interface CastCareerSearchMessage extends CastCareerSearchRequest {
+  type: typeof MESSAGE_TYPES.castCareerSearch;
+  tool_call_id: string;
+}
+
+export interface CastCareerSearchResponse extends CastCareerLocalResult {
+  projection: CastCareerAgentProjection;
+  /**
+   * Detailed CAST context for the on-device Prompt API only.  Service Worker
+   * callers must never forward this field to the Agent API or persist it in
+   * chat history.
+   */
+  reasoning_projection?: PseudonymizedReasoningResult;
 }
 
 export type CastSearchResponse =
@@ -235,6 +507,7 @@ export interface LibraryItemReadMessage {
   type: typeof MESSAGE_TYPES.libraryItemRead;
   tool_call_id: string;
   resource_ref: string;
+  presentation?: "summary" | "location";
   /**
    * Public OPAC record URL carried by the local Context Manifest.  It lets a
    * restarted service worker re-derive and verify the opaque reference
@@ -259,12 +532,18 @@ export interface LibraryActionOptionsMessage {
   type: typeof MESSAGE_TYPES.libraryActionOptions;
   tool_call_id: string;
   resource_ref: string;
+  /** Public OPAC record URL used only to re-establish a ref after SW restart. */
+  record_url?: string;
 }
 
 export interface LibraryActionPreviewMessage {
   type: typeof MESSAGE_TYPES.libraryActionPreview;
   tool_call_id: string;
   operation: LibraryOperation;
+  /** Required for reserve previews after the user selects a pickup campus. */
+  inputs?: LibraryActionEditableInputs;
+  /** Local manifest URL used only to re-establish an opaque ref after SW restart. */
+  record_url?: string;
 }
 
 export interface LibraryActionSubmitMessage {
@@ -274,6 +553,17 @@ export interface LibraryActionSubmitMessage {
   inputs: LibraryActionEditableInputs;
   confirmation_label: "この内容で送信" | "公式ページを開く";
 }
+
+export interface OpacDiagnosticsGetMessage {
+  type: typeof MESSAGE_TYPES.opacDiagnosticsGet;
+}
+
+export interface OpacDiagnosticsClearMessage {
+  type: typeof MESSAGE_TYPES.opacDiagnosticsClear;
+}
+
+export type OpacDiagnosticsGetResponse = OpacDiagnosticSnapshot;
+export type OpacDiagnosticsClearResponse = { ok: boolean };
 
 export type LibraryCatalogSearchResponse =
   | { status: "known"; projection: LibraryCatalogSearchResult }
@@ -396,6 +686,10 @@ export type ExtensionMessage =
   | WorkspaceSourceUnavailableMessage
   | BrowserReadMessage
   | SyllabusSearchMessage
+  | ScombzSourceIdentityMessage
+  | ScombzPinMessage
+  | ScombzClearConversationMessage
+  | ScombzStudentReadMessage
   | SitrusReadMessage
   | MoodleReadMessage
   | MoodleOpenMessage
@@ -406,10 +700,13 @@ export type ExtensionMessage =
   | CastOpenMessage
   | CastAlumniReadMessage
   | CastSearchMessage
+  | CastCareerSearchMessage
   | LibraryCatalogSearchMessage
   | LibraryItemReadMessage
   | LibraryCatalogBrowseMessage
   | LibraryDiscoverySearchMessage
+  | OpacDiagnosticsGetMessage
+  | OpacDiagnosticsClearMessage
   | LibraryActionOptionsMessage
   | LibraryActionPreviewMessage
   | LibraryActionSubmitMessage;
@@ -453,10 +750,7 @@ export function isSitrusReadMessage(
     message.type === MESSAGE_TYPES.sitrusRead &&
     typeof message.tool_call_id === "string" &&
     message.tool_call_id.length > 0 &&
-    typeof message.page_url === "string" &&
-    /^https:\/\/sitrus\.sic\.shibaura-it\.ac\.jp\/SITRUS\/login\/(?:SeisekiTsutiSho|ShutokuTaniShukei)\.html(?:\?|#|$)/u.test(
-      message.page_url,
-    )
+    Object.keys(message).every((key) => ["type", "tool_call_id"].includes(key))
   );
 }
 
@@ -565,7 +859,11 @@ export function isCastAlumniReadMessage(
     isRecord(message) &&
     message.type === MESSAGE_TYPES.castAlumniRead &&
     typeof message.tool_call_id === "string" &&
-    message.tool_call_id.length > 0
+    message.tool_call_id.length > 0 &&
+    (message.conversation_id === undefined ||
+      (typeof message.conversation_id === "string" &&
+        message.conversation_id.length > 0 &&
+        message.conversation_id.length <= 200))
   );
 }
 
@@ -603,6 +901,39 @@ export function isCastSearchMessage(
     exhaustive: message.exhaustive,
   };
   return isCastSearchRequest(request);
+}
+
+export function isCastCareerSearchMessage(
+  message: unknown,
+): message is CastCareerSearchMessage {
+  if (!isRecord(message) || message.type !== MESSAGE_TYPES.castCareerSearch) {
+    return false;
+  }
+  if (
+    typeof message.tool_call_id !== "string" ||
+    message.tool_call_id.length === 0
+  ) {
+    return false;
+  }
+  const request = {
+    query: message.query,
+    surfaces: message.surfaces,
+    filters: message.filters,
+    limit: message.limit,
+    exhaustive: message.exhaustive,
+  };
+  if (!isCastCareerSearchRequest(request)) return false;
+  return Object.keys(message).every((key) =>
+    [
+      "type",
+      "tool_call_id",
+      "query",
+      "surfaces",
+      "filters",
+      "limit",
+      "exhaustive",
+    ].includes(key),
+  );
 }
 
 export function isLibraryCatalogSearchMessage(
@@ -686,6 +1017,13 @@ export function isLibraryItemReadMessage(
     message.tool_call_id.length > 0 &&
     isLibraryResourceRef(message.resource_ref)
   ) {
+    if (
+      message.presentation !== undefined &&
+      message.presentation !== "summary" &&
+      message.presentation !== "location"
+    ) {
+      return false;
+    }
     if (message.record_url === undefined) return true;
     if (typeof message.record_url !== "string") return false;
     try {
@@ -750,13 +1088,46 @@ export function isLibraryDiscoverySearchMessage(
 export function isLibraryActionOptionsMessage(
   message: unknown,
 ): message is LibraryActionOptionsMessage {
-  return (
-    isRecord(message) &&
-    message.type === MESSAGE_TYPES.libraryActionOptions &&
-    typeof message.tool_call_id === "string" &&
-    message.tool_call_id.length > 0 &&
-    isLibraryResourceRef(message.resource_ref)
-  );
+  if (
+    !(
+      isRecord(message) &&
+      message.type === MESSAGE_TYPES.libraryActionOptions &&
+      typeof message.tool_call_id === "string" &&
+      message.tool_call_id.length > 0 &&
+      isLibraryResourceRef(message.resource_ref)
+    )
+  ) {
+    return false;
+  }
+  if (message.record_url === undefined) return true;
+  if (typeof message.record_url !== "string") return false;
+  try {
+    const url = new URL(message.record_url);
+    return (
+      url.protocol === "https:" &&
+      url.origin === "https://library.shibaura-it.ac.jp" &&
+      url.pathname.startsWith("/opc/recordID/catalog.bib/") &&
+      url.pathname.slice("/opc/recordID/catalog.bib/".length).length > 0 &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.username === "" &&
+      url.password === ""
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function isOpacDiagnosticsGetMessage(
+  message: unknown,
+): message is OpacDiagnosticsGetMessage {
+  return isMessageType(message, MESSAGE_TYPES.opacDiagnosticsGet);
+}
+
+export function isOpacDiagnosticsClearMessage(
+  message: unknown,
+): message is OpacDiagnosticsClearMessage {
+  return isMessageType(message, MESSAGE_TYPES.opacDiagnosticsClear);
 }
 
 const LIBRARY_PREVIEW_ID_PATTERN =
@@ -765,17 +1136,47 @@ const LIBRARY_PREVIEW_ID_PATTERN =
 export function isLibraryActionPreviewMessage(
   message: unknown,
 ): message is LibraryActionPreviewMessage {
-  return (
-    isRecord(message) &&
-    Object.keys(message).length === 3 &&
-    Object.keys(message).every((key) =>
-      ["type", "tool_call_id", "operation"].includes(key),
-    ) &&
-    message.type === MESSAGE_TYPES.libraryActionPreview &&
-    typeof message.tool_call_id === "string" &&
-    message.tool_call_id.length > 0 &&
-    isLibraryOperation(message.operation)
-  );
+  if (
+    !(
+      isRecord(message) &&
+      Object.keys(message).length >= 3 &&
+      Object.keys(message).every((key) =>
+        ["type", "tool_call_id", "operation", "inputs", "record_url"].includes(
+          key,
+        ),
+      ) &&
+      message.type === MESSAGE_TYPES.libraryActionPreview &&
+      typeof message.tool_call_id === "string" &&
+      message.tool_call_id.length > 0 &&
+      isLibraryOperation(message.operation) &&
+      (message.inputs === undefined ||
+        (isRecord(message.inputs) &&
+          typeof message.inputs.action_type === "string" &&
+          isLibraryActionEditableInputs(
+            message.inputs.action_type as LibraryOperation["action_type"],
+            message.inputs,
+          )))
+    )
+  ) {
+    return false;
+  }
+  if (message.record_url === undefined) return true;
+  if (typeof message.record_url !== "string") return false;
+  try {
+    const url = new URL(message.record_url);
+    return (
+      url.protocol === "https:" &&
+      url.origin === "https://library.shibaura-it.ac.jp" &&
+      url.pathname.startsWith("/opc/recordID/catalog.bib/") &&
+      url.pathname.slice("/opc/recordID/catalog.bib/".length).length > 0 &&
+      url.search === "" &&
+      url.hash === "" &&
+      url.username === "" &&
+      url.password === ""
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function isLibraryActionSubmitMessage(

@@ -85,6 +85,8 @@ export interface CastSearchItem {
   locations: string[];
   occupations: string[];
   academic_programs: string[];
+  /** Present on opportunity results when the CAST form exposes eligibility. */
+  target_grades?: string[];
   deadline: string | null;
   graduation_year: number | null;
   hiring_count: number | null;
@@ -148,6 +150,8 @@ interface SearchDefinition {
   entryPath: string;
   entryQuery: string;
   actionPath: string;
+  /** HTML form action(s) observed before the JavaScript submit endpoint. */
+  formPaths?: readonly string[];
   resultPath: string;
   markers: RegExp[];
 }
@@ -183,7 +187,11 @@ export const CAST_SEARCH_DEFINITIONS: Readonly<
     kind: "company",
     entryPath: "/career/company_search",
     entryQuery: "common_header=on",
-    actionPath: "/career/company_search",
+    // The live CAST form is populated without an HTML action. Its verified
+    // submit handler posts to the `/search` endpoint; posting to the entry
+    // page returns the form again and makes history joins look empty.
+    actionPath: "/career/company_search/search",
+    formPaths: ["/career/company_search", "/career/company_search/search"],
     resultPath: "/career/company_search/search",
     markers: [/企業検索/u, /OB.?OG/u, /就活サポーター/u],
   },
@@ -536,9 +544,10 @@ export function collectCastSearchFormCatalog(
     document.querySelectorAll<HTMLFormElement>("form"),
   ).filter((form) => {
     const action = formAction(form, pageUrl);
+    const formPaths = definition.formPaths ?? [definition.actionPath];
     return (
       action?.origin === CAST_SEARCH_ORIGIN &&
-      action.pathname === definition.actionPath
+      formPaths.includes(action.pathname)
     );
   });
   if (forms.length !== 1) return null;
@@ -1034,6 +1043,7 @@ function itemFromOpportunity(
     locations: unique(opportunity.locations),
     occupations: unique(opportunity.occupations),
     academic_programs: unique(opportunity.eligible_programs),
+    target_grades: unique(opportunity.target_grades),
     deadline: opportunity.application_deadline,
     graduation_year: null,
     hiring_count: null,
@@ -1072,6 +1082,7 @@ function genericItems(
         academic_programs: splitValues(
           firstField(values, [/学部/u, /学科/u, /学問系統/u]),
         ),
+        target_grades: splitValues(firstField(values, [/対象学年|学年/u])),
         deadline: dateFromText(
           firstField(values, [/締切/u, /期限/u, /開催日/u]),
         ),
@@ -1105,6 +1116,9 @@ function genericItems(
       ),
       academic_programs: splitValues(
         body.match(/(?:募集学部学科|学部学科)\s*([^\n]+)/u)?.[1] ?? "",
+      ),
+      target_grades: splitValues(
+        body.match(/(?:対象学年|学年)\s*([^\n]+)/u)?.[1] ?? "",
       ),
       deadline: dateFromText(
         heading.match(
@@ -1183,6 +1197,13 @@ function statusForFetch(response: Response): CastSearchErrorResult | null {
 export interface CastSearchTransportOptions {
   fetcher?: typeof fetch;
   parseHtml?: (html: string) => Document;
+  /** Maximum number of pages for a bounded exhaustive read. */
+  maxPages?: number;
+  /**
+   * Content-script-only observation hook.  The parsed document stays in the
+   * CAST origin and is never returned through an extension message.
+   */
+  onDocument?: (document: Document, url: string) => void;
 }
 
 function defaultParseHtml(html: string): Document {
@@ -1216,6 +1237,7 @@ async function fetchDocument(
         response,
         error: { status: "reauth_required", reason_code: "login_required" },
       };
+    options.onDocument?.(document, finalUrl);
     return { document, response };
   } catch {
     return {
@@ -1347,8 +1369,12 @@ export async function runCastSearch(
   const allItems = [...first.result.typed_items];
   let currentPage = cursor.page + 1;
   let last = first.result;
+  const maxPages = Math.max(
+    1,
+    Math.min(MAX_PAGE_COUNT, options.maxPages ?? MAX_PAGE_COUNT),
+  );
   while (
-    currentPage <= MAX_PAGE_COUNT &&
+    currentPage <= maxPages &&
     allItems.length < Math.min(first.result.total_count, MAX_ITEMS)
   ) {
     const next = await runOnePage(request, catalog, currentPage, options);

@@ -1,12 +1,16 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { B1_OMIYA_CONTEXT, B1_OMIYA_EVENT } from "../sidepanel/b1-fixture";
 import {
   AgentApiClient,
   AgentApiError,
+  classifyAgentApiError,
   type Fetcher,
   isActionProposal,
   isCastAlumniReadResult,
   isCastReadResult,
+  isChatCapabilities,
   isChatRunResponse,
   isLibraryCatalogBrowseResult,
   isLibraryCatalogSearchResult,
@@ -14,7 +18,12 @@ import {
   isLibraryItemReadResult,
   isMoodleReadResult,
   isMyLibraryReadResult,
+  isScombzCourseListResult,
+  isScombzCourseReadResult,
+  isScombzMaterialSearchResult,
+  isScombzPortalReadResult,
   isSitrusGradeResult,
+  isSyllabusReadResult,
 } from "./client";
 
 const proposal = {
@@ -43,13 +52,34 @@ const completionEvent = {
   },
 };
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(
+  body: unknown,
+  status = 200,
+  headers?: HeadersInit,
+): Response {
   return {
     ok: status >= 200 && status < 300,
     status,
     json: vi.fn(async () => body),
+    headers: new Headers(headers),
   } as unknown as Response;
 }
+
+describe("isChatCapabilities", () => {
+  it("accepts the explicit fixture SCombZ capability used by demo builds", () => {
+    expect(
+      isChatCapabilities({
+        schema_version: "v1",
+        agent_backend: "fixture",
+        observability: "off",
+        scombz_student_read_mode: "fixture",
+        sitrus_personal_context_mode: "off",
+        supported_client_tools: ["scombz_course_list", "scombz_course_read"],
+        max_client_tools: 32,
+      }),
+    ).toBe(true);
+  });
+});
 
 function createFetcher(response: Response): Fetcher & ReturnType<typeof vi.fn> {
   return vi.fn(async () => response) as unknown as Fetcher &
@@ -57,6 +87,31 @@ function createFetcher(response: Response): Fetcher & ReturnType<typeof vi.fn> {
 }
 
 describe("AgentApiClient", () => {
+  it("classifies value-free chat 422 responses by safe reason code", () => {
+    expect(
+      classifyAgentApiError(
+        new AgentApiError("unused", 422, {
+          detail: {
+            reason_code: "chat_context_invalid",
+            field: "context_manifest",
+          },
+        }),
+      ),
+    ).toBe("context_invalid");
+    expect(
+      classifyAgentApiError(
+        new AgentApiError("unused", 422, {
+          detail: { reason_code: "agent_output_invalid" },
+        }),
+      ),
+    ).toBe("agent_output_invalid");
+    expect(
+      classifyAgentApiError(
+        new AgentApiError("unused", 422, { detail: "legacy" }),
+      ),
+    ).toBe("contract_invalid");
+  });
+
   it("validates grounded related-book cards in completed Chat responses", () => {
     expect(
       isChatRunResponse({
@@ -344,6 +399,53 @@ describe("AgentApiClient", () => {
         profile_count: 0,
       }),
     ).toBe(false);
+    const restricted = {
+      ...result,
+      data_classification: "restricted",
+      profile_count: 1,
+      contact_present: false,
+      profiles: [
+        {
+          alias: "[[ORBIT_PERSON_0123456789abcdef]]",
+          role: "alumni",
+          company: "Example Labs",
+          technical_domains: ["自然言語処理"],
+          job_types: ["研究開発"],
+          location_area: "東京",
+          graduation_year_bucket: "2020-2024",
+          evidence_id: "cast-alumni-v1-0123456789abcdef",
+        },
+      ],
+    };
+    expect(isCastAlumniReadResult(restricted)).toBe(true);
+    expect(
+      isCastAlumniReadResult({
+        ...restricted,
+        profiles: [
+          {
+            ...restricted.profiles[0],
+            email: "student@example.invalid",
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      isCastAlumniReadResult({
+        ...restricted,
+        profiles: [
+          {
+            ...restricted.profiles[0],
+            company: "https://example.invalid",
+          },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      isCastAlumniReadResult({
+        ...restricted,
+        profiles: undefined,
+      }),
+    ).toBe(false);
   });
 
   it("accepts opaque CAST evidence as a career source", () => {
@@ -449,16 +551,24 @@ describe("AgentApiClient", () => {
       grades: [
         {
           subject: "合成科目",
-          course_code: "L0410100",
           credits: 2,
           grade: "A",
+          outcome: "合格",
           year: 2025,
           term: 2,
-          term_slot: 1,
-          repeated: false,
         },
       ],
-      cumulative_gpa: 3.1,
+      credit_summaries: [
+        {
+          category: "専門科目",
+          credit_type: "選択",
+          current_course_count: 1,
+          current_credits: 2,
+          cumulative_course_count: 10,
+          cumulative_credits: 20,
+        },
+      ],
+      observed_at: "2026-09-02T00:00:00Z",
       reason_code: null,
     };
     expect(isSitrusGradeResult(result)).toBe(true);
@@ -466,8 +576,7 @@ describe("AgentApiClient", () => {
       isSitrusGradeResult({
         ...result,
         report_label: "取得済み科目",
-        grades: [{ ...result.grades[0], course_code: null, credits: null }],
-        cumulative_gpa: null,
+        grades: [{ ...result.grades[0], credits: null }],
       }),
     ).toBe(true);
     expect(isSitrusGradeResult({ ...result, pdf_base64: "forbidden" })).toBe(
@@ -476,12 +585,26 @@ describe("AgentApiClient", () => {
     expect(isSitrusGradeResult({ ...result, student_number: "AL00000" })).toBe(
       false,
     );
+    for (const forbidden of [
+      "cumulative_gpa",
+      "course_code",
+      "term_slot",
+      "repeated",
+    ]) {
+      const candidate = structuredClone(result);
+      if (forbidden === "cumulative_gpa") {
+        Object.assign(candidate, { [forbidden]: 3.1 });
+      } else {
+        Object.assign(candidate.grades[0] ?? {}, { [forbidden]: "forbidden" });
+      }
+      expect(isSitrusGradeResult(candidate)).toBe(false);
+    }
     expect(
       isSitrusGradeResult({
         ...result,
         status: "unavailable",
         grades: [],
-        cumulative_gpa: null,
+        credit_summaries: [],
         report_label: null,
       }),
     ).toBe(true);
@@ -491,6 +614,22 @@ describe("AgentApiClient", () => {
         status: "unavailable",
       }),
     ).toBe(false);
+  });
+
+  it("accepts the shared Python/TypeScript SITRUS contract fixture", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            "../../../../fixtures/contracts/sitrus_tool_result_v1.json",
+            import.meta.url,
+          ),
+        ),
+        "utf8",
+      ),
+    ) as { result: unknown };
+
+    expect(isSitrusGradeResult(fixture.result)).toBe(true);
   });
 
   it("posts the generated proposal request to the explicit API base", async () => {
@@ -645,6 +784,187 @@ describe("AgentApiClient", () => {
     );
   });
 
+  it("omits the default sync mode for strict pre-background Chat APIs", async () => {
+    const response = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-compatibility",
+        content_markdown: "確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body.execution_mode).toBeUndefined();
+        return jsonResponse(response);
+      },
+    ) as unknown as Fetcher;
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      fetcher,
+    });
+
+    await expect(
+      client.startChat({
+        conversation_id: "compatibility-chat",
+        message: "LLMに関するおすすめの本はある？",
+        execution_mode: "sync",
+      }),
+    ).resolves.toEqual(response);
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://agent.example.test/v1/chat/runs",
+      expect.objectContaining({
+        body: JSON.stringify({
+          conversation_id: "compatibility-chat",
+          message: "LLMに関するおすすめの本はある？",
+        }),
+      }),
+    );
+  });
+
+  it("keeps an explicitly requested background mode", async () => {
+    const response = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-background",
+        content_markdown: "バックグラウンドで確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const fetcher = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        expect(body.execution_mode).toBe("background");
+        return jsonResponse(response);
+      },
+    ) as unknown as Fetcher;
+    const client = new AgentApiClient({
+      baseUrl: "https://agent.example.test",
+      fetcher,
+    });
+
+    await expect(
+      client.startChat({
+        conversation_id: "background-chat",
+        message: "進捗を確認して",
+        execution_mode: "background",
+      }),
+    ).resolves.toEqual(response);
+  });
+
+  it("binds a complete server receipt to the submitted tool call", async () => {
+    const response = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-receipt",
+        content_markdown: "確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const request = {
+      tool_call_id: "call-receipt-1",
+      name: "scombz_course_list" as const,
+      version: 1 as const,
+      result: {
+        schema_version: "v1" as const,
+        status: "known" as const,
+        courses: [],
+        coverage: {
+          scope: "course_list",
+          requested: 0,
+          attempted: 0,
+          succeeded: 0,
+          failed: 0,
+          truncated: false,
+          next_cursor: null,
+        },
+        observed_at: "2026-08-30T00:00:00Z",
+        reason_code: null,
+      },
+    };
+    const fetcher = createFetcher(
+      jsonResponse(response, 200, {
+        "X-Orbit-Tool-Call-Id": request.tool_call_id,
+        "X-Orbit-Evidence-Id": "scombz-course-list-v1-receipt-1",
+      }),
+    );
+    const client = new AgentApiClient({ fetcher });
+
+    await expect(
+      client.submitChatToolResultWithReceipt("run-receipt", request),
+    ).resolves.toEqual({
+      response,
+      evidence_id: "scombz-course-list-v1-receipt-1",
+    });
+  });
+
+  it("rejects an incomplete or mismatched receipt instead of positional matching", async () => {
+    const response = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-receipt-invalid",
+        content_markdown: "確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const request = {
+      tool_call_id: "call-receipt-2",
+      name: "scombz_course_list" as const,
+      version: 1 as const,
+      result: {
+        schema_version: "v1" as const,
+        status: "known" as const,
+        courses: [],
+        coverage: {
+          scope: "course_list",
+          requested: 0,
+          attempted: 0,
+          succeeded: 0,
+          failed: 0,
+          truncated: false,
+          next_cursor: null,
+        },
+        observed_at: "2026-08-30T00:00:00Z",
+        reason_code: null,
+      },
+    };
+    const partial = new AgentApiClient({
+      fetcher: createFetcher(
+        jsonResponse(response, 200, {
+          "X-Orbit-Tool-Call-Id": request.tool_call_id,
+        }),
+      ),
+    });
+    await expect(
+      partial.submitChatToolResultWithReceipt("run-receipt", request),
+    ).rejects.toMatchObject({
+      name: "AgentApiError",
+      status: 200,
+      body: { category: "tool_result_invalid" },
+    });
+
+    const mismatched = new AgentApiClient({
+      fetcher: createFetcher(
+        jsonResponse(response, 200, {
+          "X-Orbit-Tool-Call-Id": "call-receipt-other",
+          "X-Orbit-Evidence-Id": "scombz-course-list-v1-receipt-2",
+        }),
+      ),
+    });
+    await expect(
+      mismatched.submitChatToolResultWithReceipt("run-receipt", request),
+    ).rejects.toMatchObject({
+      name: "AgentApiError",
+      status: 200,
+      body: { category: "tool_result_invalid" },
+    });
+  });
+
   it("accepts a google_drive EvidenceLink with an opaque locator", async () => {
     const driveProposal = {
       ...proposal,
@@ -753,5 +1073,123 @@ describe("AgentApiClient", () => {
       }),
     ).rejects.toThrow("Action ID must not be empty.");
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("validates all typed SCombZ projections and rejects hidden identifiers", () => {
+    const coverage = {
+      scope: "fixture",
+      requested: 1,
+      attempted: 1,
+      succeeded: 1,
+      failed: 0,
+      truncated: false,
+      next_cursor: null,
+    };
+    const course = {
+      course_ref: "orbit-scombz://course/1234567890abcdef",
+      display_name: "自然言語処理",
+      academic_year: 2026,
+      term: "春",
+      weekday: "金",
+      period: "3",
+      citation_uri: "orbit-scombz://citation/1234567890abcdef",
+    };
+    const common = {
+      schema_version: "v1" as const,
+      status: "known" as const,
+      coverage,
+      observed_at: "2026-08-28T00:00:00Z",
+      reason_code: null,
+    };
+    expect(isScombzCourseListResult({ ...common, courses: [course] })).toBe(
+      true,
+    );
+    expect(
+      isScombzPortalReadResult({
+        ...common,
+        items: [
+          {
+            ref: "orbit-scombz://item/1234567890abcdef",
+            section: "announcements",
+            title: "授業連絡",
+            detail: null,
+            observed_at: common.observed_at,
+            citation_uri: "orbit-scombz://citation/1234567890abcdef",
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      isScombzCourseReadResult({
+        ...common,
+        items: [
+          {
+            ref: "orbit-scombz://item/1234567890abcdef",
+            course_ref: course.course_ref,
+            section: "課題",
+            title: "レポート",
+            body: null,
+            due_at: null,
+            state: null,
+            has_pdf: false,
+            observed_at: common.observed_at,
+            citation_uri: "orbit-scombz://citation/1234567890abcdef",
+          },
+        ],
+        section_states: { 課題: "complete" },
+      }),
+    ).toBe(true);
+    expect(
+      isScombzMaterialSearchResult({
+        ...common,
+        hits: [
+          {
+            material_ref: "orbit-scombz://material/1234567890abcdef",
+            course_ref: course.course_ref,
+            material_title: "講義資料.pdf",
+            page: 2,
+            quote: "形態素解析の説明",
+            observed_at: common.observed_at,
+            citation_uri: "orbit-scombz://citation/1234567890abcdef-p2",
+          },
+        ],
+      }),
+    ).toBe(true);
+    expect(
+      isScombzCourseListResult({
+        ...common,
+        courses: [{ ...course, internal_id: "secret" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("validates syllabus detail refs and blocks URL/ref substitutions", () => {
+    const detail = {
+      schema_version: "v1" as const,
+      status: "known" as const,
+      syllabus_ref: "orbit-syllabus://result/1234567890abcdef",
+      url: "https://syllabus.sic.shibaura-it.ac.jp/course/1",
+      course_code: "A0001",
+      title: "自然言語処理",
+      instructors: ["公開教員"],
+      objectives: "目的",
+      weekly_plan: ["第1回"],
+      evaluation: "試験",
+      textbooks: ["教科書"],
+      prerequisites: "線形代数",
+      observed_at: "2026-08-28T00:00:00Z",
+      reason_code: null,
+      citation_uri: "orbit-syllabus://citation/1234567890abcdef",
+    };
+    expect(isSyllabusReadResult(detail)).toBe(true);
+    expect(
+      isSyllabusReadResult({
+        ...detail,
+        url: "https://evil.example/course/1",
+      }),
+    ).toBe(false);
+    expect(isSyllabusReadResult({ ...detail, syllabus_url: detail.url })).toBe(
+      false,
+    );
   });
 });

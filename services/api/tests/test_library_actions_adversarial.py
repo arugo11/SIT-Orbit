@@ -79,6 +79,9 @@ def options_result(
                     "available": action == available_action,
                     "reason_code": ("available" if action == available_action else "not_available"),
                     "required_inputs": required_inputs[action],
+                    "verification_level": (
+                        "entry_visible" if action == available_action else "none"
+                    ),
                 }
                 for action in actions
             ],
@@ -245,11 +248,26 @@ def test_chat_rejects_an_operation_missing_or_not_available_in_current_options()
         "ill_copy",
     ],
 )
-def test_write_capability_cannot_be_advertised_until_live_readback_is_verified(
+def test_available_capability_requires_a_verified_visible_entry_point(
     action_type: str,
 ) -> None:
-    with pytest.raises(ValidationError, match="remain unavailable"):
-        options_result(available_action=action_type)
+    result = options_result(available_action=action_type)
+    option = next(item for item in result.options if item.action_type == action_type)
+    assert option.available is True
+    assert option.verification_level == "entry_visible"
+
+    invalid = result.model_dump()
+    invalid["options"] = [
+        {
+            **item,
+            "verification_level": "none",
+        }
+        if item["action_type"] == action_type
+        else item
+        for item in invalid["options"]
+    ]
+    with pytest.raises(ValidationError, match="verified visible entry point"):
+        LibraryActionOptionsResult.model_validate(invalid)
 
 
 @pytest.mark.parametrize(

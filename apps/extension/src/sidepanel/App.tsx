@@ -4,7 +4,9 @@ import {
   AgentApiClient,
   type AgentRunResponse,
   type AgentToolResultRequest,
-  AZURE_DEMO_AGENT_API_BASE,
+  DEFAULT_AGENT_API_BASE,
+  DEMO_FIXTURE_ENABLED,
+  isLocalAgentApiBase,
   type OrbitEvent,
 } from "../api/client";
 import {
@@ -41,6 +43,10 @@ import {
   projectScombzPageSummary,
 } from "../content/page-context";
 import {
+  clearScombzStudentSessionConsent,
+  grantScombzStudentSessionConsent,
+} from "../content/scombz-consent";
+import {
   type CalendarCommand,
   type CastReadResponse,
   calendarCommandMessage,
@@ -53,6 +59,8 @@ import {
   MESSAGE_TYPES,
   type MoodleReadResponse,
   type MyLibraryReadResponse,
+  type OpacDiagnosticsClearResponse,
+  type OpacDiagnosticsGetResponse,
   type OpenWorkspaceResponse,
   type WorkspaceStatusResponse,
 } from "../shared/messages";
@@ -107,6 +115,21 @@ function requestCalendarCommand(
       (response: unknown) => {
         if (chrome.runtime.lastError || !isCalendarResult(response)) {
           reject(new Error("Calendar connector response was unavailable."));
+          return;
+        }
+        resolve(response);
+      },
+    );
+  });
+}
+
+function requestOpacDiagnostics(): Promise<OpacDiagnosticsGetResponse> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      { type: MESSAGE_TYPES.opacDiagnosticsGet },
+      (response: OpacDiagnosticsGetResponse | undefined) => {
+        if (chrome.runtime.lastError || !response) {
+          reject(new Error("OPAC診断ログを取得できませんでした。"));
           return;
         }
         resolve(response);
@@ -935,25 +958,34 @@ export function App({
   workspaceSession,
 }: AppProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
   const settingsCloseButtonRef = useRef<HTMLButtonElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsDrawerRef = useRef<HTMLElement>(null);
+  const agentApiBase = DEFAULT_AGENT_API_BASE;
+  const useManagedAgentAuth =
+    !DEMO_FIXTURE_ENABLED && !isLocalAgentApiBase(agentApiBase);
   const agentSessionProvider = useMemo(
     () =>
-      createManagedAgentSessionProvider({
-        baseUrl: AZURE_DEMO_AGENT_API_BASE,
-      }),
-    [],
+      useManagedAgentAuth
+        ? createManagedAgentSessionProvider({
+            baseUrl: agentApiBase,
+          })
+        : async () => null,
+    [useManagedAgentAuth],
   );
   const agentApiClient = useMemo(
     () =>
       new AgentApiClient({
-        baseUrl: AZURE_DEMO_AGENT_API_BASE,
-        sessionProvider: agentSessionProvider,
+        baseUrl: agentApiBase,
+        ...(useManagedAgentAuth
+          ? { sessionProvider: agentSessionProvider }
+          : {}),
       }),
-    [agentSessionProvider],
+    [agentSessionProvider, useManagedAgentAuth],
   );
-  const requiresFirstUseSetup = managedIdentityAvailable();
+  const requiresFirstUseSetup =
+    !DEMO_FIXTURE_ENABLED && useManagedAgentAuth && managedIdentityAvailable();
   const [firstUseSetupState, setFirstUseSetupState] =
     useState<FirstUseSetupState>(requiresFirstUseSetup ? "checking" : "ready");
   const [firstUseSetupBusy, setFirstUseSetupBusy] = useState(false);
@@ -1097,6 +1129,10 @@ export function App({
     useState<CampusServiceConnectionStatus>("not_connected");
   const [castMessage, setCastMessage] = useState<string | null>(null);
   const [castBusy, setCastBusy] = useState(false);
+  const [opacDiagnosticCount, setOpacDiagnosticCount] = useState(0);
+  const [opacDiagnosticMessage, setOpacDiagnosticMessage] = useState<
+    string | null
+  >(null);
   const [driveFixtureConnector, setDriveFixtureConnector] = useState(() =>
     createFixtureDriveConnector({
       candidates: DRIVE_FIXTURE_CANDIDATE,
@@ -1140,6 +1176,60 @@ export function App({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
+  }, [settingsOpen]);
+
+  const copyOpacDiagnostics = async (): Promise<void> => {
+    try {
+      const snapshot = await requestOpacDiagnostics();
+      await navigator.clipboard.writeText(JSON.stringify(snapshot, null, 2));
+      setOpacDiagnosticCount(snapshot.events.length);
+      setOpacDiagnosticMessage(
+        `OPAC診断ログ ${snapshot.events.length}件をコピーしました。`,
+      );
+    } catch {
+      setOpacDiagnosticMessage("OPAC診断ログをコピーできませんでした。");
+    }
+  };
+
+  const clearOpacDiagnostics = async (): Promise<void> => {
+    await new Promise<void>((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { type: MESSAGE_TYPES.opacDiagnosticsClear },
+        (response: OpacDiagnosticsClearResponse | undefined) => {
+          if (chrome.runtime.lastError || !response?.ok) {
+            reject(new Error("OPAC診断ログを消去できませんでした。"));
+            return;
+          }
+          resolve();
+        },
+      );
+    })
+      .then(() => {
+        setOpacDiagnosticCount(0);
+        setOpacDiagnosticMessage("OPAC診断ログを消去しました。");
+      })
+      .catch(() => {
+        setOpacDiagnosticMessage("OPAC診断ログを消去できませんでした。");
+      });
+  };
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    let active = true;
+    void requestOpacDiagnostics()
+      .then((snapshot) => {
+        if (active) setOpacDiagnosticCount(snapshot.events.length);
+      })
+      .catch(() => {
+        if (active) {
+          setOpacDiagnosticMessage(
+            "OPAC診断ログの件数を取得できませんでした。",
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
   }, [settingsOpen]);
 
   const runCalendarAction = async (
@@ -1548,6 +1638,20 @@ export function App({
     );
   };
 
+  const grantScombzConsent = async (): Promise<void> => {
+    await grantScombzStudentSessionConsent();
+    setSettingsMessage(
+      "SCombZの授業情報と抽出済みPDF本文を、必要な範囲だけAzure OpenAIへ送る同意を記録しました。",
+    );
+  };
+
+  const clearScombzConsent = async (): Promise<void> => {
+    await clearScombzStudentSessionConsent();
+    setSettingsMessage(
+      "SCombZの共有同意を解除しました。次回の読み取り時に再確認します。",
+    );
+  };
+
   const requestProposal = async (): Promise<void> => {
     dispatch({ type: "propose-started" });
     try {
@@ -1794,7 +1898,9 @@ export function App({
           >
             <h3 id="agent-settings-title">Agent接続</h3>
             <p className="settings-message">
-              SITアカウントで管理されたAgentを利用します。
+              {useManagedAgentAuth
+                ? "SITアカウントで管理されたAgentを利用します。"
+                : "ローカルAgent（開発用）へ直接接続しています。OAuthは使用しません。"}
             </p>
             {requiresFirstUseSetup ? (
               <button
@@ -1876,6 +1982,30 @@ export function App({
               読み取りは必要なToolが選ばれたときだけ行い、Chromeのサイト権限は拡張機能のインストール時に確認します。
               外部サービスの変更・送信だけは実行前に確認します。
             </p>
+            {settingsMessage ? (
+              <p className="settings-message">{settingsMessage}</p>
+            ) : null}
+            <p className="settings-message">
+              SCombZの授業情報と抽出済みPDF本文を、必要な範囲だけAzure
+              OpenAIへ送ります。
+              Cookie・生PDF・内部ID・全抽出本文は送信せず、会話終了時に端末内の一時データを破棄します。
+            </p>
+            <div className="button-row">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void grantScombzConsent()}
+              >
+                SCombZ共有に同意
+              </button>
+              <button
+                type="button"
+                className="text-button settings-text-action"
+                onClick={() => void clearScombzConsent()}
+              >
+                SCombZ共有同意を解除
+              </button>
+            </div>
             <button
               type="button"
               className="text-button settings-text-action"
@@ -1910,6 +2040,33 @@ export function App({
                     : "B1 大宮の提案を作成"}
               </button>
             </div>
+            <section aria-labelledby="opac-diagnostics-title">
+              <h3 id="opac-diagnostics-title">OPAC診断ログ</h3>
+              <p className="settings-message">
+                このブラウザを終了するまで端末内に保持します（現在
+                {opacDiagnosticCount}
+                件）。コピー内容には検索語が含まれますが、認証情報、所蔵内容、内部IDは記録しません。
+              </p>
+              <div className="button-row">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void copyOpacDiagnostics()}
+                >
+                  OPAC診断ログをコピー
+                </button>
+                <button
+                  type="button"
+                  className="text-button settings-text-action"
+                  onClick={() => void clearOpacDiagnostics()}
+                >
+                  OPAC診断ログを消去
+                </button>
+              </div>
+              {opacDiagnosticMessage ? (
+                <p className="state-message">{opacDiagnosticMessage}</p>
+              ) : null}
+            </section>
             {loopState.status === "tool-running" ||
             loopState.status === "resuming" ? (
               <p className="state-message" data-agent-status={loopState.status}>

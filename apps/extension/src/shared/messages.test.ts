@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isCastAlumniReadMessage,
+  isCastCareerSearchMessage,
   isCastOpenMessage,
   isCastReadMessage,
   isCastSearchMessage,
@@ -176,29 +177,46 @@ describe("page context message validation", () => {
         form_action: "/career/evil",
       }),
     ).toBe(false);
+    expect(
+      isCastCareerSearchMessage({
+        type: "cast-career-search",
+        tool_call_id: "career-1",
+        query: "情報系の就職先",
+        surfaces: ["company", "hiring_record", "selection_report"],
+        filters: { obog_required: true },
+        limit: 10,
+      }),
+    ).toBe(true);
+    expect(
+      isCastCareerSearchMessage({
+        type: "cast-career-search",
+        tool_call_id: "career-2",
+        query: "情報系の就職先",
+        surfaces: ["company"],
+        filters: {},
+        limit: 10,
+        url: "https://evil.example.invalid",
+      }),
+    ).toBe(false);
   });
-  it("accepts only the observed SITRUS grade notice route", () => {
+  it("accepts only the page-independent SITRUS read command", () => {
     expect(
       isSitrusReadMessage({
         type: "sitrus-read",
         tool_call_id: "tool-1",
-        page_url:
-          "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/SeisekiTsutiSho.html?N=synthetic",
       }),
     ).toBe(true);
     expect(
       isSitrusReadMessage({
         type: "sitrus-read",
         tool_call_id: "tool-2",
-        page_url:
-          "https://sitrus.sic.shibaura-it.ac.jp/SITRUS/login/ShutokuTaniShukei.html?N=synthetic",
+        page_url: "https://sitrus.sic.shibaura-it.ac.jp/forbidden",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isSitrusReadMessage({
         type: "sitrus-read",
-        tool_call_id: "tool-1",
-        page_url: "https://sitrus.sic.shibaura-it.ac.jp/404",
+        tool_call_id: "",
       }),
     ).toBe(false);
   });

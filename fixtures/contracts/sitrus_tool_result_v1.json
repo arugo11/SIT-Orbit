@@ -1,0 +1,32 @@
+{
+  "tool_call_id": "sitrus-contract-call-1",
+  "name": "sitrus_read",
+  "version": 1,
+  "result": {
+    "schema_version": "v1",
+    "status": "known",
+    "report_label": "合成取得済み科目・単位数",
+    "grades": [
+      {
+        "subject": "合成科目",
+        "credits": 2,
+        "grade": "A",
+        "outcome": "合格",
+        "year": 2026,
+        "term": 1
+      }
+    ],
+    "credit_summaries": [
+      {
+        "category": "専門科目",
+        "credit_type": "選択",
+        "current_course_count": 1,
+        "current_credits": 2,
+        "cumulative_course_count": 10,
+        "cumulative_credits": 20
+      }
+    ],
+    "observed_at": "2026-09-02T00:00:00Z",
+    "reason_code": null
+  }
+}

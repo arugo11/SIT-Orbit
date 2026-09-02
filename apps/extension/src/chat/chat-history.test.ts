@@ -1,15 +1,24 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type {
+  ChatRunResponse,
   EvidenceLink,
   LibraryBibliographicRecord,
   RelatedBookCandidate,
 } from "../api/client";
+import type { ChatConversation } from "./chat-history";
 import {
+  ContextEvidenceConflictError,
+  loadConversation,
+  mergeCompletedChatContext,
   mergeConversationEvidence,
   mergeLibraryContext,
   mergeRelatedBookContext,
   newConversation,
+  saveConversation,
   toChatContextManifest,
+  toChatHistory,
 } from "./chat-history";
 
 const evidence: EvidenceLink = {
@@ -58,6 +67,42 @@ const relatedBook: RelatedBookCandidate = {
 };
 
 describe("chat context manifest", () => {
+  it("round-trips the shared completed-response fixture without duplicate evidence", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL(
+            "../../../../packages/api-client/fixtures/chat_context_roundtrip.json",
+            import.meta.url,
+          ),
+        ),
+        "utf8",
+      ),
+    ) as {
+      completed_response: Extract<ChatRunResponse, { status: "completed" }>;
+      next_request: {
+        context_manifest: { evidence: EvidenceLink[] };
+      };
+    };
+    const response = fixture.completed_response;
+    const merged = mergeCompletedChatContext(
+      newConversation(),
+      response.context_manifest,
+      {
+        evidence: response.message.evidence,
+        relatedBooks: response.message.related_books,
+      },
+    );
+    const manifest = toChatContextManifest(merged.contextManifest);
+    const manifestEvidence = manifest.evidence ?? [];
+    expect(manifestEvidence).toEqual(
+      fixture.next_request.context_manifest.evidence,
+    );
+    expect(new Set(manifestEvidence.map((item) => item.evidence_id)).size).toBe(
+      manifestEvidence.length,
+    );
+  });
+
   it("keeps a public OPAC record across turns and adds completion evidence", () => {
     let conversation = newConversation();
     conversation = mergeLibraryContext(conversation, [record]);
@@ -110,5 +155,157 @@ describe("chat context manifest", () => {
       },
     ]);
     expect(conversation.contextManifest.related_books).toHaveLength(1);
+  });
+  it("deduplicates mirrored completion evidence in stable order", () => {
+    const conversation = newConversation();
+    const assistant = {
+      evidence: [evidence],
+      relatedBooks: [],
+    };
+    const merged = mergeCompletedChatContext(
+      conversation,
+      {
+        schema_version: "v1",
+        evidence: [evidence],
+        library_records: [],
+        related_books: [],
+      },
+      assistant,
+    );
+    expect(merged.contextManifest.evidence).toEqual([evidence]);
+    expect(toChatContextManifest(merged.contextManifest).evidence).toHaveLength(
+      1,
+    );
+  });
+
+  it("retains only opaque SCombZ personal evidence for same-conversation context", () => {
+    const personal: EvidenceLink = {
+      evidence_id: "scombz-course-list-v1-1234567890abcdef",
+      title: "SCombZの履修科目",
+      source_type: "scombz",
+      locator: "orbit-scombz://read/1234567890abcdef",
+      data_classification: "personal",
+    };
+    let conversation = mergeConversationEvidence(newConversation(), [personal]);
+    expect(conversation.contextManifest.evidence).toEqual([personal]);
+
+    conversation = mergeConversationEvidence(conversation, [
+      {
+        ...personal,
+        locator: "orbit-scombz://read/1234567890abcdef?internal=secret",
+      },
+    ]);
+    expect(conversation.contextManifest.evidence).toEqual([personal]);
+  });
+
+  it("repairs duplicate evidence retained in an older assistant message", async () => {
+    const conversation = newConversation();
+    await saveConversation({
+      ...conversation,
+      messages: [
+        {
+          id: "assistant-legacy",
+          role: "assistant",
+          content: "参照しました。",
+          evidence: [evidence, { ...evidence }],
+        },
+      ],
+    });
+    const loaded = await loadConversation(conversation.conversationId);
+    expect(loaded?.messages[0]?.evidence).toEqual([evidence]);
+  });
+
+  it("fails closed when mirrored evidence metadata conflicts", () => {
+    expect(() =>
+      mergeCompletedChatContext(
+        newConversation(),
+        {
+          schema_version: "v1",
+          evidence: [{ ...evidence, title: "別の書誌" }],
+          library_records: [],
+          related_books: [],
+        },
+        { evidence: [evidence], relatedBooks: [] },
+      ),
+    ).toThrow(ContextEvidenceConflictError);
+  });
+
+  it("accepts a twelve-thousand-character assistant history entry", () => {
+    const history = toChatHistory([
+      {
+        id: "assistant-long",
+        role: "assistant",
+        content: "x".repeat(12_000),
+      },
+    ]);
+    expect(history).toHaveLength(1);
+    expect(history[0]?.content).toHaveLength(12_000);
+  });
+
+  it("does not fall back to display content when a private history entry is unclassified", () => {
+    const history = toChatHistory(
+      [
+        {
+          id: "user-private-legacy",
+          role: "user",
+          content: "学生の氏名と連絡先を含む表示用本文",
+        },
+        {
+          id: "assistant-private-safe",
+          role: "assistant",
+          content: "端末表示用の回答",
+          provider_content: "[[ORBIT_PERSON_safe-token]]を確認しました。",
+        },
+      ],
+      { requireProviderContent: true },
+    );
+    expect(history).toEqual([
+      {
+        role: "assistant",
+        content: "[[ORBIT_PERSON_safe-token]]を確認しました。",
+      },
+    ]);
+  });
+
+  it("drops a corrupted private provider projection before history serialization", () => {
+    const history = toChatHistory(
+      [
+        {
+          id: "assistant-private-unsafe",
+          role: "assistant",
+          content: "端末表示用の回答",
+          provider_content:
+            "資料を確認しました。https://scombz.shibaura-it.ac.jp/lms/course?idnumber=private-id",
+        },
+        {
+          id: "assistant-private-safe",
+          role: "assistant",
+          content: "端末表示用の回答",
+          provider_content: "[[ORBIT_PERSON_safe-token]]を確認しました。",
+        },
+      ],
+      { requireProviderContent: true },
+    );
+    expect(history).toEqual([
+      {
+        role: "assistant",
+        content: "[[ORBIT_PERSON_safe-token]]を確認しました。",
+      },
+    ]);
+  });
+
+  it("keeps legacy conversations local-only when processing metadata is absent", async () => {
+    const legacy = { ...newConversation() } as unknown as Record<
+      string,
+      unknown
+    >;
+    delete legacy.processing_scope;
+    delete legacy.provider_destination;
+    delete legacy.history_eligible;
+    await saveConversation(legacy as unknown as ChatConversation);
+    const loaded = await loadConversation(legacy.conversationId as string);
+    expect(loaded?.history_eligible).toBe(false);
+    expect(loaded?.provider_destination).toBe("unknown");
+    expect(loaded?.processing_scope).toBe("none");
   });
 });

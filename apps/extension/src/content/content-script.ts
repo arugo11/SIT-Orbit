@@ -1,14 +1,23 @@
 import {
+  isCastCareerSearchMessage,
   isCastSearchMessage,
   isRequestPageContextMessage,
+  isScombzSourceIdentityMessage,
+  isScombzStudentReadMessage,
   MESSAGE_TYPES,
 } from "../shared/messages";
 import {
   CAST_ALUMNI_INTERNAL_MESSAGE,
   extractCastAlumniPage,
 } from "./cast-alumni-reader";
+import { handleCastCareerInternalMessage } from "./cast-career-source-runtime";
 import { runCastSearch } from "./cast-search-api";
 import { parseScombzPageContext } from "./page-context";
+import {
+  CONTENT_SCRIPT_GENERATION,
+  readScombzStudent,
+  ADAPTER_VERSION as SCOMBZ_ADAPTER_VERSION,
+} from "./scombz-student-reader";
 
 function readPageContext() {
   return parseScombzPageContext(
@@ -34,6 +43,20 @@ function reportPageContextAfterNavigation(): void {
   window.setTimeout(reportPageContext, 0);
 }
 
+function isAuthenticatedScombzPage(): boolean {
+  const pathname = window.location.pathname;
+  if (/^\/login(?:\/|$)/u.test(pathname)) return false;
+  if (/login|ログイン|password/iu.test(document.title)) return false;
+  // The authenticated SCombZ shell exposes a Logout link.  Requiring this
+  // visible, same-origin affordance keeps an audit source from being treated
+  // as authenticated after a login redirect or an expired session page.
+  return Boolean(
+    document.querySelector(
+      'a[href*="/logout"], form[action*="/logout"], [data-testid="logout"]',
+    ),
+  );
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (
     typeof message === "object" &&
@@ -46,6 +69,23 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (isCastSearchMessage(message)) {
     const { type: _type, tool_call_id: _toolCallId, ...request } = message;
     void runCastSearch(request).then(sendResponse);
+    return true;
+  }
+  if (isScombzSourceIdentityMessage(message)) {
+    sendResponse({
+      generation: CONTENT_SCRIPT_GENERATION,
+      adapter_version: SCOMBZ_ADAPTER_VERSION,
+      authenticated: isAuthenticatedScombzPage(),
+    });
+    return;
+  }
+  if (isScombzStudentReadMessage(message)) {
+    void readScombzStudent(message).then(sendResponse);
+    return true;
+  }
+  if (isCastCareerSearchMessage(message)) {
+    const { type: _type, tool_call_id: _toolCallId, ...request } = message;
+    void handleCastCareerInternalMessage(request).then(sendResponse);
     return true;
   }
   if (!isRequestPageContextMessage(message)) {
