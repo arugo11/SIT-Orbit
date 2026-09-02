@@ -179,7 +179,19 @@ az acr build \
 
 image="${registry_server}/${image_repository}:${ORBIT_AZURE_IMAGE_TAG}"
 revision_suffix="native-tool-search-${ORBIT_AZURE_IMAGE_TAG//[^A-Za-z0-9-]/-}"
-revision_suffix="${revision_suffix:0:63}"
+# Azure limits the combined app-name plus suffix to 54 characters. Keep the
+# suffix deterministic while deriving the maximum from the existing app name.
+max_suffix_length=$((54 - ${#ORBIT_AZURE_CONTAINER_APP} - 2))
+if (( max_suffix_length < 1 )); then
+  printf 'Container App name leaves no room for a revision suffix.\n' >&2
+  exit 1
+fi
+revision_suffix="${revision_suffix:0:max_suffix_length}"
+revision_suffix="${revision_suffix%-}"
+if [[ -z "${revision_suffix}" ]]; then
+  printf 'The generated revision suffix is empty.\n' >&2
+  exit 1
+fi
 
 if [[ "${app_revision_mode}" != "Multiple" ]]; then
   az containerapp revision set-mode \
