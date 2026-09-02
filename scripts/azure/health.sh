@@ -28,10 +28,10 @@ IFS='|' read -r healthy_revision traffic_weight revision_state revision_health r
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   --subscription "${ORBIT_AZURE_SUBSCRIPTION}" \
-  --query "[?properties.trafficWeight==\`100\` && (properties.runningState=='Running' || properties.runningState=='ScaledToZero') && properties.healthState=='Healthy'] | [0] | join('|',[name,to_string(properties.trafficWeight),properties.runningState,properties.healthState,properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_MODEL'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_BASE_MODEL'].value | [0]])" \
+  --query "[?properties.trafficWeight==\`100\` && (properties.runningState=='Running' || properties.runningState=='RunningAtMaxScale' || properties.runningState=='ScaledToZero') && properties.healthState=='Healthy'] | [0] | join('|',[name,to_string(properties.trafficWeight),properties.runningState,properties.healthState,properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_MODEL'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_BASE_MODEL'].value | [0]])" \
   --output tsv)"
 if [[ "${healthy_revision}" == "" || "${traffic_weight}" != "100" ||
-  ( "${revision_state}" != "Running" && "${revision_state}" != "ScaledToZero" ) || "${revision_health}" != "Healthy" ||
+  ( "${revision_state}" != "Running" && "${revision_state}" != "RunningAtMaxScale" && "${revision_state}" != "ScaledToZero" ) || "${revision_health}" != "Healthy" ||
   "${revision_backend}" != "azure_openai" || "${revision_model}" != "gpt-5-6-terra" ||
   "${revision_base}" != "gpt-5.6-terra" ]]; then
   printf 'No Healthy Azure native Tool Search revision has 100%% traffic.\n' >&2
