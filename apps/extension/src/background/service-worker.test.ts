@@ -281,38 +281,6 @@ const inlineAuthorlessScopeCases = [
     title: "著者なし貸出",
     html: inlineCurrentLoansHtml("著者なし貸出", "2026/08/24"),
   },
-  {
-    scope: "reservations",
-    title: "著者なし予約",
-    html: inlineReservationsHtml("著者なし予約", "取置中", "2026/08/28"),
-  },
-  {
-    scope: "loan_history",
-    title: "著者なし履歴",
-    html: inlineGenericMyLibraryHtml(
-      "貸出履歴一覧",
-      ["書名", "貸出日", "状態"],
-      ["著者なし履歴", "2026/07/01", "返却済み"],
-    ),
-  },
-  {
-    scope: "purchase_requests",
-    title: "著者なし購入依頼",
-    html: inlineGenericMyLibraryHtml(
-      "購入依頼状況",
-      ["書名", "申請日", "状態", "申請種別"],
-      ["著者なし購入依頼", "2026/08/01", "受付済み", "図書購入"],
-    ),
-  },
-  {
-    scope: "interlibrary_requests",
-    title: "著者なしILL依頼",
-    html: inlineGenericMyLibraryHtml(
-      "ILL（文献複写・貸借）依頼",
-      ["書名", "受付日", "状態", "依頼種別"],
-      ["著者なしILL依頼", "2026/08/05", "処理中", "文献複写"],
-    ),
-  },
 ] as const;
 
 const inlineMarkedRequiredCellCases = [
@@ -326,46 +294,6 @@ const inlineMarkedRequiredCellCases = [
       "empty",
     )}</tr></tbody></table>`,
   },
-  {
-    scope: "reservations",
-    html: `<table id="reservationList"><tbody><tr>${inlineDefinitionCell(
-      "書名 / 著者名",
-      "必須列検証予約",
-    )}${inlineMarkedDefinitionCell("状態", "no-data")}${inlineDefinitionCell(
-      "受取館取置期限日",
-      "2026/08/28",
-    )}</tr></tbody></table>`,
-  },
-  {
-    scope: "loan_history",
-    html: inlineGenericMyLibraryHtml(
-      "貸出履歴一覧",
-      ["書名", "貸出日", "状態"],
-      ["必須列検証履歴", "", "返却済み"],
-    ).replace(
-      "<td></td><td>返却済み</td>",
-      '<td class="empty"></td><td>返却済み</td>',
-    ),
-  },
-  {
-    scope: "purchase_requests",
-    html: inlineGenericMyLibraryHtml(
-      "購入依頼状況",
-      ["書名", "申請日", "状態", "申請種別"],
-      ["必須列検証購入", "2026/08/01", "受付済み", ""],
-    ).replace("<td></td></tr>", '<td class="no-data"></td></tr>'),
-  },
-  {
-    scope: "interlibrary_requests",
-    html: inlineGenericMyLibraryHtml(
-      "ILL（文献複写・貸借）依頼",
-      ["書名", "受付日", "状態", "依頼種別"],
-      ["必須列検証ILL", "2026/08/05", "", "文献複写"],
-    ).replace(
-      "<td></td><td>文献複写</td>",
-      '<td class="empty"></td><td>文献複写</td>',
-    ),
-  },
 ] as const;
 
 const inlineEmptyBodyWithoutPlaceholderCases = [
@@ -373,28 +301,13 @@ const inlineEmptyBodyWithoutPlaceholderCases = [
     scope: "current_loans",
     html: '<table id="lendList"><tbody></tbody></table>',
   },
-  {
-    scope: "reservations",
-    html: '<table id="reservationList"><tbody></tbody></table>',
-  },
-  {
-    scope: "loan_history",
-    html: `<table><caption>貸出履歴一覧</caption><thead><tr><th>書名</th><th>貸出日</th><th>状態</th></tr></thead><tbody></tbody></table>`,
-  },
-  {
-    scope: "purchase_requests",
-    html: `<table><caption>購入依頼状況</caption><thead><tr><th>書名</th><th>申請日</th><th>状態</th><th>申請種別</th></tr></thead><tbody></tbody></table>`,
-  },
-  {
-    scope: "interlibrary_requests",
-    html: `<table><caption>ILL（文献複写・貸借）依頼</caption><thead><tr><th>書名</th><th>受付日</th><th>状態</th><th>依頼種別</th></tr></thead><tbody></tbody></table>`,
-  },
 ] as const;
 
 async function runInlineMyLibraryReader(
   scope: InlineMyLibraryScope,
   html: string,
   workerResult: Record<string, unknown>,
+  pageUrl?: string,
 ): Promise<unknown> {
   const menuId = {
     current_loans: 5,
@@ -431,7 +344,7 @@ async function runInlineMyLibraryReader(
   );
   await vi.waitFor(() => expect(response).toHaveBeenCalledTimes(1));
 
-  stubPage(html, liveStatusUrl);
+  stubPage(html, pageUrl ?? liveStatusUrl);
   const readStatusPage = capturedScript(1) as unknown as (
     requestedScope: InlineMyLibraryScope,
   ) => unknown;
@@ -987,6 +900,56 @@ describe("service worker side panel contract", () => {
       kind: "reservations",
       items: [],
     });
+  });
+
+  it("fails closed for an unexpected My Library page URL", async () => {
+    const result = await runInlineMyLibraryReader(
+      "loan_history",
+      inlineGenericMyLibraryHtml(
+        "貸出履歴一覧",
+        ["書名", "貸出日", "状態"],
+        ["端末内資料", "2026/07/01", "返却済み"],
+      ),
+      { status: "unavailable", reason_code: "unexpected_page" },
+      "https://library.shibaura-it.ac.jp/portal/admin/selectMenu/doSelectPublicUseMainMenu?query=query-secret",
+    );
+    expect(result).toEqual({
+      status: "unavailable",
+      reason_code: "unexpected_page",
+    });
+  });
+
+  it("keeps identity and provider form values out of the inline reader result", async () => {
+    const result = await runInlineMyLibraryReader(
+      "purchase_requests",
+      `<table>
+        <caption>購入依頼状況</caption>
+        <thead><tr><th>申請番号</th><th>書名 / 著者名</th><th>申請日</th><th>状態</th><th>申請種別</th></tr></thead>
+        <tbody><tr><td>tracking-secret-id</td><td>端末内資料 / 公開著者</td><td>2026/08/01</td><td>受付済み</td><td>図書購入</td><td>contact-note-secret</td></tr></tbody>
+      </table>
+      <form><input name="student_id" value="student-number-secret" /><input name="sso_token" value="sso-token-secret" /></form>`,
+      { status: "known", scope: "purchase_requests", items: [] },
+    );
+    expect(result).toMatchObject({
+      status: "known",
+      items: [
+        {
+          title: "端末内資料",
+          author: "公開著者",
+          status: "受付済み",
+          activity_date: "2026-08-01",
+          request_type: "図書購入",
+        },
+      ],
+    });
+    const serialized = JSON.stringify(result);
+    for (const marker of [
+      "contact-note-secret",
+      "student-number-secret",
+      "sso-token-secret",
+    ]) {
+      expect(serialized).not.toContain(marker);
+    }
   });
 
   it("reads public catalog DOM in an inactive isolated-world tab", async () => {

@@ -1,5 +1,28 @@
-import type { SitrusGradeResult } from "../api/client";
 import { SITRUS_ORIGIN } from "./page-context";
+
+/** Local-only representation used while parsing the visible grade report. */
+export interface SitrusLocalGradeItem {
+  subject: string;
+  course_code: string | null;
+  credits: number | null;
+  grade: "S" | "A" | "B" | "C" | "D" | "F" | "G" | "N" | "X" | "#";
+  outcome: string | null;
+  year: number | null;
+  term: number | null;
+  term_slot: number | null;
+  repeated: boolean;
+}
+
+export interface SitrusLocalGradeResult {
+  schema_version: "v1";
+  status: "known" | "unavailable";
+  report_label: string | null;
+  grades: SitrusLocalGradeItem[];
+  credit_summaries: never[];
+  cumulative_gpa: number | null;
+  observed_at: string;
+  reason_code: string | null;
+}
 
 export interface SitrusTextItem {
   str: string;
@@ -12,8 +35,8 @@ export interface SitrusTextItem {
 const COURSE_CODE = /(?:[A-Z]\d{7}|\d{8})/u;
 const GRADE = /\*?[SABCDFGNX#]/u;
 const MAX_ITEMS = 10_000;
-type SitrusGrade = NonNullable<SitrusGradeResult["grades"]>[number];
-type SitrusGrades = NonNullable<SitrusGradeResult["grades"]>;
+type SitrusGrade = SitrusLocalGradeItem;
+type SitrusGrades = SitrusLocalGradeItem[];
 
 export interface SitrusTableRow {
   result: string;
@@ -34,13 +57,15 @@ const ALLOWED_GRADES = new Set([
   "#",
 ]);
 
-function unavailable(reason_code: string): SitrusGradeResult {
+function unavailable(reason_code: string): SitrusLocalGradeResult {
   return {
     schema_version: "v1",
     status: "unavailable",
     report_label: null,
     grades: [],
+    credit_summaries: [],
     cumulative_gpa: null,
+    observed_at: new Date().toISOString(),
     reason_code,
   };
 }
@@ -85,7 +110,7 @@ function rowForSegment(segment: string): SitrusGrade | null {
   const numbersAfter = [
     ...afterCode.slice(gradeMatch.index + gradeToken.length).matchAll(/\d+/gu),
   ].map((match) => Number(match[0]));
-  const credits = numbersBefore.length >= 2 ? numbersBefore[1] : null;
+  const credits = numbersBefore.length >= 2 ? (numbersBefore[1] ?? null) : null;
   const yearIndex = numbersAfter.findIndex(
     (value) => value >= 20 && value <= 99,
   );
@@ -108,6 +133,7 @@ function rowForSegment(segment: string): SitrusGrade | null {
     course_code: courseCode,
     credits,
     grade,
+    outcome: null,
     year,
     term,
     term_slot: termSlot,
@@ -151,7 +177,7 @@ function lineGroups(items: SitrusTextItem[]): string[] {
 export function parseSitrusGradeProjection(
   rawItems: SitrusTextItem[],
   url: string,
-): SitrusGradeResult {
+): SitrusLocalGradeResult {
   if (!isSitrusPath(url, "/SITRUS/login/SeisekiTsutiSho.html")) {
     return unavailable("invalid_grade_url");
   }
@@ -192,7 +218,9 @@ export function parseSitrusGradeProjection(
     status: "known",
     report_label: reportMatch?.[1]?.replace(/\s+/gu, " ").trim() ?? null,
     grades: grades.slice(0, 200),
+    credit_summaries: [],
     cumulative_gpa: gpaMatch ? Number(gpaMatch[1]) : null,
+    observed_at: new Date().toISOString(),
     reason_code: null,
   };
 }
@@ -205,7 +233,7 @@ export function parseSitrusGradeProjection(
 export function parseSitrusGradeTableProjection(
   rows: SitrusTableRow[],
   url: string,
-): SitrusGradeResult {
+): SitrusLocalGradeResult {
   if (!isSitrusPath(url, "/SITRUS/login/ShutokuTaniShukei.html")) {
     return unavailable("invalid_grade_url");
   }
@@ -227,6 +255,7 @@ export function parseSitrusGradeTableProjection(
       course_code: null,
       credits: null,
       grade: grade as SitrusGrade["grade"],
+      outcome: result,
       year: null,
       term: null,
       term_slot: null,
@@ -240,7 +269,9 @@ export function parseSitrusGradeTableProjection(
     status: "known",
     report_label: "取得済み科目",
     grades,
+    credit_summaries: [],
     cumulative_gpa: null,
+    observed_at: new Date().toISOString(),
     reason_code: null,
   };
 }

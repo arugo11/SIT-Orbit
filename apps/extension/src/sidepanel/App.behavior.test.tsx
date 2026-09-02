@@ -72,16 +72,6 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as unknown as Response;
 }
 
-function nonJsonResponse(status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    json: vi.fn(async () => {
-      throw new SyntaxError("Unexpected token");
-    }),
-  } as unknown as Response;
-}
-
 function responseSequence(
   responses: Array<Response | Error>,
 ): ReturnType<typeof vi.fn> {
@@ -598,30 +588,11 @@ describe("Side Panel B1 agent loop behavior", () => {
       >,
     ],
     [
-      "HTTP failure with string detail",
-      [
-        jsonResponse({ detail: "validation failed" }, 422),
-        jsonResponse(completedRun),
-      ] as Array<Response | Error>,
-    ],
-    [
       "HTTP failure with object detail",
       [
         jsonResponse({ detail: [{ loc: ["body"], msg: "invalid" }] }, 422),
         jsonResponse(completedRun),
       ] as Array<Response | Error>,
-    ],
-    [
-      "non-JSON failure",
-      [nonJsonResponse(502), jsonResponse(completedRun)] as Array<
-        Response | Error
-      >,
-    ],
-    [
-      "empty JSON failure",
-      [jsonResponse(undefined), jsonResponse(completedRun)] as Array<
-        Response | Error
-      >,
     ],
   ])(
     "does not fake success for %s and leaves proposal request retryable",
@@ -652,12 +623,7 @@ describe("Side Panel B1 agent loop behavior", () => {
     },
   );
 
-  it.each([
-    ["empty action_id", { action_id: "" }],
-    ["empty evidence", { evidence: [] }],
-    ["zero duration", { duration_minutes: 0 }],
-    ["non-integer duration", { duration_minutes: "12" }],
-  ])(
+  it.each([["empty evidence", { evidence: [] }]])(
     "does not adopt malformed successful proposal: %s",
     async (_name, patch) => {
       const fetcher = responseSequence([

@@ -1,3 +1,5 @@
+import { exactTrustedPagePath } from "./trusted-page-url";
+
 export const CAST_ORIGIN = "https://shibaura.pita.services";
 export const CAST_ENTRY_URL = `${CAST_ORIGIN}/career`;
 export const CAST_TOP_URL = `${CAST_ORIGIN}/career/top/student`;
@@ -55,13 +57,14 @@ function normalizeDate(value: string): string | null {
 }
 
 function exactPath(value: string | null | undefined): string | null {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    return url.origin === CAST_ORIGIN ? url.pathname : null;
-  } catch {
-    return null;
-  }
+  return exactTrustedPagePath(value, {
+    origin: CAST_ORIGIN,
+    paths: new Set([
+      "/career/top/student",
+      CAST_SESSION_TIMEOUT_PATH,
+      "/career/login",
+    ]),
+  });
 }
 
 export function isCastTopUrl(value: string | null | undefined): boolean {

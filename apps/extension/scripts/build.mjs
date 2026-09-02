@@ -25,6 +25,44 @@ if (
   throw new Error("ORBIT_AUDIT_BRIDGE_PORT must be a valid local TCP port.");
 }
 const auditSecret = auditBuild ? randomBytes(32).toString("base64url") : "";
+const extensionProfile =
+  process.env.ORBIT_EXTENSION_PROFILE?.trim() || "production";
+if (!new Set(["demo", "production"]).has(extensionProfile)) {
+  throw new Error("ORBIT_EXTENSION_PROFILE must be demo or production.");
+}
+const productionAgentApiBase =
+  process.env.ORBIT_PRODUCTION_AGENT_API_BASE?.trim() ||
+  "https://sit-orbit-demo-api.grayground-578aed68.japaneast.azurecontainerapps.io";
+const demoAgentApiBase = process.env.ORBIT_DEMO_AGENT_API_BASE?.trim();
+if (extensionProfile === "demo" && !demoAgentApiBase) {
+  throw new Error("ORBIT_DEMO_AGENT_API_BASE is required for a demo build.");
+}
+const agentApiBase =
+  extensionProfile === "demo" ? demoAgentApiBase : productionAgentApiBase;
+const parsedAgentApiBase = new URL(agentApiBase);
+const isDemoLoopback =
+  extensionProfile === "demo" &&
+  parsedAgentApiBase.protocol === "http:" &&
+  new Set(["127.0.0.1", "localhost", "[::1]"]).has(parsedAgentApiBase.hostname);
+if (
+  (parsedAgentApiBase.protocol !== "https:" && !isDemoLoopback) ||
+  parsedAgentApiBase.pathname !== "/"
+) {
+  throw new Error(
+    "The selected Agent API base must be an HTTPS origin or a demo loopback origin.",
+  );
+}
+const demoFixtureProfilePlugin = {
+  name: "demo-fixture-profile",
+  setup(context) {
+    context.onResolve({ filter: /^\.\/demo-fixture$/ }, (args) => {
+      if (extensionProfile === "demo") return null;
+      return {
+        path: resolve(dirname(args.importer), "demo-fixture-disabled.ts"),
+      };
+    });
+  },
+};
 
 await rm(outputDirectory, { force: true, recursive: true });
 await mkdir(outputDirectory, { recursive: true });
@@ -60,9 +98,6 @@ try {
 const agentOAuthClientId =
   process.env.ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID?.trim() ||
   parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID");
-const agentApiBase =
-  process.env.ORBIT_AGENT_API_BASE?.trim() ||
-  parseLocalEnvValue(localEnv, "ORBIT_AGENT_API_BASE");
 const extensionOAuthClientId =
   process.env.ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID?.trim() ||
   parseLocalEnvValue(localEnv, "ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID");
@@ -70,10 +105,12 @@ const extensionOAuthClientId =
 const bundleOptions = {
   bundle: true,
   format: "iife",
+  metafile: true,
   minify: true,
   platform: "browser",
   target: "chrome114",
   legalComments: "none",
+  plugins: [demoFixtureProfilePlugin],
   define: {
     __ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__: JSON.stringify(
       agentOAuthClientId ?? "",
@@ -81,11 +118,12 @@ const bundleOptions = {
     __ORBIT_AUDIT_BUILD__: JSON.stringify(auditBuild),
     __ORBIT_AUDIT_BRIDGE_PORT__: JSON.stringify(auditBuild ? auditPort : 0),
     __ORBIT_AUDIT_BRIDGE_SECRET__: JSON.stringify(auditSecret),
-    __ORBIT_AGENT_API_BASE__: JSON.stringify(agentApiBase ?? ""),
+    __ORBIT_AGENT_API_BASE__: JSON.stringify(parsedAgentApiBase.origin),
+    __ORBIT_DEMO_FIXTURE__: JSON.stringify(extensionProfile === "demo"),
   },
 };
 
-await Promise.all([
+const buildResults = await Promise.all([
   build({
     ...bundleOptions,
     entryPoints: [resolve(packageRoot, "src/background/service-worker.ts")],
@@ -117,6 +155,33 @@ await Promise.all([
     outfile: resolve(outputDirectory, "workspace.js"),
   }),
 ]);
+
+const modulesOutsideProductionBundles = [
+  "src/content/career-map.ts",
+  "src/content/cast-decision-room.ts",
+  "src/privacy/application-mission.ts",
+  "src/privacy/career-evidence-bank.ts",
+  "src/privacy/cast-action-adapters.ts",
+  "src/privacy/cast-change-feed.ts",
+  "src/privacy/cast-quality-release.ts",
+  "src/privacy/evidence-grounded-es.ts",
+  "src/privacy/multi-perspective-career-review.ts",
+  "src/privacy/obog-concierge.ts",
+];
+const bundledInputs = new Set(
+  buildResults.flatMap((result) =>
+    Object.keys(result.metafile.inputs).map((input) =>
+      input.replaceAll("\\", "/"),
+    ),
+  ),
+);
+for (const modulePath of modulesOutsideProductionBundles) {
+  if ([...bundledInputs].some((input) => input.endsWith(modulePath))) {
+    throw new Error(
+      `Module without production-path tests entered an extension bundle: ${modulePath}`,
+    );
+  }
+}
 
 await Promise.all([
   copyFile(

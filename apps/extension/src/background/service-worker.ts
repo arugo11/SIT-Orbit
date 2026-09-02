@@ -115,13 +115,8 @@ import {
   type PageContext,
 } from "../content/page-context";
 import { hasScombzStudentSessionConsent } from "../content/scombz-consent";
-import {
-  parseSitrusGradeProjection,
-  parseSitrusGradeTableProjection,
-  type SitrusTableRow,
-} from "../content/sitrus-reader";
-import { ConversationPseudonymizationGateway } from "../privacy/conversation-pseudonymization";
 import { CareerVault } from "../privacy/career-vault";
+import { ConversationPseudonymizationGateway } from "../privacy/conversation-pseudonymization";
 import { PseudonymizationGateway } from "../privacy/pseudonymization";
 import {
   type BrowserReadResponse,
@@ -186,22 +181,20 @@ import {
   type MoodleReadResponse,
   type MyLibraryReadMessage,
   type MyLibraryReadResponse,
-  type OpenWorkspaceMessage,
-  type OpenWorkspaceResponse,
   type ScombzPinResponse,
   type ScombzSourceIdentityResponse,
   type ScombzStudentReadResponse,
   type SitrusReadResponse,
-  type UpdateWorkspaceSessionMessage,
-  type WorkspaceSessionResponse,
-  type WorkspaceStatusResponse,
 } from "../shared/messages";
 import {
-  isWorkspaceSessionId,
-  type WorkspaceSession,
-  workspaceSessionKey,
-  workspaceSourceKey,
-} from "../shared/workspace-session";
+  classifyLibraryNavigationUrl,
+  LIBRARY_NAVIGATION_POLL_MS,
+  LIBRARY_NAVIGATION_TIMEOUT_MS,
+  waitForLibraryNavigation,
+} from "./library-navigation";
+import { ScombzTabSessionRegistry } from "./scombz-tab-session";
+import { readAuthenticatedSitrusGrades, SitrusApiError } from "./sitrus-api";
+import { WorkspaceSessionController } from "./workspace-controller";
 
 const googleCalendarConnector = new GoogleCalendarConnector();
 const googleDriveConnector = new GoogleDriveConnector();
@@ -226,17 +219,15 @@ const CAST_PERMISSION_PATTERN = `${CAST_ORIGIN}/*`;
 // Context Manifest record URLs may re-establish the ref after a worker
 // restart, but only after exact origin/path and opaque-ref validation.
 const libraryRecordRefs = new Map<string, string>();
-interface ScombzConversationBinding {
-  tabId: number;
-  expiresAt: number;
-  contentScriptGeneration: string;
-  adapterVersion: "scombz-student-v1";
-  serviceWorkerEpoch: string;
-}
-
 const SCOMBZ_HANDLE_TTL_MS = 30 * 60 * 1000;
 const SCOMBZ_SERVICE_WORKER_EPOCH = crypto.randomUUID();
-const scombzConversationTabs = new Map<string, ScombzConversationBinding>();
+const scombzTabSessions = new ScombzTabSessionRegistry(
+  SCOMBZ_SERVICE_WORKER_EPOCH,
+  SCOMBZ_HANDLE_TTL_MS,
+);
+const workspaceSessions = new WorkspaceSessionController(
+  requestPageContextForTab,
+);
 
 interface AuditScombzSourceBinding {
   tabId: number;
@@ -265,7 +256,7 @@ const castConversationPseudonymizerReady =
 async function clearConversationBindings(
   conversationId: string,
 ): Promise<void> {
-  scombzConversationTabs.delete(conversationId);
+  scombzTabSessions.delete(conversationId);
   auditSyllabusRefs.delete(conversationId);
   await castConversationPseudonymizerReady.catch(() => undefined);
   await castConversationPseudonymizer
@@ -421,195 +412,6 @@ async function waitForTabReady(
     };
     chrome.tabs.onUpdated.addListener(listener);
     setTimeout(finish, timeoutMs);
-  });
-}
-
-const LIBRARY_NAVIGATION_TIMEOUT_MS = 15_000;
-const LIBRARY_NAVIGATION_POLL_MS = 100;
-
-type LibraryNavigationResult =
-  | { status: "ready" }
-  | { status: "unavailable"; reason_code: string };
-
-function sameNavigationUrl(left: string | undefined, right: string): boolean {
-  if (!left) return false;
-  try {
-    const actual = new URL(left);
-    const expected = new URL(right);
-    return (
-      actual.origin === expected.origin &&
-      actual.pathname === expected.pathname &&
-      actual.search === expected.search &&
-      actual.hash === expected.hash
-    );
-  } catch {
-    return false;
-  }
-}
-
-function sameSearchNavigationUrl(
-  actualUrl: string | undefined,
-  expectedUrl: string,
-): boolean {
-  if (!actualUrl) return false;
-  try {
-    const actual = new URL(actualUrl);
-    const expected = new URL(expectedUrl);
-    if (
-      actual.origin !== expected.origin ||
-      decodeURIComponent(actual.pathname) !==
-        decodeURIComponent(expected.pathname) ||
-      actual.hash !== expected.hash
-    ) {
-      return false;
-    }
-    const entries = (url: URL): string[] =>
-      Array.from(url.searchParams.entries())
-        .map(([key, value]) => `${key}\u0000${value}`)
-        .sort();
-    const actualEntries = entries(actual);
-    const expectedEntries = entries(expected);
-    return (
-      actualEntries.length === expectedEntries.length &&
-      actualEntries.every((entry, index) => entry === expectedEntries[index])
-    );
-  } catch {
-    return false;
-  }
-}
-
-function isCanonicalLibrarySearchRecordRedirect(
-  actualUrl: string | undefined,
-): boolean {
-  if (!actualUrl) return false;
-  try {
-    const actual = new URL(actualUrl);
-    return (
-      actual.origin === LIBRARY_OPAC_ORIGIN &&
-      /^\/opc\/recordID\/catalog\.bib\/[A-Za-z0-9._-]{1,128}$/u.test(
-        actual.pathname,
-      ) &&
-      actual.searchParams.get("caller") === "xc-search" &&
-      Array.from(actual.searchParams.keys()).every(
-        (key) => key === "caller" || key === "hit",
-      ) &&
-      !actual.hash
-    );
-  } catch {
-    return false;
-  }
-}
-
-function classifyLibraryNavigationUrl(
-  actualUrl: string | undefined,
-): OpacDiagnosticRouteKind {
-  if (!actualUrl) return "unknown";
-  try {
-    const url = new URL(actualUrl);
-    if (url.origin !== LIBRARY_OPAC_ORIGIN) return "unknown";
-    if (url.pathname.startsWith("/opc/xc/search/")) return "search_results";
-    if (url.pathname.startsWith("/opc/recordID/catalog.bib/")) {
-      return "single_record";
-    }
-    if (/login|selectLogin/iu.test(url.pathname)) return "login";
-    if (/error/iu.test(url.pathname)) return "error";
-    if (url.pathname === "/opc/" || url.pathname === "/opc") return "entry";
-    return "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-
-function isAllowedLibraryNavigationUrl(
-  actualUrl: string | undefined,
-  expectedUrl: string,
-  allowSearchRecordRedirect: boolean,
-): boolean {
-  return (
-    sameNavigationUrl(actualUrl, expectedUrl) ||
-    sameSearchNavigationUrl(actualUrl, expectedUrl) ||
-    (allowSearchRecordRedirect &&
-      isCanonicalLibrarySearchRecordRedirect(actualUrl))
-  );
-}
-
-async function waitForLibraryNavigation(
-  tabId: number,
-  expectedUrl: string,
-  timeoutReason: string,
-  mismatchReason: string,
-  initialUrl?: string,
-  allowSearchRecordRedirect = false,
-): Promise<LibraryNavigationResult> {
-  if (!expectedUrl.startsWith(`${LIBRARY_OPAC_ORIGIN}/`)) {
-    return { status: "unavailable", reason_code: "invalid_expected_url" };
-  }
-  return new Promise<LibraryNavigationResult>((resolve) => {
-    let settled = false;
-    let navigationObserved = false;
-    let baselineUrl = initialUrl;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let pollId: ReturnType<typeof setInterval> | undefined;
-    const finish = (result: LibraryNavigationResult): void => {
-      if (settled) return;
-      settled = true;
-      if (timeoutId !== undefined) clearTimeout(timeoutId);
-      if (pollId !== undefined) clearInterval(pollId);
-      chrome.tabs.onUpdated.removeListener?.(listener);
-      resolve(result);
-    };
-    const inspect = async (updatedTab?: chrome.tabs.Tab): Promise<void> => {
-      let tab = updatedTab;
-      if (!tab) {
-        try {
-          tab = await chrome.tabs.get(tabId);
-        } catch {
-          return;
-        }
-      }
-      const currentUrl = tab.url;
-      if (!baselineUrl && currentUrl) {
-        baselineUrl = currentUrl;
-      } else if (
-        baselineUrl &&
-        currentUrl &&
-        !sameNavigationUrl(currentUrl, baselineUrl)
-      ) {
-        navigationObserved = true;
-      }
-      if (
-        isAllowedLibraryNavigationUrl(
-          currentUrl,
-          expectedUrl,
-          allowSearchRecordRedirect,
-        )
-      ) {
-        const status = (tab as chrome.tabs.Tab & { status?: string }).status;
-        if (status === "complete") finish({ status: "ready" });
-        return;
-      }
-      const status = (tab as chrome.tabs.Tab & { status?: string }).status;
-      if (navigationObserved && status === "complete") {
-        finish({ status: "unavailable", reason_code: mismatchReason });
-      }
-    };
-    const listener = (
-      updatedTabId: number,
-      changeInfo: { status?: string; url?: string },
-      updatedTab?: chrome.tabs.Tab,
-    ): void => {
-      if (updatedTabId !== tabId) return;
-      if (changeInfo.url) navigationObserved = true;
-      void inspect(updatedTab);
-    };
-    chrome.tabs.onUpdated.addListener(listener);
-    pollId = setInterval(() => {
-      void inspect();
-    }, LIBRARY_NAVIGATION_POLL_MS);
-    timeoutId = setTimeout(() => {
-      finish({ status: "unavailable", reason_code: timeoutReason });
-    }, LIBRARY_NAVIGATION_TIMEOUT_MS);
-    void inspect();
   });
 }
 
@@ -4700,223 +4502,34 @@ async function handleBrowserRead(
   }
 }
 
-async function readSitrusGradeTextInPage(): Promise<
-  | {
-      status: "known";
-      text_items: Array<{
-        str: string;
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-      }>;
-    }
-  | { status: "unavailable"; reason_code: string }
-> {
-  try {
-    const current = window as Window & {
-      id_data?: { GakusekiNo?: unknown };
-      gakuseiInfo?: Array<{ gakuseki_no?: unknown }>;
-      pdfjsLib?: {
-        getDocument: (source: { data: Uint8Array }) => {
-          promise: Promise<{
-            getPage: (pageNumber: number) => Promise<{
-              getTextContent: () => Promise<{
-                items: Array<Record<string, unknown>>;
-              }>;
-            }>;
-          }>;
-        };
-      };
-      "pdfjs-dist/build/pdf"?: {
-        getDocument: (source: { data: Uint8Array }) => {
-          promise: Promise<{
-            getPage: (pageNumber: number) => Promise<{
-              getTextContent: () => Promise<{
-                items: Array<Record<string, unknown>>;
-              }>;
-            }>;
-          }>;
-        };
-      };
-    };
-    const studentId =
-      current.id_data?.GakusekiNo ??
-      current.gakuseiInfo?.[0]?.gakuseki_no ??
-      new URL(current.location.href).searchParams.get("N");
-    if (
-      typeof studentId !== "string" ||
-      !/^[A-Za-z0-9_-]{3,32}$/u.test(studentId)
-    ) {
-      return { status: "unavailable", reason_code: "student_id_unavailable" };
-    }
-    const response = await fetch(
-      `../../app/SITRUS/Seiseki?gakusei_no=${encodeURIComponent(studentId)}`,
-      { credentials: "include" },
-    );
-    if (!response.ok) {
-      return { status: "unavailable", reason_code: "grade_endpoint_failed" };
-    }
-    const raw: unknown = await response.json();
-    const payload = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (
-      !payload ||
-      typeof payload !== "object" ||
-      (payload as { Result?: unknown }).Result !== "true" ||
-      typeof (payload as { Message?: unknown }).Message !== "string"
-    ) {
-      return { status: "unavailable", reason_code: "grade_data_unavailable" };
-    }
-    const pdfjs = current.pdfjsLib ?? current["pdfjs-dist/build/pdf"];
-    if (!pdfjs?.getDocument) {
-      return { status: "unavailable", reason_code: "pdfjs_unavailable" };
-    }
-    const binary = atob((payload as { Message: string }).Message);
-    const bytes = Uint8Array.from(binary, (character) =>
-      character.charCodeAt(0),
-    );
-    const pdf = await pdfjs.getDocument({ data: bytes }).promise;
-    const page = await pdf.getPage(1);
-    const content = await page.getTextContent();
-    const text_items = content.items
-      .map((item) => {
-        const transform = Array.isArray(item.transform) ? item.transform : [];
-        return {
-          str: typeof item.str === "string" ? item.str : "",
-          x: Number(transform[4]) || 0,
-          y: Number(transform[5]) || 0,
-          width: Number(item.width) || 0,
-          height: Number(item.height) || 0,
-        };
-      })
-      .filter((item) => item.str)
-      .slice(0, 10_000);
-    return { status: "known", text_items };
-  } catch {
-    return { status: "unavailable", reason_code: "grade_read_failed" };
-  }
-}
-
-/** Read only the visible grade table on the exact SITRUS summary page. */
-async function readSitrusGradeTableInPage(): Promise<
-  | { status: "known"; rows: SitrusTableRow[] }
-  | { status: "unavailable"; reason_code: string }
-> {
-  try {
-    const rows: SitrusTableRow[] = [];
-    const allowedGrades = new Set([
-      "S",
-      "A",
-      "B",
-      "C",
-      "D",
-      "F",
-      "G",
-      "N",
-      "X",
-      "#",
-    ]);
-    for (const row of Array.from(
-      document.querySelectorAll('[role="grid"] [role="row"]'),
-    )) {
-      const cells = Array.from(row.querySelectorAll('[role="gridcell"]'))
-        .map((cell) => (cell.textContent ?? "").replace(/\s+/gu, " ").trim())
-        .filter(Boolean);
-      if (cells.length < 3) continue;
-      const result = cells[0] ?? "";
-      const grade = (cells[1] ?? "").toUpperCase();
-      const subject = cells[2] ?? "";
-      if (result && subject && allowedGrades.has(grade)) {
-        rows.push({ result, grade, subject });
-      }
-      if (rows.length >= 200) break;
-    }
-    return rows.length > 0
-      ? { status: "known", rows }
-      : { status: "unavailable", reason_code: "grade_table_not_visible" };
-  } catch {
-    return { status: "unavailable", reason_code: "grade_table_read_failed" };
-  }
-}
-
 async function handleSitrusRead(
-  message: import("../shared/messages").SitrusReadMessage,
+  _message: import("../shared/messages").SitrusReadMessage,
 ): Promise<SitrusReadResponse> {
-  if (!isSitrusGradeUrl(message.page_url)) {
-    return { status: "unavailable", reason_code: "invalid_grade_url" };
-  }
-  const target = browserOrigin(message.page_url);
-  if (!target || !(await hasBrowserPermission(target.pattern, target.origin))) {
+  const origin = "https://sitrus.sic.shibaura-it.ac.jp";
+  const pattern = `${origin}/*`;
+  if (!(await hasBrowserPermission(pattern, origin))) {
     return {
       status: "permission_required",
-      origin: target?.origin ?? "https://sitrus.sic.shibaura-it.ac.jp",
-      pattern: target?.pattern ?? "https://sitrus.sic.shibaura-it.ac.jp/*",
+      origin,
+      pattern,
     };
   }
   try {
-    const [activeTab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-    if (
-      !activeTab ||
-      activeTab.id === undefined ||
-      !isSitrusGradeUrl(activeTab.url)
-    ) {
-      return { status: "unavailable", reason_code: "grade_page_not_active" };
-    }
-    const requested = new URL(message.page_url);
-    const active = new URL(activeTab.url ?? "");
-    if (
-      requested.origin !== active.origin ||
-      requested.pathname !== active.pathname
-    ) {
-      return { status: "unavailable", reason_code: "grade_page_changed" };
-    }
-    const isSummaryPage =
-      active.pathname === "/SITRUS/login/ShutokuTaniShukei.html";
-    if (isSummaryPage) {
-      const [injected] = await chrome.scripting.executeScript({
-        target: { tabId: activeTab.id },
-        world: "MAIN",
-        func: readSitrusGradeTableInPage,
-      });
-      const value = injected?.result;
-      if (value?.status !== "known" || !Array.isArray(value.rows)) {
-        return { status: "unavailable", reason_code: "invalid_projection" };
-      }
-      return {
-        status: "known",
-        projection: parseSitrusGradeTableProjection(
-          value.rows,
-          message.page_url,
-        ),
-      };
-    }
-    const [injected] = await chrome.scripting.executeScript({
-      target: { tabId: activeTab.id },
-      world: "MAIN",
-      func: readSitrusGradeTextInPage,
-    });
-    const value = injected?.result;
-    if (!value) {
-      return { status: "unavailable", reason_code: "invalid_projection" };
-    }
-    if (value.status !== "known") {
-      return { status: "unavailable", reason_code: value.reason_code };
-    }
-    if (!Array.isArray(value.text_items)) {
-      return { status: "unavailable", reason_code: "invalid_projection" };
-    }
     return {
       status: "known",
-      projection: parseSitrusGradeProjection(
-        value.text_items,
-        message.page_url,
-      ),
+      projection: await readAuthenticatedSitrusGrades(),
     };
-  } catch {
-    return { status: "unavailable", reason_code: "grade_read_failed" };
+  } catch (error) {
+    if (error instanceof SitrusApiError && error.reauthRequired) {
+      return { status: "reauth_required", reason_code: error.reasonCode };
+    }
+    return {
+      status: "unavailable",
+      reason_code:
+        error instanceof SitrusApiError
+          ? error.reasonCode
+          : "grade_read_failed",
+    };
   }
 }
 
@@ -6505,231 +6118,6 @@ function isTrustedExtensionPageSender(sender: chrome.runtime.MessageSender) {
   }
 }
 
-async function readWorkspaceSession(
-  sessionId: string,
-): Promise<WorkspaceSession | null> {
-  if (!isWorkspaceSessionId(sessionId)) {
-    return null;
-  }
-  const key = workspaceSessionKey(sessionId);
-  const stored = await chrome.storage.session.get(key);
-  const value = stored[key];
-  return value && typeof value === "object"
-    ? (value as WorkspaceSession)
-    : null;
-}
-
-async function writeWorkspaceSession(session: WorkspaceSession): Promise<void> {
-  await chrome.storage.session.set({
-    [workspaceSessionKey(session.sessionId)]: session,
-    [workspaceSourceKey(session.sourceTabId)]: session.sessionId,
-  });
-}
-
-async function workspaceForSourceTab(
-  sourceTabId: number,
-): Promise<WorkspaceSession | null> {
-  const sourceKey = workspaceSourceKey(sourceTabId);
-  const stored = await chrome.storage.session.get(sourceKey);
-  const sessionId = stored[sourceKey];
-  return typeof sessionId === "string" ? readWorkspaceSession(sessionId) : null;
-}
-
-async function currentScombzTab(): Promise<chrome.tabs.Tab | null> {
-  const [activeTab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
-  return activeTab?.id !== undefined && isScombzUrl(activeTab.url)
-    ? activeTab
-    : null;
-}
-
-async function openWorkspace(
-  message: OpenWorkspaceMessage,
-): Promise<OpenWorkspaceResponse> {
-  const sourceTab = await currentScombzTab();
-  if (sourceTab?.id === undefined) {
-    return { ok: false, error: "接続元のScombZタブを確認できません。" };
-  }
-  const pageContext = await requestPageContextForTab(sourceTab.id);
-  if (pageContext?.kind !== "scombz") {
-    return { ok: false, error: "ScombZページの情報を取得できません。" };
-  }
-
-  const existing = await workspaceForSourceTab(sourceTab.id);
-  if (
-    existing?.workspaceTabId !== null &&
-    existing?.workspaceTabId !== undefined
-  ) {
-    try {
-      const workspaceTab = await chrome.tabs.get(existing.workspaceTabId);
-      const refreshed = {
-        ...existing,
-        pageContext,
-        sourceAvailable: true,
-        updatedAt: new Date().toISOString(),
-      };
-      await writeWorkspaceSession(refreshed);
-      await chrome.tabs.update(existing.workspaceTabId, { active: true });
-      await chrome.windows.update(workspaceTab.windowId, { focused: true });
-      await chrome.runtime
-        .sendMessage({
-          type: MESSAGE_TYPES.workspaceOwnershipChanged,
-          active: true,
-          session: refreshed,
-        })
-        .catch(() => undefined);
-      return { ok: true, session: refreshed };
-    } catch {
-      // The workspace tab disappeared without an onRemoved notification.
-    }
-  }
-
-  const sessionId = existing?.sessionId ?? crypto.randomUUID();
-  const session: WorkspaceSession = {
-    sessionId,
-    sourceTabId: sourceTab.id,
-    sourceWindowId: sourceTab.windowId,
-    workspaceTabId: null,
-    pageContext,
-    stableState: message.stable_state,
-    sourceAvailable: true,
-    updatedAt: new Date().toISOString(),
-  };
-  await writeWorkspaceSession(session);
-
-  const workspaceUrl = chrome.runtime.getURL(
-    `workspace.html?session=${encodeURIComponent(sessionId)}`,
-  );
-  const workspaceTab = await chrome.tabs.create({
-    openerTabId: sourceTab.id,
-    windowId: sourceTab.windowId,
-    active: false,
-  });
-  if (workspaceTab.id === undefined) {
-    return { ok: false, error: "全画面タブを作成できませんでした。" };
-  }
-  const opened = {
-    ...session,
-    workspaceTabId: workspaceTab.id,
-    updatedAt: new Date().toISOString(),
-  };
-  await writeWorkspaceSession(opened);
-  try {
-    await chrome.tabs.update(workspaceTab.id, {
-      url: workspaceUrl,
-      active: true,
-    });
-  } catch {
-    await writeWorkspaceSession({
-      ...opened,
-      workspaceTabId: null,
-      updatedAt: new Date().toISOString(),
-    });
-    return { ok: false, error: "全画面タブを表示できませんでした。" };
-  }
-  await chrome.runtime
-    .sendMessage({
-      type: MESSAGE_TYPES.workspaceOwnershipChanged,
-      active: true,
-      session: opened,
-    })
-    .catch(() => undefined);
-  return { ok: true, session: opened };
-}
-
-async function getWorkspaceSession(
-  sessionId: string,
-): Promise<WorkspaceSessionResponse> {
-  const session = await readWorkspaceSession(sessionId);
-  return session
-    ? { ok: true, session }
-    : { ok: false, error: "全画面セッションが見つかりません。" };
-}
-
-async function getWorkspaceStatus(): Promise<WorkspaceStatusResponse> {
-  const sourceTab = await currentScombzTab();
-  if (sourceTab?.id === undefined) {
-    return { active: false, session: null, sourceTabId: null };
-  }
-  const session = await workspaceForSourceTab(sourceTab.id);
-  return {
-    active:
-      session?.workspaceTabId !== null && session?.workspaceTabId !== undefined,
-    session,
-    sourceTabId: sourceTab.id,
-  };
-}
-
-async function updateWorkspaceSession(
-  message: UpdateWorkspaceSessionMessage,
-  sender: chrome.runtime.MessageSender,
-): Promise<WorkspaceSessionResponse> {
-  const session = await readWorkspaceSession(message.session_id);
-  if (
-    !session ||
-    sender.tab?.id === undefined ||
-    sender.tab.id !== session.workspaceTabId
-  ) {
-    return { ok: false, error: "全画面セッションの更新を拒否しました。" };
-  }
-  const updated = {
-    ...session,
-    stableState: message.stable_state,
-    updatedAt: new Date().toISOString(),
-  };
-  await writeWorkspaceSession(updated);
-  return { ok: true, session: updated };
-}
-
-async function releaseWorkspaceTab(tabId: number): Promise<void> {
-  const stored = await chrome.storage.session.get(null);
-  const sessions = Object.values(stored).filter(
-    (value): value is WorkspaceSession =>
-      typeof value === "object" &&
-      value !== null &&
-      "workspaceTabId" in value &&
-      (value as WorkspaceSession).workspaceTabId === tabId,
-  );
-  await Promise.all(
-    sessions.map(async (session) => {
-      const released = {
-        ...session,
-        workspaceTabId: null,
-        updatedAt: new Date().toISOString(),
-      };
-      await writeWorkspaceSession(released);
-      await chrome.runtime
-        .sendMessage({
-          type: MESSAGE_TYPES.workspaceOwnershipChanged,
-          active: false,
-          session: released,
-        })
-        .catch(() => undefined);
-    }),
-  );
-}
-
-async function markSourceUnavailable(tabId: number): Promise<void> {
-  const session = await workspaceForSourceTab(tabId);
-  if (!session) {
-    return;
-  }
-  const unavailable = {
-    ...session,
-    sourceAvailable: false,
-    updatedAt: new Date().toISOString(),
-  };
-  await writeWorkspaceSession(unavailable);
-  await chrome.runtime
-    .sendMessage({
-      type: MESSAGE_TYPES.workspaceSourceUnavailable,
-      session_id: session.sessionId,
-    })
-    .catch(() => undefined);
-}
-
 function unavailableCalendarResult(): CalendarConnectorResult {
   return {
     status: "unavailable",
@@ -6884,23 +6272,16 @@ async function handleScombzStudentRead(
       reason_code,
     },
   });
-  const pinned = scombzConversationTabs.get(message.conversation_id);
-  if (pinned === undefined) {
-    return unavailable("unavailable", "scombz_source_not_pinned");
+  const resolution = scombzTabSessions.resolve(message.conversation_id);
+  if (resolution.status !== "known") {
+    return unavailable("unavailable", resolution.reason_code);
   }
-  if (pinned.expiresAt <= Date.now()) {
-    scombzConversationTabs.delete(message.conversation_id);
-    return unavailable("unavailable", "scombz_handle_expired");
-  }
-  if (pinned.serviceWorkerEpoch !== SCOMBZ_SERVICE_WORKER_EPOCH) {
-    scombzConversationTabs.delete(message.conversation_id);
-    return unavailable("unavailable", "scombz_handle_epoch_mismatch");
-  }
+  const pinned = resolution.binding;
   let tab: chrome.tabs.Tab;
   try {
     tab = await chrome.tabs.get(pinned.tabId);
   } catch {
-    scombzConversationTabs.delete(message.conversation_id);
+    scombzTabSessions.delete(message.conversation_id);
     return unavailable("reauth_required", "scombz_source_tab_missing");
   }
   if (tab.id === undefined || !isScombzUrl(tab.url)) {
@@ -6933,10 +6314,6 @@ async function pinScombzConversationToTab(
   if (tab.id === undefined || !isScombzUrl(tab.url)) {
     return { status: "unavailable", reason_code: "scombz_source_tab_changed" };
   }
-  const pinned = scombzConversationTabs.get(conversationId);
-  if (pinned !== undefined && pinned.tabId !== tab.id) {
-    return { status: "unavailable", reason_code: "scombz_source_tab_changed" };
-  }
   const identity = await readScombzSourceIdentity(tab.id);
   if (!identity) {
     return {
@@ -6947,24 +6324,14 @@ async function pinScombzConversationToTab(
   if (!identity.authenticated) {
     return { status: "unavailable", reason_code: "scombz_reauth_required" };
   }
-  if (
-    pinned &&
-    (pinned.contentScriptGeneration !== identity.generation ||
-      pinned.serviceWorkerEpoch !== SCOMBZ_SERVICE_WORKER_EPOCH)
-  ) {
-    scombzConversationTabs.delete(conversationId);
-    return {
-      status: "unavailable",
-      reason_code: "scombz_source_reloaded",
-    };
-  }
-  scombzConversationTabs.set(conversationId, {
+  const pinStatus = scombzTabSessions.pin(conversationId, {
     tabId: tab.id,
-    expiresAt: Date.now() + SCOMBZ_HANDLE_TTL_MS,
     contentScriptGeneration: identity.generation,
     adapterVersion: identity.adapter_version,
-    serviceWorkerEpoch: SCOMBZ_SERVICE_WORKER_EPOCH,
   });
+  if (pinStatus !== "pinned") {
+    return { status: "unavailable", reason_code: pinStatus };
+  }
   return { status: "pinned" };
 }
 
@@ -7486,7 +6853,7 @@ function configureActionClick(): void {
 configureActionClick();
 chrome.runtime.onInstalled.addListener(configureActionClick);
 chrome.runtime.onStartup.addListener(() => {
-  scombzConversationTabs.clear();
+  scombzTabSessions.clear();
   clearAuditSourceMaps();
   clearMyLibraryResourceMaps();
   clearLibraryRecordMaps();
@@ -7494,7 +6861,7 @@ chrome.runtime.onStartup.addListener(() => {
   configureActionClick();
 });
 chrome.runtime.onSuspend?.addListener(() => {
-  scombzConversationTabs.clear();
+  scombzTabSessions.clear();
   clearAuditSourceMaps();
   clearMyLibraryResourceMaps();
   clearLibraryRecordMaps();
@@ -7503,10 +6870,7 @@ chrome.runtime.onSuspend?.addListener(() => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === "loading") {
-    for (const [conversationId, binding] of scombzConversationTabs) {
-      if (binding.tabId === tabId)
-        scombzConversationTabs.delete(conversationId);
-    }
+    scombzTabSessions.invalidateTab(tabId);
     // A reload creates a new content-script generation.  Rotate the opaque
     // audit source ref as well so an existing CLI conversation cannot reuse a
     // handle minted for the previous page instance.
@@ -7516,17 +6880,15 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     void updateTabPanel(tabId, changeInfo.url ?? tab.url);
   }
   if (changeInfo.url !== undefined && !isScombzUrl(changeInfo.url)) {
-    void markSourceUnavailable(tabId);
+    void workspaceSessions.markSourceUnavailable(tabId);
   }
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  for (const [conversationId, binding] of scombzConversationTabs) {
-    if (binding.tabId === tabId) scombzConversationTabs.delete(conversationId);
-  }
+  scombzTabSessions.invalidateTab(tabId);
   invalidateAuditSourceForTab(tabId);
-  void releaseWorkspaceTab(tabId);
-  void markSourceUnavailable(tabId);
+  void workspaceSessions.releaseWorkspaceTab(tabId);
+  void workspaceSessions.markSourceUnavailable(tabId);
 });
 
 chrome.tabs.onActivated.addListener(({ tabId }) => {
@@ -7850,7 +7212,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: "全画面表示の開始を拒否しました。" });
       return true;
     }
-    void openWorkspace(message).then(sendResponse);
+    void workspaceSessions.open(message).then(sendResponse);
     return true;
   }
 
@@ -7859,7 +7221,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: "全画面セッションを取得できません。" });
       return true;
     }
-    void getWorkspaceSession(message.session_id).then(sendResponse);
+    void workspaceSessions.get(message.session_id).then(sendResponse);
     return true;
   }
 
@@ -7868,7 +7230,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: false, error: "全画面セッションを更新できません。" });
       return true;
     }
-    void updateWorkspaceSession(message, sender).then(sendResponse);
+    void workspaceSessions.update(message, sender).then(sendResponse);
     return true;
   }
 
@@ -7877,7 +7239,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ active: false, session: null, sourceTabId: null });
       return true;
     }
-    void getWorkspaceStatus().then(sendResponse);
+    void workspaceSessions.status().then(sendResponse);
     return true;
   }
 

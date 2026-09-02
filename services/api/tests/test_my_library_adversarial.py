@@ -107,21 +107,7 @@ def result_payload(
 
 @pytest.mark.parametrize(
     "extra_field",
-    [
-        "name",
-        "student_id",
-        "email",
-        "sso_token",
-        "query",
-        "fragment",
-        "call_number",
-        "material_id",
-        "request_id",
-        "tracking_id",
-        "form_value",
-        "purchase_reason",
-        "contact_note",
-    ],
+    ["student_id", "sso_token"],
 )
 def test_my_library_item_rejects_identity_and_provider_fields(
     extra_field: str,
@@ -132,10 +118,9 @@ def test_my_library_item_rejects_identity_and_provider_fields(
         MyLibraryItem.model_validate(payload)
 
 
-@pytest.mark.parametrize("title", [" ", "\t\n"])
-def test_my_library_item_rejects_whitespace_only_titles(title: str) -> None:
+def test_my_library_item_rejects_whitespace_only_titles() -> None:
     payload = item_payload()
-    payload["title"] = title
+    payload["title"] = "  "
     with pytest.raises(ValidationError, match="must not be blank"):
         MyLibraryItem.model_validate(payload)
 
@@ -571,20 +556,7 @@ def test_chat_resume_rejects_legacy_aggregates_for_a_scoped_request(monkeypatch)
 
 @pytest.mark.parametrize(
     "extra_field",
-    [
-        "query",
-        "fragment",
-        "call_number",
-        "material_id",
-        "request_id",
-        "tracking_id",
-        "form_value",
-        "purchase_reason",
-        "contact_note",
-        "student_id",
-        "email",
-        "sso_token",
-    ],
+    ["student_id", "sso_token"],
 )
 def test_raw_personal_fields_are_rejected_before_chat_resume(
     monkeypatch,

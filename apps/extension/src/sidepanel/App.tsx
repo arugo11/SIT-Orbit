@@ -5,6 +5,7 @@ import {
   type AgentRunResponse,
   type AgentToolResultRequest,
   DEFAULT_AGENT_API_BASE,
+  DEMO_FIXTURE_ENABLED,
   isLocalAgentApiBase,
   type OrbitEvent,
 } from "../api/client";
@@ -962,7 +963,8 @@ export function App({
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsDrawerRef = useRef<HTMLElement>(null);
   const agentApiBase = DEFAULT_AGENT_API_BASE;
-  const useManagedAgentAuth = !isLocalAgentApiBase(agentApiBase);
+  const useManagedAgentAuth =
+    !DEMO_FIXTURE_ENABLED && !isLocalAgentApiBase(agentApiBase);
   const agentSessionProvider = useMemo(
     () =>
       useManagedAgentAuth
@@ -983,7 +985,7 @@ export function App({
     [agentSessionProvider, useManagedAgentAuth],
   );
   const requiresFirstUseSetup =
-    useManagedAgentAuth && managedIdentityAvailable();
+    !DEMO_FIXTURE_ENABLED && useManagedAgentAuth && managedIdentityAvailable();
   const [firstUseSetupState, setFirstUseSetupState] =
     useState<FirstUseSetupState>(requiresFirstUseSetup ? "checking" : "ready");
   const [firstUseSetupBusy, setFirstUseSetupBusy] = useState(false);
