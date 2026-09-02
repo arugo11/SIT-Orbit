@@ -161,7 +161,7 @@ previous_revision="$(az containerapp revision list \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
   "${subscription_args[@]}" \
-  --query "[?properties.trafficWeight==\`100\` && properties.runningState=='Running' && properties.healthState=='Healthy'].name | [0]" \
+  --query "[?properties.trafficWeight==\`100\` && (properties.runningState=='Running' || properties.runningState=='ScaledToZero') && properties.healthState=='Healthy'].name | [0]" \
   --output tsv)"
 if [[ -z "${previous_revision}" ]]; then
   printf 'A prior Healthy revision with 100%% traffic is required before rollout.\n' >&2
@@ -233,7 +233,7 @@ IFS='|' read -r candidate_state candidate_health candidate_profile candidate_bac
   "${subscription_args[@]}" \
   --query "join('|',[properties.runningState,properties.healthState,properties.template.containers[0].env[?name=='ORBIT_RUNTIME_PROFILE'].value | [0],properties.template.containers[0].env[?name=='ORBIT_AGENT_BACKEND'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_MODEL'].value | [0],properties.template.containers[0].env[?name=='AZURE_OPENAI_BASE_MODEL'].value | [0]])" \
   --output tsv)"
-if [[ "${candidate_state}" != "Running" || "${candidate_health}" != "Healthy" || \
+if [[ "${candidate_state}" != "Running" && "${candidate_state}" != "ScaledToZero" || "${candidate_health}" != "Healthy" || \
   "${candidate_profile}" != "production" || "${candidate_backend}" != "azure_openai" || \
   "${candidate_deployment}" != "${deployment_model}" || "${candidate_base}" != "${canonical_model}" ]]; then
   printf 'Candidate revision is not Healthy or has an unexpected canonical model profile.\n' >&2

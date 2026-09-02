@@ -33,7 +33,7 @@ IFS='|' read -r revision_state revision_health <<< "$(az containerapp revision s
   "${subscription_args[@]}" \
   --query "join('|',[properties.runningState,properties.healthState])" \
   --output tsv)"
-if [[ "${revision_state}" != "Running" || "${revision_health}" != "Healthy" ]]; then
+if [[ "${revision_state}" != "Running" && "${revision_state}" != "ScaledToZero" || "${revision_health}" != "Healthy" ]]; then
   printf 'Rollback target is not a Healthy running revision.\n' >&2
   exit 1
 fi

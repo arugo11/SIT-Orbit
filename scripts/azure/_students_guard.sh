@@ -9,8 +9,8 @@ require_azure_for_students_subscription() {
 
   local subscription_id state quota_id spending_limit
   IFS='|' read -r subscription_id state quota_id spending_limit <<< "$(az account subscription show \
-    --subscription "${ORBIT_AZURE_SUBSCRIPTION}" \
-    --query "join('|',[id,state,subscriptionPolicies.quotaId,subscriptionPolicies.spendingLimit])" \
+    --subscription-id "${ORBIT_AZURE_SUBSCRIPTION}" \
+    --query "join('|',[subscriptionId,state,subscriptionPolicies.quotaId,subscriptionPolicies.spendingLimit])" \
     --output tsv)"
   if [[ ! "${subscription_id}" =~ ^[0-9a-fA-F-]{36}$ ]]; then
     printf 'Azure subscription ID could not be resolved from the selected account.\n' >&2
