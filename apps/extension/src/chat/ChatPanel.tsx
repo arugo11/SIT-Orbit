@@ -906,32 +906,83 @@ function castCareerFailureProjection(
   };
 }
 
-function sendExtensionMessage<T>(message: unknown): Promise<T> {
+function abortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function sendExtensionMessage<T>(
+  message: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response: T | undefined) => {
-      const runtimeError = chrome.runtime.lastError;
-      if (runtimeError || response === undefined) {
-        const detail = runtimeError?.message?.trim();
-        reject(
-          new Error(
-            detail
-              ? `拡張機能のToolを利用できません: ${detail}`
-              : "拡張機能のToolを利用できません。",
-          ),
-        );
-        return;
-      }
-      resolve(response);
-    });
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
+    let settled = false;
+    const cleanup = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortError(signal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const runtime = chrome.runtime;
+    try {
+      runtime.sendMessage(message, (response: T | undefined) => {
+        const runtimeError = runtime.lastError;
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (runtimeError || response === undefined) {
+          const detail = runtimeError?.message?.trim();
+          reject(
+            new Error(
+              detail
+                ? `拡張機能のToolを利用できません: ${detail}`
+                : "拡張機能のToolを利用できません。",
+            ),
+          );
+          return;
+        }
+        resolve(response);
+      });
+    } catch (error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
   });
 }
 
-async function readChatAuthPreflight(): Promise<Set<string>> {
+async function readChatAuthPreflight(
+  signal?: AbortSignal,
+): Promise<Set<string>> {
   try {
     const response = await sendExtensionMessage<{
       schema_version?: unknown;
       ready_tools?: unknown;
-    }>({ type: MESSAGE_TYPES.chatAuthPreflight });
+    }>({ type: MESSAGE_TYPES.chatAuthPreflight }, signal);
+    throwIfAborted(signal);
     if (
       response.schema_version !== "v1" ||
       !Array.isArray(response.ready_tools) ||
@@ -940,7 +991,8 @@ async function readChatAuthPreflight(): Promise<Set<string>> {
       return new Set();
     }
     return new Set(response.ready_tools);
-  } catch {
+  } catch (error) {
+    if (signal?.aborted || isAbortError(error)) throw abortError(signal);
     // Unknown auth state is fail-closed and therefore cannot enter the
     // provider-side Tool Search corpus.
     return new Set();
@@ -961,6 +1013,12 @@ interface ChatProgress {
   detail: string;
   detailBase: string;
   startedAt: number;
+}
+
+interface ChatRunOptions {
+  submit?: boolean;
+  signal?: AbortSignal;
+  assertActive?: () => void;
 }
 
 export function ChatPanel({
@@ -1040,6 +1098,23 @@ export function ChatPanel({
   // sends the first message) before that read completes, the late result must
   // not replace the conversation they are actively editing with an older one.
   const conversationInteractionRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  function assertRunActive(controller: AbortController): void {
+    if (
+      abortControllerRef.current !== controller ||
+      controller.signal.aborted
+    ) {
+      throw abortError(controller.signal);
+    }
+  }
+
+  function abortCurrentRun(): void {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setProgress(null);
+    setBusy(false);
+  }
 
   function setChatProgress(
     phase: ChatProgressPhase,
@@ -1102,6 +1177,13 @@ export function ChatPanel({
     });
     return () => {
       mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
     };
   }, []);
 
@@ -1204,12 +1286,16 @@ export function ChatPanel({
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
     progressLabel = toolLabel(response.calls[0]?.name ?? ""),
-    options: { submit?: boolean } = {},
+    options: ChatRunOptions = {},
   ): Promise<{
     response: ChatRunResponse;
     conversation: ChatConversation;
     request: ChatToolResultRequest;
   }> {
+    const { signal } = options;
+    const assertActive =
+      options.assertActive ?? (() => throwIfAborted(options.signal));
+    assertActive();
     const [call] = response.calls;
     if (!call) {
       throw new Error("AgentのTool呼び出しを検証できません。");
@@ -1505,6 +1591,7 @@ export function ChatPanel({
       updatedAt: new Date().toISOString(),
       messages: [...scopedCurrent.messages, activity],
     };
+    assertActive();
     // Show the running boundary locally, but do not write it to the durable
     // transcript yet. A failed tool must disappear from history; only the
     // completed, evidence-backed activity is persisted below.
@@ -1542,13 +1629,18 @@ export function ChatPanel({
         | "portal_read"
         | "course_read"
         | "material_search";
-      const result = await sendExtensionMessage<ScombzStudentReadResponse>({
-        type: MESSAGE_TYPES.scombzStudentRead,
-        tool_call_id: call.tool_call_id,
-        conversation_id: current.conversationId,
-        action,
-        arguments: argumentsObject,
-      });
+      assertActive();
+      const result = await sendExtensionMessage<ScombzStudentReadResponse>(
+        {
+          type: MESSAGE_TYPES.scombzStudentRead,
+          tool_call_id: call.tool_call_id,
+          conversation_id: current.conversationId,
+          action,
+          arguments: argumentsObject,
+        },
+        signal,
+      );
+      assertActive();
       if (
         result.status !== "known" &&
         result.status !== "partial" &&
@@ -1575,9 +1667,11 @@ export function ChatPanel({
         result.projection as ChatToolResultRequest["result"],
       );
     } else if (call.name === "google_calendar_availability") {
+      assertActive();
       const refreshed = calendarConnector
         ? await calendarConnector.refresh()
         : await calendarRequest("refresh");
+      assertActive();
       if (refreshed.status === "reauth_required") {
         throw new Error("Google Calendarの再認証が必要です。");
       }
@@ -1592,19 +1686,24 @@ export function ChatPanel({
         projectCalendarAvailability(refreshed.snapshot),
       );
     } else if (call.name === "syllabus_search") {
-      const syllabus = await sendExtensionMessage<SyllabusSearchResult>({
-        type: "syllabus-search",
-        tool_call_id: call.tool_call_id,
-        query: argumentsObject.query as string,
-        year:
-          typeof argumentsObject.year === "number"
-            ? argumentsObject.year
-            : null,
-        faculty:
-          typeof argumentsObject.faculty === "string"
-            ? argumentsObject.faculty
-            : null,
-      });
+      assertActive();
+      const syllabus = await sendExtensionMessage<SyllabusSearchResult>(
+        {
+          type: "syllabus-search",
+          tool_call_id: call.tool_call_id,
+          query: argumentsObject.query as string,
+          year:
+            typeof argumentsObject.year === "number"
+              ? argumentsObject.year
+              : null,
+          faculty:
+            typeof argumentsObject.faculty === "string"
+              ? argumentsObject.faculty
+              : null,
+        },
+        signal,
+      );
+      assertActive();
       if (!isSyllabusSearchResult(syllabus)) {
         throw new Error("シラバス検索結果を検証できません。");
       }
@@ -1660,7 +1759,12 @@ export function ChatPanel({
               unavailableDetail("syllabus_origin_rejected"),
             );
           } else {
-            const response = await fetch(target.href, { credentials: "omit" });
+            assertActive();
+            const response = await fetch(target.href, {
+              credentials: "omit",
+              signal,
+            });
+            assertActive();
             if (!response.ok) {
               request = toolResultRequest(
                 call.tool_call_id,
@@ -1668,7 +1772,9 @@ export function ChatPanel({
                 unavailableDetail(`http_${response.status}`),
               );
             } else {
-              const detail = parseSyllabusDetailHtml(await response.text());
+              const html = await response.text();
+              assertActive();
+              const detail = parseSyllabusDetailHtml(html);
               const projection = {
                 schema_version: "v1" as const,
                 status: "known" as const,
@@ -1695,7 +1801,8 @@ export function ChatPanel({
               );
             }
           }
-        } catch {
+        } catch (error) {
+          if (signal?.aborted || isAbortError(error)) throw error;
           request = toolResultRequest(
             call.tool_call_id,
             call.name,
@@ -1709,39 +1816,44 @@ export function ChatPanel({
         progressLabel,
         "検索結果の書誌と所蔵欄を確認しています。",
       );
-      const library = await sendExtensionMessage<LibraryCatalogSearchResponse>({
-        type: "library-catalog-search",
-        tool_call_id: call.tool_call_id,
-        query: argumentsObject.query as string,
-        author:
-          typeof argumentsObject.author === "string"
-            ? argumentsObject.author
-            : null,
-        subject:
-          typeof argumentsObject.subject === "string"
-            ? argumentsObject.subject
-            : null,
-        isbn:
-          typeof argumentsObject.isbn === "string"
-            ? argumentsObject.isbn
-            : null,
-        pub_year:
-          typeof argumentsObject.pub_year === "number"
-            ? argumentsObject.pub_year
-            : null,
-        campus:
-          typeof argumentsObject.campus === "string"
-            ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
-            : "any",
-        format:
-          typeof argumentsObject.format === "string"
-            ? (argumentsObject.format as "book" | "journal" | "ebook" | "any")
-            : "any",
-        limit:
-          typeof argumentsObject.limit === "number"
-            ? argumentsObject.limit
-            : 10,
-      });
+      assertActive();
+      const library = await sendExtensionMessage<LibraryCatalogSearchResponse>(
+        {
+          type: "library-catalog-search",
+          tool_call_id: call.tool_call_id,
+          query: argumentsObject.query as string,
+          author:
+            typeof argumentsObject.author === "string"
+              ? argumentsObject.author
+              : null,
+          subject:
+            typeof argumentsObject.subject === "string"
+              ? argumentsObject.subject
+              : null,
+          isbn:
+            typeof argumentsObject.isbn === "string"
+              ? argumentsObject.isbn
+              : null,
+          pub_year:
+            typeof argumentsObject.pub_year === "number"
+              ? argumentsObject.pub_year
+              : null,
+          campus:
+            typeof argumentsObject.campus === "string"
+              ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
+              : "any",
+          format:
+            typeof argumentsObject.format === "string"
+              ? (argumentsObject.format as "book" | "journal" | "ebook" | "any")
+              : "any",
+          limit:
+            typeof argumentsObject.limit === "number"
+              ? argumentsObject.limit
+              : 10,
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1795,13 +1907,18 @@ export function ChatPanel({
         conversationAfterTool.contextManifest.library_records.find(
           (item) => item.resource_ref === libraryResourceRef,
         );
-      const library = await sendExtensionMessage<LibraryItemReadResponse>({
-        type: "library-item-read",
-        tool_call_id: call.tool_call_id,
-        resource_ref: libraryResourceRef,
-        presentation,
-        ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
-      });
+      assertActive();
+      const library = await sendExtensionMessage<LibraryItemReadResponse>(
+        {
+          type: "library-item-read",
+          tool_call_id: call.tool_call_id,
+          resource_ref: libraryResourceRef,
+          presentation,
+          ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1846,14 +1963,19 @@ export function ChatPanel({
         conversationAfterTool.contextManifest.library_records.find(
           (item) => item.resource_ref === actionResourceRef,
         );
-      const library = await sendExtensionMessage<LibraryActionOptionsResponse>({
-        type: MESSAGE_TYPES.libraryActionOptions,
-        tool_call_id: call.tool_call_id,
-        resource_ref: actionResourceRef,
-        ...(actionManifestRecord
-          ? { record_url: actionManifestRecord.record.url }
-          : {}),
-      });
+      assertActive();
+      const library = await sendExtensionMessage<LibraryActionOptionsResponse>(
+        {
+          type: MESSAGE_TYPES.libraryActionOptions,
+          tool_call_id: call.tool_call_id,
+          resource_ref: actionResourceRef,
+          ...(actionManifestRecord
+            ? { record_url: actionManifestRecord.record.url }
+            : {}),
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1872,7 +1994,9 @@ export function ChatPanel({
         discardActivity();
       }
       if (projection.data_classification === "personal") {
+        assertActive();
         const capabilities = await apiClient.capabilities();
+        assertActive();
         if (
           capabilities.agent_backend !== "azure_openai" ||
           !capabilities.my_library_personal_context
@@ -1884,19 +2008,24 @@ export function ChatPanel({
       }
       request = toolResultRequest(call.tool_call_id, call.name, projection);
     } else if (call.name === "library_catalog_browse") {
-      const library = await sendExtensionMessage<LibraryCatalogBrowseResponse>({
-        type: "library-catalog-browse",
-        tool_call_id: call.tool_call_id,
-        kind: argumentsObject.kind as "new_books" | "loan_ranking",
-        campus:
-          typeof argumentsObject.campus === "string"
-            ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
-            : "any",
-        limit:
-          typeof argumentsObject.limit === "number"
-            ? argumentsObject.limit
-            : 10,
-      });
+      assertActive();
+      const library = await sendExtensionMessage<LibraryCatalogBrowseResponse>(
+        {
+          type: "library-catalog-browse",
+          tool_call_id: call.tool_call_id,
+          kind: argumentsObject.kind as "new_books" | "loan_ranking",
+          campus:
+            typeof argumentsObject.campus === "string"
+              ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
+              : "any",
+          limit:
+            typeof argumentsObject.limit === "number"
+              ? argumentsObject.limit
+              : 10,
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1929,16 +2058,21 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_discovery_search") {
+      assertActive();
       const library =
-        await sendExtensionMessage<LibraryDiscoverySearchResponse>({
-          type: "library-discovery-search",
-          tool_call_id: call.tool_call_id,
-          query: argumentsObject.query as string,
-          limit:
-            typeof argumentsObject.limit === "number"
-              ? argumentsObject.limit
-              : 10,
-        });
+        await sendExtensionMessage<LibraryDiscoverySearchResponse>(
+          {
+            type: "library-discovery-search",
+            tool_call_id: call.tool_call_id,
+            query: argumentsObject.query as string,
+            limit:
+              typeof argumentsObject.limit === "number"
+                ? argumentsObject.limit
+                : 10,
+          },
+          signal,
+        );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1965,10 +2099,15 @@ export function ChatPanel({
     } else if (call.name === "sitrus_read") {
       const access = hostAccessRequest(SITRUS_ORIGIN);
       if (!access) throw new Error("SITRUSの参照先URLを検証できません。");
-      const sitrus = await sendExtensionMessage<SitrusReadResponse>({
-        type: "sitrus-read",
-        tool_call_id: call.tool_call_id,
-      });
+      assertActive();
+      const sitrus = await sendExtensionMessage<SitrusReadResponse>(
+        {
+          type: "sitrus-read",
+          tool_call_id: call.tool_call_id,
+        },
+        signal,
+      );
+      assertActive();
       if (sitrus.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1993,10 +2132,15 @@ export function ChatPanel({
     } else if (call.name === "moodle_read") {
       const access = hostAccessRequest(MOODLE_DASHBOARD_URL);
       if (!access) throw new Error("Moodleの参照先URLを検証できません。");
-      const moodle = await sendExtensionMessage<MoodleReadResponse>({
-        type: "moodle-read",
-        tool_call_id: call.tool_call_id,
-      });
+      assertActive();
+      const moodle = await sendExtensionMessage<MoodleReadResponse>(
+        {
+          type: "moodle-read",
+          tool_call_id: call.tool_call_id,
+        },
+        signal,
+      );
+      assertActive();
       if (moodle.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2035,7 +2179,9 @@ export function ChatPanel({
         typeof argumentsObject.offset === "number" ? argumentsObject.offset : 0;
       const requestedLimit =
         typeof argumentsObject.limit === "number" ? argumentsObject.limit : 20;
+      assertActive();
       const capabilities = await apiClient.capabilities();
+      assertActive();
       if (
         capabilities.agent_backend !== "azure_openai" ||
         !capabilities.my_library_personal_context
@@ -2044,17 +2190,22 @@ export function ChatPanel({
           "My Libraryの個人情報はAzure OpenAI Agentに接続している場合だけ送信できます。",
         );
       }
-      const library = await sendExtensionMessage<MyLibraryReadResponse>({
-        type: "my-library-read",
-        tool_call_id: call.tool_call_id,
-        scope: requestedScope,
-        query:
-          typeof argumentsObject.query === "string"
-            ? argumentsObject.query
-            : null,
-        offset: requestedOffset,
-        limit: requestedLimit,
-      });
+      assertActive();
+      const library = await sendExtensionMessage<MyLibraryReadResponse>(
+        {
+          type: "my-library-read",
+          tool_call_id: call.tool_call_id,
+          scope: requestedScope,
+          query:
+            typeof argumentsObject.query === "string"
+              ? argumentsObject.query
+              : null,
+          offset: requestedOffset,
+          limit: requestedLimit,
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2096,10 +2247,15 @@ export function ChatPanel({
     } else if (call.name === "cast_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
       if (!access) throw new Error("CASTの参照先URLを検証できません。");
-      const cast = await sendExtensionMessage<CastReadResponse>({
-        type: "cast-read",
-        tool_call_id: call.tool_call_id,
-      });
+      assertActive();
+      const cast = await sendExtensionMessage<CastReadResponse>(
+        {
+          type: "cast-read",
+          tool_call_id: call.tool_call_id,
+        },
+        signal,
+      );
+      assertActive();
       if (cast.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2125,11 +2281,16 @@ export function ChatPanel({
     } else if (call.name === "cast_alumni_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
       if (!access) throw new Error("CASTの参照先URLを検証できません。");
-      const alumni = await sendExtensionMessage<CastAlumniReadResponse>({
-        type: "cast-alumni-read",
-        tool_call_id: call.tool_call_id,
-        conversation_id: current.conversationId,
-      });
+      assertActive();
+      const alumni = await sendExtensionMessage<CastAlumniReadResponse>(
+        {
+          type: "cast-alumni-read",
+          tool_call_id: call.tool_call_id,
+          conversation_id: current.conversationId,
+        },
+        signal,
+      );
+      assertActive();
       if (alumni.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2163,11 +2324,16 @@ export function ChatPanel({
         alumni.projection,
       );
     } else if (call.name === "cast_search") {
-      const cast = await sendExtensionMessage<CastSearchResponse>({
-        type: MESSAGE_TYPES.castSearch,
-        tool_call_id: call.tool_call_id,
-        ...argumentsObject,
-      });
+      assertActive();
+      const cast = await sendExtensionMessage<CastSearchResponse>(
+        {
+          type: MESSAGE_TYPES.castSearch,
+          tool_call_id: call.tool_call_id,
+          ...argumentsObject,
+        },
+        signal,
+      );
+      assertActive();
       if (cast.status !== "known") {
         const message =
           cast.status === "reauth_required"
@@ -2196,11 +2362,16 @@ export function ChatPanel({
         cast.projection,
       );
     } else if (call.name === "cast_career_search") {
-      const cast = await sendExtensionMessage<CastCareerSearchResponse>({
-        type: MESSAGE_TYPES.castCareerSearch,
-        tool_call_id: call.tool_call_id,
-        ...argumentsObject,
-      });
+      assertActive();
+      const cast = await sendExtensionMessage<CastCareerSearchResponse>(
+        {
+          type: MESSAGE_TYPES.castCareerSearch,
+          tool_call_id: call.tool_call_id,
+          ...argumentsObject,
+        },
+        signal,
+      );
+      assertActive();
       if (!isCastCareerSearchResult(cast.projection)) {
         throw new Error("CAST横断検索結果を検証できませんでした。");
       }
@@ -2252,11 +2423,16 @@ export function ChatPanel({
       const url = argumentsObject.url as string;
       const access = hostAccessRequest(url);
       if (!access) throw new Error("参照先URLを検証できません。");
-      const browser = await sendExtensionMessage<BrowserReadResponse>({
-        type: "browser-read",
-        tool_call_id: call.tool_call_id,
-        url,
-      });
+      assertActive();
+      const browser = await sendExtensionMessage<BrowserReadResponse>(
+        {
+          type: "browser-read",
+          tool_call_id: call.tool_call_id,
+          url,
+        },
+        signal,
+      );
+      assertActive();
       if (browser.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2278,21 +2454,30 @@ export function ChatPanel({
       // Keep the provider-facing result behind the same conversation gateway
       // as the user message and history. The local display/detail state stays
       // untouched; only the request sent to the Agent is transformed.
+      assertActive();
       const transformed =
         await pseudonymizerRef.current.transformToolProjection(
           conversationAfterTool.conversationId,
           request.result,
           call.name,
         );
+      assertActive();
       request = {
         ...request,
         result: transformed.provider_result as ChatToolResultRequest["result"],
       };
     }
-    const nextResponse =
-      options.submit === false
-        ? response
-        : await apiClient.submitChatToolResult(response.run_id, request);
+    let nextResponse: ChatRunResponse = response;
+    if (options.submit !== false) {
+      assertActive();
+      nextResponse = await apiClient.submitChatToolResult(
+        response.run_id,
+        request,
+        signal,
+      );
+      assertActive();
+    }
+    assertActive();
     setChatProgress(
       "resuming",
       "Agentが取得結果を整理中",
@@ -2324,7 +2509,9 @@ export function ChatPanel({
           : item,
       ),
     };
+    assertActive();
     await persist(completedConversation);
+    assertActive();
     return {
       response: nextResponse,
       conversation: completedConversation,
@@ -2342,10 +2529,14 @@ export function ChatPanel({
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
     error: unknown,
+    options: ChatRunOptions = {},
   ): Promise<{
     response: ChatRunResponse;
     conversation: ChatConversation;
   } | null> {
+    const assertActive =
+      options.assertActive ?? (() => throwIfAborted(options.signal));
+    assertActive();
     const [call] = response.calls;
     if (call?.name !== "cast_career_search") return null;
 
@@ -2382,29 +2573,39 @@ export function ChatPanel({
       updatedAt: new Date().toISOString(),
       messages: failureMessages,
     };
+    assertActive();
     await persist(failureConversation);
+    assertActive();
     setChatProgress(
       "resuming",
       `${sourceLabel(call.name)}を確認できませんでした`,
       `${statusLabel(projection.status)}。他の情報源を続けて確認します。`,
     );
+    assertActive();
     const nextResponse = await apiClient.submitChatToolResult(
       response.run_id,
       toolResultRequest(call.tool_call_id, call.name, projection),
+      options.signal,
     );
+    assertActive();
     return { response: nextResponse, conversation: failureConversation };
   }
 
   async function finishResponse(
     initialResponse: ChatRunResponse,
     initialConversation: ChatConversation,
+    options: ChatRunOptions = {},
     initialSeenCallIds = new Set<string>(),
   ): Promise<void> {
+    const assertActive =
+      options.assertActive ?? (() => throwIfAborted(options.signal));
+    assertActive();
     let response = initialResponse;
     let current = initialConversation;
     const seenCallIds = initialSeenCallIds;
     let previousCompleteCatalogQuery: string | null = null;
     for (let index = 0; response.status === "tool_required"; index += 1) {
+      assertActive();
       if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
       const call = response.calls[0];
       if (!call || seenCallIds.has(call.tool_call_id)) {
@@ -2439,15 +2640,23 @@ export function ChatPanel({
         conversation: ChatConversation;
       };
       try {
-        next = await runTool(response, current, progressLabel);
+        next = await runTool(response, current, progressLabel, options);
       } catch (error) {
-        const recovered = await recoverToolFailure(response, current, error);
+        assertActive();
+        const recovered = await recoverToolFailure(
+          response,
+          current,
+          error,
+          options,
+        );
         if (!recovered) throw error;
         next = recovered;
       }
+      assertActive();
       response = next.response;
       current = next.conversation;
     }
+    assertActive();
     const assistantFromResponse = messageFromResponse(response);
     let restoredAssistant = {
       content: assistantFromResponse.content,
@@ -2460,11 +2669,14 @@ export function ChatPanel({
       current.processing_scope === "mixed"
     ) {
       try {
+        assertActive();
         restoredAssistant = await pseudonymizerRef.current.restoreMarkdown(
           current.conversationId,
           assistantFromResponse.content,
         );
-      } catch {
+        assertActive();
+      } catch (error) {
+        if (options.signal?.aborted || isAbortError(error)) throw error;
         // A test/fixture mount may not expose Web Crypto.  Provider output is
         // already safe in that case; keep the assistant response visible rather
         // than turning a local restore optimization into a chat failure.
@@ -2483,6 +2695,7 @@ export function ChatPanel({
         warnings: restoredAssistant.warnings,
       },
     };
+    assertActive();
     setChatProgress("completed", "完了", "回答と参照元を表示しました。");
     const responseManifest =
       response.status === "completed" ? response.context_manifest : null;
@@ -2491,16 +2704,25 @@ export function ChatPanel({
       responseManifest,
       assistant,
     );
+    assertActive();
     await persist({
       ...withEvidence,
       updatedAt: new Date().toISOString(),
       messages: [...current.messages, assistant],
     });
+    assertActive();
   }
 
   async function send(): Promise<void> {
     const message = composer.trim();
-    if (!message || busy || disabled) return;
+    if (!message || busy || disabled || abortControllerRef.current !== null)
+      return;
+    abortCurrentRun();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const signal = controller.signal;
+    const assertActive = (): void => assertRunActive(controller);
+    assertActive();
     conversationInteractionRef.current = true;
     setRetryText(null);
     setComposer("");
@@ -2526,9 +2748,11 @@ export function ChatPanel({
       updatedAt: new Date().toISOString(),
       messages: [...beforeSend.messages, userMessage],
     };
-    await persist(withUser);
     let current = withUser;
     try {
+      assertActive();
+      await persist(withUser);
+      assertActive();
       let serverTools: ReadonlySet<string> | null = null;
       let maxClientTools = 32;
       let capabilitiesSnapshot: ChatCapabilities | null = null;
@@ -2537,7 +2761,7 @@ export function ChatPanel({
       let authReadyTools = new Set<string>();
       const capabilityReader = (
         apiClient as AgentApiClient & {
-          chatCapabilities?: () => Promise<{
+          chatCapabilities?: (signal?: AbortSignal) => Promise<{
             agent_backend: string;
             observability: string;
             scombz_student_read_mode: string;
@@ -2549,7 +2773,9 @@ export function ChatPanel({
       ).chatCapabilities;
       if (typeof capabilityReader === "function") {
         try {
-          const capabilities = await capabilityReader.call(apiClient);
+          assertActive();
+          const capabilities = await capabilityReader.call(apiClient, signal);
+          assertActive();
           capabilitiesSnapshot = capabilities as ChatCapabilities;
           providerDestination =
             capabilities.agent_backend === "azure_openai"
@@ -2557,7 +2783,8 @@ export function ChatPanel({
               : "local";
           serverTools = new Set(capabilities.supported_client_tools);
           maxClientTools = capabilities.max_client_tools;
-        } catch {
+        } catch (error) {
+          if (signal.aborted || isAbortError(error)) throw abortError(signal);
           // Capability failure is fail-closed. The request may still answer
           // from already stored conversation evidence, but it advertises no
           // connector that the server has not explicitly approved.
@@ -2567,12 +2794,17 @@ export function ChatPanel({
         }
       }
 
-      authReadyTools = await readChatAuthPreflight();
+      assertActive();
+      authReadyTools = await readChatAuthPreflight(signal);
+      assertActive();
       if (
         pageContext?.kind === "scombz" &&
         authReadyTools.has("scombz_course_list")
       ) {
-        if (!(await hasScombzStudentSessionConsent())) {
+        assertActive();
+        const hasConsent = await hasScombzStudentSessionConsent();
+        assertActive();
+        if (!hasConsent) {
           throw new Error(
             "SCombZの授業情報をAzureへ送るには、設定で一度だけ共有同意が必要です。",
           );
@@ -2580,10 +2812,15 @@ export function ChatPanel({
         // Bind the conversation to the currently authenticated SCombZ tab at
         // chat start. Subsequent connector calls use this pin and never
         // silently switch to whichever tab later becomes active.
-        const pinResult = await sendExtensionMessage<ScombzPinResponse>({
-          type: MESSAGE_TYPES.scombzPin,
-          conversation_id: withUser.conversationId,
-        });
+        assertActive();
+        const pinResult = await sendExtensionMessage<ScombzPinResponse>(
+          {
+            type: MESSAGE_TYPES.scombzPin,
+            conversation_id: withUser.conversationId,
+          },
+          signal,
+        );
+        assertActive();
         if (pinResult.status !== "pinned") {
           throw new Error(
             pinResult.reason_code === "scombz_source_tab_changed"
@@ -2599,10 +2836,12 @@ export function ChatPanel({
       // syllabus text is unchanged unless it contains a direct credential,
       // identifier, or query-bearing URL that must be removed at the boundary.
       if (providerDestination === "azure_openai") {
+        assertActive();
         const transformed = await pseudonymizerRef.current.transformText(
           withUser.conversationId,
           message,
         );
+        assertActive();
         providerMessage = transformed.provider_content;
         current = {
           ...current,
@@ -2627,7 +2866,9 @@ export function ChatPanel({
         history_eligible: current.history_eligible,
         updatedAt: new Date().toISOString(),
       };
+      assertActive();
       await persist(current);
+      assertActive();
       let providerContextManifest = current.history_eligible
         ? toChatContextManifest(current.contextManifest)
         : null;
@@ -2639,6 +2880,7 @@ export function ChatPanel({
           current.processing_scope === "restricted/cast_career" ||
           current.processing_scope === "mixed")
       ) {
+        assertActive();
         const transformedEvidence =
           await pseudonymizerRef.current.transformEvidence(
             current.conversationId,
@@ -2649,7 +2891,9 @@ export function ChatPanel({
           evidence:
             transformedEvidence as typeof providerContextManifest.evidence,
         };
+        assertActive();
       }
+      assertActive();
       setChatProgress(
         "planning",
         "Agentが回答方針を検討中",
@@ -2660,27 +2904,36 @@ export function ChatPanel({
       // `chatCapabilities`; this branch never advertises the new SCombZ
       // student tools and is retained only for legacy test/host adapters.
       if (typeof capabilityReader !== "function") {
-        const response = await apiClient.startChat({
-          conversation_id: withUser.conversationId,
-          message: providerMessage,
-          history: current.history_eligible
-            ? toChatHistory(beforeSend.messages, {
-                requireProviderContent:
-                  current.processing_scope === "personal/scombz_student" ||
-                  current.processing_scope ===
-                    "personal/sitrus_academic_record" ||
-                  current.processing_scope === "restricted/cast_career" ||
-                  current.processing_scope === "mixed",
-              })
-            : [],
-          client_tools: clientTools(
-            serverTools,
-            maxClientTools,
-            authReadyTools,
-          ),
-          context_manifest: providerContextManifest,
+        assertActive();
+        const response = await apiClient.startChat(
+          {
+            conversation_id: withUser.conversationId,
+            message: providerMessage,
+            history: current.history_eligible
+              ? toChatHistory(beforeSend.messages, {
+                  requireProviderContent:
+                    current.processing_scope === "personal/scombz_student" ||
+                    current.processing_scope ===
+                      "personal/sitrus_academic_record" ||
+                    current.processing_scope === "restricted/cast_career" ||
+                    current.processing_scope === "mixed",
+                })
+              : [],
+            client_tools: clientTools(
+              serverTools,
+              maxClientTools,
+              authReadyTools,
+            ),
+            context_manifest: providerContextManifest,
+          },
+          signal,
+        );
+        assertActive();
+        await finishResponse(response, current, {
+          signal,
+          assertActive,
         });
-        await finishResponse(response, current);
+        assertActive();
         return;
       }
       const locallyAvailableTools = new Set(
@@ -2691,7 +2944,8 @@ export function ChatPanel({
       let runnerConversation = current;
       const runner = new ChatRunner({
         api: apiClient,
-        executeTool: async (call) => {
+        executeTool: async (call, context) => {
+          assertActive();
           const outcome = await runTool(
             {
               status: "tool_required",
@@ -2700,12 +2954,18 @@ export function ChatPanel({
             },
             runnerConversation,
             toolLabel(call.name),
-            { submit: false },
+            {
+              submit: false,
+              signal: context.signal ?? signal,
+              assertActive,
+            },
           );
+          assertActive();
           runnerConversation = outcome.conversation;
           return { request: outcome.request };
         },
       });
+      assertActive();
       const runnerResult = await runner.run({
         conversation_id: withUser.conversationId,
         message: providerMessage,
@@ -2725,13 +2985,28 @@ export function ChatPanel({
         source_generation: pageContext
           ? `${pageContext.kind}:${pageContext.url}`
           : `conversation:${withUser.conversationId}`,
+        signal,
       });
+      assertActive();
       current = runnerConversation;
-      await finishResponse(runnerResult.response, current);
+      await finishResponse(runnerResult.response, current, {
+        signal,
+        assertActive,
+      });
+      assertActive();
     } catch (error) {
+      if (
+        signal.aborted ||
+        isAbortError(error) ||
+        abortControllerRef.current !== controller
+      ) {
+        return;
+      }
+      assertActive();
       const failureMessage = userFacingChatFailure(error);
       setRetryText(message);
       setProgress(null);
+      assertActive();
       await persist({
         ...current,
         updatedAt: new Date().toISOString(),
@@ -2745,11 +3020,15 @@ export function ChatPanel({
         ],
       });
     } finally {
-      setBusy(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setBusy(false);
+      }
     }
   }
 
   async function selectConversation(id: string): Promise<void> {
+    abortCurrentRun();
     conversationInteractionRef.current = true;
     clearLocalSnapshots();
     const selected = await loadConversation(id);
@@ -2763,6 +3042,7 @@ export function ChatPanel({
   async function createConversation(
     options: { runtimeCleared?: boolean } = {},
   ): Promise<void> {
+    abortCurrentRun();
     conversationInteractionRef.current = true;
     clearLocalSnapshots();
     // An explicit New Chat is a privacy boundary: do not keep the previous
@@ -2783,6 +3063,7 @@ export function ChatPanel({
   }
 
   async function removeConversation(id: string): Promise<void> {
+    abortCurrentRun();
     conversationInteractionRef.current = true;
     clearLocalSnapshots();
     // Deletion must invalidate both the local alias mapping and background
@@ -2799,6 +3080,7 @@ export function ChatPanel({
   }
 
   async function clearConversations(): Promise<void> {
+    abortCurrentRun();
     conversationInteractionRef.current = true;
     clearLocalSnapshots();
     const conversationIds = [
@@ -4142,11 +4424,19 @@ export function ChatPanel({
           }}
         />
         <button
-          type="submit"
+          type={busy ? "button" : "submit"}
           className="composer-send-button"
-          aria-label={busy ? "処理中" : "送信"}
-          title={busy ? "処理中" : "送信"}
-          disabled={busy || disabled || !composer.trim()}
+          aria-label={busy ? "処理を中断" : "送信"}
+          title={busy ? "処理を中断" : "送信"}
+          disabled={disabled || (!busy && !composer.trim())}
+          onClick={
+            busy
+              ? () => {
+                  abortCurrentRun();
+                  clearLocalSnapshots();
+                }
+              : undefined
+          }
         >
           {busy ? (
             <span className="composer-spinner" aria-hidden="true" />
@@ -4155,7 +4445,7 @@ export function ChatPanel({
               <path d="m4 12 15-8-4 16-4-6-7-2Zm4.7-.6 3.7 1.1 1.9 3.1 1.9-7.4-7.5 3.2Z" />
             </svg>
           )}
-          <span className="sr-only">{busy ? "処理中" : "送信"}</span>
+          <span className="sr-only">{busy ? "処理を中断" : "送信"}</span>
         </button>
       </form>
       <p className="chat-policy-note">

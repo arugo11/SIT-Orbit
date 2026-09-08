@@ -389,7 +389,7 @@ describe("ChatPanel read-only execution boundary", () => {
 
     await sendMessage(mounted, "私の成績を教えて");
     await waitFor(() => apiClient.startChat.mock.calls.length === 1);
-    expect(apiClient.startChat).toHaveBeenCalledWith(
+    expect(apiClient.startChat.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
         message: "私の成績を教えて",
         client_tools: [{ name: "sitrus_read", version: 1 }],
@@ -463,7 +463,7 @@ describe("ChatPanel read-only execution boundary", () => {
           (request as { type?: string }).type === "scombz-pin",
       ),
     ).toBe(false);
-    expect(apiClient.startChat).toHaveBeenCalledWith(
+    expect(apiClient.startChat.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
         message: "この3冊の中で図書館で借りれるものはある?",
         client_tools: expect.arrayContaining([
@@ -643,7 +643,7 @@ describe("ChatPanel read-only execution boundary", () => {
       ),
     );
 
-    expect(apiClient.startChat).toHaveBeenCalledWith(
+    expect(apiClient.startChat.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ message: "こんにちは" }),
     );
     const request = apiClient.startChat.mock.calls[0]?.[0] as {
@@ -688,7 +688,7 @@ describe("ChatPanel read-only execution boundary", () => {
 
     await sendMessage(mounted, "SCombZの履修情報 PRIVATE_MARKER を確認して");
     await waitFor(() => apiClient.startChat.mock.calls.length === 1);
-    expect(apiClient.startChat).toHaveBeenCalledWith(
+    expect(apiClient.startChat.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ client_tools: [] }),
     );
   });
@@ -969,5 +969,131 @@ describe("ChatPanel read-only execution boundary", () => {
         mounted?.document.querySelector(".chat-progress")?.textContent ?? ""
       ).includes("完了"),
     );
+  });
+
+  it("cancels a pending Agent request without saving a failure assistant", async () => {
+    let startSignal: AbortSignal | undefined;
+    const apiClient = createApiClient({
+      status: "completed",
+      message: {
+        message_id: "cancel-unused",
+        content_markdown: "unused",
+        evidence: [],
+      },
+      proposal: null,
+    });
+    apiClient.startChat.mockImplementation(
+      (_request: unknown, signal?: AbortSignal) => {
+        startSignal = signal;
+        return new Promise<ChatRunResponse>((_resolve, reject) => {
+          if (!signal) {
+            reject(new Error("Chat request signal is missing."));
+            return;
+          }
+          signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Cancelled", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+
+    await sendMessage(mounted, "中断する合成会話");
+    await waitFor(
+      () =>
+        startSignal !== undefined &&
+        mounted?.document.querySelector<HTMLButtonElement>(
+          'button[aria-label="処理を中断"]',
+        ) !== null,
+    );
+    const cancelButton = mounted.document.querySelector<HTMLButtonElement>(
+      'button[aria-label="処理を中断"]',
+    );
+    if (!cancelButton) throw new Error("Chat cancel button is missing.");
+    await click(cancelButton);
+
+    await waitFor(
+      () =>
+        mounted?.document.querySelector<HTMLButtonElement>(
+          'button[aria-label="送信"]',
+        ) !== null,
+    );
+    expect(startSignal?.aborted).toBe(true);
+    const stored = await listConversations();
+    expect(stored).toHaveLength(1);
+    expect(stored[0]?.messages.some((item) => item.role === "assistant")).toBe(
+      false,
+    );
+    expect(mounted.document.body.textContent).not.toContain(
+      "今は応答できませんでした。もう一度お試しください。",
+    );
+  });
+
+  it("does not submit a late Tool response after the Chat is cancelled", async () => {
+    let resolveLibrary: ((response: unknown) => void) | undefined;
+    const apiClient = createApiClient(
+      toolRequired("library_catalog_search", { query: "遅い検索" }),
+    );
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={apiClient}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    mounted.chromeRuntime.sendMessage.mockImplementation(
+      (request: unknown, callback?: (response: unknown) => void) => {
+        if (
+          typeof request === "object" &&
+          request !== null &&
+          (request as { type?: string }).type === "library-catalog-search"
+        ) {
+          resolveLibrary = callback;
+          return;
+        }
+        callback?.({ ok: true });
+      },
+    );
+
+    await sendMessage(mounted, "遅い検索をして");
+    await waitFor(
+      () =>
+        resolveLibrary !== undefined &&
+        mounted?.document.querySelector<HTMLButtonElement>(
+          'button[aria-label="処理を中断"]',
+        ) !== null,
+    );
+    const cancelButton = mounted.document.querySelector<HTMLButtonElement>(
+      'button[aria-label="処理を中断"]',
+    );
+    if (!cancelButton) throw new Error("Chat cancel button is missing.");
+    await click(cancelButton);
+    await waitFor(
+      () =>
+        mounted?.document.querySelector<HTMLButtonElement>(
+          'button[aria-label="送信"]',
+        ) !== null,
+    );
+
+    resolveLibrary?.({
+      status: "unavailable",
+      projection: null,
+      reason_code: "network_error",
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(apiClient.submitChatToolResult).not.toHaveBeenCalled();
   });
 });
