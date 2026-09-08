@@ -11,9 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from orbit_api.agent import (
+    ActionConflictError,
+    ActionStore,
+    ActionUnavailableError,
     AgentRunService,
     AgentService,
     ChatRunService,
+    ExpiredActionError,
+    UnknownActionError,
     get_agent_backend,
     get_chat_backend,
 )
@@ -24,6 +29,7 @@ from orbit_api.agent.chat import (
     ChatRunExpiredError,
     ChatRunUnknownError,
 )
+from orbit_api.agent.pydantic_ai_backend import validate_agent_data
 from orbit_api.agent.runs import ConsumedRunError, ExpiredRunError, UnknownRunError
 from orbit_api.agent.runtime_profile import validate_runtime_backend
 from orbit_api.agent.tool_catalog import capability_tool_names
@@ -73,6 +79,7 @@ async def lifespan(_: FastAPI):
         # native Responses Tool Search.
         validate_azure_runtime_configuration()
     agent_run_service.store.clear()
+    action_store.clear()
     chat_run_service.store.clear()
     chat_run_service.clear_background()
     agent_sessions.clear()
@@ -81,6 +88,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         agent_run_service.store.clear()
+        action_store.clear()
         chat_run_service.store.clear()
         chat_run_service.clear_background()
         agent_sessions.clear()
@@ -254,6 +262,13 @@ async def require_api_token(request: Request, call_next):
     if request.url.path == "/v1/auth/session":
         return await call_next(request)
     expected = os.getenv("ORBIT_API_TOKEN", "").strip()
+    if request.url.path.startswith("/v1/") and os.getenv(
+        "ORBIT_RUNTIME_PROFILE", "development"
+    ).strip() == "production" and not expected:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Agent API authentication is unavailable."},
+        )
     if expected and request.url.path.startswith("/v1/"):
         authorization = request.headers.get("authorization", "")
         scheme, separator, provided = authorization.partition(" ")
@@ -299,7 +314,8 @@ def configure_cors(application: FastAPI) -> None:
 
 configure_cors(app)
 
-agent_run_service = AgentRunService()
+action_store = ActionStore()
+agent_run_service = AgentRunService(action_store=action_store)
 chat_run_service = ChatRunService(backend_factory=get_chat_backend)
 opac_gateway = get_shared_opac_gateway()
 
@@ -537,7 +553,10 @@ async def submit_chat_tool_result(
 @app.post("/v1/actions/propose", response_model=ActionProposal)
 async def propose_action(request: ProposeActionRequest) -> ActionProposal:
     try:
-        service = AgentService(get_agent_backend())
+        # Reject private legacy evidence before building a provider/backend or
+        # entering the traced proposal path.
+        validate_agent_data(request.event, request.context)
+        service = AgentService(get_agent_backend(), action_store=action_store)
         return await service.handle_event(request.event, request.context)
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -546,7 +565,17 @@ async def propose_action(request: ProposeActionRequest) -> ActionProposal:
 @app.post("/v1/actions/{action_id}/verify", response_model=OrbitEvent)
 async def verify_action(action_id: str, request: VerifyActionRequest) -> OrbitEvent:
     try:
-        service = AgentService(get_agent_backend())
+        # Verification is a local receipt lookup.  It must not construct a
+        # model/provider or infer completion from an unregistered ID.
+        service = AgentService(action_store=action_store)
         return await service.verify_result(action_id, request)
+    except UnknownActionError as error:
+        raise HTTPException(status_code=404, detail="Action was not found.") from error
+    except ExpiredActionError as error:
+        raise HTTPException(status_code=410, detail="Action is no longer verifiable.") from error
+    except ActionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ActionUnavailableError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

@@ -11,8 +11,11 @@ from orbit_api.models import (
     ChatToolResultRequest,
     EvidenceLink,
     LibraryActionOptionsResult,
+    OrbitEvent,
+    ProposeActionRequest,
     RenewOperation,
     ScombzPageSummaryResult,
+    VerifyActionRequest,
 )
 from pydantic import ValidationError
 
@@ -38,6 +41,44 @@ def test_external_action_requires_confirmation() -> None:
             requires_confirmation=False,
             prompt_version="test-v1",
         )
+
+
+def test_core_action_models_reject_extras_and_duplicate_evidence_ids() -> None:
+    evidence = EvidenceLink(
+        evidence_id="ev-duplicate",
+        title="Synthetic evidence",
+        source_type="assignment",
+        locator="demo://evidence/duplicate",
+    )
+    event = OrbitEvent(
+        event_type="campus_entered",
+        scenario_id="scenario-1",
+        campus="omiya",
+    )
+
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        OrbitEvent.model_validate({**event.model_dump(), "unexpected": "field"})
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        VerifyActionRequest.model_validate(
+            {
+                "scenario_id": "scenario-1",
+                "campus": "omiya",
+                "approved": True,
+                "completed": True,
+                "unexpected": "field",
+            }
+        )
+    with pytest.raises(ValidationError, match="unique"):
+        ActionProposal(
+            action_id="act-duplicate",
+            title="Review",
+            reason="The evidence is available.",
+            duration_minutes=10,
+            evidence=[evidence, evidence.model_copy(deep=True)],
+            prompt_version="test-v1",
+        )
+    with pytest.raises(ValidationError, match="unique"):
+        ProposeActionRequest(event=event, context=[evidence, evidence.model_copy(deep=True)])
 
 
 def test_library_action_options_are_typed_and_personal_classified() -> None:

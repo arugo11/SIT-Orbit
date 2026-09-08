@@ -1,7 +1,14 @@
 from unittest.mock import Mock
 
 import pytest
-from orbit_api.agent.pydantic_ai_backend import DeferredActionRun
+from orbit_api.agent.actions import ActionStore
+from orbit_api.agent.fixture import FixtureAgent
+from orbit_api.agent.pydantic_ai_backend import (
+    ActionDraft,
+    AgentExecution,
+    DeferredActionRun,
+    PydanticAIAgentBackend,
+)
 from orbit_api.agent.runs import (
     AgentRunService,
     ConsumedRunError,
@@ -10,8 +17,11 @@ from orbit_api.agent.runs import (
     UnknownRunError,
 )
 from orbit_api.models import (
+    ActionProposal,
+    AgentRunRequest,
     AgentToolResultRequest,
     CalendarAvailabilityResult,
+    ClientTool,
     EvidenceLink,
     OrbitEvent,
 )
@@ -182,3 +192,106 @@ async def test_expired_run_is_rejected_before_model_factory() -> None:
         await service.submit_tool_result(run_id, make_tool_result_request())
 
     backend_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_completed_resumable_run_registers_proposal_for_action_verification(
+    monkeypatch,
+) -> None:
+    class DeferredBackend(PydanticAIAgentBackend):
+        def __init__(self) -> None:
+            pass
+
+        async def start_run(
+            self,
+            event,
+            context,
+            *,
+            calendar_connected=None,
+            advertised_tools=None,
+        ):
+            del event, context, calendar_connected, advertised_tools
+            return None, DeferredActionRun(
+                messages=[],
+                tool_call_id="calendar-call-1",
+                conversation_id="conversation-1",
+            )
+
+        async def resume_execution(
+            self,
+            event,
+            context,
+            deferred,
+            tool_result,
+            *,
+            advertised_tools=None,
+            used_tool_names=frozenset(),
+            seen_tool_call_ids=frozenset(),
+        ):
+            del event, deferred, tool_result, advertised_tools, used_tool_names, seen_tool_call_ids
+            return AgentExecution(
+                draft=ActionDraft(
+                    title="確認する",
+                    reason="合成データの確認",
+                    duration_minutes=10,
+                    evidence_ids=[item.evidence_id for item in context],
+                )
+            )
+
+        def _canonicalize(self, draft, context):
+            return ActionProposal(
+                action_id="act-resumed",
+                title=draft.title,
+                reason=draft.reason,
+                duration_minutes=draft.duration_minutes,
+                evidence=list(context),
+                external_action=draft.external_action,
+                requires_confirmation=draft.requires_confirmation,
+                prompt_version="test-resumed-v1",
+                operation=draft.operation,
+            )
+
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    run_store = RunStore()
+    action_store = ActionStore()
+    backend = DeferredBackend()
+    service = AgentRunService(
+        store=run_store,
+        action_store=action_store,
+        backend_factory=lambda: backend,
+    )
+    request = AgentRunRequest(
+        event=make_event(),
+        context=[make_evidence()],
+        client_tools=[ClientTool(name="google_calendar_availability", version=1)],
+    )
+
+    started = await service.start(request)
+    assert started.status == "tool_required"
+    run_id = started.run_id
+    assert len(action_store) == 0
+
+    completed = await service.submit_tool_result(run_id, make_tool_result_request())
+
+    assert completed.status == "completed"
+    assert completed.proposal.action_id == "act-resumed"
+    assert action_store.get("act-resumed").source_event.event_id == request.event.event_id
+
+
+@pytest.mark.asyncio
+async def test_completed_compatibility_run_registers_proposal_for_action_verification() -> None:
+    action_store = ActionStore()
+    service = AgentRunService(
+        action_store=action_store,
+        backend_factory=FixtureAgent,
+    )
+    request = AgentRunRequest(event=make_event(), context=[make_evidence()])
+
+    completed = await service.start(request)
+
+    assert completed.status == "completed"
+    assert (
+        action_store.get(completed.proposal.action_id).source_event.event_id
+        == request.event.event_id
+    )

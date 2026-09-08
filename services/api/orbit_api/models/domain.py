@@ -185,8 +185,10 @@ class LibraryActionOptionsResult(BaseModel):
 class EvidenceLink(BaseModel):
     """A compact link to the evidence used by an action proposal."""
 
-    evidence_id: str = Field(min_length=1)
-    title: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_id: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
     source_type: Literal[
         "syllabus",
         "assignment",
@@ -198,12 +200,14 @@ class EvidenceLink(BaseModel):
         "google_drive",
         "web",
     ]
-    locator: str = Field(min_length=1)
+    locator: str = Field(min_length=1, max_length=500)
     data_classification: DataClassification = "synthetic"
 
 
 class OrbitEvent(BaseModel):
     """An observed event in the student's campus journey."""
+
+    model_config = ConfigDict(extra="forbid")
 
     event_id: str = Field(default_factory=lambda: f"evt-{uuid4()}")
     event_type: Literal["campus_entered", "action_completed"]
@@ -217,11 +221,13 @@ class OrbitEvent(BaseModel):
 class ActionProposal(BaseModel):
     """An evidence-backed next action that remains a proposal until approved."""
 
+    model_config = ConfigDict(extra="forbid")
+
     action_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     duration_minutes: int = Field(ge=1, le=180)
-    evidence: list[EvidenceLink] = Field(min_length=1)
+    evidence: list[EvidenceLink] = Field(min_length=1, max_length=100)
     external_action: ExternalAction = "none"
     requires_confirmation: bool = True
     prompt_version: str = Field(min_length=1)
@@ -229,6 +235,9 @@ class ActionProposal(BaseModel):
 
     @model_validator(mode="after")
     def external_actions_require_confirmation(self) -> "ActionProposal":
+        evidence_ids = [item.evidence_id for item in self.evidence]
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ValueError("Action evidence IDs must be unique.")
         if self.external_action != "none" and not self.requires_confirmation:
             raise ValueError("External actions must require explicit confirmation.")
         if self.operation is not None:
@@ -254,11 +263,22 @@ class ActionProposal(BaseModel):
 
 
 class ProposeActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     event: OrbitEvent
-    context: list[EvidenceLink] = Field(min_length=1)
+    context: list[EvidenceLink] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def context_evidence_ids_are_unique(self) -> "ProposeActionRequest":
+        evidence_ids = [item.evidence_id for item in self.context]
+        if len(set(evidence_ids)) != len(evidence_ids):
+            raise ValueError("Context evidence IDs must be unique.")
+        return self
 
 
 class VerifyActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     scenario_id: str = Field(min_length=1)
     campus: Campus
     approved: bool

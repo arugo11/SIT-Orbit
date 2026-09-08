@@ -318,6 +318,103 @@ def test_propose_and_verify_action(monkeypatch) -> None:
     assert verify_response.json()["event_type"] == "action_completed"
 
 
+def test_legacy_propose_rejects_private_event_before_backend_construction(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    private_event = load_fixture("event.json")
+    private_event["data_classification"] = "personal"
+    private_event["payload"] = {"student_name": "private-value"}
+    private_context = load_fixture("context.json")
+    private_context[0]["data_classification"] = "personal"
+    private_context[0]["locator"] = "https://private.example/raw"
+
+    def fail_backend():
+        raise AssertionError("private legacy proposals must fail before provider construction")
+
+    monkeypatch.setattr(orbit_main, "get_agent_backend", fail_backend)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/actions/propose",
+            json={"event": private_event, "context": private_context},
+        )
+
+    assert response.status_code == 422
+    assert "private-value" not in response.text
+    assert "private.example" not in response.text
+
+
+def test_production_without_api_token_fails_closed_for_protected_routes(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_RUNTIME_PROFILE", "production")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
+    configure_azure_test_env(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/capabilities")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Agent API authentication is unavailable."}
+
+
+def test_verify_requires_registered_action_and_does_not_build_backend(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+
+    def fail_backend():
+        raise AssertionError("verification must not construct an agent backend")
+
+    monkeypatch.setattr(orbit_main, "get_agent_backend", fail_backend)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/actions/act-does-not-exist/verify",
+            json={
+                "scenario_id": "b1-omiya-calculus",
+                "campus": "omiya",
+                "approved": True,
+                "completed": True,
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Action was not found."}
+
+
+def test_verify_rejects_context_mismatch_and_replays_exact_completion(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+
+    with TestClient(app) as client:
+        proposal_response = client.post(
+            "/v1/actions/propose",
+            json={"event": load_fixture("event.json"), "context": load_fixture("context.json")},
+        )
+        assert proposal_response.status_code == 200
+        action_id = proposal_response.json()["action_id"]
+        request = {
+            "scenario_id": "b1-omiya-calculus",
+            "campus": "omiya",
+            "approved": True,
+            "completed": True,
+            "notes": "同じ承認",
+        }
+        first = client.post(f"/v1/actions/{action_id}/verify", json=request)
+        retry = client.post(f"/v1/actions/{action_id}/verify", json=request)
+        changed = client.post(
+            f"/v1/actions/{action_id}/verify",
+            json={**request, "notes": "変更された承認"},
+        )
+        mismatch = client.post(
+            f"/v1/actions/{action_id}/verify",
+            json={**request, "scenario_id": "other-scenario"},
+        )
+
+    assert first.status_code == 200
+    assert retry.status_code == 200
+    assert retry.json() == first.json()
+    assert changed.status_code == 409
+    assert mismatch.status_code == 409
+
+
 def test_unknown_run_returns_gone_without_model_configuration() -> None:
     with TestClient(app) as client:
         response = client.post(

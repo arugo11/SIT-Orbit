@@ -28,6 +28,7 @@ from orbit_api.models import (
     ScombzPageSummaryResult,
 )
 
+from .actions import ActionStore
 from .base import AgentBackend
 from .factory import get_agent_backend
 from .pydantic_ai_backend import (
@@ -330,9 +331,11 @@ class AgentRunService:
         self,
         *,
         store: RunStore | None = None,
+        action_store: ActionStore | None = None,
         backend_factory: Callable[[], AgentBackend] = get_agent_backend,
     ) -> None:
         self.store = store if store is not None else RunStore()
+        self.action_store = action_store if action_store is not None else ActionStore()
         self.backend_factory = backend_factory
 
     @staticmethod
@@ -375,11 +378,13 @@ class AgentRunService:
                 return self._tool_required(run_id, deferred)
             if proposal is None:
                 raise RuntimeError("The agent returned neither a proposal nor a tool request.")
+            self.action_store.register(proposal, request.event)
             return AgentRunCompleted(status="completed", proposal=proposal)
 
         # The compatibility backend contract remains a single synchronous
         # proposal method; client tools only apply to the resumable adapter.
         proposal = await backend.propose_action(request.event, request.context)
+        self.action_store.register(proposal, request.event)
         return AgentRunCompleted(status="completed", proposal=proposal)
 
     async def submit_tool_result(
@@ -437,6 +442,7 @@ class AgentRunService:
             if execution.draft is not None:
                 proposal = backend._canonicalize(execution.draft, context)
                 self.store.complete(run_id, generation=claimed.generation)
+                self.action_store.register(proposal, claimed.event)
                 return AgentRunCompleted(status="completed", proposal=proposal)
             if execution.deferred is None:
                 raise RuntimeError("The agent returned neither a proposal nor a tool request.")
