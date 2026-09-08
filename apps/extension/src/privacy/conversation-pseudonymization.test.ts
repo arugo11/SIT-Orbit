@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ConversationPseudonymizationGateway,
   isProviderSafeConversationText,
@@ -34,6 +34,113 @@ function createGateway(options: { now?: () => number; ttlMs?: number } = {}) {
 }
 
 describe("conversation pseudonymization gateway", () => {
+  it("suppresses an encrypted write when clear races delayed encryption", async () => {
+    const store = new MemoryConversationAliasStore();
+    const gateway = new ConversationPseudonymizationGateway({
+      store,
+      keyStore: new MemoryConversationSessionKeyStore(),
+    });
+    await gateway.transformText("conversation-race-encrypt", "初期化");
+
+    let releaseEncrypt!: () => void;
+    let encryptStarted!: () => void;
+    const encryptGate = new Promise<void>((resolve) => {
+      releaseEncrypt = resolve;
+    });
+    const encryptReady = new Promise<void>((resolve) => {
+      encryptStarted = resolve;
+    });
+    const originalEncrypt = globalThis.crypto.subtle.encrypt.bind(
+      globalThis.crypto.subtle,
+    );
+    const encryptSpy = vi
+      .spyOn(globalThis.crypto.subtle, "encrypt")
+      .mockImplementation(
+        async (
+          algorithm: AlgorithmIdentifier,
+          key: CryptoKey,
+          data: BufferSource,
+        ) => {
+          encryptStarted();
+          await encryptGate;
+          return originalEncrypt(algorithm, key, data);
+        },
+      );
+
+    try {
+      const pending = gateway.transformText(
+        "conversation-race-encrypt",
+        "山田 太郎を確認する。",
+        [person],
+      );
+      await encryptReady;
+      const clearing = gateway.clear("conversation-race-encrypt");
+      releaseEncrypt();
+      await expect(pending).resolves.toMatchObject({
+        display_content: "山田 太郎を確認する。",
+      });
+      await clearing;
+      expect(store.snapshot()).toHaveLength(0);
+    } finally {
+      encryptSpy.mockRestore();
+    }
+  });
+
+  it("waits for a pending put before deleting a cleared mapping", async () => {
+    class DelayedPutStore extends MemoryConversationAliasStore {
+      private putGate: Promise<void> | null = null;
+      private putStarted: (() => void) | null = null;
+
+      delayNextPut(): Promise<void> {
+        let resolveStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          resolveStarted = resolve;
+        });
+        this.putStarted = resolveStarted;
+        this.putGate = new Promise<void>((resolve) => {
+          this.releasePut = resolve;
+        });
+        return started;
+      }
+
+      releasePut!: () => void;
+
+      async put(record: Parameters<MemoryConversationAliasStore["put"]>[0]) {
+        const gate = this.putGate;
+        const started = this.putStarted;
+        this.putGate = null;
+        this.putStarted = null;
+        if (gate) {
+          started?.();
+          await gate;
+        }
+        await super.put(record);
+      }
+    }
+
+    const store = new DelayedPutStore();
+    const gateway = new ConversationPseudonymizationGateway({
+      store,
+      keyStore: new MemoryConversationSessionKeyStore(),
+    });
+    await gateway.transformText("conversation-race-put", "初期化");
+    const putStarted = store.delayNextPut();
+    const pending = gateway.transformText(
+      "conversation-race-put",
+      "山田 太郎を確認する。",
+      [person],
+    );
+    await putStarted;
+    const clearing = gateway.clear("conversation-race-put");
+    store.releasePut();
+
+    await expect(pending).resolves.toMatchObject({
+      display_content: "山田 太郎を確認する。",
+    });
+    await clearing;
+    expect(store.snapshot()).toHaveLength(0);
+  });
+
   it("keeps aliases stable within a conversation and isolates a new chat", async () => {
     const { gateway } = createGateway();
     const first = await gateway.transformText(

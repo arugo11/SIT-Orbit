@@ -544,6 +544,7 @@ export class ConversationPseudonymizationGateway {
   // long-lived Side Panel notice a Service Worker restart without a new
   // cross-context protocol.
   private sessionKeyBytes: Uint8Array | null = null;
+  private readonly pendingWrites = new Map<string, Set<Promise<void>>>();
 
   constructor(options: ConversationPseudonymizationOptions = {}) {
     this.store =
@@ -599,19 +600,21 @@ export class ConversationPseudonymizationGateway {
   }
 
   async clear(conversationId = this.activeConversationId): Promise<void> {
-    if (conversationId) await this.store.delete(conversationId);
     if (conversationId === this.activeConversationId) {
       this.mapping = null;
       this.activeConversationId = null;
       this.key = null;
     }
+    await this.waitForPendingWrites(conversationId);
+    if (conversationId) await this.store.delete(conversationId);
   }
 
   async clearAll(): Promise<void> {
-    await this.store.clear();
     this.mapping = null;
     this.activeConversationId = null;
     this.key = null;
+    await this.waitForPendingWrites();
+    await this.store.clear();
     this.sessionKeyBytes = null;
     await this.keyStore.clear().catch(() => undefined);
   }
@@ -1205,47 +1208,122 @@ export class ConversationPseudonymizationGateway {
   }
 
   private async persist(): Promise<void> {
-    if (!this.mapping || !this.key) return;
+    const mapping = this.mapping;
+    const key = this.key;
+    const sessionKeyBytes = this.sessionKeyBytes;
+    const conversationId = mapping?.conversation_id;
+    if (!mapping || !key || !conversationId) return;
+    const write = this.persistSnapshot(
+      mapping,
+      key,
+      sessionKeyBytes,
+      conversationId,
+    );
+    let writes = this.pendingWrites.get(conversationId);
+    if (!writes) {
+      writes = new Set();
+      this.pendingWrites.set(conversationId, writes);
+    }
+    writes.add(write);
+    void write.then(
+      () => this.finishPendingWrite(conversationId, write),
+      () => this.finishPendingWrite(conversationId, write),
+    );
+    await write;
+  }
+
+  private async persistSnapshot(
+    mapping: ConversationMapping,
+    key: CryptoKey,
+    sessionKeyBytes: Uint8Array | null,
+    conversationId: string,
+  ): Promise<void> {
     const currentSessionKey = await this.keyStore.get();
     if (
       !currentSessionKey ||
-      !this.sessionKeyBytes ||
-      !sameBytes(this.sessionKeyBytes, currentSessionKey)
+      !sessionKeyBytes ||
+      !sameBytes(sessionKeyBytes, currentSessionKey) ||
+      !this.isCurrentSnapshot(mapping, key, sessionKeyBytes, conversationId)
     ) {
       // Never encrypt stale in-memory aliases under a deleted or newer
       // session generation.  The next public operation will reinitialize the
       // conversation from the current generation.
-      if (!currentSessionKey && this.activeConversationId) {
+      if (
+        !currentSessionKey &&
+        this.isCurrentSnapshot(mapping, key, sessionKeyBytes, conversationId)
+      ) {
         await this.store
-          .delete(this.activeConversationId)
+          .delete(conversationId)
           .catch(() => undefined);
+        this.mapping = null;
+        this.activeConversationId = null;
+        this.key = null;
+        this.sessionKeyBytes = null;
       }
-      this.mapping = null;
-      this.activeConversationId = null;
-      this.key = null;
-      this.sessionKeyBytes = null;
       return;
     }
     const iv = randomBytes(12);
-    const plaintext = new TextEncoder().encode(JSON.stringify(this.mapping));
+    const plaintext = new TextEncoder().encode(JSON.stringify(mapping));
     const ciphertext = await webCrypto().subtle.encrypt(
       {
         name: "AES-GCM",
         iv: ownedBuffer(iv),
         additionalData: ownedBuffer(
-          new TextEncoder().encode(this.mapping.conversation_id),
+          new TextEncoder().encode(conversationId),
         ),
       },
-      this.key,
+      key,
       ownedBuffer(plaintext),
     );
+    const latestSessionKey = await this.keyStore.get();
+    if (
+      !latestSessionKey ||
+      !sessionKeyBytes ||
+      !sameBytes(sessionKeyBytes, latestSessionKey) ||
+      !this.isCurrentSnapshot(mapping, key, sessionKeyBytes, conversationId)
+    ) {
+      return;
+    }
     await this.store.put({
       schema_version: CONVERSATION_PSEUDONYMIZATION_VERSION,
-      conversation_id: this.mapping.conversation_id,
+      conversation_id: conversationId,
       iv: toBase64(iv),
       ciphertext: toBase64(new Uint8Array(ciphertext)),
       expires_at: new Date(this.now() + this.ttlMs).toISOString(),
     });
+  }
+
+  private isCurrentSnapshot(
+    mapping: ConversationMapping,
+    key: CryptoKey,
+    sessionKeyBytes: Uint8Array | null,
+    conversationId: string,
+  ): boolean {
+    return (
+      this.mapping === mapping &&
+      this.key === key &&
+      this.sessionKeyBytes === sessionKeyBytes &&
+      this.activeConversationId === conversationId
+    );
+  }
+
+  private finishPendingWrite(
+    conversationId: string,
+    write: Promise<void>,
+  ): void {
+    const writes = this.pendingWrites.get(conversationId);
+    if (!writes) return;
+    writes.delete(write);
+    if (writes.size === 0) this.pendingWrites.delete(conversationId);
+  }
+
+  private async waitForPendingWrites(
+    conversationId?: string | null,
+  ): Promise<void> {
+    const writes = conversationId
+      ? [...(this.pendingWrites.get(conversationId) ?? [])]
+      : [...this.pendingWrites.values()].flatMap((items) => [...items]);
+    if (writes.length > 0) await Promise.allSettled(writes);
   }
 
   private async decrypt(
