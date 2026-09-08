@@ -56,7 +56,7 @@ describe("SCombZ student disclosure consent", () => {
       /cookie|token|course|student|pdf|html/iu,
     );
     expect(await hasScombzStudentSessionConsent()).toBe(true);
-    await clearScombzStudentSessionConsent();
+    await expect(clearScombzStudentSessionConsent()).resolves.toBe(true);
     expect(localRemove).toHaveBeenCalledWith(
       SCOMBZ_STUDENT_SESSION_CONSENT_KEY,
     );
@@ -67,7 +67,27 @@ describe("SCombZ student disclosure consent", () => {
     vi.stubGlobal("chrome", { storage: {} });
     expect(await hasScombzStudentSessionConsent()).toBe(false);
     expect(await grantScombzStudentSessionConsent()).toBe(false);
-    await expect(clearScombzStudentSessionConsent()).resolves.toBeUndefined();
+    await expect(clearScombzStudentSessionConsent()).resolves.toBe(false);
+  });
+
+  it("reports a failed write or read-back instead of granting consent", async () => {
+    localSet.mockRejectedValueOnce(new Error("storage write rejected"));
+    await expect(grantScombzStudentSessionConsent()).resolves.toBe(false);
+
+    localSet.mockImplementationOnce(async (values: Record<string, unknown>) => {
+      Object.assign(localValues, values);
+    });
+    localGet.mockRejectedValueOnce(new Error("storage read rejected"));
+    await expect(grantScombzStudentSessionConsent()).resolves.toBe(false);
+  });
+
+  it("reports a failed revoke instead of claiming consent was disabled", async () => {
+    localValues[SCOMBZ_STUDENT_SESSION_CONSENT_KEY] = {
+      granted_at: new Date().toISOString(),
+    };
+    localRemove.mockRejectedValueOnce(new Error("storage remove rejected"));
+    await expect(clearScombzStudentSessionConsent()).resolves.toBe(false);
+    expect(await hasScombzStudentSessionConsent()).toBe(true);
   });
 
   it("rejects malformed or expanded consent records", async () => {

@@ -99,24 +99,41 @@ export async function readFirstUseSetup(): Promise<FirstUseSetupRecord | null> {
   }
 }
 
-export async function markFirstUseSetupStarted(): Promise<void> {
-  if (!localStorageAvailable()) return;
-  await chrome.storage.local.set({
-    [FIRST_USE_SETUP_STORAGE_KEY]: {
-      startedAt: new Date().toISOString(),
-    } satisfies FirstUseSetupRecord,
-  });
+export async function markFirstUseSetupStarted(): Promise<boolean> {
+  if (!localStorageAvailable()) return false;
+  const record = {
+    startedAt: new Date().toISOString(),
+  } satisfies FirstUseSetupRecord;
+  try {
+    await chrome.storage.local.set({
+      [FIRST_USE_SETUP_STORAGE_KEY]: record,
+    });
+    const readBack = await readFirstUseSetup();
+    return readBack?.startedAt === record.startedAt;
+  } catch {
+    return false;
+  }
 }
 
-export async function markFirstUseSetupCompleted(): Promise<void> {
-  if (!localStorageAvailable()) return;
-  const current = await readFirstUseSetup();
-  await chrome.storage.local.set({
-    [FIRST_USE_SETUP_STORAGE_KEY]: {
+export async function markFirstUseSetupCompleted(): Promise<boolean> {
+  if (!localStorageAvailable()) return false;
+  try {
+    const current = await readFirstUseSetup();
+    const record = {
       startedAt: current?.startedAt ?? new Date().toISOString(),
       completedAt: new Date().toISOString(),
-    } satisfies FirstUseSetupRecord,
-  });
+    } satisfies FirstUseSetupRecord;
+    await chrome.storage.local.set({
+      [FIRST_USE_SETUP_STORAGE_KEY]: record,
+    });
+    const readBack = await readFirstUseSetup();
+    return (
+      readBack?.startedAt === record.startedAt &&
+      readBack.completedAt === record.completedAt
+    );
+  } catch {
+    return false;
+  }
 }
 
 export async function clearFirstUseSetup(): Promise<void> {

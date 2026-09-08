@@ -130,4 +130,52 @@ describe("first-use setup gate", () => {
       await unmountSidePanel(mounted.root);
     }
   });
+
+  it("keeps Chat locked when the setup record cannot be persisted", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        access_token: "must-not-be-requested",
+        expires_at: "2099-01-01T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal(
+      "__ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__",
+      "agent-web-client.apps.googleusercontent.com",
+    );
+    vi.stubGlobal("fetch", fetcher);
+    const mounted = await mountSidePanel(
+      () => <App />,
+      (runtime) => {
+        vi.stubGlobal("chrome", {
+          runtime: { ...runtime, lastError: undefined },
+          identity: {
+            getRedirectURL: vi.fn(() => "https://example.invalid/redirect"),
+            launchWebAuthFlow: vi.fn(),
+          },
+          storage: {},
+        });
+      },
+    );
+
+    try {
+      await waitFor(() =>
+        Boolean(
+          Array.from(mounted.document.querySelectorAll("button")).find(
+            (button) => button.textContent?.trim() === "初回セットアップを開始",
+          ),
+        ),
+      );
+      await click(buttonByName(mounted.document, "初回セットアップを開始"));
+      await waitFor(
+        () =>
+          mounted.document.body.textContent?.includes(
+            "初回ログインを準備できませんでした。",
+          ) ?? false,
+      );
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(mounted.document.querySelector(".chat-panel")).toBeNull();
+    } finally {
+      await unmountSidePanel(mounted.root);
+    }
+  });
 });

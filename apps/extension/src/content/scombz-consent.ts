@@ -17,16 +17,23 @@ function isConsentRecord(value: unknown): value is { granted_at: string } {
   );
 }
 
-function available(): boolean {
+function canRead(): boolean {
   return (
     typeof chrome !== "undefined" &&
-    typeof chrome.storage?.local?.get === "function" &&
-    typeof chrome.storage?.local?.set === "function"
+    typeof chrome.storage?.local?.get === "function"
   );
 }
 
+function canGrant(): boolean {
+  return canRead() && typeof chrome.storage?.local?.set === "function";
+}
+
+function canClear(): boolean {
+  return canRead() && typeof chrome.storage?.local?.remove === "function";
+}
+
 export async function hasScombzStudentSessionConsent(): Promise<boolean> {
-  if (!available()) return false;
+  if (!canRead()) return false;
   try {
     const stored = await chrome.storage.local.get(
       SCOMBZ_STUDENT_SESSION_CONSENT_KEY,
@@ -39,28 +46,25 @@ export async function hasScombzStudentSessionConsent(): Promise<boolean> {
 }
 
 export async function grantScombzStudentSessionConsent(): Promise<boolean> {
-  if (!available()) return false;
+  if (!canGrant()) return false;
   try {
     await chrome.storage.local.set({
       [SCOMBZ_STUDENT_SESSION_CONSENT_KEY]: {
         granted_at: new Date().toISOString(),
       },
     });
-    return true;
+    return await hasScombzStudentSessionConsent();
   } catch {
     return false;
   }
 }
 
-export async function clearScombzStudentSessionConsent(): Promise<void> {
-  if (
-    typeof chrome === "undefined" ||
-    typeof chrome.storage?.local?.remove !== "function"
-  )
-    return;
+export async function clearScombzStudentSessionConsent(): Promise<boolean> {
+  if (!canClear()) return false;
   try {
     await chrome.storage.local.remove(SCOMBZ_STUDENT_SESSION_CONSENT_KEY);
+    return !(await hasScombzStudentSessionConsent());
   } catch {
-    // Session teardown also clears the value; removal is best effort.
+    return false;
   }
 }
