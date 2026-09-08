@@ -121,6 +121,18 @@ function installReadOnlyRuntime(
         return;
       }
       if (
+        typeof request === "object" &&
+        request !== null &&
+        (request as { type?: string }).type === "chat-auth-preflight"
+      ) {
+        callback?.({
+          schema_version: "v1",
+          ready_tools: kind === "browser" ? [] : [],
+          unknown_tools: [],
+        });
+        return;
+      }
+      if (
         kind === "library" &&
         typeof request === "object" &&
         request !== null &&
@@ -271,6 +283,18 @@ describe("ChatPanel read-only execution boundary", () => {
               observed_at: "2026-09-02T00:00:00Z",
               reason_code: null,
             },
+          });
+          return;
+        }
+        if (
+          typeof request === "object" &&
+          request !== null &&
+          (request as { type?: string }).type === "chat-auth-preflight"
+        ) {
+          callback?.({
+            schema_version: "v1",
+            ready_tools: ["sitrus_read"],
+            unknown_tools: [],
           });
           return;
         }
@@ -553,7 +577,7 @@ describe("ChatPanel read-only execution boundary", () => {
     expect(permissionsRequest).not.toHaveBeenCalled();
   });
 
-  it("does not send a campus-private message when capabilities cannot be verified", async () => {
+  it("does not advertise campus tools when capabilities cannot be verified", async () => {
     const apiClient = createApiClient({
       status: "completed",
       message: {
@@ -578,13 +602,10 @@ describe("ChatPanel read-only execution boundary", () => {
     ));
 
     await sendMessage(mounted, "SCombZの履修情報 PRIVATE_MARKER を確認して");
-    await waitFor(() =>
-      (mounted?.document.body.textContent ?? "").includes(
-        "学内データの利用可否を確認できません",
-      ),
+    await waitFor(() => apiClient.startChat.mock.calls.length === 1);
+    expect(apiClient.startChat).toHaveBeenCalledWith(
+      expect.objectContaining({ client_tools: [] }),
     );
-
-    expect(apiClient.startChat).not.toHaveBeenCalled();
   });
 
   it("deduplicates evidence mirrored by message and context manifest before the next turn", async () => {

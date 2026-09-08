@@ -1,7 +1,6 @@
 import copy
 from typing import cast
 
-import orbit_api.main as orbit_main
 import pytest
 from fastapi.testclient import TestClient
 from orbit_api.agent.pydantic_ai_backend import validate_my_library_result_page
@@ -212,7 +211,7 @@ def test_my_library_result_is_bounded_to_twenty_rows_and_five_scopes() -> None:
         MY_LIBRARY_RESULT_ADAPTER.validate_python(too_many)
 
 
-def test_fixture_chat_response_rejects_scoped_result_without_page_storage(monkeypatch) -> None:
+def test_fixture_chat_does_not_select_my_library_from_natural_language(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     with TestClient(app) as client:
@@ -226,37 +225,10 @@ def test_fixture_chat_response_rejects_scoped_result_without_page_storage(monkey
             },
         )
         assert first.status_code == 200
-        pending = first.json()
-        assert pending["status"] == "tool_required"
-        call = pending["calls"][0]
-
-        # The in-process pending state is the only server-side storage for a
-        # client-tool run. It may contain tool arguments, but no page values.
-        stored = orbit_main.chat_run_service.store.peek(pending["run_id"])
-        assert set(stored.deferred.arguments) == {
-            "scope",
-            "query",
-            "offset",
-            "limit",
-        }
-        assert all(
-            marker not in repr(stored)
-            for marker in FORBIDDEN_VALUES
-        )
-
-        second = client.post(
-            f"/v1/chat/runs/{pending['run_id']}/tool-results",
-            json={
-                "tool_call_id": call["tool_call_id"],
-                "name": call["name"],
-                "version": call["version"],
-                "result": result_payload(),
-            },
-        )
-    assert second.status_code == 422
-    assert second.json() == {"detail": {"reason_code": "chat_contract_invalid"}}
-    for marker in FORBIDDEN_VALUES:
-        assert marker not in second.text
+        payload = first.json()
+    assert payload["status"] == "completed"
+    assert "calls" not in payload
+    assert "fixtureでは一般的なTool選択を再現しません" in payload["message"]["content_markdown"]
 
 
 def test_unavailable_scoped_result_rejects_even_zero_aggregate_values() -> None:
@@ -483,75 +455,31 @@ def test_resume_accepts_only_the_page_defined_by_offset_and_limit() -> None:
         )
 
 
-def test_chat_resume_rejects_scoped_result_before_fixture_page_validation(monkeypatch) -> None:
-    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
-    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
-    with TestClient(app) as client:
-        first = client.post(
-            "/v1/chat/runs",
-            json={
-                "conversation_id": "my-library-short-page",
-                "message": "購入依頼の状況を確認して",
-                "history": [],
-                "client_tools": [{"name": "my_library_read", "version": 1}],
-            },
-        )
-        assert first.status_code == 200
-        pending = first.json()
-        call = pending["calls"][0]
-        short_page = result_payload(items=[])
-        short_page["total_count"] = 1
-
-        resumed = client.post(
-            f"/v1/chat/runs/{pending['run_id']}/tool-results",
-            json={
-                "tool_call_id": call["tool_call_id"],
-                "name": call["name"],
-                "version": call["version"],
-                "result": short_page,
-            },
+def test_scoped_result_is_checked_without_fixture_chat_selection() -> None:
+    short_page = result_payload(items=[])
+    short_page["total_count"] = 1
+    parsed = MY_LIBRARY_RESULT_ADAPTER.validate_python(short_page)
+    with pytest.raises(ValueError, match="item count"):
+        validate_my_library_result_page(
+            parsed,
+            {"scope": "purchase_requests", "offset": 0, "limit": 20},
         )
 
-    assert resumed.status_code == 422
-    assert resumed.json() == {"detail": {"reason_code": "chat_contract_invalid"}}
 
-
-def test_chat_resume_rejects_legacy_aggregates_for_a_scoped_request(monkeypatch) -> None:
-    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
-    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
-    with TestClient(app) as client:
-        first = client.post(
-            "/v1/chat/runs",
-            json={
-                "conversation_id": "my-library-legacy-scoped",
-                "message": "貸出状況を確認して",
-                "history": [],
-                "client_tools": [{"name": "my_library_read", "version": 1}],
-            },
-        )
-        pending = first.json()
-        call = pending["calls"][0]
-        resumed = client.post(
-            f"/v1/chat/runs/{pending['run_id']}/tool-results",
-            json={
-                "tool_call_id": call["tool_call_id"],
-                "name": call["name"],
-                "version": call["version"],
-                "result": {
-                    "schema_version": "v1",
-                    "status": "known",
-                    "loan_count": 0,
-                    "reservation_count": 0,
-                    "overdue_count": 0,
-                    "renewable_count": 0,
-                    "earliest_due_date": None,
-                    "reason_code": None,
-                },
-            },
-        )
-
-    assert resumed.status_code == 422
-    assert resumed.json() == {"detail": {"reason_code": "agent_output_invalid"}}
+def test_legacy_result_cannot_satisfy_a_scoped_request() -> None:
+    legacy = {
+        "schema_version": "v1",
+        "status": "known",
+        "loan_count": 0,
+        "reservation_count": 0,
+        "overdue_count": 0,
+        "renewable_count": 0,
+        "earliest_due_date": None,
+        "reason_code": None,
+    }
+    parsed = MY_LIBRARY_RESULT_ADAPTER.validate_python(legacy)
+    with pytest.raises(ValueError, match="Legacy My Library"):
+        validate_my_library_result_page(parsed, {"scope": "current_loans"})
 
 
 @pytest.mark.parametrize(
@@ -559,35 +487,9 @@ def test_chat_resume_rejects_legacy_aggregates_for_a_scoped_request(monkeypatch)
     ["student_id", "sso_token"],
 )
 def test_raw_personal_fields_are_rejected_before_chat_resume(
-    monkeypatch,
     extra_field: str,
 ) -> None:
-    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
-    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
-    with TestClient(app) as client:
-        first = client.post(
-            "/v1/chat/runs",
-            json={
-                "conversation_id": f"my-library-reject-{extra_field}",
-                "message": "相互貸借の依頼を確認して",
-                "history": [],
-                "client_tools": [{"name": "my_library_read", "version": 1}],
-            },
-        )
-        assert first.status_code == 200
-        pending = first.json()
-        call = pending["calls"][0]
-        poisoned = copy.deepcopy(result_payload("interlibrary_requests"))
-        poisoned[extra_field] = FORBIDDEN_VALUES[0]
-        response = client.post(
-            f"/v1/chat/runs/{pending['run_id']}/tool-results",
-            json={
-                "tool_call_id": call["tool_call_id"],
-                "name": call["name"],
-                "version": call["version"],
-                "result": poisoned,
-            },
-        )
-
-    assert response.status_code == 422
-    assert FORBIDDEN_VALUES[0] not in response.text
+    poisoned = copy.deepcopy(result_payload("interlibrary_requests"))
+    poisoned[extra_field] = FORBIDDEN_VALUES[0]
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        MY_LIBRARY_RESULT_ADAPTER.validate_python(poisoned)

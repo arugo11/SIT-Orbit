@@ -377,7 +377,7 @@ describe("ChatPanel My Library consent and history boundary", () => {
   it("does not read or send personal library data to a non-Azure backend", async () => {
     const apiClient = createApiClient();
     apiClient.capabilities.mockResolvedValue({
-      agent_backend: "openai",
+      agent_backend: "fixture",
       my_library_personal_context: false,
     });
     mounted = await mountSidePanel(() => (

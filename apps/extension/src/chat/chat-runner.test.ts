@@ -163,7 +163,7 @@ describe("ChatRunner", () => {
     });
   });
 
-  it("accepts SCombZ tools only for the explicit fixture capability", async () => {
+  it("keeps private SCombZ tools out of fixture capabilities", async () => {
     const started: Array<{ client_tools?: Array<{ name: string }> }> = [];
     const api = {
       chatCapabilities: async (): Promise<ChatCapabilities> => ({
@@ -204,7 +204,6 @@ describe("ChatRunner", () => {
       ]),
     });
     expect(started[0]?.client_tools?.map((tool) => tool.name)).toEqual([
-      "scombz_course_list",
       "syllabus_search",
     ]);
   });

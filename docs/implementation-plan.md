@@ -277,10 +277,11 @@ CalendarのDeferred Toolと構造化出力を導入する要件が成立した�
 
 - PydanticAIの依存追加
 - `AgentBackend`内部の共有PydanticAI Agent
-- `OpenAIResponsesModel`、OpenAI/Azure Provider、`openai_store=False`
+- `OpenAIResponsesModel`、Azure Provider、`openai_store=False`
 - 内部`ActionDraft`とサーバー側のID/Evidence正規化
 - `google_calendar_availability` v1のDeferred Tool
 - 600秒TTLのプロセスメモリrun storeと再開API
+- `ToolCatalog`を正本にしたdeferred Tool定義とAzure Responses Hosted Tool Search
 - 厳格なdiscriminated API envelopeと最小Calendar availability schema
 - Extensionの明示クリック、非対話refresh、Tool結果の再開表示
 
@@ -295,7 +296,7 @@ Run再開はAPIプロセス内メモリの単一worker affinityに限定する�
 - Google Drive Tool登録
 - OAuth token、raw Calendar event、永続run store
 
-## Branch 8：Azureモデル選定の比較評価
+## Branch 8：Azure native Tool Search評価
 
 ### ブランチ
 
@@ -303,43 +304,25 @@ Run再開はAPIプロセス内メモリの単一worker affinityに限定する�
 
 ### 目的
 
-Terra、Luna、Solなど、Azure側で明示したdeploymentを同じ16件の合成・公開ケースで比較し、通常デモのPrimary候補を実測で見直せるようにする。
+Azure GPT-5.6 TerraのHosted Tool Searchを、合成ケースで実測できるようにする。通常の文字列routerや候補数評価は行わない。
 
 ### 暫定判断
 
-実測前はAzure OpenAI GPT-5.6 TerraをPrimary、GPT-5.6 Solを品質重視デモ、GPT-5.6 Lunaを低コストchallenger候補とする。
-この順位は確定モデルではなく、hard failure、token、latency、best-effort costの測定後に再評価する。
-
-Gemini 3.7 Flash Paidは将来の他社challenger候補であり、このbranchではGoogle Adapter、依存、モデルルーターを追加しない。
-比較する場合もsynthetic/public dataだけに限定する。
+deployment alias `gpt-5-6-terra`とcanonical profile `gpt-5.6-terra`の組み合わせを固定する。非対応profile、別provider、ローカル検索へのfallbackは行わない。
 
 ### 実装範囲
 
-- `evals/model_selection_cases.jsonl`の16ケース
-- `evals.run_model_selection`の明示的な`--role ROLE=DEPLOYMENT`入力
-- 既存`AzureOpenAIAgent`とDeferred Calendar経路の再利用
-- ケースごとのCalendar Tool挙動、Evidence、case-defined unsupported fact trap、confirmation、structured output、所要時間上限のhard failure分類
-- PydanticAI usage callbackによるinput/output/cache tokenとbest-effort costの集計
-- ケース・roleごとの提案本文を含むJSONレポートと非ゼロ終了
-- hard failure 0を必要条件とした人手レビュー
+- `evals/tool_routing_cases.jsonl`の意味的ケース
+- Azure実行からの発見Tool名・実行Tool名・所要時間・成否だけの観測入力
+- Tool選択recall、不要Tool実行率、capability／一般会話／prompt injectionでのデータ読取抑止
+- 重要ケース各3試行、recall 95%以上、不要実行率5%以下の合格判定
 - オフラインUnit Test
 
 ### 実装しない範囲
 
 - 通常の`run_eval`やCIへのlive model追加
 - LLM Judge、W&B評価、Leaderboard、総合スコア
-- Gemini依存、Google Adapter、モデルルーター
 - 実学生データ、実Calendar派生値、私的資料の送信
-
-Azure Standard Globalの暫定単価は入力／出力100万tokenあたりTerra $2／$12、Luna $0.20／$1.20、Sol $5／$30とする。
-Global deploymentは複数リージョンで処理され得るため、実データ利用時はdeployment typeとデータ処理条件を別途確認する。
-
-参考：
-[Microsoft FoundryのGPT-5.6発表](https://azure.microsoft.com/en-us/blog/gpt-5-6-now-available-in-microsoft-foundry/)、
-[Azureのデータ処理方針](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy)、
-[Google公式リリースノート](https://ai.google.dev/gemini-api/docs/changelog)、
-[Gemini API料金表](https://ai.google.dev/gemini-api/docs/pricing)、
-[PydanticAI Googleモデル](https://pydantic.dev/docs/ai/models/google/)。
 
 ## 将来ブランチ
 

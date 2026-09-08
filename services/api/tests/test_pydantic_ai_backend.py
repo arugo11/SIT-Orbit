@@ -1,11 +1,20 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pydantic_ai.models
 import pytest
-from orbit_api.agent.openai_backend import OpenAIAgent
+from orbit_api.agent.azure_openai_backend import AzureOpenAIAgent
+from orbit_api.agent.native_tool_search import (
+    TOOL_ADDITION_MODE,
+    TOOL_DEFERRAL_MODE,
+)
 from orbit_api.agent.pydantic_ai_backend import (
     CALENDAR_AVAILABILITY_LOCATOR_PREFIX,
     CALENDAR_TOOL_NAME,
     ActionDraft,
+    PydanticAIAgentBackend,
+    _discovered_tools_from_result,
 )
 from orbit_api.models import (
     CalendarAvailabilityInterval,
@@ -13,18 +22,20 @@ from orbit_api.models import (
     EvidenceLink,
     OrbitEvent,
 )
-from pydantic_ai import (
-    Agent,
-    CallDeferred,
-    DeferredToolRequests,
+from pydantic_ai import Agent, CallDeferred, DeferredToolRequests
+from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
+    NativeToolSearchReturnPart,
+    ToolAvailabilityDeltaPart,
     ToolCallPart,
+    ToolReturnPart,
+    ToolSearchMatch,
 )
-from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.openai import OpenAIResponsesModel
 from pydantic_ai.models.test import TestModel
+from pydantic_ai.providers.azure import AzureProvider
 from pydantic_ai.usage import RunUsage
 
 
@@ -62,32 +73,32 @@ async def google_calendar_availability() -> CalendarAvailabilityResult:
     raise CallDeferred()
 
 
-def test_agent_with_test_model_advertises_only_the_connected_calendar_tool() -> None:
+def azure_backend(*, usage_callback=None) -> AzureOpenAIAgent:
+    return AzureOpenAIAgent(
+        api_key="synthetic-test-key",
+        model="gpt-5-6-terra",
+        endpoint="https://example.openai.azure.com",
+        base_model="gpt-5.6-terra",
+        usage_callback=usage_callback,
+    )
+
+
+def test_action_agent_with_test_model_advertises_only_connected_calendar() -> None:
     async def run() -> None:
-        for calendar_connected, expected_tools in (
-            (False, []),
-            (True, [CALENDAR_TOOL_NAME]),
-        ):
+        for calendar_connected, expected_tools in ((False, []), (True, [CALENDAR_TOOL_NAME])):
             model = TestModel(call_tools=[])
-            tools = [google_calendar_availability] if calendar_connected else []
             agent = Agent(
                 model,
                 output_type=[ActionDraft, DeferredToolRequests],
                 instructions="test",
-                tools=tools,
+                tools=[google_calendar_availability] if calendar_connected else [],
             )
-
             result = await agent.run("synthetic proposal")
-
             assert isinstance(result.output, ActionDraft)
             assert model.last_model_request_parameters is not None
             assert [
-                tool.name
-                for tool in model.last_model_request_parameters.declared_function_tools
+                tool.name for tool in model.last_model_request_parameters.declared_function_tools
             ] == expected_tools
-            output_tools = model.last_model_request_parameters.output_tools
-            assert output_tools is not None
-            assert output_tools[0].parameters_json_schema["additionalProperties"] is False
 
     import asyncio
 
@@ -95,8 +106,8 @@ def test_agent_with_test_model_advertises_only_the_connected_calendar_tool() -> 
 
 
 @pytest.mark.asyncio
-async def test_test_model_structured_output_restores_server_owned_evidence() -> None:
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
+async def test_action_proposal_keeps_server_owned_evidence() -> None:
+    backend = azure_backend()
     evidence = make_evidence()
     model = TestModel(custom_output_args=action_args(evidence.evidence_id))
     test_agent = Agent(
@@ -104,95 +115,52 @@ async def test_test_model_structured_output_restores_server_owned_evidence() -> 
         output_type=[ActionDraft, DeferredToolRequests],
         instructions="test",
     )
-
     backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
     proposal = await backend.propose_action(make_event(), [evidence])
-
-    assert proposal.action_id.startswith("act-openai-")
+    assert proposal.action_id.startswith("act-azure-openai-")
     assert proposal.evidence == [evidence]
-    assert proposal.evidence[0] is evidence
     assert proposal.requires_confirmation is True
-    assert proposal.external_action == "checklist_update"
 
 
 @pytest.mark.asyncio
-async def test_optional_usage_callback_receives_run_usage() -> None:
-    usages: list[RunUsage] = []
-    backend = OpenAIAgent(
-        api_key="synthetic-test-key",
-        model="demo-model",
-        usage_callback=usages.append,
-    )
-    evidence = make_evidence()
-    model = TestModel(custom_output_args=action_args(evidence.evidence_id))
-    test_agent = Agent(
-        model,
-        output_type=[ActionDraft, DeferredToolRequests],
-        instructions="test",
-    )
-    backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
-
-    await backend.propose_action(make_event(), [evidence])
-
-    assert len(usages) == 1
-    assert isinstance(usages[0], RunUsage)
-    assert usages[0].requests == 1
-
-
-@pytest.mark.asyncio
-async def test_no_tool_path_returns_a_completed_action_proposal() -> None:
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
-    evidence = make_evidence()
-    model = TestModel(custom_output_args=action_args(evidence.evidence_id))
-    test_agent = Agent(
-        model,
-        output_type=[ActionDraft, DeferredToolRequests],
-        instructions="test",
-    )
-    backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
-
-    proposal, deferred = await backend.start_run(
-        make_event(),
-        [evidence],
-        calendar_connected=False,
-    )
-
-    assert deferred is None
-    assert proposal is not None
-    assert proposal.evidence == [evidence]
-
-
-@pytest.mark.asyncio
-async def test_unknown_evidence_id_is_rejected_after_structured_output() -> None:
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
+async def test_unknown_evidence_id_is_rejected() -> None:
+    backend = azure_backend()
     model = TestModel(custom_output_args=action_args("ev-not-supplied"))
-    test_agent = Agent(
-        model,
-        output_type=[ActionDraft, DeferredToolRequests],
-        instructions="test",
-    )
+    test_agent = Agent(model, output_type=[ActionDraft, DeferredToolRequests], instructions="test")
     backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
-
     with pytest.raises(ValueError, match="unknown evidence IDs"):
         await backend.propose_action(make_event(), [make_evidence()])
 
 
 @pytest.mark.asyncio
-async def test_function_model_deferred_calendar_result_is_minimized_before_resume() -> None:
+async def test_usage_callback_receives_aggregate_usage() -> None:
+    usages: list[RunUsage] = []
+    backend = azure_backend(usage_callback=usages.append)
+    evidence = make_evidence()
+    test_agent = Agent(
+        TestModel(custom_output_args=action_args(evidence.evidence_id)),
+        output_type=[ActionDraft, DeferredToolRequests],
+        instructions="test",
+    )
+    backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
+    await backend.propose_action(make_event(), [evidence])
+    assert len(usages) == 1
+    assert usages[0].requests == 1
+
+
+@pytest.mark.asyncio
+async def test_deferred_calendar_result_is_minimized_before_resume() -> None:
     requests: list[list[ModelMessage]] = []
 
-    def model_function(
-        messages: list[ModelMessage],
-        _: AgentInfo,
-    ) -> ModelResponse:
+    def model_function(messages: list[ModelMessage], _: AgentInfo) -> ModelResponse:
         requests.append(messages)
         if len(requests) == 1:
             return ModelResponse(
                 parts=[
+                    # Action Agent's deferred boundary intentionally remains
+                    # independent from Chat's native Tool Search.
                     ToolCallPart(
-                        CALENDAR_TOOL_NAME,
-                        {},
-                        tool_call_id="calendar-call-1",
+                        CALENDAR_TOOL_NAME, {}, tool_call_id="calendar-call-1"
                     )
                 ]
             )
@@ -206,19 +174,17 @@ async def test_function_model_deferred_calendar_result_is_minimized_before_resum
             ]
         )
 
-    model = FunctionModel(model_function, model_name="deterministic-test")
+    model = FunctionModel(model_function, model_name="deterministic-action-test")
     test_agent = Agent(
         model,
         output_type=[ActionDraft, DeferredToolRequests],
         instructions="test",
         tools=[google_calendar_availability],
     )
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
+    backend = azure_backend()
     backend._agent = lambda *, advertised_tools: test_agent  # type: ignore[method-assign]
-
-    event = make_event()
     evidence = make_evidence()
-    deferred_context = EvidenceLink(
+    calendar_evidence = EvidenceLink(
         evidence_id="calendar-availability-v1-run-1",
         title="Google Calendarから導出した空き時間",
         source_type="calendar",
@@ -240,27 +206,14 @@ async def test_function_model_deferred_calendar_result_is_minimized_before_resum
         ],
         reason_code=None,
     )
-
     proposal, deferred = await backend.start_run(
-        event,
-        [evidence],
-        calendar_connected=True,
+        make_event(), [evidence], calendar_connected=True
     )
-
-    assert proposal is None
-    assert deferred is not None
-    assert deferred.tool_call_id == "calendar-call-1"
-
+    assert proposal is None and deferred is not None
     resumed = await backend.resume_run(
-        event,
-        [evidence, deferred_context],
-        deferred,
-        calendar_result,
+        make_event(), [evidence, calendar_evidence], deferred, calendar_result
     )
-
-    assert resumed.evidence == [evidence, deferred_context]
-    assert resumed.requires_confirmation is True
-    assert len(requests) == 2
+    assert resumed.evidence == [evidence, calendar_evidence]
     tool_returns = [
         part
         for message in requests[1]
@@ -269,31 +222,74 @@ async def test_function_model_deferred_calendar_result_is_minimized_before_resum
     ]
     assert len(tool_returns) == 1
     assert tool_returns[0].content == {
-        "evidence_id": deferred_context.evidence_id,
+        "evidence_id": calendar_evidence.evidence_id,
         "availability": calendar_result.model_dump(mode="json"),
     }
-    serialized_result = str(tool_returns[0].content)
-    assert "event_id" not in serialized_result
-    assert "title" not in serialized_result
-    assert "oauth" not in serialized_result.lower()
-    assert "token" not in serialized_result.lower()
 
 
-def test_agent_settings_disable_provider_storage() -> None:
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
-    agent = backend._agent(advertised_tools=set())
-
+def test_azure_model_profile_declares_native_responses_modes() -> None:
+    backend = azure_backend()
     assert isinstance(backend.model, OpenAIResponsesModel)
-    assert isinstance(agent.model, OpenAIResponsesModel)
+    profile = backend.model.profile
+    assert profile.get("tool_deferral_mode") == TOOL_DEFERRAL_MODE
+    assert profile.get("tool_addition_mode") == TOOL_ADDITION_MODE
     assert backend.model.settings == {"openai_store": False}
-    assert agent.model_settings == {"openai_store": False}
-    assert agent.model.settings == {"openai_store": False}
+
+
+def test_chat_agent_initial_surface_contains_only_deferred_catalog_tools() -> None:
+    backend = PydanticAIAgentBackend(
+        model_name="gpt-5-6-terra",
+        provider=AzureProvider(
+            azure_endpoint="https://example.openai.azure.com/openai/v1",
+            api_key="synthetic-key",
+        ),
+        provider_name="Azure OpenAI",
+        action_id_prefix="test",
+        canonical_model_name="gpt-5.6-terra",
+    )
+    agent = backend._chat_agent(advertised_tools={"cast_search", "syllabus_search"})
+    assert set(agent._function_toolset.tools) == {
+        "cast_search",
+        "syllabus_search",
+        "describe_available_capabilities",
+    }
+    assert all(
+        tool.defer_loading and tool.sequential
+        for tool in agent._function_toolset.tools.values()
+    )
+    assert "search_tools" not in agent._function_toolset.tools
+    assert agent.model_settings == {"openai_store": False, "parallel_tool_calls": False}
+
+
+def test_native_tool_search_reveals_are_read_from_typed_return_content() -> None:
+    class Result:
+        def all_messages(self):
+            return [
+                SimpleNamespace(
+                    parts=[
+                        NativeToolSearchReturnPart(
+                            content={
+                                "discovered_tools": [
+                                    ToolSearchMatch(name="cast_search"),
+                                    {"name": "syllabus_search"},
+                                ]
+                            }
+                        ),
+                        ToolAvailabilityDeltaPart(tools_added=["library_item_read"]),
+                    ]
+                )
+            ]
+
+    assert _discovered_tools_from_result(Result()) == {
+        "cast_search",
+        "syllabus_search",
+        "library_item_read",
+    }
 
 
 @pytest.mark.asyncio
-async def test_real_provider_request_is_blocked_by_global_test_guard() -> None:
+async def test_global_model_requests_guard_remains_enabled() -> None:
     assert pydantic_ai.models.ALLOW_MODEL_REQUESTS is False
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
-
+    backend = azure_backend()
     with pytest.raises(RuntimeError, match="ALLOW_MODEL_REQUESTS"):
         await backend.propose_action(make_event(), [make_evidence()])

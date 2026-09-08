@@ -13,8 +13,8 @@
 - FastAPIで実装したエージェントAPI
 - Next.jsのWebアプリケーション
 - Expoのモバイルアプリケーション
-- 外部モデルを呼び出さない決定論的なfixture
-- 合成デモデータ向けのOpenAI、Azure OpenAI、およびW&B Weaveのオプションアダプター
+- Azure OpenAI Responses APIのnative Tool Searchに対応した本番アダプター
+- 外部モデルを呼び出さない決定論的なfixture（Chatは一般回答のみ）
 
 ## 環境要件
 
@@ -31,7 +31,7 @@ pnpm install
 pnpm generate:api
 ```
 
-APIデモまたはW&Bのトレースを使う場合だけ、`.env.example`を`.env`へコピーしてください。
+APIまたはW&Bのトレースを使う場合だけ、`.env.example`を`.env`へコピーしてください。
 
 標準設定では、決定論的なfixtureバックエンドを使用します。
 
@@ -60,9 +60,10 @@ pnpm build
 
 ## データポリシー
 
-W&B WeaveとOpenAIは、標準では無効になっています。
+W&B WeaveとAzure OpenAIは、標準では無効になっています。
 
-どちらのサービスにも、公開データまたは合成デモデータだけを送信できます。
+W&Bには公開・合成データだけを送信します。Azure OpenAIは、`docs/data-policy.md`に定めた
+認証済み・最小化・仮名化済みの狭い例外を除き、公開・合成データだけを送信します。
 
 このリポジトリに、学生の記録、成績、非公開の授業資料、未公開の研究、APIキー、OAuthトークンを追加しないでください。
 

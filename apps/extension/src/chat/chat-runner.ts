@@ -148,21 +148,11 @@ export class ChatRunner {
       capabilities.agent_backend === "azure_openai" &&
       capabilities.observability === "off" &&
       capabilities.scombz_student_read_mode === "live";
-    const fixtureScombzCapability =
-      capabilities !== null &&
-      capabilities.agent_backend === "fixture" &&
-      capabilities.observability === "off" &&
-      capabilities.scombz_student_read_mode === "fixture";
     const liveSitrusCapability =
       capabilities !== null &&
       capabilities.agent_backend === "azure_openai" &&
       capabilities.observability === "off" &&
       capabilities.sitrus_personal_context_mode === "live";
-    const fixtureSitrusCapability =
-      capabilities !== null &&
-      capabilities.agent_backend === "fixture" &&
-      capabilities.observability === "off" &&
-      capabilities.sitrus_personal_context_mode === "fixture";
     if (input.require_live_scombz && !liveScombzCapability) {
       throw new ChatRunnerError(
         "capability_unavailable",
@@ -176,7 +166,7 @@ export class ChatRunner {
     const serverAllowed = capabilities
       ? new Set(capabilities.supported_client_tools)
       : new Set<string>();
-    if (!liveScombzCapability && !fixtureScombzCapability) {
+    if (!liveScombzCapability) {
       for (const tool of [
         "scombz_course_list",
         "scombz_portal_read",
@@ -186,7 +176,7 @@ export class ChatRunner {
         serverAllowed.delete(tool);
       }
     }
-    if (!liveSitrusCapability && !fixtureSitrusCapability) {
+    if (!liveSitrusCapability) {
       serverAllowed.delete("sitrus_read");
     }
     const clientTools = advertiseReadOnlyTools({

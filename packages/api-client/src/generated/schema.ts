@@ -293,7 +293,7 @@ export interface components {
              * Agent Backend
              * @enum {string}
              */
-            agent_backend: "fixture" | "openai" | "azure_openai";
+            agent_backend: "fixture" | "azure_openai";
             /** My Library Personal Context */
             my_library_personal_context: boolean;
         };
@@ -801,7 +801,7 @@ export interface components {
              * Agent Backend
              * @enum {string}
              */
-            agent_backend: "fixture" | "openai" | "azure_openai";
+            agent_backend: "fixture" | "azure_openai";
             /**
              * Observability
              * @enum {string}

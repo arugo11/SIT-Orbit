@@ -262,7 +262,7 @@ function isAgentCapabilities(value: unknown): value is AgentCapabilities {
   return (
     isRecord(value) &&
     hasExactlyKeys(value, ["agent_backend", "my_library_personal_context"]) &&
-    isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) &&
+    isOneOf(value.agent_backend, ["fixture", "azure_openai"]) &&
     typeof value.my_library_personal_context === "boolean"
   );
 }
@@ -282,7 +282,7 @@ export function isChatCapabilities(value: unknown): value is ChatCapabilities {
       "max_client_tools",
     ]) ||
     value.schema_version !== "v1" ||
-    !isOneOf(value.agent_backend, ["fixture", "openai", "azure_openai"]) ||
+    !isOneOf(value.agent_backend, ["fixture", "azure_openai"]) ||
     !isOneOf(value.observability, ["off", "wandb"]) ||
     !isOneOf(value.scombz_student_read_mode, ["off", "fixture", "live"]) ||
     !isOneOf(value.sitrus_personal_context_mode, ["off", "fixture", "live"]) ||
@@ -302,21 +302,22 @@ export function isChatCapabilities(value: unknown): value is ChatCapabilities {
     value.agent_backend === "azure_openai" &&
     value.observability === "off" &&
     value.scombz_student_read_mode === "live";
-  const demoFixtureScombz =
-    value.agent_backend === "fixture" &&
-    value.observability === "off" &&
-    value.scombz_student_read_mode === "fixture";
   const liveScombzTools = new Set([
     "scombz_course_list",
     "scombz_portal_read",
     "scombz_course_read",
     "scombz_material_search",
   ]);
-  return (
+  const liveSitrus =
+    value.agent_backend === "azure_openai" &&
+    value.observability === "off" &&
+    value.sitrus_personal_context_mode === "live";
+  const scombzValid =
     liveScombz ||
-    demoFixtureScombz ||
-    !value.supported_client_tools.some((item) => liveScombzTools.has(item))
-  );
+    !value.supported_client_tools.some((item) => liveScombzTools.has(item));
+  const sitrusValid =
+    liveSitrus || !value.supported_client_tools.includes("sitrus_read");
+  return scombzValid && sitrusValid;
 }
 
 function isAgentSessionResponse(value: unknown): value is AgentSessionResponse {

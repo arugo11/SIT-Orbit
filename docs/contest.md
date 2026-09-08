@@ -18,7 +18,7 @@
 
 | 観点 | 提出前に用意する証拠 |
 | --- | --- |
-| AI活用目的 | FixtureとOpenAI Backendの役割分担、Agent trace |
+| AI活用目的 | 開発用fixtureとAzure Responses Hosted Tool Searchの役割分担、Agent trace |
 | Prompt設計 | prompt version、入力Evidence、Structured Output |
 | 人の判断 | 提案の承認・変更・却下、Before/After |
 | オリジナリティー | Campus EventからEvidenceまでの閉ループ |

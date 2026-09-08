@@ -18,6 +18,10 @@ def runtime_profile() -> RuntimeProfile:
 def validate_runtime_backend(backend: str) -> RuntimeProfile:
     """Fail closed when a named runtime profile selects the wrong backend."""
 
+    if backend not in {"fixture", "azure_openai"}:
+        raise RuntimeError(
+            "ORBIT_AGENT_BACKEND must be either 'fixture' or 'azure_openai'."
+        )
     profile = runtime_profile()
     if profile == "demo" and backend != "fixture":
         raise RuntimeError("ORBIT_RUNTIME_PROFILE=demo requires ORBIT_AGENT_BACKEND=fixture.")

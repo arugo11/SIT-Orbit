@@ -1,11 +1,7 @@
 from unittest.mock import Mock
 
 import pytest
-from orbit_api.agent.openai_backend import OpenAIAgent
-from orbit_api.agent.pydantic_ai_backend import (
-    ActionDraft,
-    DeferredActionRun,
-)
+from orbit_api.agent.pydantic_ai_backend import DeferredActionRun
 from orbit_api.agent.runs import (
     AgentRunService,
     ConsumedRunError,
@@ -14,16 +10,11 @@ from orbit_api.agent.runs import (
     UnknownRunError,
 )
 from orbit_api.models import (
-    AgentRunRequest,
-    AgentRunToolRequired,
     AgentToolResultRequest,
     CalendarAvailabilityResult,
-    ClientTool,
     EvidenceLink,
     OrbitEvent,
 )
-from pydantic_ai import Agent, CallDeferred, DeferredToolRequests
-from pydantic_ai.models.test import TestModel
 
 
 def make_event() -> OrbitEvent:
@@ -75,7 +66,7 @@ def make_calendar_result(
 def make_pending_run(
     store: RunStore,
     *,
-    backend_name: str = "openai",
+    backend_name: str = "azure_openai",
     tool_call_id: str = "calendar-call-1",
 ) -> str:
     return store.put(
@@ -99,21 +90,6 @@ def make_tool_result_request(
         tool_call_id=tool_call_id,
         result=make_calendar_result(status),
     )
-
-
-def action_args() -> dict[str, object]:
-    return {
-        "title": "合成関数の微分を確認する",
-        "reason": "合成fixtureの空き時間に収まるためです。",
-        "duration_minutes": 12,
-        "external_action": "checklist_update",
-        "requires_confirmation": True,
-        "evidence_ids": ["ev-assignment"],
-    }
-
-
-async def google_calendar_availability() -> None:
-    raise CallDeferred()
 
 
 def test_run_store_rejects_unknown_expired_consumed_and_reused_runs() -> None:
@@ -206,43 +182,3 @@ async def test_expired_run_is_rejected_before_model_factory() -> None:
         await service.submit_tool_result(run_id, make_tool_result_request())
 
     backend_factory.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_client_tool_advertisement_controls_deferred_tool_registration(monkeypatch) -> None:
-    backend = OpenAIAgent(api_key="synthetic-test-key", model="demo-model")
-    seen_advertised_tools: list[set[str]] = []
-
-    def build_agent(*, advertised_tools: set[str]):
-        seen_advertised_tools.append(advertised_tools)
-        model = TestModel(
-            custom_output_args=action_args(),
-            call_tools="all",
-        )
-        return Agent(
-            model,
-            output_type=[ActionDraft, DeferredToolRequests],
-            instructions="test",
-            tools=[google_calendar_availability]
-            if "google_calendar_availability" in advertised_tools
-            else [],
-        )
-
-    monkeypatch.setattr(backend, "_agent", build_agent)
-    service = AgentRunService(store=RunStore(), backend_factory=lambda: backend)
-    base_request = AgentRunRequest(event=make_event(), context=[make_evidence()])
-
-    completed = await service.start(base_request)
-    assert completed.status == "completed"
-
-    connected = await service.start(
-        base_request.model_copy(
-            update={
-                "client_tools": [
-                    ClientTool(name="google_calendar_availability", version=1)
-                ]
-            }
-        )
-    )
-    assert isinstance(connected, AgentRunToolRequired)
-    assert seen_advertised_tools == [set(), {"google_calendar_availability"}]

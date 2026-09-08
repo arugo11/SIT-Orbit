@@ -289,3 +289,24 @@ export async function readAuthenticatedSitrusGrades(
     reason_code: null,
   };
 }
+
+/**
+ * Auth-only preflight for Chat Tool advertisement.
+ *
+ * The token endpoint is queried and the opaque handle is discarded.  No
+ * student identity, grades, response body, or error text leaves this module.
+ */
+export async function checkSitrusAuthentication(
+  fetcher: FetchLike = fetch,
+): Promise<boolean> {
+  try {
+    const token = await fetchJson(fetcher, SITRUS_API_PATHS.token);
+    const handle = findStringField(token, [
+      "preferred_username",
+      "cardsubject",
+    ]);
+    return Boolean(handle && STUDENT_HANDLE.test(handle));
+  } catch {
+    return false;
+  }
+}
