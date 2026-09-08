@@ -2228,7 +2228,7 @@ class ChatRunService:
         store: ChatRunStore | None = None,
         backend_factory: Callable[[], ChatBackend],
     ) -> None:
-        self.store = store or ChatRunStore()
+        self.store = store if store is not None else ChatRunStore()
         self.backend_factory = backend_factory
         self._background: dict[str, _BackgroundChatRun] = {}
         self._background_expired: dict[str, float] = {}

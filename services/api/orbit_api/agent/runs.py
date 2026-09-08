@@ -332,7 +332,7 @@ class AgentRunService:
         store: RunStore | None = None,
         backend_factory: Callable[[], AgentBackend] = get_agent_backend,
     ) -> None:
-        self.store = store or RunStore()
+        self.store = store if store is not None else RunStore()
         self.backend_factory = backend_factory
 
     @staticmethod
