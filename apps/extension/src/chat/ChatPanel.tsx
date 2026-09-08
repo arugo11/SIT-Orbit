@@ -1287,9 +1287,11 @@ export function ChatPanel({
     }
     if (
       call.name === "my_library_read" &&
-      (Object.keys(argumentsObject).some(
-        (key) => !["scope", "query", "offset", "limit"].includes(key),
-      ) ||
+      ((Object.keys(argumentsObject).length > 0 &&
+        argumentsObject.scope === undefined) ||
+        Object.keys(argumentsObject).some(
+          (key) => !["scope", "query", "offset", "limit"].includes(key),
+        ) ||
         (argumentsObject.scope !== undefined &&
           ![
             "current_loans",
