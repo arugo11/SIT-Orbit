@@ -56,6 +56,251 @@ const result = (toolCallId: string): ChatToolResultRequest =>
   }) as ChatToolResultRequest;
 
 describe("ChatRunner", () => {
+  it("rejects an already-aborted run before capabilities or start", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const chatCapabilities = async () => capabilities;
+    const startChat = async () => {
+      throw new Error("must not start");
+    };
+    const runner = new ChatRunner({
+      api: {
+        chatCapabilities,
+        startChat,
+        submitChatToolResult: async () => {
+          throw new Error("must not submit");
+        },
+      },
+      executeTool: async () => ({ request: result("unused") }),
+    });
+
+    await expect(
+      runner.run({
+        conversation_id: "conversation-aborted",
+        message: "確認して",
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("preserves cancellation while capabilities are pending", async () => {
+    const controller = new AbortController();
+    let releaseCapabilities!: () => void;
+    const capabilitiesReady = new Promise<void>((resolve) => {
+      releaseCapabilities = resolve;
+    });
+    let started = false;
+    const runner = new ChatRunner({
+      api: {
+        chatCapabilities: async (signal) => {
+          expect(signal).toBe(controller.signal);
+          await capabilitiesReady;
+          return capabilities;
+        },
+        startChat: async () => {
+          started = true;
+          throw new Error("must not start after cancellation");
+        },
+        submitChatToolResult: async () => {
+          throw new Error("must not submit");
+        },
+      },
+      executeTool: async () => ({ request: result("unused") }),
+    });
+    const pending = runner.run({
+      conversation_id: "conversation-capabilities-aborted",
+      message: "確認して",
+      signal: controller.signal,
+    });
+    controller.abort();
+    releaseCapabilities();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(started).toBe(false);
+  });
+
+  it("does not submit a tool result when cancellation happens during tool completion", async () => {
+    const controller = new AbortController();
+    let releaseTool!: () => void;
+    const toolReady = new Promise<void>((resolve) => {
+      releaseTool = resolve;
+    });
+    let toolStarted!: () => void;
+    const toolStartedPromise = new Promise<void>((resolve) => {
+      toolStarted = resolve;
+    });
+    let submitCount = 0;
+    const runner = new ChatRunner({
+      api: {
+        startChat: async (_request, signal) => {
+          expect(signal).toBe(controller.signal);
+          return {
+            status: "tool_required" as const,
+            run_id: "run-aborted-tool",
+            calls: [
+              {
+                tool_call_id: "call-aborted-tool",
+                name: "scombz_course_list" as const,
+                version: 1 as const,
+                arguments: {},
+              },
+            ],
+          };
+        },
+        submitChatToolResult: async () => {
+          submitCount += 1;
+          throw new Error("must not submit after cancellation");
+        },
+      },
+      executeTool: async (call, context) => {
+        expect(context.signal).toBe(controller.signal);
+        toolStarted();
+        await toolReady;
+        return { request: result(call.tool_call_id) };
+      },
+    });
+    const pending = runner.run({
+      conversation_id: "conversation-tool-aborted",
+      message: "授業を確認して",
+      capabilities,
+      locally_available_tools: new Set(["scombz_course_list"]),
+      signal: controller.signal,
+    });
+    await toolStartedPromise;
+    controller.abort();
+    releaseTool();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(submitCount).toBe(0);
+  });
+
+  it("rejects a changed run ID before executing the next tool", async () => {
+    let executions = 0;
+    const runner = new ChatRunner({
+      api: {
+        startChat: async () => ({
+          status: "tool_required" as const,
+          run_id: "run-stable",
+          calls: [
+            {
+              tool_call_id: "call-first",
+              name: "scombz_course_list" as const,
+              version: 1 as const,
+              arguments: {},
+            },
+          ],
+        }),
+        submitChatToolResult: async () => ({
+          status: "tool_required" as const,
+          run_id: "run-changed",
+          calls: [
+            {
+              tool_call_id: "call-second",
+              name: "scombz_course_list" as const,
+              version: 1 as const,
+              arguments: {},
+            },
+          ],
+        }),
+      },
+      executeTool: async (call) => {
+        executions += 1;
+        return { request: result(call.tool_call_id) };
+      },
+    });
+
+    await expect(
+      runner.run({
+        conversation_id: "conversation-run-id",
+        message: "授業を確認して",
+        capabilities,
+        locally_available_tools: new Set(["scombz_course_list"]),
+      }),
+    ).rejects.toMatchObject({
+      name: "ChatRunnerError",
+      code: "protocol_invalid",
+    });
+    expect(executions).toBe(1);
+  });
+
+  it("rejects a non-v1 or multi-call deferred response before execution", async () => {
+    let executions = 0;
+    const runner = new ChatRunner({
+      api: {
+        startChat: async () => ({
+          status: "tool_required" as const,
+          run_id: "run-invalid-call",
+          calls: [
+            {
+              tool_call_id: "call-one",
+              name: "scombz_course_list" as const,
+              version: 1 as const,
+              arguments: {},
+            },
+            {
+              tool_call_id: "call-two",
+              name: "scombz_course_list" as const,
+              version: 1 as const,
+              arguments: {},
+            },
+          ],
+        }),
+        submitChatToolResult: async () => {
+          throw new Error("must not submit");
+        },
+      },
+      executeTool: async () => {
+        executions += 1;
+        return { request: result("unused") };
+      },
+    });
+
+    await expect(
+      runner.run({
+        conversation_id: "conversation-invalid-call",
+        message: "授業を確認して",
+        capabilities,
+        locally_available_tools: new Set(["scombz_course_list"]),
+      }),
+    ).rejects.toMatchObject({ code: "protocol_invalid" });
+    expect(executions).toBe(0);
+  });
+
+  it("rejects a tool result whose identity differs from the requested call", async () => {
+    let submits = 0;
+    const runner = new ChatRunner({
+      api: {
+        startChat: async () => ({
+          status: "tool_required" as const,
+          run_id: "run-result-identity",
+          calls: [
+            {
+              tool_call_id: "call-requested",
+              name: "scombz_course_list" as const,
+              version: 1 as const,
+              arguments: {},
+            },
+          ],
+        }),
+        submitChatToolResult: async () => {
+          submits += 1;
+          throw new Error("must not submit mismatched result");
+        },
+      },
+      executeTool: async () => ({ request: result("call-other") }),
+    });
+
+    await expect(
+      runner.run({
+        conversation_id: "conversation-result-identity",
+        message: "授業を確認して",
+        capabilities,
+        locally_available_tools: new Set(["scombz_course_list"]),
+      }),
+    ).rejects.toMatchObject({ code: "protocol_invalid" });
+    expect(submits).toBe(0);
+  });
+
   it("supports repeated read-only calls and binds receipts to the exact call", async () => {
     let executionCount = 0;
     const responses: ChatRunResponse[] = [

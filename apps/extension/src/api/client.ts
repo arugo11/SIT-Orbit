@@ -2452,6 +2452,21 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
+function isAbortError(error: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  if (signal.reason !== undefined) throw signal.reason;
+  throw new DOMException("The operation was aborted.", "AbortError");
+}
+
 export class AgentApiClient {
   private readonly baseUrl: string;
   private readonly accessToken: string | null;
@@ -2545,19 +2560,24 @@ export class AgentApiClient {
     return payload;
   }
 
-  async chatCapabilities(): Promise<ChatCapabilities> {
+  async chatCapabilities(signal?: AbortSignal): Promise<ChatCapabilities> {
     const requestInit = { method: "GET" } satisfies RequestInit;
     let response = await this.authorizedFetch(
       "/v1/chat/capabilities",
       requestInit,
+      false,
+      signal,
     );
     if (response.status === 401 && this.sessionProvider) {
+      throwIfAborted(signal);
       response = await this.authorizedFetch(
         "/v1/chat/capabilities",
         requestInit,
         true,
+        signal,
       );
     }
+    throwIfAborted(signal);
     const payload = await readJson(response);
     if (!responseIsOk(response)) {
       throw new AgentApiError(
@@ -2609,19 +2629,29 @@ export class AgentApiClient {
     );
   }
 
-  startChat(request: ChatRunRequest): Promise<ChatRunResponse> {
+  startChat(
+    request: ChatRunRequest,
+    signal?: AbortSignal,
+  ): Promise<ChatRunResponse> {
     // The server defaults to a synchronous run.  Do not send the default
     // value to older strict API images that predate `execution_mode`; an
     // explicitly requested background run still carries the field.
     const { execution_mode, ...requestWithoutExecutionMode } = request;
     const body =
       execution_mode === "sync" ? requestWithoutExecutionMode : request;
-    return this.post("/v1/chat/runs", body, isChatRunResponse, "chat run");
+    return this.post(
+      "/v1/chat/runs",
+      body,
+      isChatRunResponse,
+      "chat run",
+      signal,
+    );
   }
 
   submitChatToolResult(
     runId: string,
     request: ChatToolResultRequest,
+    signal?: AbortSignal,
   ): Promise<ChatRunResponse> {
     if (!runId.trim()) {
       throw new TypeError("Chat run ID must not be empty.");
@@ -2631,6 +2661,7 @@ export class AgentApiClient {
       request,
       isChatRunResponse,
       "chat run",
+      signal,
     );
   }
 
@@ -2643,6 +2674,7 @@ export class AgentApiClient {
   async submitChatToolResultWithReceipt(
     runId: string,
     request: ChatToolResultRequest,
+    signal?: AbortSignal,
   ): Promise<{ response: ChatRunResponse; evidence_id: string | null }> {
     if (!runId.trim()) {
       throw new TypeError("Chat run ID must not be empty.");
@@ -2654,14 +2686,19 @@ export class AgentApiClient {
     let response = await this.authorizedFetch(
       `/v1/chat/runs/${encodeURIComponent(runId)}/tool-results`,
       requestInit,
+      false,
+      signal,
     );
     if (response.status === 401 && this.sessionProvider) {
+      throwIfAborted(signal);
       response = await this.authorizedFetch(
         `/v1/chat/runs/${encodeURIComponent(runId)}/tool-results`,
         requestInit,
         true,
+        signal,
       );
     }
+    throwIfAborted(signal);
     const payload = await readJson(response);
     if (!responseIsOk(response)) {
       throw new AgentApiError(
@@ -2734,16 +2771,19 @@ export class AgentApiClient {
     body: unknown,
     validate: (value: unknown) => value is T,
     responseName: string,
+    signal?: AbortSignal,
   ): Promise<T> {
     const requestInit = {
       method: "POST",
       body: JSON.stringify(body),
     } satisfies RequestInit;
-    let response = await this.authorizedFetch(path, requestInit);
+    let response = await this.authorizedFetch(path, requestInit, false, signal);
     if (response.status === 401 && this.sessionProvider) {
-      response = await this.authorizedFetch(path, requestInit, true);
+      throwIfAborted(signal);
+      response = await this.authorizedFetch(path, requestInit, true, signal);
     }
 
+    throwIfAborted(signal);
     const payload = await readJson(response);
     if (!responseIsOk(response)) {
       throw new AgentApiError(
@@ -2776,18 +2816,25 @@ export class AgentApiClient {
     path: string,
     init: RequestInit,
     forceRefresh = false,
+    signal?: AbortSignal,
   ): Promise<Response> {
     try {
+      throwIfAborted(signal);
+      const headers = await this.headers(forceRefresh);
+      throwIfAborted(signal);
       return await this.fetcher(`${this.baseUrl}${path}`, {
         ...init,
+        ...(signal ? { signal } : {}),
         headers: {
           ...(init.body !== undefined
             ? { "Content-Type": "application/json" }
             : {}),
-          ...(await this.headers(forceRefresh)),
+          ...headers,
         },
       });
     } catch (error) {
+      if (signal?.aborted) throwIfAborted(signal);
+      if (isAbortError(error)) throw error;
       throw this.networkError(error);
     }
   }
