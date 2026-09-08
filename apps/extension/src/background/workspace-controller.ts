@@ -182,8 +182,21 @@ export class WorkspaceSessionController {
       const activeWorkspace = await this.findActiveWorkspace();
       if (activeWorkspace) {
         try {
+          let session = activeWorkspace.session;
+          if (activeSourceTab?.id === session.sourceTabId) {
+            const pageContext = await this.requestPageContextForTab(
+              activeSourceTab.id,
+            );
+            if (pageContext?.kind === "scombz") {
+              session = {
+                ...session,
+                pageContext,
+                sourceAvailable: true,
+              };
+            }
+          }
           return await this.activateExistingWorkspace(
-            activeWorkspace.session,
+            session,
             activeWorkspace.tab,
             message.stable_state,
           );
