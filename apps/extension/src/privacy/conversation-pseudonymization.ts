@@ -443,6 +443,57 @@ const OPAQUE_PROJECTION_LOCATOR_RE =
 const SAFE_TOOL_PROJECTION_KEY_RE =
   /^(?:schema_version|status|route|scope|query|year|faculty|task_count|announcement_count|related_link_count|has_current_course|courses|items|hits|results|links|coverage|section_states|observed_at|reason_code|requested|attempted|succeeded|failed|truncated|next_cursor|course_ref|display_name|academic_year|term|weekday|period|citation_uri|ref|section|title|detail|body|text|url|due_at|state|has_pdf|material_ref|material_title|page|quote|data_classification|profile_count|profiles|alias|role|company|technical_domains|job_types|location_area|graduation_year_bucket|evidence_id|topic_categories|availability_frequencies|meeting_modes|shareable_insight_categories|contact_present|discovered_link_count)$/u;
 
+// SITRUS has a separate strict contract.  Keep its academic fields out of the
+// generic projection allowlist so a similarly named field from another source
+// cannot cross the provider boundary accidentally.
+const SITRUS_ROOT_PROJECTION_KEYS = new Set([
+  "schema_version",
+  "status",
+  "report_label",
+  "grades",
+  "credit_summaries",
+  "observed_at",
+  "reason_code",
+]);
+const SITRUS_GRADE_PROJECTION_KEYS = new Set([
+  "subject",
+  "credits",
+  "grade",
+  "outcome",
+  "year",
+  "term",
+]);
+const SITRUS_CREDIT_SUMMARY_PROJECTION_KEYS = new Set([
+  "category",
+  "credit_type",
+  "current_course_count",
+  "current_credits",
+  "cumulative_course_count",
+  "cumulative_credits",
+]);
+const SITRUS_OBSERVED_AT_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/u;
+
+function sitrusProjectionKeys(path: string): ReadonlySet<string> {
+  if (path === "") return SITRUS_ROOT_PROJECTION_KEYS;
+  if (/^grades\[\d+\]$/u.test(path)) return SITRUS_GRADE_PROJECTION_KEYS;
+  if (/^credit_summaries\[\d+\]$/u.test(path)) {
+    return SITRUS_CREDIT_SUMMARY_PROJECTION_KEYS;
+  }
+  // No nested object is part of SitrusGradeResult.  Returning an empty set
+  // makes an unexpected object fail closed while still reporting its fields.
+  return new Set();
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  let difference = 0;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    difference |= (left[index] ?? 0) ^ (right[index] ?? 0);
+  }
+  return difference === 0;
+}
+
 function redactText(value: string): { text: string; removed: string[] } {
   const removed: string[] = [];
   let text = value.replace(EMAIL_RE, () => {
@@ -488,6 +539,11 @@ export class ConversationPseudonymizationGateway {
   private activeConversationId: string | null = null;
   private mapping: ConversationMapping | null = null;
   private key: CryptoKey | null = null;
+  // Keep a copy of the session root used to derive `key`.  The root is never
+  // sent to a provider; comparing it with the store on each boundary lets a
+  // long-lived Side Panel notice a Service Worker restart without a new
+  // cross-context protocol.
+  private sessionKeyBytes: Uint8Array | null = null;
 
   constructor(options: ConversationPseudonymizationOptions = {}) {
     this.store =
@@ -505,6 +561,7 @@ export class ConversationPseudonymizationGateway {
   async begin(conversationId: string): Promise<void> {
     if (!conversationId.trim())
       throw new TypeError("Conversation ID is empty.");
+    const keyBytes = await this.syncSessionKey();
     if (this.activeConversationId === conversationId && this.mapping) {
       if (this.now() - Date.parse(this.mapping.last_used_at) > this.ttlMs) {
         await this.clear(conversationId);
@@ -514,18 +571,10 @@ export class ConversationPseudonymizationGateway {
       }
     }
     this.activeConversationId = conversationId;
-    const keyBytes = await this.keyStore.get();
-    if (!keyBytes) {
-      await this.store.clear().catch(() => undefined);
-      this.key = null;
-    } else {
-      this.key = await deriveConversationKey(keyBytes, conversationId);
-    }
-    if (!this.key) {
-      const generated = randomBytes(32);
-      await this.keyStore.set(generated);
-      this.key = await deriveConversationKey(generated, conversationId);
-    }
+    const rootKey = keyBytes ?? randomBytes(32);
+    if (!keyBytes) await this.keyStore.set(rootKey);
+    this.sessionKeyBytes = new Uint8Array(rootKey);
+    this.key = await deriveConversationKey(rootKey, conversationId);
     const encrypted = await this.store.get(conversationId);
     if (encrypted && Date.parse(encrypted.expires_at) > this.now()) {
       try {
@@ -563,6 +612,7 @@ export class ConversationPseudonymizationGateway {
     this.mapping = null;
     this.activeConversationId = null;
     this.key = null;
+    this.sessionKeyBytes = null;
     await this.keyStore.clear().catch(() => undefined);
   }
 
@@ -765,6 +815,7 @@ export class ConversationPseudonymizationGateway {
   async transformToolProjection<T>(
     conversationId: string,
     projection: T,
+    toolName?: string,
   ): Promise<ToolProjectionTransformResult<T>> {
     await this.ensureConversation(conversationId);
     const removed = new Set<string>();
@@ -782,6 +833,16 @@ export class ConversationPseudonymizationGateway {
       .sort((left, right) => right.name.length - left.name.length);
 
     const redactProjectionText = (value: string, path: string): string => {
+      // RFC3339 timestamps begin with a digit and can look like a phone
+      // number to the generic text redactor.  The API contract validates this
+      // field as a timestamp, so preserve the typed value exactly.
+      if (
+        toolName === "sitrus_read" &&
+        path === "observed_at" &&
+        SITRUS_OBSERVED_AT_RE.test(value)
+      ) {
+        return value;
+      }
       if (RAW_PROJECTION_VALUE_RE.test(value)) {
         removed.add(path || "value");
         return "[内容は省略]";
@@ -834,13 +895,19 @@ export class ConversationPseudonymizationGateway {
         return null;
       }
       const output: Record<string, unknown> = {};
+      const exactToolKeys =
+        toolName === "sitrus_read" ? sitrusProjectionKeys(path) : null;
       for (const [key, item] of Object.entries(value).slice(0, 250)) {
         const fieldPath = path ? `${path}.${key}` : key;
         if (PRIVATE_PROJECTION_KEY_RE.test(key)) {
           removed.add(fieldPath);
           continue;
         }
-        if (!SAFE_TOOL_PROJECTION_KEY_RE.test(key)) {
+        if (
+          exactToolKeys
+            ? !exactToolKeys.has(key)
+            : !SAFE_TOOL_PROJECTION_KEY_RE.test(key)
+        ) {
           removed.add(fieldPath);
           continue;
         }
@@ -1025,6 +1092,7 @@ export class ConversationPseudonymizationGateway {
   }
 
   private async ensureConversation(conversationId: string): Promise<void> {
+    await this.syncSessionKey();
     if (this.activeConversationId !== conversationId || !this.mapping) {
       await this.begin(conversationId);
     }
@@ -1038,7 +1106,10 @@ export class ConversationPseudonymizationGateway {
       this.activeConversationId === conversationId
     ) {
       const encrypted = await this.store.get(conversationId).catch(() => null);
-      if (encrypted && Date.parse(encrypted.expires_at) > this.now()) {
+      const encryptedExpiresAt = encrypted
+        ? Date.parse(encrypted.expires_at)
+        : Number.NaN;
+      if (encrypted && encryptedExpiresAt > this.now()) {
         try {
           const persisted = await this.decrypt(encrypted);
           const aliases = new Map<string, AliasMapping>();
@@ -1076,9 +1147,18 @@ export class ConversationPseudonymizationGateway {
             aliases: [...aliases.values()],
           };
         } catch {
-          // Keep the in-memory mapping. A malformed or stale record must not
-          // turn a local display restore into a provider-visible fallback.
+          // A malformed record must never leave the old in-memory aliases
+          // eligible for restore or provider projection.
+          await this.store.delete(conversationId).catch(() => undefined);
+          await this.clear(conversationId);
+          await this.begin(conversationId);
         }
+      } else {
+        // Deletion and expiry are both privacy boundaries.  In particular,
+        // do not let the final touch() below recreate a record that another
+        // extension context deliberately removed.
+        await this.clear(conversationId);
+        await this.begin(conversationId);
       }
     }
     if (
@@ -1091,6 +1171,33 @@ export class ConversationPseudonymizationGateway {
     await this.touch();
   }
 
+  /**
+   * Detect a session-key generation change made by another extension
+   * context.  A missing key is treated as a restart: remove only the active
+   * record when possible, then drop all in-memory aliases.  A changed key
+   * leaves the persisted record intact so a freshly restarted context can
+   * restore its new mapping; begin() will delete it only if it cannot decrypt
+   * it with the new generation.
+   */
+  private async syncSessionKey(): Promise<Uint8Array | null> {
+    const current = await this.keyStore.get();
+    if (
+      this.sessionKeyBytes &&
+      (!current || !sameBytes(this.sessionKeyBytes, current))
+    ) {
+      if (!current && this.activeConversationId) {
+        await this.store
+          .delete(this.activeConversationId)
+          .catch(() => undefined);
+      }
+      this.mapping = null;
+      this.activeConversationId = null;
+      this.key = null;
+      this.sessionKeyBytes = null;
+    }
+    return current ? new Uint8Array(current) : null;
+  }
+
   private async touch(): Promise<void> {
     if (!this.mapping) return;
     this.mapping.last_used_at = new Date(this.now()).toISOString();
@@ -1099,6 +1206,26 @@ export class ConversationPseudonymizationGateway {
 
   private async persist(): Promise<void> {
     if (!this.mapping || !this.key) return;
+    const currentSessionKey = await this.keyStore.get();
+    if (
+      !currentSessionKey ||
+      !this.sessionKeyBytes ||
+      !sameBytes(this.sessionKeyBytes, currentSessionKey)
+    ) {
+      // Never encrypt stale in-memory aliases under a deleted or newer
+      // session generation.  The next public operation will reinitialize the
+      // conversation from the current generation.
+      if (!currentSessionKey && this.activeConversationId) {
+        await this.store
+          .delete(this.activeConversationId)
+          .catch(() => undefined);
+      }
+      this.mapping = null;
+      this.activeConversationId = null;
+      this.key = null;
+      this.sessionKeyBytes = null;
+      return;
+    }
     const iv = randomBytes(12);
     const plaintext = new TextEncoder().encode(JSON.stringify(this.mapping));
     const ciphertext = await webCrypto().subtle.encrypt(

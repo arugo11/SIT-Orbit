@@ -1118,6 +1118,36 @@ export function ChatPanel({
     await saveConversation(next);
   }
 
+  function clearLocalSnapshots(): void {
+    setLocalMoodleDetails({});
+    setLocalMyLibraryDetails({});
+    setLocalCastDetails({});
+    setLocalCastAlumniDetails({});
+    setLocalCastSearchDetails({});
+    setLocalCastCareerDetails({});
+    setLocalLibraryDetails({});
+    setLocalLibraryPresentations({});
+    setLibraryPreviews({});
+    setLibraryPreviewInputs({});
+    setLibraryPreviewStates({});
+    setLibraryPreviewErrors({});
+    setLibraryChoiceFreeform({});
+    setProgress(null);
+  }
+
+  async function clearConversationRuntime(
+    conversationId: string,
+  ): Promise<void> {
+    await pseudonymizerRef.current.clear(conversationId);
+    const clearResult = await sendExtensionMessage<{ ok: boolean }>({
+      type: MESSAGE_TYPES.scombzClearConversation,
+      conversation_id: conversationId,
+    });
+    if (!clearResult?.ok) {
+      throw new Error("会話の参照元を破棄できませんでした。");
+    }
+  }
+
   function clientTools(
     serverTools: ReadonlySet<string> | null = null,
     maxClientTools = 32,
@@ -2252,6 +2282,7 @@ export function ChatPanel({
         await pseudonymizerRef.current.transformToolProjection(
           conversationAfterTool.conversationId,
           request.result,
+          call.name,
         );
       request = {
         ...request,
@@ -2720,6 +2751,7 @@ export function ChatPanel({
 
   async function selectConversation(id: string): Promise<void> {
     conversationInteractionRef.current = true;
+    clearLocalSnapshots();
     const selected = await loadConversation(id);
     if (selected) {
       setConversation(selected);
@@ -2728,21 +2760,15 @@ export function ChatPanel({
     }
   }
 
-  async function createConversation(): Promise<void> {
+  async function createConversation(
+    options: { runtimeCleared?: boolean } = {},
+  ): Promise<void> {
     conversationInteractionRef.current = true;
+    clearLocalSnapshots();
     // An explicit New Chat is a privacy boundary: do not keep the previous
     // conversation's alias mapping available for a later local restore.
-    await pseudonymizerRef.current.clear(conversation.conversationId);
-    // The background service worker owns the SCombZ course/material handles
-    // and the CAST projection gateway. Invalidate those maps at the same
-    // boundary; changing only the UI conversation id must not leave an old
-    // handle usable by a later read.
-    const clearResult = await sendExtensionMessage<{ ok: boolean }>({
-      type: MESSAGE_TYPES.scombzClearConversation,
-      conversation_id: conversation.conversationId,
-    });
-    if (!clearResult.ok) {
-      throw new Error("会話の参照元を破棄できませんでした。");
+    if (!options.runtimeCleared) {
+      await clearConversationRuntime(conversation.conversationId);
     }
     // Syllabus refs are conversation-bound handles too.  Drop them eagerly
     // instead of merely relying on the conversation-id check in syllabus_read;
@@ -2757,20 +2783,36 @@ export function ChatPanel({
   }
 
   async function removeConversation(id: string): Promise<void> {
+    conversationInteractionRef.current = true;
+    clearLocalSnapshots();
+    // Deletion must invalidate both the local alias mapping and background
+    // source handles before the history record is acknowledged as removed.
+    await clearConversationRuntime(id);
     await deleteConversation(id);
     const remaining = conversations.filter(
       (item) => item.conversationId !== id,
     );
     setConversations(remaining);
     if (conversation.conversationId === id) {
-      await createConversation();
+      await createConversation({ runtimeCleared: true });
     }
   }
 
   async function clearConversations(): Promise<void> {
+    conversationInteractionRef.current = true;
+    clearLocalSnapshots();
+    const conversationIds = [
+      ...new Set([
+        ...conversations.map((item) => item.conversationId),
+        conversation.conversationId,
+      ]),
+    ];
+    for (const conversationId of conversationIds) {
+      await clearConversationRuntime(conversationId);
+    }
     await deleteAllConversations();
     await pseudonymizerRef.current.clearAll();
-    await createConversation();
+    await createConversation({ runtimeCleared: true });
   }
 
   async function requestLibraryActionPreview(

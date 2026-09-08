@@ -4,13 +4,19 @@ import type { AgentApiClient, ChatRunResponse } from "../api/client";
 import { AgentApiError } from "../api/client";
 import {
   buttonByName,
+  click,
   type MountedSidePanel,
   mountSidePanel,
   unmountSidePanel,
   waitFor,
 } from "../sidepanel/ui-test-helpers";
 import { ChatPanel } from "./ChatPanel";
-import { deleteAllConversations, listConversations } from "./chat-history";
+import {
+  deleteAllConversations,
+  listConversations,
+  newConversation,
+  saveConversation,
+} from "./chat-history";
 
 function toolRequired(
   name: string,
@@ -209,6 +215,85 @@ describe("ChatPanel read-only execution boundary", () => {
       mounted.document.querySelector(".chat-permission-prompt"),
     ).toBeNull();
     expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
+  it("clears runtime bindings before deleting an inactive conversation", async () => {
+    const current = {
+      ...newConversation(),
+      title: "現在の合成会話",
+      createdAt: "2026-09-08T00:00:00.000Z",
+      updatedAt: "2026-09-08T00:00:02.000Z",
+    };
+    const inactive = {
+      ...newConversation(),
+      title: "削除対象の合成会話",
+      createdAt: "2026-09-08T00:00:00.000Z",
+      updatedAt: "2026-09-08T00:00:01.000Z",
+    };
+    await saveConversation(current);
+    await saveConversation(inactive);
+
+    mounted = await mountSidePanel(() => (
+      <ChatPanel
+        apiClient={createApiClient({
+          status: "completed",
+          message: {
+            message_id: "unused-delete-test",
+            content_markdown: "合成応答",
+            evidence: [],
+          },
+          proposal: null,
+        })}
+        pageContext={null}
+        calendarState={{ status: "not_connected" }}
+        calendarRequest={async () => ({ status: "not_connected" })}
+      />
+    ));
+    const clearRequests: Array<Record<string, unknown>> = [];
+    mounted.chromeRuntime.sendMessage.mockImplementation(
+      (request: unknown, callback?: (response: unknown) => void) => {
+        if (
+          typeof request === "object" &&
+          request !== null &&
+          (request as { type?: string }).type === "scombz-clear-conversation"
+        ) {
+          clearRequests.push(request as Record<string, unknown>);
+        }
+        callback?.({ ok: true });
+      },
+    );
+
+    await waitFor(() =>
+      Boolean(mounted?.document.querySelector('button[aria-label="履歴"]')),
+    );
+    const historyButton = mounted.document.querySelector<HTMLButtonElement>(
+      'button[aria-label="履歴"]',
+    );
+    if (!historyButton) throw new Error("History button is missing.");
+    await click(historyButton);
+    await waitFor(() =>
+      Boolean(
+        mounted?.document.querySelector(
+          'button[aria-label="削除対象の合成会話を削除"]',
+        ),
+      ),
+    );
+    const deleteButton = mounted.document.querySelector<HTMLButtonElement>(
+      'button[aria-label="削除対象の合成会話を削除"]',
+    );
+    if (!deleteButton)
+      throw new Error("Conversation delete button is missing.");
+    await click(deleteButton);
+
+    await waitFor(() => clearRequests.length === 1);
+    expect(clearRequests[0]).toEqual(
+      expect.objectContaining({
+        conversation_id: inactive.conversationId,
+      }),
+    );
+    expect(
+      (await listConversations()).map((item) => item.conversationId),
+    ).toEqual([current.conversationId]);
   });
 
   it("reads SITRUS without an active grade tab and keeps the result ephemeral", async () => {
