@@ -70,10 +70,12 @@ describe("createFoundationClient", () => {
       "http://localhost:8000/v1/actions/propose",
     );
     const init = fetcher.mock.calls[1]?.[1] as RequestInit;
+    const { event_id: _templateEventId, ...event } = B1_OMIYA_EVENT;
     expect(JSON.parse(String(init.body))).toEqual({
-      event: B1_OMIYA_EVENT,
+      event,
       context: B1_OMIYA_CONTEXT,
     });
+    expect(JSON.parse(String(init.body)).event).not.toHaveProperty("event_id");
   });
 
   it("stops before proposal when the deployed backend is not fixture", async () => {

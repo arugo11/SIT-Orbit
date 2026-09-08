@@ -340,13 +340,16 @@ export function createFoundationClient(
         "backend",
       );
     }
+    // Each explicit proposal starts a new demo action. Let the API assign
+    // its event ID; completion retries keep using the returned action ID.
+    const { event_id: _templateEventId, ...event } = B1_OMIYA_EVENT;
     const nextProposal = await request(
       "/v1/actions/propose",
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          event: B1_OMIYA_EVENT,
+          event,
           context: B1_OMIYA_CONTEXT,
         }),
       },

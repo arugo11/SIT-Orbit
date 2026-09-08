@@ -318,6 +318,40 @@ def test_propose_and_verify_action(monkeypatch) -> None:
     assert verify_response.json()["event_type"] == "action_completed"
 
 
+def test_new_demo_sessions_complete_independently_and_retries_keep_receipts(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    event = load_fixture("event.json")
+    event.pop("event_id")
+    action_ids = []
+    completion_ids = []
+
+    with TestClient(app) as client:
+        for duration in (10, 12):
+            proposed = client.post(
+                "/v1/actions/propose",
+                json={"event": event, "context": load_fixture("context.json")},
+            )
+            assert proposed.status_code == 200
+            action_id = proposed.json()["action_id"]
+            action_ids.append(action_id)
+            request = {
+                "scenario_id": "b1-omiya-calculus",
+                "campus": "omiya",
+                "approved": True,
+                "completed": True,
+                "notes": f"duration_minutes={duration}",
+            }
+            completed = client.post(f"/v1/actions/{action_id}/verify", json=request)
+            retry = client.post(f"/v1/actions/{action_id}/verify", json=request)
+            assert completed.status_code == retry.status_code == 200
+            assert completed.json() == retry.json()
+            completion_ids.append(completed.json()["event_id"])
+
+    assert action_ids[0] != action_ids[1]
+    assert completion_ids[0] != completion_ids[1]
+
+
 def test_legacy_propose_rejects_private_event_before_backend_construction(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
