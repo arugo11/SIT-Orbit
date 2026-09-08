@@ -187,8 +187,8 @@ class EvidenceLink(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    evidence_id: str = Field(min_length=1, max_length=200)
-    title: str = Field(min_length=1, max_length=200)
+    evidence_id: str = Field(min_length=1)
+    title: str = Field(min_length=1)
     source_type: Literal[
         "syllabus",
         "assignment",
@@ -200,7 +200,7 @@ class EvidenceLink(BaseModel):
         "google_drive",
         "web",
     ]
-    locator: str = Field(min_length=1, max_length=500)
+    locator: str = Field(min_length=1)
     data_classification: DataClassification = "synthetic"
 
 
@@ -227,7 +227,7 @@ class ActionProposal(BaseModel):
     title: str = Field(min_length=1)
     reason: str = Field(min_length=1)
     duration_minutes: int = Field(ge=1, le=180)
-    evidence: list[EvidenceLink] = Field(min_length=1, max_length=100)
+    evidence: list[EvidenceLink] = Field(min_length=1)
     external_action: ExternalAction = "none"
     requires_confirmation: bool = True
     prompt_version: str = Field(min_length=1)
@@ -266,7 +266,7 @@ class ProposeActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event: OrbitEvent
-    context: list[EvidenceLink] = Field(min_length=1, max_length=100)
+    context: list[EvidenceLink] = Field(min_length=1)
 
     @model_validator(mode="after")
     def context_evidence_ids_are_unique(self) -> "ProposeActionRequest":
