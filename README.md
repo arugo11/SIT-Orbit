@@ -40,10 +40,21 @@ Azure Container Appsへの合成デモ配置手順は[`docs/azure-demo.md`](docs
 ## 起動
 
 ```bash
-uv run uvicorn orbit_api.main:app --app-dir services/api --reload
+ORBIT_AGENT_BACKEND=fixture ORBIT_OBSERVABILITY=off ORBIT_CORS_ORIGINS=http://localhost:3000 uv run uvicorn orbit_api.main:app --app-dir services/api --reload
 pnpm --filter @sit-orbit/web dev
 pnpm --filter @sit-orbit/mobile start
 ```
+
+WebとMobileの行動画面は、合成データの提案を取得し、所要時間の変更、承認、却下、完了まで操作できます。
+fixture以外のAPIに接続した場合は体験を開始しません。
+Webの接続先を変える場合は`NEXT_PUBLIC_ORBIT_API_BASE_URL`、Mobileでは`EXPO_PUBLIC_ORBIT_API_BASE_URL`を起動時に設定します（既定は`http://localhost:8000`）。
+Mobileの実機からはlocalhostで開発マシンへ接続できないため、同じネットワークから到達できる開発マシンのアドレスを使い、APIを`--host 0.0.0.0`で起動してください。
+Webのポートを変える場合は`ORBIT_CORS_ORIGINS`も実際のoriginに合わせます。
+
+完了記録は発行済みの提案と照合し、同じ完了要求の再送には同じイベントを返します。
+提案と完了応答は同じAPIプロセス内に最大256件、24時間保持し、再起動で消えます。
+期限切れや再起動後は提案を取得し直してください。
+監査で見つかった不足と実環境での未確認事項は、[2026年9月8日の実装監査](docs/completion-audit-2026-09-08.md)にまとめています。
 
 ## 検証
 
