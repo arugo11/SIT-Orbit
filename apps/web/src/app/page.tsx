@@ -309,9 +309,7 @@ export default function Home() {
               ) : null}
 
               {status === "rejected" ? (
-                <p className="state-message">
-                  提案を却下しました。
-                </p>
+                <p className="state-message">提案を却下しました。</p>
               ) : null}
 
               {status === "completed" && completionEvent ? (

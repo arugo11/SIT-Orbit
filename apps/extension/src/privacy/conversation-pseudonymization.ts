@@ -1252,9 +1252,7 @@ export class ConversationPseudonymizationGateway {
         !currentSessionKey &&
         this.isCurrentSnapshot(mapping, key, sessionKeyBytes, conversationId)
       ) {
-        await this.store
-          .delete(conversationId)
-          .catch(() => undefined);
+        await this.store.delete(conversationId).catch(() => undefined);
         this.mapping = null;
         this.activeConversationId = null;
         this.key = null;
@@ -1268,9 +1266,7 @@ export class ConversationPseudonymizationGateway {
       {
         name: "AES-GCM",
         iv: ownedBuffer(iv),
-        additionalData: ownedBuffer(
-          new TextEncoder().encode(conversationId),
-        ),
+        additionalData: ownedBuffer(new TextEncoder().encode(conversationId)),
       },
       key,
       ownedBuffer(plaintext),
