@@ -5,7 +5,7 @@ import {
   type OrbitEvent,
 } from "@sit-orbit/api-client";
 import { StatusBar } from "expo-status-bar";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -30,11 +30,17 @@ type Phase =
   | "completed"
   | "error";
 
-function describeError(error: unknown): string {
-  if (error instanceof Error && error.message) {
-    return error.message;
+function describeError(
+  error: unknown,
+  operation: "proposal" | "completion" = "proposal",
+): string {
+  if (operation === "completion") {
+    if (error instanceof Error && error.message.includes("action_completed")) {
+      return "完了を記録できませんでした。返された完了情報を確認できません。";
+    }
+    return "完了を記録できませんでした。APIが利用できるか確認してください。";
   }
-  return "APIとの通信に失敗しました。接続先とfixture設定を確認してください。";
+  return "提案を読み込めませんでした。APIが利用できるか確認してください。";
 }
 
 function isCompletionEvent(
@@ -46,12 +52,60 @@ function isCompletionEvent(
     event.scenario_id === B1_OMIYA_EVENT.scenario_id &&
     event.campus === B1_OMIYA_EVENT.campus &&
     event.data_classification === "synthetic" &&
-    event.payload?.action_id === proposal.action_id
+    event.payload?.action_id === proposal.action_id &&
+    event.payload?.approved === true &&
+    event.payload?.completed === true
   );
 }
 
-function formatPayload(payload: Record<string, unknown>): string {
-  return JSON.stringify(payload, null, 2);
+export function parseDurationMinutes(value: string): number | null {
+  if (!/^(?:[1-9]|1[0-8])$/.test(value)) {
+    return null;
+  }
+  const duration = Number(value);
+  return Number.isInteger(duration) ? duration : null;
+}
+
+function formatOccurredAt(value?: string): string {
+  if (!value) {
+    return "日時を確認できません";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? "日時を確認できません"
+    : date.toLocaleString("ja-JP");
+}
+
+function formatApprovalNote(
+  duration: number,
+  proposal: ActionProposal,
+): string {
+  return duration === proposal.duration_minutes
+    ? `提案された${duration}分で承認しました。`
+    : `行動時間を${duration}分に変更して承認しました。`;
+}
+
+function evidenceSourceLabel(
+  sourceType: ActionProposal["evidence"][number]["source_type"],
+): string {
+  const labels: Record<typeof sourceType, string> = {
+    syllabus: "シラバス",
+    assignment: "課題",
+    learning_history: "学習履歴",
+    calendar: "予定",
+    scombz: "授業情報",
+    library: "図書館",
+    career: "キャリア",
+    google_drive: "資料",
+    web: "公開情報",
+  };
+  return labels[sourceType] ?? "その他";
+}
+
+function evidenceClassificationLabel(
+  classification: ActionProposal["evidence"][number]["data_classification"],
+): string {
+  return classification === "synthetic" ? "合成データ" : "確認済み情報";
 }
 
 export default function App() {
@@ -68,8 +122,13 @@ export default function App() {
   );
   const [durationText, setDurationText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const requestGeneration = useRef(0);
+  const mounted = useRef(true);
+  const verifyInFlight = useRef(false);
 
   const loadProposal = useCallback(async () => {
+    const requestId = requestGeneration.current + 1;
+    requestGeneration.current = requestId;
     setPhase("loading");
     setProposal(null);
     setCompletionEvent(null);
@@ -77,13 +136,10 @@ export default function App() {
     setError(null);
 
     try {
-      const capabilities = await client.capabilities();
-      if (capabilities.agent_backend !== "fixture") {
-        throw new Error(
-          "このモバイルデモはfixture backend専用です。外部モデルへは接続しません。",
-        );
-      }
       const nextProposal = await client.propose();
+      if (!mounted.current || requestId !== requestGeneration.current) {
+        return;
+      }
       if (
         nextProposal.duration_minutes < MIN_DURATION_MINUTES ||
         nextProposal.duration_minutes > MAX_DURATION_MINUTES
@@ -94,20 +150,25 @@ export default function App() {
       setDurationText(String(nextProposal.duration_minutes));
       setPhase("proposed");
     } catch (loadError) {
+      if (!mounted.current || requestId !== requestGeneration.current) {
+        return;
+      }
       setPhase("error");
       setError(describeError(loadError));
     }
   }, [client]);
 
   useEffect(() => {
+    mounted.current = true;
     void loadProposal();
+    return () => {
+      mounted.current = false;
+      requestGeneration.current += 1;
+    };
   }, [loadProposal]);
 
-  const duration = Number.parseInt(durationText, 10);
-  const durationIsValid =
-    Number.isInteger(duration) &&
-    duration >= MIN_DURATION_MINUTES &&
-    duration <= MAX_DURATION_MINUTES;
+  const duration = parseDurationMinutes(durationText);
+  const durationIsValid = duration !== null;
   const durationWasChanged =
     proposal !== null &&
     durationIsValid &&
@@ -139,12 +200,19 @@ export default function App() {
   };
 
   const verifyCompletion = async (): Promise<void> => {
-    if (phase !== "approved" || !proposal || !durationIsValid) {
+    if (
+      verifyInFlight.current ||
+      phase !== "approved" ||
+      !proposal ||
+      duration === null
+    ) {
       return;
     }
 
+    verifyInFlight.current = true;
     setPhase("verifying");
     setError(null);
+    const requestId = requestGeneration.current;
     try {
       const notes = durationWasChanged
         ? `duration_minutes=${duration}; original_duration_minutes=${proposal.duration_minutes}`
@@ -161,11 +229,19 @@ export default function App() {
           "action_completedのsyntheticイベントを受け取れませんでした。",
         );
       }
+      if (!mounted.current || requestId !== requestGeneration.current) {
+        return;
+      }
       setCompletionEvent(event);
       setPhase("completed");
     } catch (verificationError) {
+      if (!mounted.current || requestId !== requestGeneration.current) {
+        return;
+      }
       setPhase("approved");
-      setError(describeError(verificationError));
+      setError(describeError(verificationError, "completion"));
+    } finally {
+      verifyInFlight.current = false;
     }
   };
 
@@ -187,7 +263,7 @@ export default function App() {
 
         <View style={styles.demoBanner} accessibilityRole="text">
           <View style={styles.demoDot} />
-          <Text style={styles.demoLabel}>SYNTHETIC DEMO · FIXTURE ONLY</Text>
+          <Text style={styles.demoLabel}>DEMO · 合成データの体験</Text>
         </View>
 
         {phase === "loading" ? (
@@ -204,11 +280,6 @@ export default function App() {
           <View style={styles.stateCard}>
             <Text style={styles.stateTitle}>提案を取得できませんでした</Text>
             <Text style={styles.errorText}>{error}</Text>
-            <Text style={styles.stateText}>
-              接続先: {apiBaseUrl}
-              {"\n"}
-              実機では同じWi-Fi上の開発マシンのホスト名またはIPを設定してください。
-            </Text>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="提案を再試行"
@@ -238,7 +309,8 @@ export default function App() {
                   <View style={styles.evidenceCopy}>
                     <Text style={styles.evidenceText}>{item.title}</Text>
                     <Text style={styles.evidenceMeta}>
-                      {item.source_type} · {item.data_classification}
+                      {evidenceSourceLabel(item.source_type)} ·{" "}
+                      {evidenceClassificationLabel(item.data_classification)}
                     </Text>
                   </View>
                 </View>
@@ -256,7 +328,7 @@ export default function App() {
                     accessibilityRole="button"
                     accessibilityLabel="行動時間を1分短くする"
                     style={styles.stepper}
-                    onPress={() => changeDuration(duration - 1)}
+                    onPress={() => changeDuration((duration ?? 1) - 1)}
                     disabled={
                       interactionLocked || !durationIsValid || duration <= 1
                     }
@@ -269,8 +341,13 @@ export default function App() {
                     maxLength={2}
                     value={durationText}
                     onChangeText={(value) => {
-                      setDurationText(value.replace(/[^0-9]/g, ""));
-                      setError(null);
+                      if (/^\d*$/.test(value)) {
+                        setDurationText(value);
+                        setError(null);
+                      } else {
+                        setDurationText("");
+                        setError("1〜18分で入力してください。");
+                      }
                     }}
                     style={styles.durationInput}
                   />
@@ -279,7 +356,7 @@ export default function App() {
                     accessibilityRole="button"
                     accessibilityLabel="行動時間を1分長くする"
                     style={styles.stepper}
-                    onPress={() => changeDuration(duration + 1)}
+                    onPress={() => changeDuration((duration ?? 1) + 1)}
                     disabled={
                       interactionLocked || !durationIsValid || duration >= 18
                     }
@@ -287,9 +364,9 @@ export default function App() {
                     <Text style={styles.stepperText}>＋</Text>
                   </Pressable>
                 </View>
-                {!durationIsValid ? (
+                {!durationIsValid || error ? (
                   <Text style={styles.validationText}>
-                    1〜18分で入力してください。
+                    {error ?? "1〜18分で入力してください。"}
                   </Text>
                 ) : null}
                 <View style={styles.buttonStack}>
@@ -362,28 +439,29 @@ export default function App() {
           </View>
         ) : null}
 
-        {phase === "completed" && completionEvent ? (
+        {phase === "completed" && completionEvent && proposal ? (
           <View style={styles.completionCard}>
             <Text style={styles.completionTitle}>
               完了イベントを受信しました
             </Text>
-            <Text style={styles.completionText}>
-              APIが返した実際の action_completed イベントです。
-            </Text>
+            <Text style={styles.completionText}>APIが返した完了情報です。</Text>
             <View style={styles.eventDetails}>
-              <Text style={styles.eventLabel}>EVENT TYPE</Text>
+              <Text style={styles.eventLabel}>行動</Text>
+              <Text style={styles.eventValue}>{proposal.title}</Text>
+              <Text style={styles.eventLabel}>実行時間</Text>
               <Text style={styles.eventValue}>
-                {completionEvent.event_type}
+                {duration ?? proposal.duration_minutes}分
               </Text>
-              <Text style={styles.eventLabel}>SCENARIO</Text>
+              <Text style={styles.eventLabel}>承認メモ</Text>
               <Text style={styles.eventValue}>
-                {completionEvent.scenario_id}
+                {formatApprovalNote(
+                  duration ?? proposal.duration_minutes,
+                  proposal,
+                )}
               </Text>
-              <Text style={styles.eventLabel}>CAMPUS</Text>
-              <Text style={styles.eventValue}>{completionEvent.campus}</Text>
-              <Text style={styles.eventLabel}>PAYLOAD</Text>
-              <Text selectable style={styles.payload}>
-                {formatPayload(completionEvent.payload)}
+              <Text style={styles.eventLabel}>完了日時</Text>
+              <Text style={styles.eventValue}>
+                {formatOccurredAt(completionEvent.occurred_at)}
               </Text>
             </View>
           </View>
