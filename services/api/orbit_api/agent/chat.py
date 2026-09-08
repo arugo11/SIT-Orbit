@@ -822,16 +822,20 @@ class ChatRunService:
         state: _BackgroundChatRun,
         request: ChatRunRequest,
     ) -> None:
+        deadline = asyncio.timeout(CHAT_RUN_TTL_SECONDS)
         try:
             # Enforce the advertised lifetime even when no client polls again.
             # Cleanup on the next request alone leaves abandoned provider work
             # and its input alive indefinitely.
-            async with asyncio.timeout(CHAT_RUN_TTL_SECONDS):
+            async with deadline:
                 state.result = await self._start_sync(request, emit=state.emit)
         except TimeoutError:
-            state.error = "background_run_expired"
-            self._background.pop(state.run_id, None)
-            self._background_expired[state.run_id] = time.monotonic()
+            if deadline.expired():
+                state.error = "background_run_expired"
+                self._background.pop(state.run_id, None)
+                self._background_expired[state.run_id] = time.monotonic()
+            else:
+                state.error = "background_run_failed"
         except asyncio.CancelledError:
             state.error = "background_run_cancelled"
             raise

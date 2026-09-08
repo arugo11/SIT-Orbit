@@ -66,3 +66,22 @@ async def test_clearing_background_work_wakes_open_event_stream(monkeypatch) -> 
     assert await asyncio.wait_for(waiting, timeout=1) is None
     assert state.done
     assert state.error == "background_run_cancelled"
+
+
+async def test_upstream_timeout_is_a_failure_before_the_run_deadline(monkeypatch) -> None:
+    service = chat.ChatRunService(backend_factory=Mock())
+    monkeypatch.setattr(service, "_start_sync", AsyncMock(side_effect=TimeoutError))
+    started = await service.start(
+        ChatRunRequest(
+            conversation_id="background-upstream-timeout",
+            message="Synthetic request",
+            execution_mode="background",
+        )
+    )
+    assert started.status == "background"
+    state = service._background[started.run_id]
+    assert state.task is not None
+    await state.task
+
+    with pytest.raises(RuntimeError, match="background_run_failed"):
+        service.background_status(started.run_id)
