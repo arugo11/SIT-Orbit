@@ -69,6 +69,17 @@ def test_session_tokens_are_opaque_hashed_and_expire() -> None:
     assert not store.verify(token, now=1_060)
 
 
+def test_session_token_issue_prunes_expired_tokens_without_a_verify_call() -> None:
+    store = SessionTokenStore(ttl_seconds=60)
+    store.issue(now=1_000)
+    store.issue(now=1_010)
+    assert len(store._tokens) == 2
+
+    store.issue(now=1_060)
+
+    assert len(store._tokens) == 2
+
+
 def test_google_code_exchange_uses_pkce_and_does_not_request_offline_access(
     monkeypatch,
 ) -> None:

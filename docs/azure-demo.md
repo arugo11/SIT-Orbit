@@ -1,277 +1,78 @@
-# Azureデモランタイム
+# Azure Container Apps運用
 
-SIT ORBITのデモAPIをAzure Container Apps Consumptionへ配置するための手順です。
-ここで扱うデータは、公開データまたは合成データに限定します。通常の開発とCIは外部APIを呼ばず、`fixture`バックエンドだけを使います。
+SIT ORBITのproduction Chatは、Azure Responses APIのHosted Tool Searchを利用する。通常の開発・CIは外部APIを呼ばず、Chat fixtureは一般回答だけを返す。Action Agentの合成fixtureデモと、ChatのAzure acceptanceを混同しない。
 
-## 採用範囲
+## 固定するモデル契約
 
-- FastAPI API：Azure Container Apps
-- コンテナ：リポジトリ直下の`Dockerfile`をACRでremote build
-- Image pull：ユーザー割り当てManaged Identity
-- スケール：最小レプリカ数0、最大レプリカ数1
-- デモの既定Backend：`fixture`
-- モデルBackend：明示設定時だけ`azure_openai`
-- Web：この手順では配置しない
-
-`deploy.sh`は既存のContainer Apps environmentとAzure Container Registry（ACR）を再利用します。`az acr build`と`az containerapp create`を分けることで、`az containerapp up`によるEnvironment、Log Analytics workspace、ACRの暗黙作成を避けます。[ソースからのbuildとdeploy](https://learn.microsoft.com/en-us/azure/container-apps/tutorial-deploy-from-code)
-
-Private ACRからのimage pullには管理者資格情報を使わず、ユーザー割り当てManaged Identityを使います。[Managed IdentityによるACR image pull](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity-image-pull)
-
-Container Appsは最小レプリカ数を0にでき、待機中のデモを常時起動しない構成にできます。[スケーリング](https://learn.microsoft.com/en-us/azure/container-apps/scale-app)
-
-## 前提
-
-ローカルに次のコマンドがあり、対象サブスクリプションへ`az login`済みであることを確認します。対象のresource group、Container Apps environment、ACRは事前に存在している必要があります。
-
-```bash
-az account show
-if az extension show --name containerapp >/dev/null 2>&1; then
-  az extension remove --name containerapp
-fi
-az containerapp create --help
-az containerapp update --help
-az containerapp identity assign --help
-az containerapp registry set --help
+```text
+AZURE_OPENAI_MODEL=gpt-5-6-terra       # Azure deployment alias
+AZURE_OPENAI_BASE_MODEL=gpt-5.6-terra  # PydanticAI canonical profile
 ```
 
-`containerapp` preview extensionが入っている場合は、Core Azure CLIの同名コマンドを上書きします。今回のsource build障害を起こしたpreview extensionは外し、Core実装で必要な操作が利用できることを確認します。拡張が未導入なら、削除操作は不要です。
+この組み合わせは`native_tool_search.py`のallowlistで検証する。PydanticAI profileが`ToolSearchTool`とResponsesの`with_tool_search` / `with_definitions`を宣言しない場合は、起動・deploy前に停止する。別モデル、通常OpenAI backend、ローカル語句検索、provider fallbackは用意しない。
 
-Azure for Studentsの残額、有効期限、当月の利用額はAzure PortalのEducationまたはCost Managementを正本にします。Student Offerのクレジットを使い切ると契約状態が変わる可能性があるため、デモ後に必ず利用状況を確認します。[Azure for Studentsの利用状況](https://learn.microsoft.com/en-us/azure/education-hub/navigate-costs) · [FAQ](https://learn.microsoft.com/en-us/azure/education-hub/faq)
+## Student subscription境界
 
-## Student Offerの利用方針
+Azure操作は、利用者が明示したAzure for Students subscription内の既存resourceだけを対象にする。`scripts/azure/_students_guard.sh`は次をread-backしてから各スクリプトを続行する。
 
-2026年8月28日の確認時点では、Student Offerの残額は$52.17、有効期限は2026年9月24日、8月の利用額は約2,460円、月末予測は約2,870円であり、現在の支払請求額と2026年3月以降の発行済み請求額は0円です。
-2026年2月の12,475円は旧Microsoft Azure Standardの支払済み請求であり、現在有効なサブスクリプションはAzure for Studentsだけです。
+- `ORBIT_AZURE_SUBSCRIPTION`が設定され、対象subscriptionが`Enabled`
+- `quotaId`が`AzureForStudents_`系で、spending limitが有効
+- Resource Group、Container Apps environment、ACR、Container App、Azure OpenAI account、deploymentが同じsubscription内で`Succeeded`。Managed Identityは既存IDとprincipal IDをread-backする
 
-残りのStudent OfferクレジットはSIT ORBITへ優先して使い、期限内かつクレジット内であれば、Azure OpenAIの比較評価、Provider Acceptance、デモ品質の改善に現在より多くのコストをかけて構いません。
-ただし、従量課金へのアップグレード、支出上限の解除、SIT ORBITと無関係な消費はこの方針に含めず、外部Providerへ送信できるデータの制約も変更しません。
-既存の月次budget `sit-copilot-students-monthly`は設定額`10.0`と実績通貨JPYが整合していないため、修正するまでは支出上限として扱いません。
+別subscriptionの利用、新規resource作成、SKU変更、role assignment作成は行わない。不足や不一致があれば停止し、既存resourceを変更しない。
 
-## 合成fixture APIを配置する
+## 既存resourceへrevisionを出す
 
-デプロイは明示したリソースグループとContainer Appだけを対象にします。次の環境変数は、シェルの一時環境やローカルの`.env`で設定し、リポジトリへ保存しません。
+事前に既存resource名とimage tagを環境変数へ設定する。秘密値は`.env`やログへ保存しない。
 
 ```bash
-export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
-export ORBIT_AZURE_CONTAINER_APP="<lowercase-container-app-name>"
-export ORBIT_AZURE_ENVIRONMENT_ID="<existing-environment-resource-id>"
+export ORBIT_AZURE_SUBSCRIPTION="<existing-student-subscription-id>"
+export ORBIT_AZURE_RESOURCE_GROUP="<existing-resource-group>"
+export ORBIT_AZURE_ENVIRONMENT_ID="<existing-container-apps-environment-id>"
 export ORBIT_AZURE_REGISTRY="<existing-acr-name>"
-# 必要な場合だけ指定
-export ORBIT_AZURE_SUBSCRIPTION="<subscription-name-or-id>"
-export ORBIT_AZURE_IDENTITY="<user-assigned-identity-name>"
-export ORBIT_AZURE_IMAGE_REPOSITORY="sit-orbit-api"
-export ORBIT_AZURE_IMAGE_TAG="<immutable-image-tag>"
+export ORBIT_AZURE_CONTAINER_APP="<existing-container-app>"
+export ORBIT_AZURE_IDENTITY="<existing-user-assigned-identity>"
+export ORBIT_AZURE_OPENAI_ACCOUNT="<existing-azure-openai-account>"
+export ORBIT_AZURE_IMAGE_TAG="<candidate-tag>"
 
 scripts/azure/deploy.sh
 scripts/azure/health.sh
 ```
 
-`ORBIT_AZURE_IMAGE_TAG`を省略した場合は、現在のGit commitの完全SHAを使います。ビルド後にACRのmanifest digestを読み戻し、Container Appへdigest pinしたimageを設定します。`deploy.sh`は次を順に行います。
-
-1. 既存environmentとACRを検証する
-2. ユーザー割り当てManaged Identityを作成または再利用する
-3. ACRの認可モードを確認し、Identityへimage pull用roleを付与する
-4. ACR上で`linux/amd64` imageをremote buildする
-5. Container Appを作成または新しいimageへ更新する
-6. digest pinしたimage、最小レプリカ数0、最大レプリカ数1を読み戻す
-
-RBAC modeのACRでは`AcrPull`、ABAC repository permissions modeでは`Container Registry Repository Reader`を使用します。既存ACRの認可モード自体は変更しません。[ACRの組み込みRole](https://learn.microsoft.com/en-us/azure/container-registry/container-registry-rbac-built-in-roles-overview)
-
-`deploy.sh`は`ORBIT_AGENT_BACKEND=fixture`と`ORBIT_OBSERVABILITY=off`を渡します。したがって、この手順のデプロイ、`/health`確認、B1大宮fixtureのリクエストは、OpenAI、Azure OpenAI、W&B、GoogleのAPIを呼びません。
-
-## デモ後にscale-to-zeroへ戻す
-
-Container Appを削除せず、待機時のレプリカ数を0へ戻します。
+`deploy.sh`はresourceを作成せず、既存ACRでimageをbuildし、Container AppsをMultiple revision modeへ設定する。直前のHealthy revisionを100%のまま保持し、新revisionは0% trafficで作成する。candidateのhealth、environment、backend、deployment alias、canonical profile、synthetic API確認をread-backしてからだけ100%へ昇格する。失敗時は`rollback.sh`で直前のHealthy revisionへtrafficを100%戻し、candidateは診断用に0%で残す。
 
 ```bash
-scripts/azure/scale-to-zero.sh
+scripts/azure/rollback.sh
 ```
 
-完全な削除はこのスクリプトの責務に含めません。リソースグループを削除する場合は、対象名を確認したうえでAzure PortalまたはAzure CLIから別途実行します。
+待機時は`scale-to-zero.sh`を使う。削除やresource group全体の操作はこの手順に含めない。
 
-## Azure OpenAIを使うデモ
+## Azure OpenAI設定
 
-Azure OpenAI v1はOpenAI互換クライアントの`/openai/v1/`エンドポイントを利用できます。SIT ORBITではAzure専用SDKやAgent Frameworkを必須にせず、既存の`openai`依存のAdapterを使います。[Azure OpenAI Responses API](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses)
-
-Azure OpenAIの設定は、次の3つがすべて揃った場合だけ有効です。
-
-```text
-ORBIT_AGENT_BACKEND=azure_openai
-ORBIT_WEB_SEARCH=azure
-ORBIT_BOOK_DISCOVERY=multi_query
-ORBIT_OPAC_TRANSPORT=server
-ORBIT_OPAC_BASE_URL=https://library.shibaura-it.ac.jp
-ORBIT_OPAC_MIN_INTERVAL_MS=10000
-ORBIT_OPAC_SEARCH_CACHE_TTL_SECONDS=300
-ORBIT_OPAC_DETAIL_CACHE_TTL_SECONDS=30
-ORBIT_SCOMBZ_STUDENT_READ=live
-AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com
-AZURE_OPENAI_MODEL=<deployment-name>
-AZURE_OPENAI_API_KEY=<secret>
-```
-
-関連書籍Discoveryを有効にする場合は、`ORBIT_BOOK_DISCOVERY=multi_query`または`semantic`を設定します。`configure-openai.sh`では、同じ値を`ORBIT_AZURE_BOOK_DISCOVERY_MODE`へ必ず指定してください。値が未設定または不正な場合、Azureの更新を開始せず停止します。どちらも`ORBIT_WEB_SEARCH=azure`が必須で、条件不足時にOPAC単独や別検索Providerへfallbackしません。初回のProvider受入は`multi_query`で行い、実検索payload、候補精度、OPAC再確認を確認した後に、別変更として`semantic`へ切り替えます。
-
-`AZURE_OPENAI_MODEL`はモデルの表示名ではなく、Azure側のデプロイ名です。API versionをアプリケーションへ固定せず、v1のベースURLを利用します。
-
-デプロイ時にAPIキーを通常の環境変数へ直書きしないでください。Container AppsのSecretへ登録し、環境変数から`secretref:`で参照します。[Container AppsのSecret](https://learn.microsoft.com/en-us/azure/container-apps/manage-secrets)
+既存のAzure OpenAI accountとdeploymentだけを対象に、`configure-openai.sh`でContainer App Secretと環境変数を更新する。account/deploymentのsubscription、provisioning state、model name、Responses対応、native Tool Search profileをread-backする。
 
 ```bash
-# 値はシェル履歴や共有ログへ残さない方法で登録する。
-az containerapp secret set \
-  --name "$ORBIT_AZURE_CONTAINER_APP" \
-  --resource-group "$ORBIT_AZURE_RESOURCE_GROUP" \
-  --secrets azure-openai-api-key=<secret-value>
-
-az containerapp update \
-  --name "$ORBIT_AZURE_CONTAINER_APP" \
-  --resource-group "$ORBIT_AZURE_RESOURCE_GROUP" \
-  --set-env-vars \
-    ORBIT_AGENT_BACKEND=azure_openai \
-    ORBIT_OBSERVABILITY=off \
-    AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com \
-    AZURE_OPENAI_MODEL=<deployment-name> \
-    AZURE_OPENAI_API_KEY=secretref:azure-openai-api-key
-```
-
-このProvider確認は通常のCIと分離します。実行する場合も、公開・合成データだけを使い、応答、キー、OAuth token、個人情報をPR、ログ、W&Bへ残しません。Azure認証をManaged Identityへ移行する場合は、権限範囲を確認してから別の変更として扱います。[Managed Identity](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity)
-
-設定不足時は`RuntimeError`となり、fixtureやOpenAIへ暗黙に切り替わりません。
-
-既存Container AppへAzure OpenAIと一般Web検索を設定する場合は、API keyをシェルへ手入力せず、Azure CLIからContainer Apps Secretへ移す次のスクリプトを使います。
-`deploy.sh`は安全側の既定としてBackendを`fixture`へ戻すため、モデルを使うデモではimage配置後に実行します。
-
-```bash
-export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
-export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
-export ORBIT_AZURE_OPENAI_ACCOUNT="<azure-openai-account-name>"
-export ORBIT_AZURE_OPENAI_DEPLOYMENT="<deployment-name>"
-export ORBIT_AZURE_BOOK_DISCOVERY_MODE="multi_query"
-export ORBIT_SCOMBZ_STUDENT_READ="live"
-# 必要な場合だけ指定
-export ORBIT_AZURE_SUBSCRIPTION="<subscription-name-or-id>"
-
+export ORBIT_AZURE_OPENAI_ACCOUNT="<existing-account>"
+export ORBIT_AZURE_OPENAI_DEPLOYMENT="gpt-5-6-terra"
+export AZURE_OPENAI_MODEL="gpt-5-6-terra"
+export AZURE_OPENAI_BASE_MODEL="gpt-5.6-terra"
 scripts/azure/configure-openai.sh
-scripts/azure/health.sh
 ```
 
-`configure-openai.sh`はAzure OpenAI accountとdeploymentが`Succeeded`であることを確認し、API keyをContainer Apps Secretへ登録する。
-その後、`azure_openai`、`ORBIT_WEB_SEARCH=azure`、`ORBIT_BOOK_DISCOVERY`、OPAC Gatewayのserver transport・公式base URL・間隔・cache TTL、`ORBIT_OBSERVABILITY=off`、endpoint、deployment名、Secret参照を設定し、秘密値を表示せずに設定名だけを読み戻す。`deploy.sh`で配置したイメージのSHAと、公開OpenAPIの`ChatContextManifest.related_books`、OPAC検索・詳細エンドポイントを確認してから、拡張機能でChatを送信する。Azure本番ではOPAC検索用Chromeタブを作成せず、上流の構造変更や通信障害を未所蔵へ変換しない。
+一般Web検索、関連書籍探索、server-side OPACは、構成済みの場合だけTool Catalogへ登録される。SITRUSは`azure_openai + live + observability=off + auth-only preflight`の交差が成立した場合だけeligibleであり、GPA、氏名、学籍番号、生レスポンスは送信しない。
 
-### Chrome拡張機能から接続する
+## Chrome live acceptance
 
-外部公開したAgent APIは、`ORBIT_API_TOKEN`（既存の管理用Bearer）と、Chrome Identityで交換する短命なmanaged Agent session tokenの両方を受け付ける。拡張機能へAPI endpointや固定tokenを入力しない。
+production extensionを再build・再読込し、同じ会話で次を確認する。
 
-```bash
-export ORBIT_AZURE_RESOURCE_GROUP="<resource-group>"
-export ORBIT_AZURE_CONTAINER_APP="<container-app-name>"
-export ORBIT_AZURE_API_TOKEN="$(openssl rand -hex 32)"
-export ORBIT_GOOGLE_OAUTH_CLIENT_ID="<agent-web-application-oauth-client-id>"
-read -r -s -p "Google OAuth client secret: " ORBIT_GOOGLE_OAUTH_CLIENT_SECRET
-export ORBIT_GOOGLE_OAUTH_CLIENT_SECRET
-export ORBIT_GOOGLE_OAUTH_REDIRECT_URI="https://<extension-id>.chromiumapp.org/agent-auth"
-export ORBIT_EXTENSION_ORIGIN="chrome-extension://<extension-id>"
-scripts/azure/configure-api-auth.sh
-```
+1. 「去年の情報工学科で卒業した人の就職先」から`cast_search(kind="hiring_record", filters.graduation_years=[2025], filters.academic_programs=["情報工学科"])`を選ぶ。
+2. 続く「それを仕事として体験するなら今参加できるもの」から`cast_search(kind="internship", filters.include_closed=false)`を選ぶ。
+3. 「CASTとの連携機能では何ができる？」では`describe_available_capabilities`だけを使い、CASTデータを読まない。
 
-`ORBIT_GOOGLE_OAUTH_CLIENT_SECRET`はGoogle Cloudから安全な一時入力で受け取り、shell履歴、`.env`、ログ、Chatへ残さない。スクリプトは値を表示せず、Container Apps Secret `orbit-google-oauth-client-secret`へ保存し、APIにはSecret参照だけを設定する。
+Tool実行表示、条件、端末内詳細とAgent向け匿名集計の分離、Evidenceを確認する。`reauth_required`は再認証を一度だけ許し、`form_changed`、再失敗、条件不一致、Evidence欠落、privacy境界違反は成功扱いにしない。live acceptance失敗時はアプリ内fallbackを追加せず、直前のHealthy revisionへ戻す。
 
-拡張機能をbuildするシェルでは、同じAgent client IDを次の変数へ渡す。
+## 診断ログと停止
 
-```bash
-export ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID="${ORBIT_GOOGLE_OAUTH_CLIENT_ID}"
-export ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID="<chrome-extension-oauth-client-id>"
-pnpm --filter @sit-orbit/extension build
-```
+アプリのtelemetryは発見Tool名、実行Tool名、所要時間、成否だけを記録する。ユーザー本文、Tool Search文、引数、結果、Evidence内容、例外本文はAzureやログへ残さない。
 
-Agent認証は`chrome.identity.launchWebAuthFlow`でS256 PKCE付きの認可コードを取得し、APIがGoogleのtoken endpointでcodeを交換する。`ORBIT_GOOGLE_OAUTH_CLIENT_ID`にはGoogle Cloudの**Web application** OAuth client IDを指定し、Chrome Extension client IDを指定してはいけない。Web clientのAuthorized redirect URIには、拡張機能IDを実際に`chrome://extensions`で確認したうえで、次のURIを完全一致で1件登録する。
-
-```text
-https://<extension-id>.chromiumapp.org/agent-auth
-```
-
-`https`、拡張機能ID、`/agent-auth`、末尾スラッシュの有無まで一致させる。ワイルドカードや`chrome-extension://`のoriginでは代用できない。拡張機能を別の場所から読み込んでIDが変わった場合は、URIも登録し直す。
-
-Agentのbuild時はAPIと同じWeb client IDを`ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID`へ設定する。Google Calendarの`chrome.identity.getAuthToken`用にChrome Extension clientを使う場合だけ、別のIDを`ORBIT_GOOGLE_EXTENSION_OAUTH_CLIENT_ID`へ設定する。後者はmanifestの`oauth2.client_id`へ入り、Agentのcode交換には使わない。Calendarを使わない場合は後者を空欄にできる。
-
-拡張機能を初めて使うときにセットアップ画面を表示し、Chat送信より前にChrome IdentityのSITアカウント認証を行う。Chrome Identityが返したone-time authorization codeとPKCE verifierは`POST /v1/auth/session`へ一度だけ送り、返された短命session tokenで既存の`/v1/*`へアクセスする。認証後はScombZ、SITRUS、Moodle、My Library、CASTの公式ログイン画面を重複なく開くため、利用者は各タブでパスワードや2段階認証を完了してからChatを開始する。APIはcode交換で受け取ったGoogle ID tokenを検証後に破棄し、refresh tokenは要求しない。code、verifier、Google token、managed session tokenはChat履歴、IndexedDB、Chrome Sync、FastAPIログへ保存しない。session tokenはメモリと`chrome.storage.session`だけに保持し、初回セットアップの開始・完了時刻だけを`chrome.storage.local`へ保存する。期限切れまたは401時は一度だけ再認証する。
-
-`ORBIT_EXTENSION_ORIGIN`を指定した場合だけ、その拡張機能originからの`GET`、`POST`、CORS preflightと`Authorization`、`Content-Type` headerを許可する。ワイルドカードoriginは設定せず、`chrome://extensions`に表示された実際のIDを使う。
-
-`/health`は監視用に認証なしで応答する。Bearer tokenの正否は実際のChat送信時に検証され、無効なtokenでは`401`となる。ローカル開発とCIは`ORBIT_API_TOKEN`を設定しないため、従来どおり認証なしでfixture APIを利用できる。
-`POST /v1/auth/session`はGoogle ID tokenの署名、issuer、audience、期限、メール確認状態、hosted domain、メールドメインを検証し、拒否されたcodeやidentityは401、Google障害または設定不足は503を返す。既存の管理用Bearerは運用・監視用に残し、拡張機能の通常Chatには渡さない。
-既定の許可ドメインは`@sic.shibaura-it.ac.jp`と`@shibaura-it.ac.jp`である。個人Gmailなどはredirect URIを直した後もAgent session交換で401となるため、SITアカウントを選択する。
-
-## 2026年8月22日のProvider Acceptance
-
-Azure for Students subscriptionのJapan Eastに、専用OpenAI account `sit-orbit-aoai-argo11`と`gpt-5.6-terra` version `2026-07-09`のGlobalStandard deployment `gpt-5-6-terra`を作成した。
-capacity 1では親ChatのpromptがTPM上限を超えて429になったため、従量課金のままcapacity 10へ変更した。
-
-Container App `sit-orbit-demo-api`へmain commit `49963f203ff1`のimageを配置し、revision `sit-orbit-demo-api--0000003`で一般Web検索を有効化した。
-外部FQDNから公開情報だけを使ったChat requestを実行し、HTTP 200、`completed`、`web-search-v1-*` Evidence 2件、公式`www.shibaura-it.ac.jp`出典を確認した。
-応答本文、検索の生レスポンス、API keyは文書やW&Bへ保存していない。
-
-## モデル選定の暫定方針
-
-モデルの役割は、実測前の暫定順位として次のように置く。
-
-| 役割 | 候補 | 用途 |
-| --- | --- | --- |
-| Primary | Azure OpenAI GPT-5.6 Terra | 通常デモ |
-| Quality demo | Azure OpenAI GPT-5.6 Sol | 品質を優先するデモ |
-| Challenger | Azure OpenAI GPT-5.6 Luna | 低コスト候補 |
-
-Azure側のdeployment名は固定せず、`evals.run_model_selection`へrole mappingとして渡す。
-この比較Runnerは通常のCIや`run_eval`とは別で、16件の合成・公開ケースを順番に実行する。
-
-```bash
-ORBIT_OBSERVABILITY=off \
-AZURE_OPENAI_ENDPOINT="https://<resource>.openai.azure.com" \
-AZURE_OPENAI_API_KEY="<secret>" \
-PYTHONPATH=services/api uv run python -m evals.run_model_selection \
-  --role terra=<terra-deployment> \
-  --role luna=<luna-deployment> \
-  --role sol=<sol-deployment>
-```
-
-暫定のAzure Standard Global単価は、入力／出力100万tokenあたりTerraが$2／$12、Lunaが$0.20／$1.20、Solが$5／$30である。
-Global deploymentでは複数リージョンで処理され得るため、実データ利用前にはdeployment type、リージョン、データ処理方針を確認する。
-実測後も、hard failureが0件であることを必要条件に、提案本文の人手確認、品質、コストを比較してPrimaryを見直す。case-defined trapはすべての根拠外事実を自動検出するものではないため、hard failure 0だけではPrimaryを確定しない。
-
-Gemini 3.7 Flash Paidは将来のsynthetic/public-only challengerとする。
-このbranchではGoogle Adapterや依存を追加せず、実Calendar派生値をGeminiへ送信しない。
-Geminiの単価は2026年12月31日までは入力$0.75／出力$3.75、2027年1月1日から入力$1.50／出力$7.50（100万tokenあたり）と記録するが、実行時点の公式料金を再確認する。
-
-参考：
-[Microsoft FoundryのGPT-5.6発表](https://azure.microsoft.com/en-us/blog/gpt-5-6-now-available-in-microsoft-foundry/)、
-[Azureのデータ処理方針](https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy)、
-[Google公式リリースノート](https://ai.google.dev/gemini-api/docs/changelog)、
-[Gemini API料金表](https://ai.google.dev/gemini-api/docs/pricing)、
-[PydanticAI Googleモデル](https://pydantic.dev/docs/ai/models/google/)。
-
-## 費用と停止の確認
-
-デモ開始前後に、Azure PortalのEducation／Cost Managementで次を確認します。
-
-- 対象リソースグループとContainer App
-- Container Appsのレプリカ数と実行時間
-- Container Registry、Managed Identity、Log Analyticsなどの関連リソース
-- Azure OpenAIのモデルデプロイ、トークン使用量、クォータ
-- Student Offerの残額と有効期限
-
-必要なときだけ起動し、終了後に`scale-to-zero.sh`を実行します。常時稼働のVMや、デモに不要な検索・Functions・監視サービスはこのBranchでは追加しません。
-
-## Provider Acceptanceとの境界
-
-通常CIはAzure資格情報を持たないため、次はProvider Acceptanceとして分離します。
-
-- Azure Portalでのモデルデプロイ可否
-- 実Azureモデルへの合成fixtureリクエスト
-- Azure OpenAIのリージョン、クォータ、課金の確認
-- Managed Identity、RBAC、Key Vaultの本番構成
-
-これらを確認できない場合、ローカルfixtureの成功を実連携の成功として扱いません。Provider Acceptanceでは、実際のFQDNから`/health`とB1大宮fixtureの提案・完了記録を確認し、Container Appのscale設定を読み戻します。可能なら実レプリカ数が0になった後のcold startでも`/health`を再確認します。結果は対象のPRへ記録します。
-
-## 失敗途中のresourceを整理する場合
-
-`deploy.sh`は既存environmentとACRを再利用するため、resource groupやenvironmentを削除しません。失敗した過去の`az containerapp up`が作成した未使用workspaceなどを削除する場合は、resource IDと依存関係を読み取ってから別操作として行います。resource group全体の削除は、同じgroupに残すresourceがないと確認できた場合だけ実行します。
+`health.sh`はrevisionのhealth、traffic、backend、canonical profileを読み戻す。確認できない状態を成功とは扱わず、Container Appは0% candidateのまま停止する。

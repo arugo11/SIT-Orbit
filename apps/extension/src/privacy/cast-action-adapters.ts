@@ -9,6 +9,7 @@ export type CastActionPreviewStatus =
   | "pending_confirmation"
   | "awaiting_red_confirmation"
   | "confirmed"
+  | "executing"
   | "executed"
   | "rejected"
   | "blocked"
@@ -344,6 +345,20 @@ function isExpired(record: CastActionRecord, now: number): boolean {
   return new Date(record.preview.expires_at).valueOf() <= now;
 }
 
+function isExecutionResult(value: unknown): value is CastActionExecutionResult {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const result = value as Record<string, unknown>;
+  if (result.status === "executed") {
+    return typeof result.execution_ref === "string";
+  }
+  return (
+    (result.status === "blocked" || result.status === "unavailable") &&
+    typeof result.reason_code === "string"
+  );
+}
+
 class UnavailableCastActionExecutor implements CastActionExecutor {
   async execute(): Promise<CastActionExecutionResult> {
     return {
@@ -395,6 +410,7 @@ export class CastActionAdapter {
     if (!record) return null;
     if (
       !isExpired(record, now.valueOf()) ||
+      record.status === "executing" ||
       record.status === "executed" ||
       record.status === "rejected"
     ) {
@@ -423,6 +439,9 @@ export class CastActionAdapter {
       throw new Error("CAST action preview is blocked.");
     }
     if (confirmation.phase === "primary") {
+      if (record.status !== "pending_confirmation") {
+        throw new Error("Primary confirmation is not expected for this state.");
+      }
       if (confirmation.phrase !== "実行を確認") {
         throw new Error("Primary confirmation phrase is invalid.");
       }
@@ -438,6 +457,9 @@ export class CastActionAdapter {
       if (!record.primary_confirmed_at) {
         throw new Error("Primary confirmation is required first.");
       }
+      if (record.status !== "awaiting_red_confirmation") {
+        throw new Error("Red confirmation is not expected for this state.");
+      }
       if (confirmation.phrase !== "推薦応募を実行する") {
         throw new Error("Red confirmation phrase is invalid.");
       }
@@ -451,6 +473,9 @@ export class CastActionAdapter {
     const id = assertPreviewId(previewIdValue);
     const record = this.records.get(id);
     if (!record) throw new Error("CAST action preview was not found.");
+    if (record.status === "executing") {
+      throw new Error("Executing CAST action cannot be rejected.");
+    }
     if (record.status === "executed") {
       throw new Error("Executed CAST action cannot be rejected.");
     }
@@ -470,12 +495,29 @@ export class CastActionAdapter {
       return { status: "blocked", reason_code: "preview_expired" };
     }
     if (record.status !== "confirmed") {
+      if (record.status === "executing") {
+        return {
+          status: "blocked",
+          reason_code: "execution_in_progress",
+        };
+      }
       return {
         status: "blocked",
         reason_code: "explicit_confirmation_required",
       };
     }
-    const result = await this.executor.execute(structuredClone(record.preview));
+    record.status = "executing";
+    let result: CastActionExecutionResult;
+    try {
+      result = await this.executor.execute(structuredClone(record.preview));
+    } catch {
+      record.status = "blocked";
+      return { status: "blocked", reason_code: "executor_failed" };
+    }
+    if (!isExecutionResult(result)) {
+      record.status = "blocked";
+      return { status: "blocked", reason_code: "invalid_executor_result" };
+    }
     if (result.status === "executed") {
       if (
         !/^cast-action-execution:v1:[a-f0-9]{32}$/u.test(result.execution_ref)
@@ -488,7 +530,7 @@ export class CastActionAdapter {
       }
       record.status = "executed";
       record.executed_at = now.toISOString();
-    } else if (result.status === "unavailable") {
+    } else {
       record.status = "blocked";
     }
     return result;

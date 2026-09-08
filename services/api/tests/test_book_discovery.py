@@ -17,7 +17,6 @@ from orbit_api.agent.book_discovery import (
     SemanticCandidateUpdate,
     SemanticRanking,
 )
-from orbit_api.agent.openai_backend import OpenAIAgent
 from orbit_api.agent.pydantic_ai_backend import (
     LIBRARY_CATALOG_SEARCH_TOOL_NAME,
     ChatDraft,
@@ -34,6 +33,7 @@ from orbit_api.models import (
     RelatedBookRelationAxis,
 )
 from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai._tool_search import NativeToolSearchReturnPart
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
@@ -262,16 +262,21 @@ def test_book_discovery_requires_azure_web_search(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="ORBIT_WEB_SEARCH=azure"):
         AzureOpenAIAgent(
             api_key="synthetic-key",
-            model="synthetic-model",
+            model="gpt-5-6-terra",
             endpoint="https://example.openai.azure.com",
+            base_model="gpt-5.6-terra",
         )
 
 
-def test_book_discovery_is_not_advertised_on_openai(monkeypatch) -> None:
+def test_book_discovery_requires_native_azure_profile(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_BOOK_DISCOVERY", "multi_query")
-
-    with pytest.raises(RuntimeError, match="only with azure_openai"):
-        OpenAIAgent(api_key="synthetic-key", model="synthetic-model")
+    with pytest.raises(ValueError, match="AZURE_OPENAI_BASE_MODEL|canonical"):
+        AzureOpenAIAgent(
+            api_key="synthetic-key",
+            model="gpt-5-6-terra",
+            endpoint="https://example.openai.azure.com",
+            base_model="gpt-5.6-sol",
+        )
 
 
 class FakeWebSearchExecutor:
@@ -344,6 +349,14 @@ async def test_function_model_discovery_then_opac_verification_shares_budget(
         if calls == 1:
             return ModelResponse(
                 parts=[
+                    NativeToolSearchReturnPart(
+                        content={
+                            "discovered_tools": [
+                                {"name": "related_book_discovery"},
+                                {"name": LIBRARY_CATALOG_SEARCH_TOOL_NAME},
+                            ]
+                        }
+                    ),
                     ToolCallPart(
                         "related_book_discovery",
                         {
@@ -382,13 +395,14 @@ async def test_function_model_discovery_then_opac_verification_shares_budget(
             ]
         )
 
-    backend = OpenAIAgent(
+    backend = AzureOpenAIAgent(
         api_key="synthetic-key",
-        model="synthetic-model",
-        provider_name="Azure OpenAI",
+        model="gpt-5-6-terra",
+        endpoint="https://example.openai.azure.com",
+        base_model="gpt-5.6-terra",
     )
-    backend.web_search_executor = web
-    backend.book_discovery_executor = FakeRelatedBookExecutor()
+    backend.web_search_executor = web  # type: ignore[assignment]
+    backend.book_discovery_executor = FakeRelatedBookExecutor()  # type: ignore[assignment]
 
     def make_agent(
         *,
@@ -416,6 +430,8 @@ async def test_function_model_discovery_then_opac_verification_shares_budget(
     )
 
     assert first.deferred is not None
+    # The related-book server tool performs two bounded public searches; both
+    # contribute to the shared external-tool budget before the deferred OPAC call.
     assert first.deferred.tool_call_count == 3
     assert len(first.generated_evidence) == 2
     assert len(first.generated_related_books) == 1

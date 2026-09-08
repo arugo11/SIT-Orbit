@@ -79,6 +79,8 @@ import {
   CAST_ORIGIN,
   CAST_TOP_URL,
   type CastLocalSnapshot,
+  isCastReauthenticationUrl,
+  isCastTopUrl,
   projectCastForAgent,
 } from "../content/cast-reader";
 import {
@@ -92,6 +94,7 @@ import {
   isCastSupportPageUrl,
 } from "../content/cast-support-reader";
 import {
+  isMoodleDashboardUrl,
   MOODLE_DASHBOARD_URL,
   MOODLE_LOGIN_URL,
   MOODLE_ORIGIN,
@@ -99,6 +102,7 @@ import {
   projectMoodleForAgent,
 } from "../content/moodle-reader";
 import {
+  isMyLibraryStatusUrl,
   MY_LIBRARY_ENTRY_URL,
   MY_LIBRARY_MENU_IDS,
   MY_LIBRARY_ORIGIN,
@@ -113,6 +117,7 @@ import {
   isScombzUrl,
   isSitrusGradeUrl,
   type PageContext,
+  SITRUS_ORIGIN,
 } from "../content/page-context";
 import { hasScombzStudentSessionConsent } from "../content/scombz-consent";
 import { CareerVault } from "../privacy/career-vault";
@@ -127,6 +132,7 @@ import {
   type CastReadResponse,
   type CastSearchMessage,
   type CastSearchResponse,
+  type ChatAuthPreflightResponse,
   type DriveCommandMessage,
   isBrowserReadMessage,
   isCalendarCommandMessage,
@@ -135,6 +141,7 @@ import {
   isCastOpenMessage,
   isCastReadMessage,
   isCastSearchMessage,
+  isChatAuthPreflightMessage,
   isDriveCommandMessage,
   isGetPageContextMessage,
   isGetWorkspaceSessionMessage,
@@ -193,7 +200,11 @@ import {
   waitForLibraryNavigation,
 } from "./library-navigation";
 import { ScombzTabSessionRegistry } from "./scombz-tab-session";
-import { readAuthenticatedSitrusGrades, SitrusApiError } from "./sitrus-api";
+import {
+  checkSitrusAuthentication,
+  readAuthenticatedSitrusGrades,
+  SitrusApiError,
+} from "./sitrus-api";
 import { WorkspaceSessionController } from "./workspace-controller";
 
 const googleCalendarConnector = new GoogleCalendarConnector();
@@ -6437,11 +6448,118 @@ async function readScombzSourceIdentity(
     return {
       generation: identity.generation,
       adapter_version: "scombz-student-v1",
-      authenticated: identity.authenticated !== false,
+      // Older content scripts may omit the field. Treat that as unknown,
+      // never as an authenticated session, at this provider boundary.
+      authenticated: identity.authenticated === true,
     };
   } catch {
     return null;
   }
+}
+
+function isAuthenticatedMyLibraryRoute(urlValue: string | undefined): boolean {
+  if (!urlValue) return false;
+  try {
+    const url = new URL(urlValue);
+    return (
+      url.username === "" &&
+      url.password === "" &&
+      isMyLibraryStatusUrl(urlValue)
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Compute the extension-side authentication intersection without reading any
+ * page data.  Only host permission, an already-open authenticated route, or
+ * the SITRUS token endpoint may make a tool ready.  Unknown state is omitted
+ * from ``ready_tools`` so the server cannot advertise it to Tool Search.
+ */
+async function handleChatAuthPreflight(): Promise<ChatAuthPreflightResponse> {
+  const ready = new Set<string>();
+  const unknown = new Set<string>();
+
+  const tabs = await chrome.tabs.query({});
+  const activeTabs = tabs.filter((tab) => tab.id !== undefined && tab.url);
+  // SCombZ reads are bound to the page currently shown in the Side Panel's
+  // window.  Looking at an arbitrary tab in another window could advertise a
+  // handle that the subsequent executor cannot safely pin.
+  const [currentTab] = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+  const scombzTab =
+    currentTab?.id !== undefined && isScombzUrl(currentTab.url)
+      ? currentTab
+      : undefined;
+  if (scombzTab?.id !== undefined) {
+    const identity = await readScombzSourceIdentity(scombzTab.id);
+    if (identity?.authenticated && (await hasScombzStudentSessionConsent())) {
+      for (const name of [
+        "scombz_course_list",
+        "scombz_portal_read",
+        "scombz_course_read",
+        "scombz_material_search",
+      ]) {
+        ready.add(name);
+      }
+    } else {
+      unknown.add("scombz_course_list");
+      unknown.add("scombz_portal_read");
+      unknown.add("scombz_course_read");
+      unknown.add("scombz_material_search");
+    }
+  }
+
+  if (await hasBrowserPermission(CAST_PERMISSION_PATTERN, CAST_ORIGIN)) {
+    const castTab = activeTabs.find(
+      (tab) => isCastTopUrl(tab.url) && !isCastReauthenticationUrl(tab.url),
+    );
+    if (castTab) {
+      for (const name of [
+        "cast_read",
+        "cast_alumni_read",
+        "cast_search",
+        "cast_career_search",
+      ]) {
+        ready.add(name);
+      }
+    } else {
+      unknown.add("cast_read");
+      unknown.add("cast_alumni_read");
+      unknown.add("cast_search");
+      unknown.add("cast_career_search");
+    }
+  }
+
+  if (await hasBrowserPermission(`${SITRUS_ORIGIN}/*`, SITRUS_ORIGIN)) {
+    if (await checkSitrusAuthentication()) ready.add("sitrus_read");
+    else unknown.add("sitrus_read");
+  }
+
+  if (await hasBrowserPermission(MOODLE_PERMISSION_PATTERN, MOODLE_ORIGIN)) {
+    const moodleTab = activeTabs.find((tab) => isMoodleDashboardUrl(tab.url));
+    if (moodleTab) ready.add("moodle_read");
+    else unknown.add("moodle_read");
+  }
+
+  if (
+    await hasBrowserPermission(MY_LIBRARY_PERMISSION_PATTERN, MY_LIBRARY_ORIGIN)
+  ) {
+    const libraryTab = activeTabs.find((tab) =>
+      isAuthenticatedMyLibraryRoute(tab.url),
+    );
+    if (libraryTab) ready.add("my_library_read");
+    else unknown.add("my_library_read");
+  }
+
+  return {
+    schema_version: "v1",
+    ready_tools: [...ready].sort(),
+    unknown_tools: [...unknown].filter((name) => !ready.has(name)).sort(),
+  };
 }
 
 async function listAuditSources(): Promise<AuditSourceDescriptor[]> {
@@ -6923,6 +7041,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
     void handleBrowserRead(message).then(sendResponse);
+    return true;
+  }
+
+  if (isChatAuthPreflightMessage(message)) {
+    if (!isTrustedExtensionPageSender(sender)) {
+      sendResponse({
+        schema_version: "v1",
+        ready_tools: [],
+        unknown_tools: [],
+      });
+      return true;
+    }
+    void handleChatAuthPreflight()
+      .then(sendResponse)
+      .catch(() =>
+        sendResponse({
+          schema_version: "v1",
+          ready_tools: [],
+          unknown_tools: [],
+        }),
+      );
     return true;
   }
 

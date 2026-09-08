@@ -14,6 +14,43 @@ import {
   workspaceSourceKey,
 } from "../shared/workspace-session";
 
+function isTabId(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isStoredWorkspaceSession(
+  value: unknown,
+  expectedSessionId?: string,
+): value is WorkspaceSession {
+  if (typeof value !== "object" || value === null) return false;
+  const candidate = value as Partial<WorkspaceSession>;
+  return (
+    isWorkspaceSessionId(candidate.sessionId) &&
+    (expectedSessionId === undefined ||
+      candidate.sessionId === expectedSessionId) &&
+    isTabId(candidate.sourceTabId) &&
+    isTabId(candidate.sourceWindowId) &&
+    (candidate.workspaceTabId === null || isTabId(candidate.workspaceTabId)) &&
+    typeof candidate.sourceAvailable === "boolean" &&
+    typeof candidate.updatedAt === "string"
+  );
+}
+
+function isWorkspaceTabForSession(
+  tab: chrome.tabs.Tab,
+  sessionId: string,
+): boolean {
+  if (tab.id === undefined || typeof tab.url !== "string") return false;
+  try {
+    return (
+      tab.url ===
+      `${chrome.runtime.getURL("workspace.html")}?session=${encodeURIComponent(sessionId)}`
+    );
+  } catch {
+    return false;
+  }
+}
+
 export class WorkspaceSessionController {
   constructor(
     private readonly requestPageContextForTab: (
@@ -26,9 +63,64 @@ export class WorkspaceSessionController {
     const key = workspaceSessionKey(sessionId);
     const stored = await chrome.storage.session.get(key);
     const value = stored[key];
-    return value && typeof value === "object"
-      ? (value as WorkspaceSession)
-      : null;
+    return isStoredWorkspaceSession(value, sessionId) ? value : null;
+  }
+
+  private async readStoredSessions(): Promise<WorkspaceSession[]> {
+    const stored = await chrome.storage.session.get(null);
+    return Object.entries(stored)
+      .filter(([key]) => key.startsWith("workspace:session:"))
+      .map(([key, value]) => {
+        const sessionId = key.slice("workspace:session:".length);
+        return isWorkspaceSessionId(sessionId) &&
+          isStoredWorkspaceSession(value, sessionId)
+          ? value
+          : null;
+      })
+      .filter((session): session is WorkspaceSession => session !== null);
+  }
+
+  private async clearStaleWorkspaceRef(
+    session: WorkspaceSession,
+  ): Promise<void> {
+    try {
+      await this.write({
+        ...session,
+        workspaceTabId: null,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // A service-worker restart or storage teardown can race cleanup.
+    }
+  }
+
+  private async findActiveWorkspace(): Promise<{
+    session: WorkspaceSession;
+    tab: chrome.tabs.Tab;
+  } | null> {
+    let sessions: WorkspaceSession[];
+    try {
+      sessions = await this.readStoredSessions();
+    } catch {
+      return null;
+    }
+
+    for (const session of sessions) {
+      if (session.workspaceTabId === null) continue;
+      try {
+        const tab = await chrome.tabs.get(session.workspaceTabId);
+        if (isWorkspaceTabForSession(tab, session.sessionId)) {
+          return { session, tab };
+        }
+      } catch {
+        await this.clearStaleWorkspaceRef(session);
+        continue;
+      }
+      // A tab ID can be reused by another page after the workspace closes.
+      // Treat that as stale too and clear the saved ownership reference.
+      await this.clearStaleWorkspaceRef(session);
+    }
+    return null;
   }
 
   private async write(session: WorkspaceSession): Promise<void> {
@@ -57,8 +149,64 @@ export class WorkspaceSessionController {
       : null;
   }
 
+  private async activateExistingWorkspace(
+    session: WorkspaceSession,
+    workspaceTab: chrome.tabs.Tab,
+    stableState: WorkspaceSession["stableState"],
+  ): Promise<OpenWorkspaceResponse> {
+    const refreshed = {
+      ...session,
+      stableState,
+      updatedAt: new Date().toISOString(),
+    };
+    await this.write(refreshed);
+    await chrome.tabs.update(workspaceTab.id as number, { active: true });
+    await chrome.windows.update(workspaceTab.windowId, { focused: true });
+    await chrome.runtime
+      .sendMessage({
+        type: MESSAGE_TYPES.workspaceOwnershipChanged,
+        active: true,
+        session: refreshed,
+      })
+      .catch(() => undefined);
+    return { ok: true, session: refreshed };
+  }
+
   async open(message: OpenWorkspaceMessage): Promise<OpenWorkspaceResponse> {
-    const sourceTab = await this.currentScombzTab();
+    const activeSourceTab = await this.currentScombzTab();
+    const sourceExisting =
+      activeSourceTab?.id === undefined
+        ? null
+        : await this.forSourceTab(activeSourceTab.id);
+    if (!sourceExisting) {
+      const activeWorkspace = await this.findActiveWorkspace();
+      if (activeWorkspace) {
+        try {
+          let session = activeWorkspace.session;
+          if (activeSourceTab?.id === session.sourceTabId) {
+            const pageContext = await this.requestPageContextForTab(
+              activeSourceTab.id,
+            );
+            if (pageContext?.kind === "scombz") {
+              session = {
+                ...session,
+                pageContext,
+                sourceAvailable: true,
+              };
+            }
+          }
+          return await this.activateExistingWorkspace(
+            session,
+            activeWorkspace.tab,
+            message.stable_state,
+          );
+        } catch {
+          await this.clearStaleWorkspaceRef(activeWorkspace.session);
+        }
+      }
+    }
+
+    const sourceTab = activeSourceTab;
     if (sourceTab?.id === undefined) {
       return { ok: false, error: "接続元のScombZタブを確認できません。" };
     }
@@ -67,13 +215,16 @@ export class WorkspaceSessionController {
       return { ok: false, error: "ScombZページの情報を取得できません。" };
     }
 
-    const existing = await this.forSourceTab(sourceTab.id);
+    const existing = sourceExisting;
     if (
       existing?.workspaceTabId !== null &&
       existing?.workspaceTabId !== undefined
     ) {
       try {
         const workspaceTab = await chrome.tabs.get(existing.workspaceTabId);
+        if (!isWorkspaceTabForSession(workspaceTab, existing.sessionId)) {
+          throw new Error("保存済みworkspaceタブのURLが一致しません。");
+        }
         const refreshed = {
           ...existing,
           pageContext,
@@ -157,17 +308,16 @@ export class WorkspaceSessionController {
   }
 
   async status(): Promise<WorkspaceStatusResponse> {
-    const sourceTab = await this.currentScombzTab();
-    if (sourceTab?.id === undefined) {
+    const activeWorkspace = await this.findActiveWorkspace();
+    if (!activeWorkspace) {
       return { active: false, session: null, sourceTabId: null };
     }
-    const session = await this.forSourceTab(sourceTab.id);
     return {
-      active:
-        session?.workspaceTabId !== null &&
-        session?.workspaceTabId !== undefined,
-      session,
-      sourceTabId: sourceTab.id,
+      active: true,
+      session: activeWorkspace.session,
+      // Keep the saved source binding.  The currently active tab may belong
+      // to another window or may be an unrelated SCombZ page.
+      sourceTabId: activeWorkspace.session.sourceTabId,
     };
   }
 

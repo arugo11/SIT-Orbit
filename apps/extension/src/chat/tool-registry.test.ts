@@ -115,4 +115,20 @@ describe("chat tool registry", () => {
       false,
     );
   });
+
+  it("requires an explicit library scope except for the legacy empty call", () => {
+    expect(validateChatToolArguments("my_library_read", {}).ok).toBe(true);
+    expect(
+      validateChatToolArguments("my_library_read", {
+        scope: "reservations",
+        limit: 20,
+      }).ok,
+    ).toBe(true);
+    for (const args of [{ limit: 20 }, { offset: 0 }, { query: "book" }]) {
+      expect(validateChatToolArguments("my_library_read", args)).toEqual({
+        ok: false,
+        reason: "invalid_my_library_arguments",
+      });
+    }
+  });
 });

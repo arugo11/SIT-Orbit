@@ -11,6 +11,13 @@ from orbit_api.main import app, configure_cors
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def configure_azure_test_env(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "synthetic-test-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setenv("AZURE_OPENAI_MODEL", "gpt-5-6-terra")
+    monkeypatch.setenv("AZURE_OPENAI_BASE_MODEL", "gpt-5.6-terra")
+
+
 def test_validation_diagnostics_keep_only_contract_paths_and_types() -> None:
     error = RequestValidationError(
         [
@@ -49,7 +56,7 @@ def load_fixture(name: str):
 
 
 def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
-    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_MODEL", raising=False)
@@ -63,7 +70,7 @@ def test_health_does_not_require_backend_configuration(monkeypatch) -> None:
 
 @pytest.mark.parametrize(
     ("backend", "allowed"),
-    [("fixture", False), ("openai", False), ("azure_openai", True)],
+    [("fixture", False), ("azure_openai", True)],
 )
 def test_capabilities_report_the_configured_personal_data_boundary(
     monkeypatch,
@@ -72,6 +79,8 @@ def test_capabilities_report_the_configured_personal_data_boundary(
 ) -> None:
     monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
+    if backend == "azure_openai":
+        configure_azure_test_env(monkeypatch)
     with TestClient(app) as client:
         response = client.get("/v1/capabilities")
 
@@ -86,7 +95,7 @@ def test_capabilities_report_the_configured_personal_data_boundary(
     ("backend", "mode", "observability", "live_tools"),
     [
         ("fixture", "off", "off", False),
-        ("fixture", "fixture", "off", True),
+            ("fixture", "fixture", "off", False),
         ("azure_openai", "fixture", "off", False),
         ("azure_openai", "live", "wandb", False),
         ("azure_openai", "live", "off", True),
@@ -101,6 +110,8 @@ def test_chat_capabilities_gate_live_scombz_tools(
 ) -> None:
     monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", backend)
+    if backend == "azure_openai":
+        configure_azure_test_env(monkeypatch)
     monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", mode)
     monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", "off")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", observability)
@@ -126,11 +137,10 @@ def test_chat_capabilities_gate_live_scombz_tools(
     ("backend", "mode", "observability", "allowed"),
     [
         ("fixture", "off", "off", False),
-        ("fixture", "fixture", "off", True),
+        ("fixture", "fixture", "off", False),
         ("azure_openai", "fixture", "off", False),
         ("azure_openai", "live", "wandb", False),
         ("azure_openai", "live", "off", True),
-        ("openai", "live", "off", False),
     ],
 )
 def test_chat_capabilities_gate_sitrus_personal_context(
@@ -145,6 +155,8 @@ def test_chat_capabilities_gate_sitrus_personal_context(
     monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", "off")
     monkeypatch.setenv("ORBIT_SITRUS_PERSONAL_CONTEXT", mode)
     monkeypatch.setenv("ORBIT_OBSERVABILITY", observability)
+    if backend == "azure_openai":
+        configure_azure_test_env(monkeypatch)
     if observability == "wandb":
         monkeypatch.setattr(orbit_main, "init_observability", lambda: False)
 
@@ -199,6 +211,7 @@ def test_api_token_protects_v1_routes_but_not_health(monkeypatch) -> None:
 def test_chat_capabilities_requires_the_same_authenticated_session(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_API_TOKEN", "test-chat-capability-token")
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    configure_azure_test_env(monkeypatch)
     monkeypatch.setenv("ORBIT_SCOMBZ_STUDENT_READ", "live")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     with TestClient(app) as client:
@@ -303,6 +316,137 @@ def test_propose_and_verify_action(monkeypatch) -> None:
         )
     assert verify_response.status_code == 200
     assert verify_response.json()["event_type"] == "action_completed"
+
+
+def test_new_demo_sessions_complete_independently_and_retries_keep_receipts(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    event = load_fixture("event.json")
+    event.pop("event_id")
+    action_ids = []
+    completion_ids = []
+
+    with TestClient(app) as client:
+        for duration in (10, 12):
+            proposed = client.post(
+                "/v1/actions/propose",
+                json={"event": event, "context": load_fixture("context.json")},
+            )
+            assert proposed.status_code == 200
+            action_id = proposed.json()["action_id"]
+            action_ids.append(action_id)
+            request = {
+                "scenario_id": "b1-omiya-calculus",
+                "campus": "omiya",
+                "approved": True,
+                "completed": True,
+                "notes": f"duration_minutes={duration}",
+            }
+            completed = client.post(f"/v1/actions/{action_id}/verify", json=request)
+            retry = client.post(f"/v1/actions/{action_id}/verify", json=request)
+            assert completed.status_code == retry.status_code == 200
+            assert completed.json() == retry.json()
+            completion_ids.append(completed.json()["event_id"])
+
+    assert action_ids[0] != action_ids[1]
+    assert completion_ids[0] != completion_ids[1]
+
+
+def test_legacy_propose_rejects_private_event_before_backend_construction(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+    private_event = load_fixture("event.json")
+    private_event["data_classification"] = "personal"
+    private_event["payload"] = {"student_name": "private-value"}
+    private_context = load_fixture("context.json")
+    private_context[0]["data_classification"] = "personal"
+    private_context[0]["locator"] = "https://private.example/raw"
+
+    def fail_backend():
+        raise AssertionError("private legacy proposals must fail before provider construction")
+
+    monkeypatch.setattr(orbit_main, "get_agent_backend", fail_backend)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/actions/propose",
+            json={"event": private_event, "context": private_context},
+        )
+
+    assert response.status_code == 422
+    assert "private-value" not in response.text
+    assert "private.example" not in response.text
+
+
+def test_production_without_api_token_fails_closed_for_protected_routes(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_RUNTIME_PROFILE", "production")
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
+    monkeypatch.delenv("ORBIT_API_TOKEN", raising=False)
+    configure_azure_test_env(monkeypatch)
+
+    with TestClient(app) as client:
+        response = client.get("/v1/capabilities")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Agent API authentication is unavailable."}
+
+
+def test_verify_requires_registered_action_and_does_not_build_backend(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+
+    def fail_backend():
+        raise AssertionError("verification must not construct an agent backend")
+
+    monkeypatch.setattr(orbit_main, "get_agent_backend", fail_backend)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/actions/act-does-not-exist/verify",
+            json={
+                "scenario_id": "b1-omiya-calculus",
+                "campus": "omiya",
+                "approved": True,
+                "completed": True,
+            },
+        )
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Action was not found."}
+
+
+def test_verify_rejects_context_mismatch_and_replays_exact_completion(monkeypatch) -> None:
+    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
+    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+
+    with TestClient(app) as client:
+        proposal_response = client.post(
+            "/v1/actions/propose",
+            json={"event": load_fixture("event.json"), "context": load_fixture("context.json")},
+        )
+        assert proposal_response.status_code == 200
+        action_id = proposal_response.json()["action_id"]
+        request = {
+            "scenario_id": "b1-omiya-calculus",
+            "campus": "omiya",
+            "approved": True,
+            "completed": True,
+            "notes": "同じ承認",
+        }
+        first = client.post(f"/v1/actions/{action_id}/verify", json=request)
+        retry = client.post(f"/v1/actions/{action_id}/verify", json=request)
+        changed = client.post(
+            f"/v1/actions/{action_id}/verify",
+            json={**request, "notes": "変更された承認"},
+        )
+        mismatch = client.post(
+            f"/v1/actions/{action_id}/verify",
+            json={**request, "scenario_id": "other-scenario"},
+        )
+
+    assert first.status_code == 200
+    assert retry.status_code == 200
+    assert retry.json() == first.json()
+    assert changed.status_code == 409
+    assert mismatch.status_code == 409
 
 
 def test_unknown_run_returns_gone_without_model_configuration() -> None:

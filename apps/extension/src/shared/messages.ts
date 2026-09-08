@@ -71,6 +71,7 @@ export const MESSAGE_TYPES = {
   scombzPin: "scombz-pin",
   scombzClearConversation: "scombz-clear-conversation",
   scombzSourceIdentity: "scombz-source-identity",
+  chatAuthPreflight: "chat-auth-preflight",
   scombzStudentRead: "scombz-student-read",
   sitrusRead: "sitrus-read",
   moodleRead: "moodle-read",
@@ -183,6 +184,27 @@ export interface ScombzClearConversationMessage {
 
 export interface ScombzSourceIdentityMessage {
   type: typeof MESSAGE_TYPES.scombzSourceIdentity;
+}
+
+/**
+ * Auth-only readiness check used before Chat advertises a client Tool.
+ * The service worker returns tool names and booleans only; it never returns
+ * page content, records, tokens, or connector payloads.
+ */
+export interface ChatAuthPreflightMessage {
+  type: typeof MESSAGE_TYPES.chatAuthPreflight;
+}
+
+export interface ChatAuthPreflightResponse {
+  schema_version: "v1";
+  ready_tools: string[];
+  unknown_tools: string[];
+}
+
+export function isChatAuthPreflightMessage(
+  value: unknown,
+): value is ChatAuthPreflightMessage {
+  return isRecord(value) && value.type === MESSAGE_TYPES.chatAuthPreflight;
 }
 
 export interface ScombzSourceIdentityResponse {
@@ -687,6 +709,7 @@ export type ExtensionMessage =
   | BrowserReadMessage
   | SyllabusSearchMessage
   | ScombzSourceIdentityMessage
+  | ChatAuthPreflightMessage
   | ScombzPinMessage
   | ScombzClearConversationMessage
   | ScombzStudentReadMessage

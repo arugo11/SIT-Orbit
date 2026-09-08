@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   ConversationPseudonymizationGateway,
   isProviderSafeConversationText,
@@ -34,6 +34,113 @@ function createGateway(options: { now?: () => number; ttlMs?: number } = {}) {
 }
 
 describe("conversation pseudonymization gateway", () => {
+  it("suppresses an encrypted write when clear races delayed encryption", async () => {
+    const store = new MemoryConversationAliasStore();
+    const gateway = new ConversationPseudonymizationGateway({
+      store,
+      keyStore: new MemoryConversationSessionKeyStore(),
+    });
+    await gateway.transformText("conversation-race-encrypt", "初期化");
+
+    let releaseEncrypt!: () => void;
+    let encryptStarted!: () => void;
+    const encryptGate = new Promise<void>((resolve) => {
+      releaseEncrypt = resolve;
+    });
+    const encryptReady = new Promise<void>((resolve) => {
+      encryptStarted = resolve;
+    });
+    const originalEncrypt = globalThis.crypto.subtle.encrypt.bind(
+      globalThis.crypto.subtle,
+    );
+    const encryptSpy = vi
+      .spyOn(globalThis.crypto.subtle, "encrypt")
+      .mockImplementation(
+        async (
+          algorithm: AlgorithmIdentifier,
+          key: CryptoKey,
+          data: BufferSource,
+        ) => {
+          encryptStarted();
+          await encryptGate;
+          return originalEncrypt(algorithm, key, data);
+        },
+      );
+
+    try {
+      const pending = gateway.transformText(
+        "conversation-race-encrypt",
+        "山田 太郎を確認する。",
+        [person],
+      );
+      await encryptReady;
+      const clearing = gateway.clear("conversation-race-encrypt");
+      releaseEncrypt();
+      await expect(pending).resolves.toMatchObject({
+        display_content: "山田 太郎を確認する。",
+      });
+      await clearing;
+      expect(store.snapshot()).toHaveLength(0);
+    } finally {
+      encryptSpy.mockRestore();
+    }
+  });
+
+  it("waits for a pending put before deleting a cleared mapping", async () => {
+    class DelayedPutStore extends MemoryConversationAliasStore {
+      private putGate: Promise<void> | null = null;
+      private putStarted: (() => void) | null = null;
+
+      delayNextPut(): Promise<void> {
+        let resolveStarted!: () => void;
+        const started = new Promise<void>((resolve) => {
+          resolveStarted = resolve;
+        });
+        this.putStarted = resolveStarted;
+        this.putGate = new Promise<void>((resolve) => {
+          this.releasePut = resolve;
+        });
+        return started;
+      }
+
+      releasePut!: () => void;
+
+      async put(record: Parameters<MemoryConversationAliasStore["put"]>[0]) {
+        const gate = this.putGate;
+        const started = this.putStarted;
+        this.putGate = null;
+        this.putStarted = null;
+        if (gate) {
+          started?.();
+          await gate;
+        }
+        await super.put(record);
+      }
+    }
+
+    const store = new DelayedPutStore();
+    const gateway = new ConversationPseudonymizationGateway({
+      store,
+      keyStore: new MemoryConversationSessionKeyStore(),
+    });
+    await gateway.transformText("conversation-race-put", "初期化");
+    const putStarted = store.delayNextPut();
+    const pending = gateway.transformText(
+      "conversation-race-put",
+      "山田 太郎を確認する。",
+      [person],
+    );
+    await putStarted;
+    const clearing = gateway.clear("conversation-race-put");
+    store.releasePut();
+
+    await expect(pending).resolves.toMatchObject({
+      display_content: "山田 太郎を確認する。",
+    });
+    await clearing;
+    expect(store.snapshot()).toHaveLength(0);
+  });
+
   it("keeps aliases stable within a conversation and isolates a new chat", async () => {
     const { gateway } = createGateway();
     const first = await gateway.transformText(
@@ -157,6 +264,106 @@ describe("conversation pseudonymization gateway", () => {
     );
   });
 
+  it("uses the exact SITRUS contract while preserving academic rows", async () => {
+    const gateway = new ConversationPseudonymizationGateway({
+      store: new MemoryConversationAliasStore(),
+      keyStore: new MemoryConversationSessionKeyStore(),
+    });
+    const transformed = await gateway.transformToolProjection(
+      "conversation-sitrus",
+      {
+        schema_version: "v1",
+        status: "known",
+        report_label: "合成成績レポート",
+        grades: [
+          {
+            subject: "機械学習",
+            credits: 2,
+            grade: "A",
+            outcome: "合格",
+            year: 2025,
+            term: 2,
+            course_code: "COURSE-001",
+          },
+        ],
+        credit_summaries: [
+          {
+            category: "専門",
+            credit_type: "必修",
+            current_course_count: 3,
+            current_credits: 6,
+            cumulative_course_count: 42,
+            cumulative_credits: 84,
+            student_number: "STUDENT-001",
+          },
+        ],
+        observed_at: "2026-09-02T00:00:00Z",
+        reason_code: null,
+        gpa: 3.7,
+        student_name: "合成学生",
+      },
+      "sitrus_read",
+    );
+    const provider = transformed.provider_result as Record<string, unknown>;
+    expect(provider).toEqual({
+      schema_version: "v1",
+      status: "known",
+      report_label: "合成成績レポート",
+      grades: [
+        {
+          subject: "機械学習",
+          credits: 2,
+          grade: "A",
+          outcome: "合格",
+          year: 2025,
+          term: 2,
+        },
+      ],
+      credit_summaries: [
+        {
+          category: "専門",
+          credit_type: "必修",
+          current_course_count: 3,
+          current_credits: 6,
+          cumulative_course_count: 42,
+          cumulative_credits: 84,
+        },
+      ],
+      observed_at: "2026-09-02T00:00:00Z",
+      reason_code: null,
+    });
+    expect(transformed.report.removed_fields).toEqual(
+      expect.arrayContaining([
+        "grades[0].course_code",
+        "credit_summaries[0].student_number",
+        "gpa",
+        "student_name",
+      ]),
+    );
+  });
+
+  it("does not add academic keys to generic projections", async () => {
+    const gateway = new ConversationPseudonymizationGateway({
+      store: new MemoryConversationAliasStore(),
+      keyStore: new MemoryConversationSessionKeyStore(),
+    });
+    const transformed = await gateway.transformToolProjection(
+      "conversation-generic",
+      {
+        schema_version: "v1",
+        status: "known",
+        grades: [{ subject: "機械学習", grade: "A" }],
+        report_label: "合成成績レポート",
+      },
+    );
+    const provider = transformed.provider_result as Record<string, unknown>;
+    expect(provider.grades).toBeUndefined();
+    expect(provider.report_label).toBeUndefined();
+    expect(transformed.report.removed_fields).toEqual(
+      expect.arrayContaining(["grades", "report_label"]),
+    );
+  });
+
   it("reloads aliases minted by the other extension context", async () => {
     const store = new MemoryConversationAliasStore();
     const keyStore = new MemoryConversationSessionKeyStore();
@@ -181,6 +388,60 @@ describe("conversation pseudonymization gateway", () => {
     );
     expect(restored.content).toContain("山田 太郎");
     expect(restored.warnings).toHaveLength(0);
+  });
+
+  it("drops stale aliases after another context resets the session generation", async () => {
+    const store = new MemoryConversationAliasStore();
+    const keyStore = new MemoryConversationSessionKeyStore();
+    const staleGateway = new ConversationPseudonymizationGateway({
+      store,
+      keyStore,
+    });
+    const restartedGateway = new ConversationPseudonymizationGateway({
+      store,
+      keyStore,
+    });
+    const original = await staleGateway.transformText(
+      "conversation-restarted",
+      "山田 太郎の履歴を確認する。",
+      [person],
+    );
+    const originalToken = original.provider_content.match(
+      /\[\[ORBIT_PERSON_[^\]]+\]\]/u,
+    )?.[0];
+    if (!originalToken) throw new Error("original alias was not generated");
+
+    await restartedGateway.clearAll();
+    const freshPerson = {
+      ...person,
+      display_name: "鈴木 花子",
+      name: "鈴木 花子",
+      romanized_name: "Suzuki Hanako",
+    };
+    const fresh = await restartedGateway.transformText(
+      "conversation-restarted",
+      "鈴木 花子の履歴を確認する。",
+      [freshPerson],
+    );
+    const freshToken = fresh.provider_content.match(
+      /\[\[ORBIT_PERSON_[^\]]+\]\]/u,
+    )?.[0];
+    if (!freshToken) throw new Error("fresh alias was not generated");
+    expect(freshToken).not.toBe(originalToken);
+
+    const freshRestore = await staleGateway.restoreMarkdown(
+      "conversation-restarted",
+      `担当者: ${freshToken}`,
+    );
+    expect(freshRestore.content).toContain("鈴木 花子");
+    expect(freshRestore.content).not.toContain("山田 太郎");
+
+    const staleRestore = await staleGateway.restoreMarkdown(
+      "conversation-restarted",
+      `旧担当者: ${originalToken}`,
+    );
+    expect(staleRestore.content).not.toContain("山田 太郎");
+    expect(staleRestore.warnings).toHaveLength(1);
   });
 
   it("restores only normal Markdown text and warns for unknown tokens", async () => {

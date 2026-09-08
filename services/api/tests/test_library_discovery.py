@@ -107,7 +107,7 @@ def test_library_tool_result_matching_and_public_evidence_allowlist() -> None:
     )
 
 
-def test_fixture_library_catalog_tool_loop(monkeypatch) -> None:
+def test_fixture_does_not_select_library_tools_from_natural_language(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
     monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
     with TestClient(app) as client:
@@ -120,32 +120,10 @@ def test_fixture_library_catalog_tool_loop(monkeypatch) -> None:
             },
         )
         assert first.status_code == 200
-        pending = first.json()
-        call = pending["calls"][0]
-        second = client.post(
-            f"/v1/chat/runs/{pending['run_id']}/tool-results",
-            json={
-                "tool_call_id": call["tool_call_id"],
-                "name": call["name"],
-                "version": 1,
-                "result": {
-                    "schema_version": "v1",
-                    "status": "known",
-                    "query": "図書館の蔵書を検索して",
-                    "items": [_item().model_dump(mode="json")],
-                    "reason_code": None,
-                },
-            },
-        )
-    assert second.status_code == 200
-    payload = second.json()
+        payload = first.json()
     assert payload["status"] == "completed"
-    assert "公開ロボット工学" in payload["message"]["content_markdown"]
-    assert "貸出可" in payload["message"]["content_markdown"]
-    assert "大宮図書館" in payload["message"]["content_markdown"]
-    assert "548.3" in payload["message"]["content_markdown"]
-    assert payload["message"]["evidence"][0]["data_classification"] == "public"
-    assert "material" not in second.text.lower()
+    assert "calls" not in payload
+    assert "fixtureでは一般的なTool選択を再現しません" in payload["message"]["content_markdown"]
 
 
 def test_fixture_does_not_repeat_library_search_from_history(monkeypatch) -> None:

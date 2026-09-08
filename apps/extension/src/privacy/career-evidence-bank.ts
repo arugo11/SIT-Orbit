@@ -1,4 +1,4 @@
-import type { CareerVault } from "./career-vault";
+import { type CareerVault, serializeCareerVaultMutation } from "./career-vault";
 
 export type CareerEvidenceSource =
   | "course"
@@ -48,6 +48,7 @@ export interface CareerEvidencePromptItem {
 
 const INDEX_RECORD_ID = "career-evidence-index:v1";
 const RECORD_PREFIX = "career-evidence:v1:";
+const EVIDENCE_MUTATION_KEY = "career-evidence:index";
 const MAX_TEXT_LENGTH = 4000;
 const MAX_MATERIALS = 12;
 const MAX_INDEX_SIZE = 2000;
@@ -208,12 +209,18 @@ export class CareerEvidenceBank {
   }
 
   async list(): Promise<CareerEvidenceRecord[]> {
-    const records: CareerEvidenceRecord[] = [];
-    for (const evidenceId of await this.index()) {
-      const record = await this.vault.get<CareerEvidenceRecord>(evidenceId);
-      if (record) records.push(record);
-    }
-    return records;
+    return serializeCareerVaultMutation(
+      this.vault,
+      EVIDENCE_MUTATION_KEY,
+      async () => {
+        const records: CareerEvidenceRecord[] = [];
+        for (const evidenceId of await this.index()) {
+          const record = await this.vault.get<CareerEvidenceRecord>(evidenceId);
+          if (record) records.push(record);
+        }
+        return records;
+      },
+    );
   }
 
   async get(evidenceId: string): Promise<CareerEvidenceRecord | null> {
@@ -234,9 +241,15 @@ export class CareerEvidenceBank {
       updated_at: now,
       ...normalized,
     };
-    await this.vault.put(evidenceId, record);
-    await this.saveIndex([...(await this.index()), evidenceId]);
-    return record;
+    return serializeCareerVaultMutation(
+      this.vault,
+      EVIDENCE_MUTATION_KEY,
+      async () => {
+        await this.vault.put(evidenceId, record);
+        await this.saveIndex([...(await this.index()), evidenceId]);
+        return record;
+      },
+    );
   }
 
   async update(
@@ -245,34 +258,52 @@ export class CareerEvidenceBank {
     now = new Date().toISOString(),
   ): Promise<CareerEvidenceRecord> {
     assertEvidenceId(evidenceId);
-    const existing = await this.get(evidenceId);
-    if (!existing) throw new Error("Career evidence record was not found.");
-    const merged = normalizeInput({
-      ...existing,
-      ...patch,
-    });
-    const record: CareerEvidenceRecord = {
-      ...existing,
-      ...merged,
-      evidence_id: evidenceId,
-      updated_at: now,
-    };
-    await this.vault.put(evidenceId, record);
-    return record;
+    return serializeCareerVaultMutation(
+      this.vault,
+      EVIDENCE_MUTATION_KEY,
+      async () => {
+        const existing = await this.get(evidenceId);
+        if (!existing) throw new Error("Career evidence record was not found.");
+        const merged = normalizeInput({
+          ...existing,
+          ...patch,
+        });
+        const record: CareerEvidenceRecord = {
+          ...existing,
+          ...merged,
+          evidence_id: evidenceId,
+          updated_at: now,
+        };
+        await this.vault.put(evidenceId, record);
+        return record;
+      },
+    );
   }
 
   async remove(evidenceId: string): Promise<void> {
     assertEvidenceId(evidenceId);
-    await this.vault.delete(evidenceId);
-    await this.saveIndex(
-      (await this.index()).filter((id) => id !== evidenceId),
+    await serializeCareerVaultMutation(
+      this.vault,
+      EVIDENCE_MUTATION_KEY,
+      async () => {
+        await this.vault.delete(evidenceId);
+        await this.saveIndex(
+          (await this.index()).filter((id) => id !== evidenceId),
+        );
+      },
     );
   }
 
   async clear(): Promise<void> {
-    for (const evidenceId of await this.index()) {
-      await this.vault.delete(evidenceId);
-    }
-    await this.saveIndex([]);
+    await serializeCareerVaultMutation(
+      this.vault,
+      EVIDENCE_MUTATION_KEY,
+      async () => {
+        for (const evidenceId of await this.index()) {
+          await this.vault.delete(evidenceId);
+        }
+        await this.saveIndex([]);
+      },
+    );
   }
 }

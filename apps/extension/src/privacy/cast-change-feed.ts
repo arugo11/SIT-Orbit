@@ -1,4 +1,4 @@
-import type { CareerVault } from "./career-vault";
+import { type CareerVault, serializeCareerVaultMutation } from "./career-vault";
 
 export type CastChangeKind = "added" | "removed" | "changed";
 export type CastChangeCategory =
@@ -41,15 +41,122 @@ export interface CastChangeAgentProjection {
   opportunity_change_count: number;
 }
 
+export type CastChangeRecordKind =
+  | "job"
+  | "internship"
+  | "company_session"
+  | "company"
+  | "hiring_record"
+  | "selection_report"
+  | "notice"
+  | "recording"
+  | "career_event"
+  | "counseling"
+  | "supporter"
+  | "guide";
+
+export type CastChangeRecordStatus =
+  | "open"
+  | "closing_soon"
+  | "closed"
+  | "known"
+  | "unknown"
+  | "available";
+
+/**
+ * A structural row retained by the local change feed.  Text copied from a
+ * CAST page is deliberately absent: only an opaque reference, enums, dates,
+ * and bounded counts can be persisted.
+ */
+export interface CastChangeSnapshotRecord {
+  reference: string;
+  category: CastChangeCategory;
+  kind?: CastChangeRecordKind;
+  status?: CastChangeRecordStatus;
+  deadline?: string | null;
+  published_date?: string | null;
+  count?: number;
+}
+
+export interface CastChangeSnapshotCounts {
+  notices?: number;
+  opportunities?: number;
+  hiring_records?: number;
+  selection_reports?: number;
+  support_resources?: number;
+  people?: number;
+}
+
+/** The only snapshot shape accepted by CastChangeFeed storage. */
+export interface CastChangeSnapshot {
+  schema_version: "v1";
+  records: CastChangeSnapshotRecord[];
+  counts: CastChangeSnapshotCounts;
+}
+
 export interface CastStoredSnapshot {
   schema_version: "v1";
   captured_at: string;
-  snapshot: unknown;
+  snapshot: CastChangeSnapshot;
 }
 
 const RECORD_PREFIX = "cast-change-snapshot:v1:";
 const MAX_SNAPSHOT_BYTES = 2_000_000;
 const MAX_CHANGES = 500;
+const MAX_RECORDS = 500;
+const MAX_COUNT = 100_000;
+const CHANGE_FEED_MUTATION_KEY = "cast-change-feed";
+const CHANGE_SNAPSHOT_KEYS = ["schema_version", "records", "counts"] as const;
+const CHANGE_RECORD_KEYS = [
+  "reference",
+  "category",
+  "kind",
+  "status",
+  "deadline",
+  "published_date",
+  "count",
+] as const;
+const CHANGE_COUNT_KEYS = [
+  "notices",
+  "opportunities",
+  "hiring_records",
+  "selection_reports",
+  "support_resources",
+  "people",
+] as const;
+const CHANGE_REFERENCE_PATTERN =
+  /^(?:job|internship|company|company-session|company_session|employment|exam|hiring|hiring-record|selection-report|notice|opportunity|resource|support-resource|recording|career-event|counseling):[a-z0-9_-]{1,120}$/u;
+const CHANGE_DATE_PATTERN = /^20\d{2}-\d{2}-\d{2}$/u;
+const CHANGE_RECORD_KINDS: readonly CastChangeRecordKind[] = [
+  "job",
+  "internship",
+  "company_session",
+  "company",
+  "hiring_record",
+  "selection_report",
+  "notice",
+  "recording",
+  "career_event",
+  "counseling",
+  "supporter",
+  "guide",
+];
+const CHANGE_RECORD_STATUSES: readonly CastChangeRecordStatus[] = [
+  "open",
+  "closing_soon",
+  "closed",
+  "known",
+  "unknown",
+  "available",
+];
+const CHANGE_CATEGORIES: readonly CastChangeCategory[] = [
+  "deadline",
+  "internship",
+  "history_report",
+  "support_resource",
+  "opportunity",
+  "other",
+];
 
 function text(value: string): string {
   return value.normalize("NFKC").replace(/\s+/gu, " ").trim();
@@ -77,9 +184,176 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function assertKeys(
+  value: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  if (Object.keys(value).some((key) => !allowed.includes(key))) {
+    throw new Error(`${label} contains an unsupported field.`);
+  }
+}
+
+function assertCount(value: unknown, label: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0 ||
+    value > MAX_COUNT
+  ) {
+    throw new Error(`${label} must be a bounded count.`);
+  }
+  return value;
+}
+
+function assertDate(value: unknown, label: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !CHANGE_DATE_PATTERN.test(value)) {
+    throw new Error(`${label} must be an ISO date or null.`);
+  }
+  const date = new Date(`${value}T00:00:00Z`);
+  if (
+    Number.isNaN(date.valueOf()) ||
+    date.toISOString().slice(0, 10) !== value
+  ) {
+    throw new Error(`${label} is invalid.`);
+  }
+  return value;
+}
+
+function assertCapturedAt(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length > 80 ||
+    !value.includes("T") ||
+    Number.isNaN(new Date(value).valueOf())
+  ) {
+    throw new Error("CAST change-feed captured_at is invalid.");
+  }
+  return value;
+}
+
+function normalizeSnapshotRecord(value: unknown): CastChangeSnapshotRecord {
+  if (!isRecord(value)) {
+    throw new Error("CAST change-feed record must be an object.");
+  }
+  assertKeys(value, CHANGE_RECORD_KEYS, "CAST change-feed record");
+  if (!Object.hasOwn(value, "reference") || !Object.hasOwn(value, "category")) {
+    throw new Error("CAST change-feed record is missing required fields.");
+  }
+  const reference = value.reference;
+  if (
+    typeof reference !== "string" ||
+    !CHANGE_REFERENCE_PATTERN.test(reference) ||
+    /(?:access[_-]?token|cookie|password|oauth|authorization|secret)/iu.test(
+      reference,
+    )
+  ) {
+    throw new Error("CAST change-feed reference must be opaque.");
+  }
+  const category = value.category;
+  if (
+    typeof category !== "string" ||
+    !CHANGE_CATEGORIES.includes(category as CastChangeCategory)
+  ) {
+    throw new Error("CAST change-feed category is invalid.");
+  }
+  const kind = value.kind;
+  if (
+    kind !== undefined &&
+    (typeof kind !== "string" ||
+      !CHANGE_RECORD_KINDS.includes(kind as CastChangeRecordKind))
+  ) {
+    throw new Error("CAST change-feed kind is invalid.");
+  }
+  const status = value.status;
+  if (
+    status !== undefined &&
+    (typeof status !== "string" ||
+      !CHANGE_RECORD_STATUSES.includes(status as CastChangeRecordStatus))
+  ) {
+    throw new Error("CAST change-feed status is invalid.");
+  }
+  const deadline =
+    value.deadline === undefined
+      ? undefined
+      : assertDate(value.deadline, "CAST change-feed deadline");
+  const publishedDate =
+    value.published_date === undefined
+      ? undefined
+      : assertDate(value.published_date, "CAST change-feed published_date");
+  const count =
+    value.count === undefined
+      ? undefined
+      : assertCount(value.count, "CAST change-feed record count");
+  return {
+    reference,
+    category: category as CastChangeCategory,
+    ...(kind !== undefined ? { kind: kind as CastChangeRecordKind } : {}),
+    ...(status !== undefined
+      ? { status: status as CastChangeRecordStatus }
+      : {}),
+    ...(deadline !== undefined ? { deadline } : {}),
+    ...(publishedDate !== undefined ? { published_date: publishedDate } : {}),
+    ...(count !== undefined ? { count } : {}),
+  };
+}
+
+function normalizeSnapshotCounts(value: unknown): CastChangeSnapshotCounts {
+  if (!isRecord(value)) {
+    throw new Error("CAST change-feed counts must be an object.");
+  }
+  assertKeys(value, CHANGE_COUNT_KEYS, "CAST change-feed counts");
+  if (Object.keys(value).length === 0) {
+    throw new Error("CAST change-feed counts must not be empty.");
+  }
+  const counts: CastChangeSnapshotCounts = {};
+  for (const key of CHANGE_COUNT_KEYS) {
+    if (Object.hasOwn(value, key)) {
+      counts[key] = assertCount(value[key], `CAST change-feed ${key}`);
+    }
+  }
+  if (Object.keys(counts).length === 0) {
+    throw new Error("CAST change-feed counts must not be empty.");
+  }
+  return counts;
+}
+
+/** Validate and copy a change-feed snapshot before it reaches Career Vault. */
+export function parseCastChangeSnapshot(value: unknown): CastChangeSnapshot {
+  if (!isRecord(value)) {
+    throw new Error("CAST change-feed snapshot has an invalid schema.");
+  }
+  assertKeys(value, CHANGE_SNAPSHOT_KEYS, "CAST change-feed snapshot");
+  if (
+    !Object.hasOwn(value, "schema_version") ||
+    !Object.hasOwn(value, "records") ||
+    !Object.hasOwn(value, "counts")
+  ) {
+    throw new Error("CAST change-feed snapshot is missing required fields.");
+  }
+  if (value.schema_version !== "v1") {
+    throw new Error("CAST change-feed snapshot schema version is unsupported.");
+  }
+  if (!Array.isArray(value.records) || value.records.length > MAX_RECORDS) {
+    throw new Error("CAST change-feed record count is out of bounds.");
+  }
+  const records = value.records.map(normalizeSnapshotRecord);
+  if (
+    new Set(records.map((record) => record.reference)).size !== records.length
+  ) {
+    throw new Error("CAST change-feed references must be unique.");
+  }
+  return {
+    schema_version: "v1",
+    records,
+    counts: normalizeSnapshotCounts(value.counts),
+  };
+}
+
 function valueKey(value: unknown, index: number): string {
   if (!isRecord(value)) return `index:${index}`;
-  for (const field of ["local_id", "id", "url", "source_url"]) {
+  for (const field of ["reference", "local_id", "id", "url", "source_url"]) {
     const candidate = value[field];
     if (typeof candidate === "string" && candidate.trim()) {
       return `${field}:${candidate}`;
@@ -253,7 +527,31 @@ export class CastChangeFeed {
 
   async read(sourceKey: string): Promise<CastStoredSnapshot | null> {
     const recordId = await this.recordId(sourceKey);
-    return this.vault.get<CastStoredSnapshot>(recordId);
+    const value = await this.vault.get<unknown>(recordId);
+    if (value === null) return null;
+    if (!isRecord(value)) {
+      throw new Error("CAST stored change-feed snapshot is invalid.");
+    }
+    assertKeys(
+      value,
+      ["schema_version", "captured_at", "snapshot"],
+      "CAST stored change-feed snapshot",
+    );
+    if (
+      !Object.hasOwn(value, "schema_version") ||
+      !Object.hasOwn(value, "captured_at") ||
+      !Object.hasOwn(value, "snapshot")
+    ) {
+      throw new Error("CAST stored change-feed snapshot is incomplete.");
+    }
+    if (value.schema_version !== "v1") {
+      throw new Error("CAST stored change-feed schema version is unsupported.");
+    }
+    return {
+      schema_version: "v1",
+      captured_at: assertCapturedAt(value.captured_at),
+      snapshot: parseCastChangeSnapshot(value.snapshot),
+    };
   }
 
   async compareAndStore(
@@ -261,22 +559,36 @@ export class CastChangeFeed {
     snapshot: unknown,
     capturedAt = new Date().toISOString(),
   ): Promise<CastChangeSet> {
+    const normalizedSourceKey = assertOpaqueSourceKey(sourceKey);
     if (jsonBytes(snapshot) > MAX_SNAPSHOT_BYTES) {
       throw new Error("CAST snapshot exceeds the local change-feed limit.");
     }
-    const previous = await this.read(sourceKey);
-    const changeSet: CastChangeSet = {
-      schema_version: "v1",
-      status: previous ? "known" : "baseline",
-      captured_at: capturedAt,
-      previous_captured_at: previous?.captured_at ?? null,
-      changes: previous ? diffCastSnapshots(previous.snapshot, snapshot) : [],
-    };
-    await this.vault.put(await this.recordId(sourceKey), {
-      schema_version: "v1",
-      captured_at: capturedAt,
-      snapshot,
-    } satisfies CastStoredSnapshot);
-    return changeSet;
+    const normalizedSnapshot = parseCastChangeSnapshot(snapshot);
+    if (jsonBytes(normalizedSnapshot) > MAX_SNAPSHOT_BYTES) {
+      throw new Error("CAST snapshot exceeds the local change-feed limit.");
+    }
+    const normalizedCapturedAt = assertCapturedAt(capturedAt);
+    return serializeCareerVaultMutation(
+      this.vault,
+      `${CHANGE_FEED_MUTATION_KEY}:${normalizedSourceKey}`,
+      async () => {
+        const previous = await this.read(normalizedSourceKey);
+        const changeSet: CastChangeSet = {
+          schema_version: "v1",
+          status: previous ? "known" : "baseline",
+          captured_at: normalizedCapturedAt,
+          previous_captured_at: previous?.captured_at ?? null,
+          changes: previous
+            ? diffCastSnapshots(previous.snapshot, normalizedSnapshot)
+            : [],
+        };
+        await this.vault.put(await this.recordId(normalizedSourceKey), {
+          schema_version: "v1",
+          captured_at: normalizedCapturedAt,
+          snapshot: normalizedSnapshot,
+        } satisfies CastStoredSnapshot);
+        return changeSet;
+      },
+    );
   }
 }

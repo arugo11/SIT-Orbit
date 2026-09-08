@@ -65,9 +65,9 @@ pnpm build
 
 - あるモデルまたはバックエンドから別のモデルまたはバックエンドに自動的にフォールバックしないでください。
 
-- OpenAIでは、`ORBIT_AGENT_BACKEND=openai`とAPIキーの両方が必要です。
+- Azure OpenAIでは、`ORBIT_AGENT_BACKEND=azure_openai`、エンドポイント、デプロイメント名、canonical profile（`AZURE_OPENAI_BASE_MODEL`）、およびAPIキーが必要です。
 
-- Azure OpenAIでは、`ORBIT_AGENT_BACKEND=azure_openai`、エンドポイント、デプロイメント名、およびAPIキーが必要です。
+- Azure操作は、利用者が明示指定した既存のAzure for Students subscription内に限定してください。別subscriptionの利用、新規resource作成、SKU変更、role assignment作成は行わないでください。
 
 - W&Bでは、`ORBIT_OBSERVABILITY=wandb`と明示的なW&B構成が必要です。
 

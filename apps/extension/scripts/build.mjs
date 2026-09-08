@@ -52,18 +52,6 @@ if (
     "The selected Agent API base must be an HTTPS origin or a demo loopback origin.",
   );
 }
-const demoFixtureProfilePlugin = {
-  name: "demo-fixture-profile",
-  setup(context) {
-    context.onResolve({ filter: /^\.\/demo-fixture$/ }, (args) => {
-      if (extensionProfile === "demo") return null;
-      return {
-        path: resolve(dirname(args.importer), "demo-fixture-disabled.ts"),
-      };
-    });
-  },
-};
-
 await rm(outputDirectory, { force: true, recursive: true });
 await mkdir(outputDirectory, { recursive: true });
 
@@ -110,7 +98,6 @@ const bundleOptions = {
   platform: "browser",
   target: "chrome114",
   legalComments: "none",
-  plugins: [demoFixtureProfilePlugin],
   define: {
     __ORBIT_GOOGLE_AGENT_OAUTH_CLIENT_ID__: JSON.stringify(
       agentOAuthClientId ?? "",

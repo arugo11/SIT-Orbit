@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@sit-orbit/api-client": "workspace:*",
     "expo": "57.0.8",
     "expo-status-bar": "57.0.1",
     "react": "19.2.8",

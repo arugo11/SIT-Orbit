@@ -2727,6 +2727,21 @@ describe("service worker side panel contract", () => {
     expect(serialized).not.toContain("pendingRunId");
     expect(serialized).not.toContain("oauth");
 
+    const savedSession = Object.entries(storageValues).find(([key]) =>
+      key.startsWith("workspace:session:"),
+    )?.[1] as { sessionId?: string } | undefined;
+    expect(savedSession?.sessionId).toBeTypeOf("string");
+    getTab.mockImplementation(
+      async (tabId: number): Promise<chrome.tabs.Tab> =>
+        tabId === 91
+          ? ({
+              id: 91,
+              windowId: 4,
+              url: `${chromeMock.runtime.getURL("workspace.html")}?session=${encodeURIComponent(savedSession?.sessionId ?? "")}`,
+            } as chrome.tabs.Tab)
+          : defaultTab(tabId),
+    );
+
     const secondResponse = vi.fn();
     onMessage.dispatch(
       {

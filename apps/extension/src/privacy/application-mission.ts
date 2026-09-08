@@ -1,4 +1,4 @@
-import type { CareerVault } from "./career-vault";
+import { type CareerVault, serializeCareerVaultMutation } from "./career-vault";
 
 export const APPLICATION_MISSION_STEPS = [
   "requirements",
@@ -119,6 +119,7 @@ export interface ApplicationMissionTransition {
 
 const MISSION_INDEX = "application-mission-index:v1";
 const MISSION_PREFIX = "application-mission:v1:";
+const MISSION_MUTATION_KEY = "application-mission:index";
 const MAX_REFS = 32;
 const MAX_DOCUMENTS = 24;
 const MAX_TRANSITIONS = 128;
@@ -539,9 +540,15 @@ export class ApplicationMissionStore {
     now = new Date().toISOString(),
   ): Promise<ApplicationMissionRecord> {
     const record = createApplicationMission(input, now);
-    await this.vault.put(record.mission_id, record);
-    await this.saveIndex([...(await this.index()), record.mission_id]);
-    return record;
+    return serializeCareerVaultMutation(
+      this.vault,
+      MISSION_MUTATION_KEY,
+      async () => {
+        await this.vault.put(record.mission_id, record);
+        await this.saveIndex([...(await this.index()), record.mission_id]);
+        return record;
+      },
+    );
   }
 
   async get(missionIdValue: string): Promise<ApplicationMissionRecord | null> {
@@ -556,34 +563,58 @@ export class ApplicationMissionStore {
     event: ApplicationMissionEvent,
     recordedAt = new Date().toISOString(),
   ): Promise<ApplicationMissionRecord> {
-    const current = await this.get(missionIdValue);
-    if (!current) throw new Error("Application mission was not found.");
-    const next = reduceApplicationMission(current, event, recordedAt);
-    await this.vault.put(next.mission_id, next);
-    return next;
+    return serializeCareerVaultMutation(
+      this.vault,
+      MISSION_MUTATION_KEY,
+      async () => {
+        const current = await this.get(missionIdValue);
+        if (!current) throw new Error("Application mission was not found.");
+        const next = reduceApplicationMission(current, event, recordedAt);
+        await this.vault.put(next.mission_id, next);
+        return next;
+      },
+    );
   }
 
   async list(): Promise<ApplicationMissionRecord[]> {
-    const records: ApplicationMissionRecord[] = [];
-    for (const id of await this.index()) {
-      const record = await this.get(id);
-      if (record) records.push(record);
-    }
-    return records;
+    return serializeCareerVaultMutation(
+      this.vault,
+      MISSION_MUTATION_KEY,
+      async () => {
+        const records: ApplicationMissionRecord[] = [];
+        for (const id of await this.index()) {
+          const record = await this.get(id);
+          if (record) records.push(record);
+        }
+        return records;
+      },
+    );
   }
 
   async remove(missionIdValue: string): Promise<void> {
     if (!MISSION_ID_PATTERN.test(missionIdValue)) {
       throw new Error("Invalid application mission ID.");
     }
-    await this.vault.delete(missionIdValue);
-    await this.saveIndex(
-      (await this.index()).filter((id) => id !== missionIdValue),
+    await serializeCareerVaultMutation(
+      this.vault,
+      MISSION_MUTATION_KEY,
+      async () => {
+        await this.vault.delete(missionIdValue);
+        await this.saveIndex(
+          (await this.index()).filter((id) => id !== missionIdValue),
+        );
+      },
     );
   }
 
   async clear(): Promise<void> {
-    for (const id of await this.index()) await this.vault.delete(id);
-    await this.saveIndex([]);
+    await serializeCareerVaultMutation(
+      this.vault,
+      MISSION_MUTATION_KEY,
+      async () => {
+        for (const id of await this.index()) await this.vault.delete(id);
+        await this.saveIndex([]);
+      },
+    );
   }
 }

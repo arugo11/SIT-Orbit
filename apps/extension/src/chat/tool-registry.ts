@@ -354,6 +354,7 @@ export function validateChatToolArguments(
   }
   if (name === "my_library_read") {
     if (
+      (Object.keys(args).length > 0 && args.scope === undefined) ||
       (args.scope !== undefined &&
         ![
           "current_loans",

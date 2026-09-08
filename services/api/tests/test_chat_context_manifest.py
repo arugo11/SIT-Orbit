@@ -12,11 +12,9 @@ from orbit_api.models import (
     ChatLibraryContextRecord,
     ChatRunCompleted,
     ChatRunRequest,
-    ChatToolResultRequest,
     EvidenceLink,
     LibraryBibliographicRecord,
     LibraryHoldingSummary,
-    LibraryItemReadResult,
 )
 from pydantic import ValidationError
 
@@ -251,11 +249,9 @@ def test_shared_completed_response_fixture_is_accepted_by_python_request_model()
 
 
 @pytest.mark.asyncio
-async def test_fixture_uses_manifest_ref_for_elliptical_follow_up(monkeypatch) -> None:
-    monkeypatch.setenv("ORBIT_AGENT_BACKEND", "fixture")
-    monkeypatch.setenv("ORBIT_OBSERVABILITY", "off")
+async def test_fixture_does_not_select_a_tool_from_an_elliptical_follow_up() -> None:
     service = ChatRunService(backend_factory=FixtureChatBackend)
-    first = await service.start(
+    response = await service.start(
         ChatRunRequest(
             conversation_id="manifest-follow-up",
             message="その本はどこに配架されてる？",
@@ -267,26 +263,9 @@ async def test_fixture_uses_manifest_ref_for_elliptical_follow_up(monkeypatch) -
             context_manifest=public_manifest(),
         )
     )
-    assert first.status == "tool_required"
-    assert first.calls[0].name == "library_item_read"
-    assert first.calls[0].arguments["resource_ref"] == public_record().resource_ref
-
-    completed = await service.submit_tool_result(
-        first.run_id,
-        ChatToolResultRequest(
-            tool_call_id=first.calls[0].tool_call_id,
-            name="library_item_read",
-            version=1,
-            result=LibraryItemReadResult(
-                status="known",
-                resource_ref=public_record().resource_ref,
-                item=public_record(),
-                reason_code=None,
-            ),
-        ),
-    )
-    assert completed.status == "completed"
-    assert "ロボット工学" in completed.message.content_markdown
+    assert isinstance(response, ChatRunCompleted)
+    assert response.message.content_markdown == FixtureChatBackend._MESSAGE
+    assert response.message.evidence == []
 
 
 def test_manifest_round_trip_request_accepts_old_client_shape() -> None:
@@ -300,7 +279,7 @@ def test_manifest_round_trip_request_accepts_old_client_shape() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fixture_recognizes_natural_book_discovery_request() -> None:
+async def test_fixture_does_not_recognize_natural_book_discovery_request() -> None:
     service = ChatRunService(backend_factory=FixtureChatBackend)
     response = await service.start(
         ChatRunRequest(
@@ -311,13 +290,12 @@ async def test_fixture_recognizes_natural_book_discovery_request() -> None:
         )
     )
 
-    assert response.status == "tool_required"
-    assert response.calls[0].name == "library_catalog_search"
-    assert response.calls[0].arguments["query"] == "ロボットに関する本を探して"
+    assert isinstance(response, ChatRunCompleted)
+    assert response.message.content_markdown == FixtureChatBackend._MESSAGE
 
 
 @pytest.mark.asyncio
-async def test_fixture_keeps_loan_question_on_my_library() -> None:
+async def test_fixture_does_not_select_my_library_from_a_loan_question() -> None:
     service = ChatRunService(backend_factory=FixtureChatBackend)
     response = await service.start(
         ChatRunRequest(
@@ -331,6 +309,5 @@ async def test_fixture_keeps_loan_question_on_my_library() -> None:
         )
     )
 
-    assert response.status == "tool_required"
-    assert response.calls[0].name == "my_library_read"
-    assert response.calls[0].arguments["scope"] == "current_loans"
+    assert isinstance(response, ChatRunCompleted)
+    assert response.message.content_markdown == FixtureChatBackend._MESSAGE

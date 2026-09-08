@@ -88,4 +88,28 @@ describe("first-use campus login setup", () => {
     await clearFirstUseSetup();
     await expect(readFirstUseSetup()).resolves.toBeNull();
   });
+
+  it("fails closed when setup storage is unavailable or does not persist", async () => {
+    vi.stubGlobal("chrome", { storage: {} });
+    await expect(markFirstUseSetupStarted()).resolves.toBe(false);
+    await expect(markFirstUseSetupCompleted()).resolves.toBe(false);
+
+    const set = vi.fn(async () => undefined);
+    vi.stubGlobal("chrome", {
+      storage: { local: { get: vi.fn(async () => ({})), set } },
+    });
+    await expect(markFirstUseSetupStarted()).resolves.toBe(false);
+    await expect(markFirstUseSetupCompleted()).resolves.toBe(false);
+
+    const rejectedSet = vi.fn(async () => {
+      throw new Error("storage write rejected");
+    });
+    vi.stubGlobal("chrome", {
+      storage: {
+        local: { get: vi.fn(async () => ({})), set: rejectedSet },
+      },
+    });
+    await expect(markFirstUseSetupStarted()).resolves.toBe(false);
+    await expect(markFirstUseSetupCompleted()).resolves.toBe(false);
+  });
 });

@@ -7,6 +7,7 @@ import {
 } from "../content/my-library-consent";
 import {
   buttonByName,
+  click,
   type MountedSidePanel,
   mountSidePanel,
   unmountSidePanel,
@@ -321,6 +322,15 @@ describe("ChatPanel My Library consent and history boundary", () => {
     }
     expect(stored).toContain("購入依頼の状況を確認しました");
     expect(rendered).toContain("端末内資料");
+
+    const newChatButton = mounted.document.querySelector<HTMLButtonElement>(
+      'button[aria-label="新規Chat"]',
+    );
+    if (!newChatButton) throw new Error("New Chat button is missing.");
+    await click(newChatButton);
+    await waitFor(
+      () => !(mounted?.document.body.textContent ?? "").includes("端末内資料"),
+    );
   });
 
   it("rejects a legacy aggregate when the Agent requested a scoped page", async () => {
@@ -377,7 +387,7 @@ describe("ChatPanel My Library consent and history boundary", () => {
   it("does not read or send personal library data to a non-Azure backend", async () => {
     const apiClient = createApiClient();
     apiClient.capabilities.mockResolvedValue({
-      agent_backend: "openai",
+      agent_backend: "fixture",
       my_library_personal_context: false,
     });
     mounted = await mountSidePanel(() => (

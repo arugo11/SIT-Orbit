@@ -5,6 +5,7 @@ import { B1_OMIYA_CONTEXT, B1_OMIYA_EVENT } from "../sidepanel/b1-fixture";
 import {
   AgentApiClient,
   AgentApiError,
+  type ChatToolResultRequest,
   classifyAgentApiError,
   type Fetcher,
   isActionProposal,
@@ -66,7 +67,7 @@ function jsonResponse(
 }
 
 describe("isChatCapabilities", () => {
-  it("accepts the explicit fixture SCombZ capability used by demo builds", () => {
+  it("rejects fixture capabilities that advertise private SCombZ tools", () => {
     expect(
       isChatCapabilities({
         schema_version: "v1",
@@ -77,7 +78,7 @@ describe("isChatCapabilities", () => {
         supported_client_tools: ["scombz_course_list", "scombz_course_read"],
         max_client_tools: 32,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
 
@@ -782,6 +783,108 @@ describe("AgentApiClient", () => {
         headers: { Authorization: "Bearer demo-token" },
       },
     );
+  });
+
+  it("threads an optional AbortSignal through Chat API requests", async () => {
+    const signal = new AbortController().signal;
+    const capabilitiesResponse = {
+      schema_version: "v1" as const,
+      agent_backend: "fixture" as const,
+      observability: "off" as const,
+      scombz_student_read_mode: "off" as const,
+      sitrus_personal_context_mode: "off" as const,
+      supported_client_tools: [] as const,
+      max_client_tools: 32,
+    };
+    const chatResponse = {
+      status: "completed" as const,
+      message: {
+        message_id: "chat-signal",
+        content_markdown: "確認しました。",
+        evidence: [],
+      },
+      proposal: null,
+    };
+    const request = {
+      tool_call_id: "call-signal",
+      name: "scombz_course_list" as const,
+      version: 1 as const,
+      result: {},
+    } as unknown as ChatToolResultRequest;
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(capabilitiesResponse))
+      .mockResolvedValue(jsonResponse(chatResponse));
+    const client = new AgentApiClient({ fetcher });
+
+    await client.chatCapabilities(signal);
+    await client.startChat(
+      {
+        conversation_id: "chat-signal",
+        message: "確認して",
+        execution_mode: "sync",
+      },
+      signal,
+    );
+    await client.submitChatToolResult("run-signal", request, signal);
+    await client.submitChatToolResultWithReceipt("run-signal", request, signal);
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      expect.objectContaining({ signal }),
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      expect.objectContaining({ signal }),
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(
+      3,
+      expect.any(String),
+      expect.objectContaining({ signal }),
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(
+      4,
+      expect.any(String),
+      expect.objectContaining({ signal }),
+    );
+  });
+
+  it("does not refresh auth after cancellation and preserves AbortError", async () => {
+    const controller = new AbortController();
+    const sessionProvider = vi.fn(async () => "session-token");
+    const fetcher = vi.fn(async () => {
+      controller.abort();
+      return jsonResponse({ detail: "expired" }, 401);
+    });
+    const client = new AgentApiClient({
+      sessionProvider,
+      fetcher,
+    });
+    const request = {
+      conversation_id: "chat-abort-retry",
+      message: "確認して",
+      execution_mode: "sync" as const,
+    };
+
+    await expect(
+      client.startChat(request, controller.signal),
+    ).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(sessionProvider).toHaveBeenCalledTimes(1);
+
+    const abortError = new DOMException("cancelled", "AbortError");
+    const abortingClient = new AgentApiClient({
+      fetcher: vi.fn(async () => {
+        throw abortError;
+      }),
+    });
+    await expect(
+      abortingClient.startChat(request, new AbortController().signal),
+    ).rejects.toBe(abortError);
   });
 
   it("omits the default sync mode for strict pre-background Chat APIs", async () => {

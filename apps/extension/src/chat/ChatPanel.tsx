@@ -6,7 +6,6 @@ import {
   type ChatRunResponse,
   type ChatToolResultRequest,
   classifyAgentApiError,
-  DEMO_FIXTURE_ENABLED,
   isBrowserReadResult,
   isCastAlumniReadResult,
   isCastCareerSearchResult,
@@ -94,12 +93,7 @@ import type {
   SitrusReadResponse,
 } from "../shared/messages";
 import { MESSAGE_TYPES } from "../shared/messages";
-import {
-  hostAccessRequest,
-  requiresLiveScombzStudentRead,
-  requiresSitrusPersonalContext,
-  requiresVerifiedCampusCapability,
-} from "./access-policy";
+import { hostAccessRequest } from "./access-policy";
 import {
   type ChatConversation,
   type ChatTimelineMessage,
@@ -116,7 +110,6 @@ import {
   toChatHistory,
 } from "./chat-history";
 import { ChatRunner } from "./chat-runner";
-import { demoFixtureToolResult } from "./demo-fixture";
 import {
   advertiseReadOnlyTools,
   isRegisteredReadOnlyTool,
@@ -445,44 +438,6 @@ function mergeProcessingScope(
     history_eligible:
       toolName === "sitrus_read" ? false : conversation.history_eligible,
   };
-}
-
-function explicitBookCount(messages: ChatTimelineMessage[]): number | null {
-  const latestUserMessage = [...messages]
-    .reverse()
-    .find((message) => message.role === "user")?.content;
-  if (!latestUserMessage) return null;
-  const match = latestUserMessage.match(
-    /([1-8１２３４５６７８一二三四五六七八])冊/u,
-  );
-  if (!match?.[1]) return null;
-  const countByText: Record<string, number> = {
-    "1": 1,
-    "2": 2,
-    "3": 3,
-    "4": 4,
-    "5": 5,
-    "6": 6,
-    "7": 7,
-    "8": 8,
-    "１": 1,
-    "２": 2,
-    "３": 3,
-    "４": 4,
-    "５": 5,
-    "６": 6,
-    "７": 7,
-    "８": 8,
-    一: 1,
-    二: 2,
-    三: 3,
-    四: 4,
-    五: 5,
-    六: 6,
-    七: 7,
-    八: 8,
-  };
-  return countByText[match[1]] ?? null;
 }
 
 function libraryFailureDetail(reasonCode: string): string {
@@ -951,24 +906,97 @@ function castCareerFailureProjection(
   };
 }
 
-function sendExtensionMessage<T>(message: unknown): Promise<T> {
+function abortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason;
+  if (reason instanceof Error) return reason;
+  return new DOMException("The operation was aborted.", "AbortError");
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (typeof DOMException !== "undefined" &&
+      error instanceof DOMException &&
+      error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw abortError(signal);
+}
+
+function sendExtensionMessage<T>(
+  message: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage(message, (response: T | undefined) => {
-      const runtimeError = chrome.runtime.lastError;
-      if (runtimeError || response === undefined) {
-        const detail = runtimeError?.message?.trim();
-        reject(
-          new Error(
-            detail
-              ? `拡張機能のToolを利用できません: ${detail}`
-              : "拡張機能のToolを利用できません。",
-          ),
-        );
-        return;
-      }
-      resolve(response);
-    });
+    if (signal?.aborted) {
+      reject(abortError(signal));
+      return;
+    }
+    let settled = false;
+    const cleanup = (): void => {
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortError(signal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const runtime = chrome.runtime;
+    try {
+      runtime.sendMessage(message, (response: T | undefined) => {
+        const runtimeError = runtime.lastError;
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (runtimeError || response === undefined) {
+          const detail = runtimeError?.message?.trim();
+          reject(
+            new Error(
+              detail
+                ? `拡張機能のToolを利用できません: ${detail}`
+                : "拡張機能のToolを利用できません。",
+            ),
+          );
+          return;
+        }
+        resolve(response);
+      });
+    } catch (error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
   });
+}
+
+async function readChatAuthPreflight(
+  signal?: AbortSignal,
+): Promise<Set<string>> {
+  try {
+    const response = await sendExtensionMessage<{
+      schema_version?: unknown;
+      ready_tools?: unknown;
+    }>({ type: MESSAGE_TYPES.chatAuthPreflight }, signal);
+    throwIfAborted(signal);
+    if (
+      response.schema_version !== "v1" ||
+      !Array.isArray(response.ready_tools) ||
+      !response.ready_tools.every((name) => typeof name === "string")
+    ) {
+      return new Set();
+    }
+    return new Set(response.ready_tools);
+  } catch (error) {
+    if (signal?.aborted || isAbortError(error)) throw abortError(signal);
+    // Unknown auth state is fail-closed and therefore cannot enter the
+    // provider-side Tool Search corpus.
+    return new Set();
+  }
 }
 
 type ChatProgressPhase =
@@ -985,6 +1013,12 @@ interface ChatProgress {
   detail: string;
   detailBase: string;
   startedAt: number;
+}
+
+interface ChatRunOptions {
+  submit?: boolean;
+  signal?: AbortSignal;
+  assertActive?: () => void;
 }
 
 export function ChatPanel({
@@ -1064,6 +1098,23 @@ export function ChatPanel({
   // sends the first message) before that read completes, the late result must
   // not replace the conversation they are actively editing with an older one.
   const conversationInteractionRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  function assertRunActive(controller: AbortController): void {
+    if (
+      abortControllerRef.current !== controller ||
+      controller.signal.aborted
+    ) {
+      throw abortError(controller.signal);
+    }
+  }
+
+  function abortCurrentRun(): void {
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
+    setProgress(null);
+    setBusy(false);
+  }
 
   function setChatProgress(
     phase: ChatProgressPhase,
@@ -1129,6 +1180,13 @@ export function ChatPanel({
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+    };
+  }, []);
+
   async function persist(next: ChatConversation): Promise<void> {
     setConversation(next);
     setConversations((items) => {
@@ -1142,119 +1200,102 @@ export function ChatPanel({
     await saveConversation(next);
   }
 
+  function clearLocalSnapshots(): void {
+    setLocalMoodleDetails({});
+    setLocalMyLibraryDetails({});
+    setLocalCastDetails({});
+    setLocalCastAlumniDetails({});
+    setLocalCastSearchDetails({});
+    setLocalCastCareerDetails({});
+    setLocalLibraryDetails({});
+    setLocalLibraryPresentations({});
+    setLibraryPreviews({});
+    setLibraryPreviewInputs({});
+    setLibraryPreviewStates({});
+    setLibraryPreviewErrors({});
+    setLibraryChoiceFreeform({});
+    setProgress(null);
+  }
+
+  async function clearConversationRuntime(
+    conversationId: string,
+  ): Promise<void> {
+    await pseudonymizerRef.current.clear(conversationId);
+    const clearResult = await sendExtensionMessage<{ ok: boolean }>({
+      type: MESSAGE_TYPES.scombzClearConversation,
+      conversation_id: conversationId,
+    });
+    if (!clearResult?.ok) {
+      throw new Error("会話の参照元を破棄できませんでした。");
+    }
+  }
+
   function clientTools(
     serverTools: ReadonlySet<string> | null = null,
     maxClientTools = 32,
-    fixtureScombz = false,
+    authReadyTools: ReadonlySet<string> | null = null,
   ) {
-    const liveScombzTools = new Set([
-      "scombz_course_list",
-      "scombz_portal_read",
-      "scombz_course_read",
-      "scombz_material_search",
-    ]);
     const allows = (name: string): boolean => {
       if (serverTools === null) return true;
       return serverTools.has(name);
     };
-    const tools: Array<{
-      name:
-        | "scombz_page_summary"
-        | "scombz_read"
-        | "scombz_course_list"
-        | "scombz_portal_read"
-        | "scombz_course_read"
-        | "scombz_material_search"
-        | "google_calendar_availability"
-        | "syllabus_search"
-        | "syllabus_read"
-        | "browser_read_url"
-        | "sitrus_read"
-        | "moodle_read"
-        | "my_library_read"
-        | "cast_read"
-        | "cast_alumni_read"
-        | "cast_search"
-        | "cast_career_search"
-        | "library_catalog_search"
-        | "library_item_read"
-        | "library_catalog_browse"
-        | "library_discovery_search"
-        | "library_action_options";
-      version: 1;
-    }> = [];
+    const locallyAvailable = new Set<string>();
     if (projectScombzRead(pageContext) && allows("scombz_read")) {
-      tools.push({ name: "scombz_read", version: 1 });
+      locallyAvailable.add("scombz_read");
     }
-    if (
-      (pageContext?.kind === "scombz" || fixtureScombz) &&
-      serverTools !== null
-    ) {
-      for (const name of liveScombzTools as Set<
-        | "scombz_course_list"
-        | "scombz_portal_read"
-        | "scombz_course_read"
-        | "scombz_material_search"
-      >) {
-        if (allows(name)) tools.push({ name, version: 1 });
-      }
+    if (pageSummary && allows("scombz_page_summary")) {
+      locallyAvailable.add("scombz_page_summary");
     }
     if (
       calendarState.status === "connected" &&
       calendarState.snapshot &&
       allows("google_calendar_availability")
     ) {
-      tools.push({ name: "google_calendar_availability", version: 1 });
+      locallyAvailable.add("google_calendar_availability");
     }
-    if (allows("syllabus_search"))
-      tools.push({ name: "syllabus_search", version: 1 });
-    if (allows("syllabus_read"))
-      tools.push({ name: "syllabus_read", version: 1 });
-    if (allows("browser_read_url"))
-      tools.push({ name: "browser_read_url", version: 1 });
-    if (serverTools !== null && allows("sitrus_read")) {
-      tools.push({ name: "sitrus_read", version: 1 });
-    }
-    if (allows("moodle_read")) tools.push({ name: "moodle_read", version: 1 });
-    if (allows("my_library_read"))
-      tools.push({ name: "my_library_read", version: 1 });
-    if (allows("cast_read")) tools.push({ name: "cast_read", version: 1 });
-    if (allows("cast_alumni_read"))
-      tools.push({ name: "cast_alumni_read", version: 1 });
-    if (allows("cast_search")) tools.push({ name: "cast_search", version: 1 });
-    if (allows("cast_career_search"))
-      tools.push({ name: "cast_career_search", version: 1 });
-    // OPAC/SIT Search reads are public and read-only. Advertise them on every
-    // turn so the Agent can resolve elliptical follow-ups such as
-    // 「どこに配架されてる？」 from the conversation context instead of
-    // relying on a brittle latest-message keyword gate.
+    // Public search/catalog Tools are safe to advertise without a page read.
     for (const name of [
+      "syllabus_search",
+      "syllabus_read",
+      "browser_read_url",
       "library_catalog_search",
       "library_item_read",
       "library_catalog_browse",
       "library_discovery_search",
       "library_action_options",
     ] as const) {
-      if (allows(name)) tools.push({ name, version: 1 });
+      if (allows(name)) locallyAvailable.add(name);
+    }
+    // Auth-only preflight is the only source for private connector readiness.
+    // A missing/unknown result is intentionally not treated as available.
+    for (const name of authReadyTools ?? []) {
+      // A null server snapshot means the capability request failed.  Do not
+      // advertise connector tools in that case, even if a stale preflight
+      // result happens to be present locally.
+      if (serverTools !== null && allows(name)) locallyAvailable.add(name);
     }
     const advertised = advertiseReadOnlyTools({
-      locallyAvailable: new Set(tools.map((tool) => tool.name)),
+      locallyAvailable,
       serverAllowed: serverTools,
       maxClientTools,
     });
-    return advertised as typeof tools;
+    return advertised;
   }
 
   async function runTool(
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
     progressLabel = toolLabel(response.calls[0]?.name ?? ""),
-    options: { submit?: boolean; demoFixture?: boolean } = {},
+    options: ChatRunOptions = {},
   ): Promise<{
     response: ChatRunResponse;
     conversation: ChatConversation;
     request: ChatToolResultRequest;
   }> {
+    const { signal } = options;
+    const assertActive =
+      options.assertActive ?? (() => throwIfAborted(options.signal));
+    assertActive();
     const [call] = response.calls;
     if (!call) {
       throw new Error("AgentのTool呼び出しを検証できません。");
@@ -1362,9 +1403,11 @@ export function ChatPanel({
     }
     if (
       call.name === "my_library_read" &&
-      (Object.keys(argumentsObject).some(
-        (key) => !["scope", "query", "offset", "limit"].includes(key),
-      ) ||
+      ((Object.keys(argumentsObject).length > 0 &&
+        argumentsObject.scope === undefined) ||
+        Object.keys(argumentsObject).some(
+          (key) => !["scope", "query", "offset", "limit"].includes(key),
+        ) ||
         (argumentsObject.scope !== undefined &&
           ![
             "current_loans",
@@ -1548,6 +1591,7 @@ export function ChatPanel({
       updatedAt: new Date().toISOString(),
       messages: [...scopedCurrent.messages, activity],
     };
+    assertActive();
     // Show the running boundary locally, but do not write it to the durable
     // transcript yet. A failed tool must disappear from history; only the
     // completed, evidence-backed activity is persisted below.
@@ -1563,13 +1607,7 @@ export function ChatPanel({
     };
 
     let request: ChatToolResultRequest;
-    const fixtureResult =
-      options.demoFixture && DEMO_FIXTURE_ENABLED
-        ? demoFixtureToolResult(call.name, argumentsObject)
-        : null;
-    if (fixtureResult) {
-      request = toolResultRequest(call.tool_call_id, call.name, fixtureResult);
-    } else if (call.name === "scombz_page_summary") {
+    if (call.name === "scombz_page_summary") {
       if (!pageSummary) {
         throw new Error("表示中のSCombZページを読み取れません。");
       }
@@ -1591,13 +1629,18 @@ export function ChatPanel({
         | "portal_read"
         | "course_read"
         | "material_search";
-      const result = await sendExtensionMessage<ScombzStudentReadResponse>({
-        type: MESSAGE_TYPES.scombzStudentRead,
-        tool_call_id: call.tool_call_id,
-        conversation_id: current.conversationId,
-        action,
-        arguments: argumentsObject,
-      });
+      assertActive();
+      const result = await sendExtensionMessage<ScombzStudentReadResponse>(
+        {
+          type: MESSAGE_TYPES.scombzStudentRead,
+          tool_call_id: call.tool_call_id,
+          conversation_id: current.conversationId,
+          action,
+          arguments: argumentsObject,
+        },
+        signal,
+      );
+      assertActive();
       if (
         result.status !== "known" &&
         result.status !== "partial" &&
@@ -1624,9 +1667,11 @@ export function ChatPanel({
         result.projection as ChatToolResultRequest["result"],
       );
     } else if (call.name === "google_calendar_availability") {
+      assertActive();
       const refreshed = calendarConnector
         ? await calendarConnector.refresh()
         : await calendarRequest("refresh");
+      assertActive();
       if (refreshed.status === "reauth_required") {
         throw new Error("Google Calendarの再認証が必要です。");
       }
@@ -1641,19 +1686,24 @@ export function ChatPanel({
         projectCalendarAvailability(refreshed.snapshot),
       );
     } else if (call.name === "syllabus_search") {
-      const syllabus = await sendExtensionMessage<SyllabusSearchResult>({
-        type: "syllabus-search",
-        tool_call_id: call.tool_call_id,
-        query: argumentsObject.query as string,
-        year:
-          typeof argumentsObject.year === "number"
-            ? argumentsObject.year
-            : null,
-        faculty:
-          typeof argumentsObject.faculty === "string"
-            ? argumentsObject.faculty
-            : null,
-      });
+      assertActive();
+      const syllabus = await sendExtensionMessage<SyllabusSearchResult>(
+        {
+          type: "syllabus-search",
+          tool_call_id: call.tool_call_id,
+          query: argumentsObject.query as string,
+          year:
+            typeof argumentsObject.year === "number"
+              ? argumentsObject.year
+              : null,
+          faculty:
+            typeof argumentsObject.faculty === "string"
+              ? argumentsObject.faculty
+              : null,
+        },
+        signal,
+      );
+      assertActive();
       if (!isSyllabusSearchResult(syllabus)) {
         throw new Error("シラバス検索結果を検証できません。");
       }
@@ -1709,7 +1759,12 @@ export function ChatPanel({
               unavailableDetail("syllabus_origin_rejected"),
             );
           } else {
-            const response = await fetch(target.href, { credentials: "omit" });
+            assertActive();
+            const response = await fetch(target.href, {
+              credentials: "omit",
+              signal,
+            });
+            assertActive();
             if (!response.ok) {
               request = toolResultRequest(
                 call.tool_call_id,
@@ -1717,7 +1772,9 @@ export function ChatPanel({
                 unavailableDetail(`http_${response.status}`),
               );
             } else {
-              const detail = parseSyllabusDetailHtml(await response.text());
+              const html = await response.text();
+              assertActive();
+              const detail = parseSyllabusDetailHtml(html);
               const projection = {
                 schema_version: "v1" as const,
                 status: "known" as const,
@@ -1744,7 +1801,8 @@ export function ChatPanel({
               );
             }
           }
-        } catch {
+        } catch (error) {
+          if (signal?.aborted || isAbortError(error)) throw error;
           request = toolResultRequest(
             call.tool_call_id,
             call.name,
@@ -1758,39 +1816,44 @@ export function ChatPanel({
         progressLabel,
         "検索結果の書誌と所蔵欄を確認しています。",
       );
-      const library = await sendExtensionMessage<LibraryCatalogSearchResponse>({
-        type: "library-catalog-search",
-        tool_call_id: call.tool_call_id,
-        query: argumentsObject.query as string,
-        author:
-          typeof argumentsObject.author === "string"
-            ? argumentsObject.author
-            : null,
-        subject:
-          typeof argumentsObject.subject === "string"
-            ? argumentsObject.subject
-            : null,
-        isbn:
-          typeof argumentsObject.isbn === "string"
-            ? argumentsObject.isbn
-            : null,
-        pub_year:
-          typeof argumentsObject.pub_year === "number"
-            ? argumentsObject.pub_year
-            : null,
-        campus:
-          typeof argumentsObject.campus === "string"
-            ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
-            : "any",
-        format:
-          typeof argumentsObject.format === "string"
-            ? (argumentsObject.format as "book" | "journal" | "ebook" | "any")
-            : "any",
-        limit:
-          typeof argumentsObject.limit === "number"
-            ? argumentsObject.limit
-            : 10,
-      });
+      assertActive();
+      const library = await sendExtensionMessage<LibraryCatalogSearchResponse>(
+        {
+          type: "library-catalog-search",
+          tool_call_id: call.tool_call_id,
+          query: argumentsObject.query as string,
+          author:
+            typeof argumentsObject.author === "string"
+              ? argumentsObject.author
+              : null,
+          subject:
+            typeof argumentsObject.subject === "string"
+              ? argumentsObject.subject
+              : null,
+          isbn:
+            typeof argumentsObject.isbn === "string"
+              ? argumentsObject.isbn
+              : null,
+          pub_year:
+            typeof argumentsObject.pub_year === "number"
+              ? argumentsObject.pub_year
+              : null,
+          campus:
+            typeof argumentsObject.campus === "string"
+              ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
+              : "any",
+          format:
+            typeof argumentsObject.format === "string"
+              ? (argumentsObject.format as "book" | "journal" | "ebook" | "any")
+              : "any",
+          limit:
+            typeof argumentsObject.limit === "number"
+              ? argumentsObject.limit
+              : 10,
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1844,13 +1907,18 @@ export function ChatPanel({
         conversationAfterTool.contextManifest.library_records.find(
           (item) => item.resource_ref === libraryResourceRef,
         );
-      const library = await sendExtensionMessage<LibraryItemReadResponse>({
-        type: "library-item-read",
-        tool_call_id: call.tool_call_id,
-        resource_ref: libraryResourceRef,
-        presentation,
-        ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
-      });
+      assertActive();
+      const library = await sendExtensionMessage<LibraryItemReadResponse>(
+        {
+          type: "library-item-read",
+          tool_call_id: call.tool_call_id,
+          resource_ref: libraryResourceRef,
+          presentation,
+          ...(manifestRecord ? { record_url: manifestRecord.record.url } : {}),
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1895,14 +1963,19 @@ export function ChatPanel({
         conversationAfterTool.contextManifest.library_records.find(
           (item) => item.resource_ref === actionResourceRef,
         );
-      const library = await sendExtensionMessage<LibraryActionOptionsResponse>({
-        type: MESSAGE_TYPES.libraryActionOptions,
-        tool_call_id: call.tool_call_id,
-        resource_ref: actionResourceRef,
-        ...(actionManifestRecord
-          ? { record_url: actionManifestRecord.record.url }
-          : {}),
-      });
+      assertActive();
+      const library = await sendExtensionMessage<LibraryActionOptionsResponse>(
+        {
+          type: MESSAGE_TYPES.libraryActionOptions,
+          tool_call_id: call.tool_call_id,
+          resource_ref: actionResourceRef,
+          ...(actionManifestRecord
+            ? { record_url: actionManifestRecord.record.url }
+            : {}),
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1921,7 +1994,9 @@ export function ChatPanel({
         discardActivity();
       }
       if (projection.data_classification === "personal") {
+        assertActive();
         const capabilities = await apiClient.capabilities();
+        assertActive();
         if (
           capabilities.agent_backend !== "azure_openai" ||
           !capabilities.my_library_personal_context
@@ -1933,19 +2008,24 @@ export function ChatPanel({
       }
       request = toolResultRequest(call.tool_call_id, call.name, projection);
     } else if (call.name === "library_catalog_browse") {
-      const library = await sendExtensionMessage<LibraryCatalogBrowseResponse>({
-        type: "library-catalog-browse",
-        tool_call_id: call.tool_call_id,
-        kind: argumentsObject.kind as "new_books" | "loan_ranking",
-        campus:
-          typeof argumentsObject.campus === "string"
-            ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
-            : "any",
-        limit:
-          typeof argumentsObject.limit === "number"
-            ? argumentsObject.limit
-            : 10,
-      });
+      assertActive();
+      const library = await sendExtensionMessage<LibraryCatalogBrowseResponse>(
+        {
+          type: "library-catalog-browse",
+          tool_call_id: call.tool_call_id,
+          kind: argumentsObject.kind as "new_books" | "loan_ranking",
+          campus:
+            typeof argumentsObject.campus === "string"
+              ? (argumentsObject.campus as "toyosu" | "omiya" | "any")
+              : "any",
+          limit:
+            typeof argumentsObject.limit === "number"
+              ? argumentsObject.limit
+              : 10,
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -1978,16 +2058,21 @@ export function ChatPanel({
         );
       }
     } else if (call.name === "library_discovery_search") {
+      assertActive();
       const library =
-        await sendExtensionMessage<LibraryDiscoverySearchResponse>({
-          type: "library-discovery-search",
-          tool_call_id: call.tool_call_id,
-          query: argumentsObject.query as string,
-          limit:
-            typeof argumentsObject.limit === "number"
-              ? argumentsObject.limit
-              : 10,
-        });
+        await sendExtensionMessage<LibraryDiscoverySearchResponse>(
+          {
+            type: "library-discovery-search",
+            tool_call_id: call.tool_call_id,
+            query: argumentsObject.query as string,
+            limit:
+              typeof argumentsObject.limit === "number"
+                ? argumentsObject.limit
+                : 10,
+          },
+          signal,
+        );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2014,10 +2099,15 @@ export function ChatPanel({
     } else if (call.name === "sitrus_read") {
       const access = hostAccessRequest(SITRUS_ORIGIN);
       if (!access) throw new Error("SITRUSの参照先URLを検証できません。");
-      const sitrus = await sendExtensionMessage<SitrusReadResponse>({
-        type: "sitrus-read",
-        tool_call_id: call.tool_call_id,
-      });
+      assertActive();
+      const sitrus = await sendExtensionMessage<SitrusReadResponse>(
+        {
+          type: "sitrus-read",
+          tool_call_id: call.tool_call_id,
+        },
+        signal,
+      );
+      assertActive();
       if (sitrus.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2042,10 +2132,15 @@ export function ChatPanel({
     } else if (call.name === "moodle_read") {
       const access = hostAccessRequest(MOODLE_DASHBOARD_URL);
       if (!access) throw new Error("Moodleの参照先URLを検証できません。");
-      const moodle = await sendExtensionMessage<MoodleReadResponse>({
-        type: "moodle-read",
-        tool_call_id: call.tool_call_id,
-      });
+      assertActive();
+      const moodle = await sendExtensionMessage<MoodleReadResponse>(
+        {
+          type: "moodle-read",
+          tool_call_id: call.tool_call_id,
+        },
+        signal,
+      );
+      assertActive();
       if (moodle.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2084,7 +2179,9 @@ export function ChatPanel({
         typeof argumentsObject.offset === "number" ? argumentsObject.offset : 0;
       const requestedLimit =
         typeof argumentsObject.limit === "number" ? argumentsObject.limit : 20;
+      assertActive();
       const capabilities = await apiClient.capabilities();
+      assertActive();
       if (
         capabilities.agent_backend !== "azure_openai" ||
         !capabilities.my_library_personal_context
@@ -2093,17 +2190,22 @@ export function ChatPanel({
           "My Libraryの個人情報はAzure OpenAI Agentに接続している場合だけ送信できます。",
         );
       }
-      const library = await sendExtensionMessage<MyLibraryReadResponse>({
-        type: "my-library-read",
-        tool_call_id: call.tool_call_id,
-        scope: requestedScope,
-        query:
-          typeof argumentsObject.query === "string"
-            ? argumentsObject.query
-            : null,
-        offset: requestedOffset,
-        limit: requestedLimit,
-      });
+      assertActive();
+      const library = await sendExtensionMessage<MyLibraryReadResponse>(
+        {
+          type: "my-library-read",
+          tool_call_id: call.tool_call_id,
+          scope: requestedScope,
+          query:
+            typeof argumentsObject.query === "string"
+              ? argumentsObject.query
+              : null,
+          offset: requestedOffset,
+          limit: requestedLimit,
+        },
+        signal,
+      );
+      assertActive();
       if (library.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2145,10 +2247,15 @@ export function ChatPanel({
     } else if (call.name === "cast_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
       if (!access) throw new Error("CASTの参照先URLを検証できません。");
-      const cast = await sendExtensionMessage<CastReadResponse>({
-        type: "cast-read",
-        tool_call_id: call.tool_call_id,
-      });
+      assertActive();
+      const cast = await sendExtensionMessage<CastReadResponse>(
+        {
+          type: "cast-read",
+          tool_call_id: call.tool_call_id,
+        },
+        signal,
+      );
+      assertActive();
       if (cast.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2174,11 +2281,16 @@ export function ChatPanel({
     } else if (call.name === "cast_alumni_read") {
       const access = hostAccessRequest(CAST_ENTRY_URL);
       if (!access) throw new Error("CASTの参照先URLを検証できません。");
-      const alumni = await sendExtensionMessage<CastAlumniReadResponse>({
-        type: "cast-alumni-read",
-        tool_call_id: call.tool_call_id,
-        conversation_id: current.conversationId,
-      });
+      assertActive();
+      const alumni = await sendExtensionMessage<CastAlumniReadResponse>(
+        {
+          type: "cast-alumni-read",
+          tool_call_id: call.tool_call_id,
+          conversation_id: current.conversationId,
+        },
+        signal,
+      );
+      assertActive();
       if (alumni.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2212,11 +2324,16 @@ export function ChatPanel({
         alumni.projection,
       );
     } else if (call.name === "cast_search") {
-      const cast = await sendExtensionMessage<CastSearchResponse>({
-        type: MESSAGE_TYPES.castSearch,
-        tool_call_id: call.tool_call_id,
-        ...argumentsObject,
-      });
+      assertActive();
+      const cast = await sendExtensionMessage<CastSearchResponse>(
+        {
+          type: MESSAGE_TYPES.castSearch,
+          tool_call_id: call.tool_call_id,
+          ...argumentsObject,
+        },
+        signal,
+      );
+      assertActive();
       if (cast.status !== "known") {
         const message =
           cast.status === "reauth_required"
@@ -2245,11 +2362,16 @@ export function ChatPanel({
         cast.projection,
       );
     } else if (call.name === "cast_career_search") {
-      const cast = await sendExtensionMessage<CastCareerSearchResponse>({
-        type: MESSAGE_TYPES.castCareerSearch,
-        tool_call_id: call.tool_call_id,
-        ...argumentsObject,
-      });
+      assertActive();
+      const cast = await sendExtensionMessage<CastCareerSearchResponse>(
+        {
+          type: MESSAGE_TYPES.castCareerSearch,
+          tool_call_id: call.tool_call_id,
+          ...argumentsObject,
+        },
+        signal,
+      );
+      assertActive();
       if (!isCastCareerSearchResult(cast.projection)) {
         throw new Error("CAST横断検索結果を検証できませんでした。");
       }
@@ -2301,11 +2423,16 @@ export function ChatPanel({
       const url = argumentsObject.url as string;
       const access = hostAccessRequest(url);
       if (!access) throw new Error("参照先URLを検証できません。");
-      const browser = await sendExtensionMessage<BrowserReadResponse>({
-        type: "browser-read",
-        tool_call_id: call.tool_call_id,
-        url,
-      });
+      assertActive();
+      const browser = await sendExtensionMessage<BrowserReadResponse>(
+        {
+          type: "browser-read",
+          tool_call_id: call.tool_call_id,
+          url,
+        },
+        signal,
+      );
+      assertActive();
       if (browser.status === "permission_required") {
         throw new Error(
           "Toolを実行できませんでした。拡張機能をReloadしてください。",
@@ -2327,20 +2454,30 @@ export function ChatPanel({
       // Keep the provider-facing result behind the same conversation gateway
       // as the user message and history. The local display/detail state stays
       // untouched; only the request sent to the Agent is transformed.
+      assertActive();
       const transformed =
         await pseudonymizerRef.current.transformToolProjection(
           conversationAfterTool.conversationId,
           request.result,
+          call.name,
         );
+      assertActive();
       request = {
         ...request,
         result: transformed.provider_result as ChatToolResultRequest["result"],
       };
     }
-    const nextResponse =
-      options.submit === false
-        ? response
-        : await apiClient.submitChatToolResult(response.run_id, request);
+    let nextResponse: ChatRunResponse = response;
+    if (options.submit !== false) {
+      assertActive();
+      nextResponse = await apiClient.submitChatToolResult(
+        response.run_id,
+        request,
+        signal,
+      );
+      assertActive();
+    }
+    assertActive();
     setChatProgress(
       "resuming",
       "Agentが取得結果を整理中",
@@ -2372,7 +2509,9 @@ export function ChatPanel({
           : item,
       ),
     };
+    assertActive();
     await persist(completedConversation);
+    assertActive();
     return {
       response: nextResponse,
       conversation: completedConversation,
@@ -2390,10 +2529,14 @@ export function ChatPanel({
     response: Extract<ChatRunResponse, { status: "tool_required" }>,
     current: ChatConversation,
     error: unknown,
+    options: ChatRunOptions = {},
   ): Promise<{
     response: ChatRunResponse;
     conversation: ChatConversation;
   } | null> {
+    const assertActive =
+      options.assertActive ?? (() => throwIfAborted(options.signal));
+    assertActive();
     const [call] = response.calls;
     if (call?.name !== "cast_career_search") return null;
 
@@ -2430,31 +2573,39 @@ export function ChatPanel({
       updatedAt: new Date().toISOString(),
       messages: failureMessages,
     };
+    assertActive();
     await persist(failureConversation);
+    assertActive();
     setChatProgress(
       "resuming",
       `${sourceLabel(call.name)}を確認できませんでした`,
       `${statusLabel(projection.status)}。他の情報源を続けて確認します。`,
     );
+    assertActive();
     const nextResponse = await apiClient.submitChatToolResult(
       response.run_id,
       toolResultRequest(call.tool_call_id, call.name, projection),
+      options.signal,
     );
+    assertActive();
     return { response: nextResponse, conversation: failureConversation };
   }
 
   async function finishResponse(
     initialResponse: ChatRunResponse,
     initialConversation: ChatConversation,
+    options: ChatRunOptions = {},
     initialSeenCallIds = new Set<string>(),
   ): Promise<void> {
+    const assertActive =
+      options.assertActive ?? (() => throwIfAborted(options.signal));
+    assertActive();
     let response = initialResponse;
     let current = initialConversation;
     const seenCallIds = initialSeenCallIds;
-    const requestedBookCount = explicitBookCount(initialConversation.messages);
-    let librarySearchIndex = 0;
     let previousCompleteCatalogQuery: string | null = null;
     for (let index = 0; response.status === "tool_required"; index += 1) {
+      assertActive();
       if (index >= 8) throw new Error("Tool呼び出し回数の上限に達しました。");
       const call = response.calls[0];
       if (!call || seenCallIds.has(call.tool_call_id)) {
@@ -2473,14 +2624,11 @@ export function ChatPanel({
           previousCompleteCatalogQuery.includes(catalogQuery),
       );
       if (catalogQuery && !isShortenedCatalogRetry) {
-        librarySearchIndex += 1;
         previousCompleteCatalogQuery = catalogQuery;
       }
       const progressLabel =
-        call.name === "library_catalog_search" && requestedBookCount
-          ? isShortenedCatalogRetry
-            ? `${librarySearchIndex}/${requestedBookCount}冊目を短い書名で再確認中`
-            : `${librarySearchIndex}/${requestedBookCount}冊目を確認中`
+        call.name === "library_catalog_search" && isShortenedCatalogRetry
+          ? `${toolLabel(call.name)}を短い書名で再確認中`
           : toolLabel(call.name);
       setChatProgress(
         "planning",
@@ -2492,15 +2640,23 @@ export function ChatPanel({
         conversation: ChatConversation;
       };
       try {
-        next = await runTool(response, current, progressLabel);
+        next = await runTool(response, current, progressLabel, options);
       } catch (error) {
-        const recovered = await recoverToolFailure(response, current, error);
+        assertActive();
+        const recovered = await recoverToolFailure(
+          response,
+          current,
+          error,
+          options,
+        );
         if (!recovered) throw error;
         next = recovered;
       }
+      assertActive();
       response = next.response;
       current = next.conversation;
     }
+    assertActive();
     const assistantFromResponse = messageFromResponse(response);
     let restoredAssistant = {
       content: assistantFromResponse.content,
@@ -2513,11 +2669,14 @@ export function ChatPanel({
       current.processing_scope === "mixed"
     ) {
       try {
+        assertActive();
         restoredAssistant = await pseudonymizerRef.current.restoreMarkdown(
           current.conversationId,
           assistantFromResponse.content,
         );
-      } catch {
+        assertActive();
+      } catch (error) {
+        if (options.signal?.aborted || isAbortError(error)) throw error;
         // A test/fixture mount may not expose Web Crypto.  Provider output is
         // already safe in that case; keep the assistant response visible rather
         // than turning a local restore optimization into a chat failure.
@@ -2536,6 +2695,7 @@ export function ChatPanel({
         warnings: restoredAssistant.warnings,
       },
     };
+    assertActive();
     setChatProgress("completed", "完了", "回答と参照元を表示しました。");
     const responseManifest =
       response.status === "completed" ? response.context_manifest : null;
@@ -2544,16 +2704,25 @@ export function ChatPanel({
       responseManifest,
       assistant,
     );
+    assertActive();
     await persist({
       ...withEvidence,
       updatedAt: new Date().toISOString(),
       messages: [...current.messages, assistant],
     });
+    assertActive();
   }
 
   async function send(): Promise<void> {
     const message = composer.trim();
-    if (!message || busy || disabled) return;
+    if (!message || busy || disabled || abortControllerRef.current !== null)
+      return;
+    abortCurrentRun();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const signal = controller.signal;
+    const assertActive = (): void => assertRunActive(controller);
+    assertActive();
     conversationInteractionRef.current = true;
     setRetryText(null);
     setComposer("");
@@ -2579,24 +2748,20 @@ export function ChatPanel({
       updatedAt: new Date().toISOString(),
       messages: [...beforeSend.messages, userMessage],
     };
-    await persist(withUser);
     let current = withUser;
     try {
+      assertActive();
+      await persist(withUser);
+      assertActive();
       let serverTools: ReadonlySet<string> | null = null;
       let maxClientTools = 32;
       let capabilitiesSnapshot: ChatCapabilities | null = null;
       let providerDestination: ChatConversation["provider_destination"] =
         "unknown";
-      let liveScombzGate = false;
-      let liveSitrusGate = false;
-      let demoFixtureGate = false;
-      const liveScombzReadRequired = requiresLiveScombzStudentRead(message, {
-        processingScope: current.processing_scope,
-      });
-      const sitrusReadRequired = requiresSitrusPersonalContext(message);
+      let authReadyTools = new Set<string>();
       const capabilityReader = (
         apiClient as AgentApiClient & {
-          chatCapabilities?: () => Promise<{
+          chatCapabilities?: (signal?: AbortSignal) => Promise<{
             agent_backend: string;
             observability: string;
             scombz_student_read_mode: string;
@@ -2608,51 +2773,18 @@ export function ChatPanel({
       ).chatCapabilities;
       if (typeof capabilityReader === "function") {
         try {
-          const capabilities = await capabilityReader.call(apiClient);
+          assertActive();
+          const capabilities = await capabilityReader.call(apiClient, signal);
+          assertActive();
           capabilitiesSnapshot = capabilities as ChatCapabilities;
-          liveScombzGate =
-            capabilities.agent_backend === "azure_openai" &&
-            capabilities.observability === "off" &&
-            capabilities.scombz_student_read_mode === "live";
-          liveSitrusGate =
-            capabilities.agent_backend === "azure_openai" &&
-            capabilities.observability === "off" &&
-            capabilities.sitrus_personal_context_mode === "live";
-          demoFixtureGate =
-            DEMO_FIXTURE_ENABLED &&
-            capabilities.agent_backend === "fixture" &&
-            capabilities.observability === "off" &&
-            (capabilities.scombz_student_read_mode === "fixture" ||
-              capabilities.sitrus_personal_context_mode === "fixture");
           providerDestination =
             capabilities.agent_backend === "azure_openai"
               ? "azure_openai"
               : "local";
-          const allowed = new Set(capabilities.supported_client_tools);
+          serverTools = new Set(capabilities.supported_client_tools);
           maxClientTools = capabilities.max_client_tools;
-          if (!liveScombzGate && !demoFixtureGate) {
-            for (const name of [
-              "scombz_course_list",
-              "scombz_portal_read",
-              "scombz_course_read",
-              "scombz_material_search",
-            ]) {
-              allowed.delete(name);
-            }
-          }
-          if (
-            !liveSitrusGate &&
-            !(
-              DEMO_FIXTURE_ENABLED &&
-              capabilities.agent_backend === "fixture" &&
-              capabilities.observability === "off" &&
-              capabilities.sitrus_personal_context_mode === "fixture"
-            )
-          ) {
-            allowed.delete("sitrus_read");
-          }
-          serverTools = allowed;
-        } catch {
+        } catch (error) {
+          if (signal.aborted || isAbortError(error)) throw abortError(signal);
           // Capability failure is fail-closed. The request may still answer
           // from already stored conversation evidence, but it advertises no
           // connector that the server has not explicitly approved.
@@ -2661,37 +2793,18 @@ export function ChatPanel({
           providerDestination = "unknown";
         }
       }
-      if (
-        sitrusReadRequired &&
-        typeof capabilityReader === "function" &&
-        !liveSitrusGate &&
-        !(
-          capabilitiesSnapshot?.agent_backend === "fixture" &&
-          capabilitiesSnapshot.sitrus_personal_context_mode === "fixture"
-        )
-      ) {
-        throw new Error(
-          "SITRUSの成績連携は現在利用できません。管理者設定とログイン状態を確認してください。",
-        );
-      }
-      if (
-        typeof capabilityReader === "function" &&
-        capabilitiesSnapshot === null &&
-        requiresVerifiedCampusCapability(message, {
-          onScombzPage: pageContext?.kind === "scombz",
-          processingScope: current.processing_scope,
-        })
-      ) {
-        throw new Error(
-          "学内データの利用可否を確認できません。再認証後にもう一度お試しください。",
-        );
-      }
+
+      assertActive();
+      authReadyTools = await readChatAuthPreflight(signal);
+      assertActive();
       if (
         pageContext?.kind === "scombz" &&
-        liveScombzReadRequired &&
-        !demoFixtureGate
+        authReadyTools.has("scombz_course_list")
       ) {
-        if (!(await hasScombzStudentSessionConsent())) {
+        assertActive();
+        const hasConsent = await hasScombzStudentSessionConsent();
+        assertActive();
+        if (!hasConsent) {
           throw new Error(
             "SCombZの授業情報をAzureへ送るには、設定で一度だけ共有同意が必要です。",
           );
@@ -2699,26 +2812,20 @@ export function ChatPanel({
         // Bind the conversation to the currently authenticated SCombZ tab at
         // chat start. Subsequent connector calls use this pin and never
         // silently switch to whichever tab later becomes active.
-        const pinResult = await sendExtensionMessage<ScombzPinResponse>({
-          type: MESSAGE_TYPES.scombzPin,
-          conversation_id: withUser.conversationId,
-        });
+        assertActive();
+        const pinResult = await sendExtensionMessage<ScombzPinResponse>(
+          {
+            type: MESSAGE_TYPES.scombzPin,
+            conversation_id: withUser.conversationId,
+          },
+          signal,
+        );
+        assertActive();
         if (pinResult.status !== "pinned") {
           throw new Error(
             pinResult.reason_code === "scombz_source_tab_changed"
               ? "SCombZの参照元タブが変わりました。元のタブを表示してから再試行してください。"
               : "SCombZの参照元タブを固定できませんでした。ログイン状態と表示中のタブを確認してください。",
-          );
-        }
-        // A production client must not send a personal SCombZ prompt when
-        // the authenticated live capability cannot be proven.  In
-        // particular, do not continue with the legacy `scombz_read` tool or
-        // an unclassified provider message after a capability fetch error.
-        if (typeof capabilityReader === "function" && !liveScombzGate) {
-          throw new Error(
-            capabilitiesSnapshot
-              ? "SCombZのlive読み取り機能は現在利用できません。"
-              : "SCombZのlive capabilityを確認できません。再認証後に再試行してください。",
           );
         }
       }
@@ -2729,10 +2836,12 @@ export function ChatPanel({
       // syllabus text is unchanged unless it contains a direct credential,
       // identifier, or query-bearing URL that must be removed at the boundary.
       if (providerDestination === "azure_openai") {
+        assertActive();
         const transformed = await pseudonymizerRef.current.transformText(
           withUser.conversationId,
           message,
         );
+        assertActive();
         providerMessage = transformed.provider_content;
         current = {
           ...current,
@@ -2750,13 +2859,6 @@ export function ChatPanel({
       }
       current = {
         ...current,
-        processing_scope:
-          pageContext?.kind === "scombz" &&
-          liveScombzReadRequired &&
-          liveScombzGate
-            ? mergeProcessingScope(current, "scombz_course_list")
-                .processing_scope
-            : current.processing_scope,
         provider_destination: providerDestination,
         // New conversations are eligible.  A legacy conversation loaded
         // without this metadata remains ineligible and is sent without its
@@ -2764,7 +2866,9 @@ export function ChatPanel({
         history_eligible: current.history_eligible,
         updatedAt: new Date().toISOString(),
       };
+      assertActive();
       await persist(current);
+      assertActive();
       let providerContextManifest = current.history_eligible
         ? toChatContextManifest(current.contextManifest)
         : null;
@@ -2776,6 +2880,7 @@ export function ChatPanel({
           current.processing_scope === "restricted/cast_career" ||
           current.processing_scope === "mixed")
       ) {
+        assertActive();
         const transformedEvidence =
           await pseudonymizerRef.current.transformEvidence(
             current.conversationId,
@@ -2786,7 +2891,9 @@ export function ChatPanel({
           evidence:
             transformedEvidence as typeof providerContextManifest.evidence,
         };
+        assertActive();
       }
+      assertActive();
       setChatProgress(
         "planning",
         "Agentが回答方針を検討中",
@@ -2797,38 +2904,48 @@ export function ChatPanel({
       // `chatCapabilities`; this branch never advertises the new SCombZ
       // student tools and is retained only for legacy test/host adapters.
       if (typeof capabilityReader !== "function") {
-        const response = await apiClient.startChat({
-          conversation_id: withUser.conversationId,
-          message: providerMessage,
-          history: current.history_eligible
-            ? toChatHistory(beforeSend.messages, {
-                requireProviderContent:
-                  current.processing_scope === "personal/scombz_student" ||
-                  current.processing_scope ===
-                    "personal/sitrus_academic_record" ||
-                  current.processing_scope === "restricted/cast_career" ||
-                  current.processing_scope === "mixed",
-              })
-            : [],
-          client_tools: clientTools(
-            serverTools,
-            maxClientTools,
-            demoFixtureGate,
-          ),
-          context_manifest: providerContextManifest,
+        assertActive();
+        const response = await apiClient.startChat(
+          {
+            conversation_id: withUser.conversationId,
+            message: providerMessage,
+            history: current.history_eligible
+              ? toChatHistory(beforeSend.messages, {
+                  requireProviderContent:
+                    current.processing_scope === "personal/scombz_student" ||
+                    current.processing_scope ===
+                      "personal/sitrus_academic_record" ||
+                    current.processing_scope === "restricted/cast_career" ||
+                    current.processing_scope === "mixed",
+                })
+              : [],
+            client_tools: clientTools(
+              serverTools,
+              maxClientTools,
+              authReadyTools,
+            ),
+            context_manifest: providerContextManifest,
+          },
+          signal,
+        );
+        assertActive();
+        await finishResponse(response, current, {
+          signal,
+          assertActive,
         });
-        await finishResponse(response, current);
+        assertActive();
         return;
       }
       const locallyAvailableTools = new Set(
-        clientTools(serverTools, maxClientTools, demoFixtureGate).map(
+        clientTools(serverTools, maxClientTools, authReadyTools).map(
           (tool) => tool.name,
         ),
       );
       let runnerConversation = current;
       const runner = new ChatRunner({
         api: apiClient,
-        executeTool: async (call) => {
+        executeTool: async (call, context) => {
+          assertActive();
           const outcome = await runTool(
             {
               status: "tool_required",
@@ -2837,12 +2954,18 @@ export function ChatPanel({
             },
             runnerConversation,
             toolLabel(call.name),
-            { submit: false, demoFixture: demoFixtureGate },
+            {
+              submit: false,
+              signal: context.signal ?? signal,
+              assertActive,
+            },
           );
+          assertActive();
           runnerConversation = outcome.conversation;
           return { request: outcome.request };
         },
       });
+      assertActive();
       const runnerResult = await runner.run({
         conversation_id: withUser.conversationId,
         message: providerMessage,
@@ -2862,13 +2985,28 @@ export function ChatPanel({
         source_generation: pageContext
           ? `${pageContext.kind}:${pageContext.url}`
           : `conversation:${withUser.conversationId}`,
+        signal,
       });
+      assertActive();
       current = runnerConversation;
-      await finishResponse(runnerResult.response, current);
+      await finishResponse(runnerResult.response, current, {
+        signal,
+        assertActive,
+      });
+      assertActive();
     } catch (error) {
+      if (
+        signal.aborted ||
+        isAbortError(error) ||
+        abortControllerRef.current !== controller
+      ) {
+        return;
+      }
+      assertActive();
       const failureMessage = userFacingChatFailure(error);
       setRetryText(message);
       setProgress(null);
+      assertActive();
       await persist({
         ...current,
         updatedAt: new Date().toISOString(),
@@ -2882,12 +3020,17 @@ export function ChatPanel({
         ],
       });
     } finally {
-      setBusy(false);
+      if (abortControllerRef.current === controller) {
+        abortControllerRef.current = null;
+        setBusy(false);
+      }
     }
   }
 
   async function selectConversation(id: string): Promise<void> {
+    abortCurrentRun();
     conversationInteractionRef.current = true;
+    clearLocalSnapshots();
     const selected = await loadConversation(id);
     if (selected) {
       setConversation(selected);
@@ -2896,21 +3039,16 @@ export function ChatPanel({
     }
   }
 
-  async function createConversation(): Promise<void> {
+  async function createConversation(
+    options: { runtimeCleared?: boolean } = {},
+  ): Promise<void> {
+    abortCurrentRun();
     conversationInteractionRef.current = true;
+    clearLocalSnapshots();
     // An explicit New Chat is a privacy boundary: do not keep the previous
     // conversation's alias mapping available for a later local restore.
-    await pseudonymizerRef.current.clear(conversation.conversationId);
-    // The background service worker owns the SCombZ course/material handles
-    // and the CAST projection gateway. Invalidate those maps at the same
-    // boundary; changing only the UI conversation id must not leave an old
-    // handle usable by a later read.
-    const clearResult = await sendExtensionMessage<{ ok: boolean }>({
-      type: MESSAGE_TYPES.scombzClearConversation,
-      conversation_id: conversation.conversationId,
-    });
-    if (!clearResult.ok) {
-      throw new Error("会話の参照元を破棄できませんでした。");
+    if (!options.runtimeCleared) {
+      await clearConversationRuntime(conversation.conversationId);
     }
     // Syllabus refs are conversation-bound handles too.  Drop them eagerly
     // instead of merely relying on the conversation-id check in syllabus_read;
@@ -2925,20 +3063,38 @@ export function ChatPanel({
   }
 
   async function removeConversation(id: string): Promise<void> {
+    abortCurrentRun();
+    conversationInteractionRef.current = true;
+    clearLocalSnapshots();
+    // Deletion must invalidate both the local alias mapping and background
+    // source handles before the history record is acknowledged as removed.
+    await clearConversationRuntime(id);
     await deleteConversation(id);
     const remaining = conversations.filter(
       (item) => item.conversationId !== id,
     );
     setConversations(remaining);
     if (conversation.conversationId === id) {
-      await createConversation();
+      await createConversation({ runtimeCleared: true });
     }
   }
 
   async function clearConversations(): Promise<void> {
+    abortCurrentRun();
+    conversationInteractionRef.current = true;
+    clearLocalSnapshots();
+    const conversationIds = [
+      ...new Set([
+        ...conversations.map((item) => item.conversationId),
+        conversation.conversationId,
+      ]),
+    ];
+    for (const conversationId of conversationIds) {
+      await clearConversationRuntime(conversationId);
+    }
     await deleteAllConversations();
     await pseudonymizerRef.current.clearAll();
-    await createConversation();
+    await createConversation({ runtimeCleared: true });
   }
 
   async function requestLibraryActionPreview(
@@ -4268,11 +4424,19 @@ export function ChatPanel({
           }}
         />
         <button
-          type="submit"
+          type={busy ? "button" : "submit"}
           className="composer-send-button"
-          aria-label={busy ? "処理中" : "送信"}
-          title={busy ? "処理中" : "送信"}
-          disabled={busy || disabled || !composer.trim()}
+          aria-label={busy ? "処理を中断" : "送信"}
+          title={busy ? "処理を中断" : "送信"}
+          disabled={disabled || (!busy && !composer.trim())}
+          onClick={
+            busy
+              ? () => {
+                  abortCurrentRun();
+                  clearLocalSnapshots();
+                }
+              : undefined
+          }
         >
           {busy ? (
             <span className="composer-spinner" aria-hidden="true" />
@@ -4281,7 +4445,7 @@ export function ChatPanel({
               <path d="m4 12 15-8-4 16-4-6-7-2Zm4.7-.6 3.7 1.1 1.9 3.1 1.9-7.4-7.5 3.2Z" />
             </svg>
           )}
-          <span className="sr-only">{busy ? "処理中" : "送信"}</span>
+          <span className="sr-only">{busy ? "処理を中断" : "送信"}</span>
         </button>
       </form>
       <p className="chat-policy-note">

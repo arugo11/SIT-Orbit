@@ -170,6 +170,7 @@ class SessionTokenStore:
 
     def issue(self, now: float | None = None) -> tuple[str, datetime]:
         current = time.time() if now is None else now
+        self._prune_expired(current)
         expires = current + self._ttl_seconds
         token = secrets.token_urlsafe(32)
         self._tokens[self._digest(token)] = expires
@@ -177,6 +178,7 @@ class SessionTokenStore:
 
     def verify(self, token: str, now: float | None = None) -> bool:
         current = time.time() if now is None else now
+        self._prune_expired(current)
         digest = self._digest(token)
         expires = self._tokens.get(digest)
         if expires is None:
@@ -185,6 +187,11 @@ class SessionTokenStore:
             self._tokens.pop(digest, None)
             return False
         return True
+
+    def _prune_expired(self, now: float) -> None:
+        for digest, expires in list(self._tokens.items()):
+            if expires <= now:
+                self._tokens.pop(digest, None)
 
     @staticmethod
     def _digest(token: str) -> str:

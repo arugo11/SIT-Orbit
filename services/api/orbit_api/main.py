@@ -11,18 +11,25 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from orbit_api.agent import (
+    ActionConflictError,
+    ActionStore,
+    ActionUnavailableError,
     AgentRunService,
     AgentService,
     ChatRunService,
+    ExpiredActionError,
+    UnknownActionError,
     get_agent_backend,
     get_chat_backend,
 )
+from orbit_api.agent.azure_openai_backend import validate_azure_runtime_configuration
 from orbit_api.agent.chat import (
     ChatEvidenceConflictError,
     ChatRunConsumedError,
     ChatRunExpiredError,
     ChatRunUnknownError,
 )
+from orbit_api.agent.pydantic_ai_backend import validate_agent_data
 from orbit_api.agent.runs import ConsumedRunError, ExpiredRunError, UnknownRunError
 from orbit_api.agent.runtime_profile import validate_runtime_backend
 from orbit_api.agent.tool_catalog import capability_tool_names
@@ -61,7 +68,18 @@ logger = logging.getLogger("orbit_api.validation")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    backend_name = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
+    # Validate the backend/profile contract before clearing stores or serving
+    # requests.  This keeps removed backends (including ``openai``) from
+    # starting successfully and avoids a late, request-time failure.
+    validate_runtime_backend(backend_name)
+    if backend_name == "azure_openai":
+        # This is a local, no-network preflight.  It fails startup before an
+        # Azure Agent is built when the deployment/profile pair cannot use
+        # native Responses Tool Search.
+        validate_azure_runtime_configuration()
     agent_run_service.store.clear()
+    action_store.clear()
     chat_run_service.store.clear()
     chat_run_service.clear_background()
     agent_sessions.clear()
@@ -70,6 +88,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         agent_run_service.store.clear()
+        action_store.clear()
         chat_run_service.store.clear()
         chat_run_service.clear_background()
         agent_sessions.clear()
@@ -136,11 +155,7 @@ def _safe_validation_detail(error: RequestValidationError) -> dict[str, str]:
         location = item.get("loc", ())
         if isinstance(location, (tuple, list)):
             candidate = next(
-                (
-                    part
-                    for part in location
-                    if isinstance(part, str) and part in _VALIDATION_FIELDS
-                ),
+                (part for part in location if isinstance(part, str) and part in _VALIDATION_FIELDS),
                 None,
             )
             if candidate is not None:
@@ -247,6 +262,13 @@ async def require_api_token(request: Request, call_next):
     if request.url.path == "/v1/auth/session":
         return await call_next(request)
     expected = os.getenv("ORBIT_API_TOKEN", "").strip()
+    if request.url.path.startswith("/v1/") and os.getenv(
+        "ORBIT_RUNTIME_PROFILE", "development"
+    ).strip() == "production" and not expected:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Agent API authentication is unavailable."},
+        )
     if expected and request.url.path.startswith("/v1/"):
         authorization = request.headers.get("authorization", "")
         scheme, separator, provided = authorization.partition(" ")
@@ -254,10 +276,7 @@ async def require_api_token(request: Request, call_next):
             separator != " "
             or scheme.lower() != "bearer"
             or not provided
-            or not (
-                secrets.compare_digest(provided, expected)
-                or agent_sessions.verify(provided)
-            )
+            or not (secrets.compare_digest(provided, expected) or agent_sessions.verify(provided))
         ):
             return JSONResponse(
                 status_code=401,
@@ -295,7 +314,8 @@ def configure_cors(application: FastAPI) -> None:
 
 configure_cors(app)
 
-agent_run_service = AgentRunService()
+action_store = ActionStore()
+agent_run_service = AgentRunService(action_store=action_store)
 chat_run_service = ChatRunService(backend_factory=get_chat_backend)
 opac_gateway = get_shared_opac_gateway()
 
@@ -326,13 +346,18 @@ async def create_agent_session(request: AgentSessionRequest) -> AgentSessionResp
 @app.get("/v1/capabilities", response_model=AgentCapabilities)
 async def capabilities() -> AgentCapabilities:
     backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
-    if backend not in {"fixture", "openai", "azure_openai"}:
+    if backend not in {"fixture", "azure_openai"}:
         raise HTTPException(status_code=503, detail="Agent backend is not supported.")
     try:
         validate_runtime_backend(backend)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
-    supported_backend = cast(Literal["fixture", "openai", "azure_openai"], backend)
+    if backend == "azure_openai":
+        try:
+            validate_azure_runtime_configuration()
+        except (RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+    supported_backend = cast(Literal["fixture", "azure_openai"], backend)
     return AgentCapabilities(
         agent_backend=supported_backend,
         my_library_personal_context=supported_backend == "azure_openai",
@@ -349,12 +374,17 @@ async def chat_capabilities() -> ChatCapabilities:
     """
 
     backend = os.getenv("ORBIT_AGENT_BACKEND", "fixture")
-    if backend not in {"fixture", "openai", "azure_openai"}:
+    if backend not in {"fixture", "azure_openai"}:
         raise HTTPException(status_code=503, detail="Agent backend is not supported.")
     try:
         validate_runtime_backend(backend)
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+    if backend == "azure_openai":
+        try:
+            validate_azure_runtime_configuration()
+        except (RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
     observability = os.getenv("ORBIT_OBSERVABILITY", "off")
     if observability not in {"off", "wandb"}:
         raise HTTPException(status_code=503, detail="Observability mode is not supported.")
@@ -375,12 +405,10 @@ async def chat_capabilities() -> ChatCapabilities:
         sitrus_personal_context_mode=sitrus_mode,
     )
     return ChatCapabilities(
-        agent_backend=cast(Literal["fixture", "openai", "azure_openai"], backend),
+        agent_backend=cast(Literal["fixture", "azure_openai"], backend),
         observability=cast(Literal["off", "wandb"], observability),
         scombz_student_read_mode=cast(Literal["off", "fixture", "live"], scombz_mode),
-        sitrus_personal_context_mode=cast(
-            Literal["off", "fixture", "live"], sitrus_mode
-        ),
+        sitrus_personal_context_mode=cast(Literal["off", "fixture", "live"], sitrus_mode),
         supported_client_tools=list(supported),
         max_client_tools=32,
     )
@@ -525,7 +553,10 @@ async def submit_chat_tool_result(
 @app.post("/v1/actions/propose", response_model=ActionProposal)
 async def propose_action(request: ProposeActionRequest) -> ActionProposal:
     try:
-        service = AgentService(get_agent_backend())
+        # Reject private legacy evidence before building a provider/backend or
+        # entering the traced proposal path.
+        validate_agent_data(request.event, request.context)
+        service = AgentService(get_agent_backend(), action_store=action_store)
         return await service.handle_event(request.event, request.context)
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
@@ -534,7 +565,17 @@ async def propose_action(request: ProposeActionRequest) -> ActionProposal:
 @app.post("/v1/actions/{action_id}/verify", response_model=OrbitEvent)
 async def verify_action(action_id: str, request: VerifyActionRequest) -> OrbitEvent:
     try:
-        service = AgentService(get_agent_backend())
+        # Verification is a local receipt lookup.  It must not construct a
+        # model/provider or infer completion from an unregistered ID.
+        service = AgentService(action_store=action_store)
         return await service.verify_result(action_id, request)
+    except UnknownActionError as error:
+        raise HTTPException(status_code=404, detail="Action was not found.") from error
+    except ExpiredActionError as error:
+        raise HTTPException(status_code=410, detail="Action is no longer verifiable.") from error
+    except ActionConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ActionUnavailableError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except (RuntimeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

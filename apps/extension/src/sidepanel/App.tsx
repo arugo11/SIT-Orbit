@@ -1017,7 +1017,10 @@ export function App({
     setFirstUseSetupBusy(true);
     setFirstUseSetupError(null);
     try {
-      await markFirstUseSetupStarted();
+      const started = await markFirstUseSetupStarted();
+      if (!started) {
+        throw new Error(FIRST_USE_SETUP_RETRY_MESSAGE);
+      }
       const sessionToken = await agentSessionProvider();
       if (!sessionToken) {
         throw new Error("SITアカウントのAgent認証を完了できませんでした。");
@@ -1067,7 +1070,10 @@ export function App({
       if (!sessionToken) {
         throw new Error("SITアカウントのAgent認証を完了できませんでした。");
       }
-      await markFirstUseSetupCompleted();
+      const completed = await markFirstUseSetupCompleted();
+      if (!completed) {
+        throw new Error(FIRST_USE_SETUP_RETRY_MESSAGE);
+      }
       setFirstUseSetupState("ready");
     } catch (error) {
       setFirstUseSetupError(
@@ -1639,16 +1645,20 @@ export function App({
   };
 
   const grantScombzConsent = async (): Promise<void> => {
-    await grantScombzStudentSessionConsent();
+    const granted = await grantScombzStudentSessionConsent();
     setSettingsMessage(
-      "SCombZの授業情報と抽出済みPDF本文を、必要な範囲だけAzure OpenAIへ送る同意を記録しました。",
+      granted
+        ? "SCombZの授業情報と抽出済みPDF本文を、必要な範囲だけAzure OpenAIへ送る同意を記録しました。"
+        : "SCombZ共有同意を記録できませんでした。ストレージを確認して、もう一度お試しください。",
     );
   };
 
   const clearScombzConsent = async (): Promise<void> => {
-    await clearScombzStudentSessionConsent();
+    const cleared = await clearScombzStudentSessionConsent();
     setSettingsMessage(
-      "SCombZの共有同意を解除しました。次回の読み取り時に再確認します。",
+      cleared
+        ? "SCombZの共有同意を解除しました。次回の読み取り時に再確認します。"
+        : "SCombZ共有同意を解除できませんでした。ストレージを確認して、もう一度お試しください。",
     );
   };
 
@@ -1677,8 +1687,10 @@ export function App({
         clientTools.push({ name: "google_calendar_availability", version: 1 });
       }
 
+      const eventForNewProposal = { ...B1_OMIYA_EVENT };
+      delete eventForNewProposal.event_id;
       let runResponse: AgentRunResponse = await agentApiClient.startRun({
-        event: B1_OMIYA_EVENT,
+        event: eventForNewProposal,
         context: [...B1_OMIYA_CONTEXT, ...fixtureEvidence],
         client_tools: clientTools,
       });

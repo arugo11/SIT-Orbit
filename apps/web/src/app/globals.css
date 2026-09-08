@@ -181,6 +181,7 @@ h1 span {
 }
 
 button {
+  cursor: pointer;
   padding: 13px 18px;
   border: 1px solid var(--cyan);
   border-radius: 999px;
@@ -190,10 +191,86 @@ button {
   font-weight: 700;
 }
 
+button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 button.secondary {
   color: var(--text);
   background: transparent;
   border-color: var(--line);
+}
+
+.action-card li {
+  margin: 10px 0;
+}
+
+.approval-controls {
+  margin-top: 22px;
+}
+
+.duration-editor {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.duration-editor input {
+  width: 92px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--text);
+  background: rgba(6, 9, 21, 0.75);
+  font: inherit;
+}
+
+.state-message,
+.error-message {
+  margin: 18px 0 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  background: rgba(6, 9, 21, 0.45);
+}
+
+.error-message {
+  border-color: rgba(255, 126, 126, 0.55);
+  color: #ffd1d1;
+}
+
+.completion-event {
+  display: grid;
+  gap: 7px;
+  margin-top: 22px;
+  padding: 16px;
+  border: 1px solid rgba(125, 249, 255, 0.45);
+  border-radius: 14px;
+  background: rgba(6, 16, 30, 0.6);
+}
+
+.completion-event strong {
+  color: var(--cyan);
+  letter-spacing: 0.12em;
+}
+
+.completion-event span,
+.completion-event small {
+  color: var(--muted);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.action-card li small {
+  display: block;
+  color: #7383a4;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 footer {

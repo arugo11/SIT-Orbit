@@ -87,7 +87,17 @@ describe("CAST change feed", () => {
     const feed = new CastChangeFeed(vault);
     const baseline = await feed.compareAndStore(
       "cast-top-student",
-      { notices: [{ title: "旧お知らせ" }] },
+      {
+        schema_version: "v1",
+        records: [
+          {
+            reference: "notice:synthetic-1",
+            category: "support_resource",
+            published_date: "2026-08-01",
+          },
+        ],
+        counts: { notices: 1 },
+      },
       "2026-08-22T00:00:00.000Z",
     );
     expect(baseline).toMatchObject({
@@ -96,28 +106,55 @@ describe("CAST change feed", () => {
       changes: [],
     });
     const persisted = JSON.stringify(store.snapshot());
-    expect(persisted).not.toContain("旧お知らせ");
+    expect(persisted).not.toContain("synthetic-1");
     expect(persisted).not.toContain("cast-top-student");
     expect(persisted).toContain("ciphertext");
+    await expect(feed.read("cast-top-student")).resolves.toMatchObject({
+      snapshot: {
+        schema_version: "v1",
+        records: [
+          {
+            reference: "notice:synthetic-1",
+            category: "support_resource",
+            published_date: "2026-08-01",
+          },
+        ],
+      },
+    });
   });
 
   it("compares a later snapshot and exposes only aggregate counts to an Agent", async () => {
     const { vault } = await createVault();
     const feed = new CastChangeFeed(vault);
     await feed.compareAndStore("cast-top-student", {
-      opportunities: [
-        { local_id: "job:1", application_deadline: "2026-08-30" },
+      schema_version: "v1",
+      records: [
+        {
+          reference: "opportunity:job-1",
+          category: "opportunity",
+          kind: "job",
+          deadline: "2026-08-30",
+        },
       ],
-      people: [{ name: "山田 太郎", source_identifier: "person-123" }],
+      counts: { people: 1 },
     });
     const changeSet = await feed.compareAndStore("cast-top-student", {
-      opportunities: [
-        { local_id: "job:1", application_deadline: "2026-09-01" },
+      schema_version: "v1",
+      records: [
+        {
+          reference: "opportunity:job-1",
+          category: "opportunity",
+          kind: "job",
+          deadline: "2026-09-01",
+        },
+        {
+          reference: "opportunity:job-2",
+          category: "opportunity",
+          kind: "job",
+          deadline: "2026-09-20",
+        },
       ],
-      people: [
-        { name: "山田 太郎", source_identifier: "person-123" },
-        { name: "佐藤 花子", source_identifier: "person-456" },
-      ],
+      counts: { people: 1 },
     });
     const projection = projectCastChangesForAgent(changeSet);
     expect(projection).toEqual({
@@ -131,31 +168,125 @@ describe("CAST change feed", () => {
       internship_change_count: 0,
       history_report_change_count: 0,
       support_resource_change_count: 0,
-      opportunity_change_count: 0,
+      opportunity_change_count: 1,
     });
-    expect(JSON.stringify(projection)).not.toContain("山田");
-    expect(JSON.stringify(projection)).not.toContain("person-123");
+    expect(JSON.stringify(projection)).not.toContain("opportunity:job");
     expect(JSON.stringify(projection)).not.toContain("2026-09-01");
   });
 
-  it("rejects non-opaque source keys and over-sized snapshots", async () => {
-    const { vault } = await createVault();
+  it("rejects non-opaque source keys, unsafe snapshots, and over-sized snapshots", async () => {
+    const { store, vault } = await createVault();
     const feed = new CastChangeFeed(vault);
+    const recordsBeforeInvalidInputs = store.snapshot().records.length;
     await expect(
       feed.compareAndStore("https://example.com/private", {}),
     ).rejects.toThrow("opaque");
     await expect(
+      feed.compareAndStore("cast-top-student", {
+        schema_version: "v1",
+        records: [
+          {
+            reference: "notice:unsafe-1",
+            category: "support_resource",
+            title: "raw page text",
+          },
+        ],
+        counts: { notices: 1 },
+      }),
+    ).rejects.toThrow("unsupported field");
+    await expect(
+      feed.compareAndStore("cast-top-student", {
+        schema_version: "v1",
+        records: [
+          {
+            reference: "notice:unsafe-1",
+            category: "support_resource",
+            count: 1,
+          },
+        ],
+        counts: { notices: 1 },
+        raw_html: "<html>private</html>",
+      }),
+    ).rejects.toThrow("unsupported field");
+    await expect(
+      feed.compareAndStore("cast-top-student", {
+        schema_version: "v1",
+        records: [
+          {
+            reference: "notice:unsafe?query",
+            category: "support_resource",
+            count: 1,
+          },
+        ],
+        counts: { notices: 1 },
+      }),
+    ).rejects.toThrow("opaque");
+    await expect(
+      feed.compareAndStore("cast-top-student", {
+        schema_version: "v1",
+        records: [
+          {
+            reference: "notice:duplicate-1",
+            category: "support_resource",
+          },
+          {
+            reference: "notice:duplicate-1",
+            category: "support_resource",
+          },
+        ],
+        counts: { notices: 2 },
+      }),
+    ).rejects.toThrow("unique");
+    await expect(
       feed.compareAndStore("cast-top-student", "x".repeat(2_000_001)),
     ).rejects.toThrow("local change-feed limit");
+    expect(store.snapshot().records).toHaveLength(recordsBeforeInvalidInputs);
   });
 
   it("returns no changes when a snapshot is recorded twice", async () => {
     const { vault } = await createVault();
     const feed = new CastChangeFeed(vault);
-    const snapshot = { notices: [{ title: "同じお知らせ" }] };
+    const snapshot = {
+      schema_version: "v1" as const,
+      records: [
+        {
+          reference: "notice:synthetic-2",
+          category: "support_resource" as const,
+          published_date: "2026-08-02",
+        },
+      ],
+      counts: { notices: 1 },
+    };
     await feed.compareAndStore("cast-top-student", snapshot);
     const second = await feed.compareAndStore("cast-top-student", snapshot);
     expect(second.status).toBe("known");
     expect(second.changes).toEqual([]);
+  });
+
+  it("rejects an unsafe snapshot already present in the encrypted Vault", async () => {
+    const { vault } = await createVault();
+    const feed = new CastChangeFeed(vault);
+    const digest = await vault.hmac("cast-change-snapshot:v1:cast-top-student");
+    const recordId = `cast-change-snapshot:v1:${Array.from(digest, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("")}`;
+    await vault.put(recordId, {
+      schema_version: "v1",
+      captured_at: "2026-08-22T00:00:00.000Z",
+      snapshot: {
+        schema_version: "v1",
+        records: [
+          {
+            reference: "notice:unsafe-2",
+            category: "support_resource",
+            token: "secret",
+          },
+        ],
+        counts: { notices: 1 },
+      },
+    });
+    await expect(feed.read("cast-top-student")).rejects.toThrow(
+      "unsupported field",
+    );
   });
 });

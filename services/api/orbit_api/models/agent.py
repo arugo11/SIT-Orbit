@@ -60,7 +60,7 @@ class StrictApiModel(BaseModel):
 class AgentCapabilities(StrictApiModel):
     """Authenticated runtime capabilities used before personal data leaves Chrome."""
 
-    agent_backend: Literal["fixture", "openai", "azure_openai"]
+    agent_backend: Literal["fixture", "azure_openai"]
     my_library_personal_context: StrictBool
 
 
@@ -73,7 +73,7 @@ class ChatCapabilities(StrictApiModel):
     """
 
     schema_version: Literal["v1"] = "v1"
-    agent_backend: Literal["fixture", "openai", "azure_openai"]
+    agent_backend: Literal["fixture", "azure_openai"]
     observability: Literal["off", "wandb"]
     scombz_student_read_mode: Literal["off", "fixture", "live"]
     sitrus_personal_context_mode: Literal["off", "fixture", "live"] = "off"
@@ -97,26 +97,17 @@ class ChatCapabilities(StrictApiModel):
             and self.observability == "off"
             and self.scombz_student_read_mode == "live"
         )
-        fixture_allowed = (
-            self.agent_backend == "fixture"
-            and self.observability == "off"
-            and self.scombz_student_read_mode == "fixture"
-        )
-        if not (live_allowed or fixture_allowed) and new_scombz.intersection(
+        if not live_allowed and new_scombz.intersection(
             self.supported_client_tools
         ):
-            raise ValueError("SCombZ student tools require an explicit live or fixture capability.")
+            raise ValueError("SCombZ student tools require an explicit Azure live capability.")
         sitrus_allowed = (
             self.agent_backend == "azure_openai"
             and self.observability == "off"
             and self.sitrus_personal_context_mode == "live"
-        ) or (
-            self.agent_backend == "fixture"
-            and self.observability == "off"
-            and self.sitrus_personal_context_mode == "fixture"
         )
         if not sitrus_allowed and "sitrus_read" in self.supported_client_tools:
-            raise ValueError("SITRUS grades require an explicit Azure live or fixture capability.")
+            raise ValueError("SITRUS grades require an explicit Azure live capability.")
         return self
 
 

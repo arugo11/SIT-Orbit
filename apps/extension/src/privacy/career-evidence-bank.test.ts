@@ -118,6 +118,24 @@ describe("CareerEvidenceBank", () => {
     expect(await bank.list()).toEqual([]);
   });
 
+  it("keeps concurrent evidence creates indexed across bank instances", async () => {
+    const { vault } = await createBank();
+    const firstBank = new CareerEvidenceBank(vault);
+    const secondBank = new CareerEvidenceBank(vault);
+
+    const [first, second] = await Promise.all([
+      firstBank.create(draft),
+      secondBank.create({
+        ...draft,
+        claim: "再現可能な実験を設計できる",
+      }),
+    ]);
+
+    expect(
+      (await firstBank.list()).map((record) => record.evidence_id),
+    ).toEqual([first.evidence_id, second.evidence_id]);
+  });
+
   it("normalizes public material URLs and rejects unsafe identifiers", async () => {
     const { bank } = await createBank();
     const record = await bank.create({

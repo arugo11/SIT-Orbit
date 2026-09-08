@@ -31,18 +31,16 @@ def test_production_profile_rejects_fixture_backend(monkeypatch) -> None:
 def test_unknown_backend_is_rejected_consistently(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "unknown")
 
-    with pytest.raises(RuntimeError, match="Unsupported ORBIT_AGENT_BACKEND: unknown"):
+    with pytest.raises(RuntimeError, match="either 'fixture' or 'azure_openai'"):
         get_agent_backend()
-    with pytest.raises(RuntimeError, match="Unsupported ORBIT_AGENT_BACKEND: unknown"):
+    with pytest.raises(RuntimeError, match="either 'fixture' or 'azure_openai'"):
         get_chat_backend()
 
 
-def test_openai_requires_api_key(monkeypatch) -> None:
+def test_removed_openai_backend_is_rejected(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "openai")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_MODEL", "demo-model")
 
-    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+    with pytest.raises(RuntimeError, match="either 'fixture' or 'azure_openai'"):
         get_agent_backend()
 
 
@@ -50,7 +48,8 @@ def test_azure_openai_requires_explicit_configuration(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "demo-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_MODEL", "gpt-5-6-terra")
+    monkeypatch.setenv("AZURE_OPENAI_BASE_MODEL", "gpt-5.6-terra")
 
     with pytest.raises(RuntimeError, match="AZURE_OPENAI_API_KEY"):
         get_agent_backend()
@@ -60,11 +59,12 @@ def test_azure_openai_uses_v1_endpoint(monkeypatch) -> None:
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "synthetic-test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "demo-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_MODEL", "gpt-5-6-terra")
+    monkeypatch.setenv("AZURE_OPENAI_BASE_MODEL", "gpt-5.6-terra")
 
     agent = get_agent_backend()
 
     assert isinstance(agent, AzureOpenAIAgent)
     assert str(agent.client.base_url) == "https://example.openai.azure.com/openai/v1/"
-    assert agent.model_name == "demo-deployment"
+    assert agent.model_name == "gpt-5-6-terra"
     assert agent.model.settings == {"openai_store": False}

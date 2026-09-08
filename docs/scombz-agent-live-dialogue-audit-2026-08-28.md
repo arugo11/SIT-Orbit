@@ -338,7 +338,7 @@ Evidence: `scombz`の監査用別名`evidence-legacy-01`（実URL・内部IDは�
 | backend | `azure_openai` | PASS |
 | observability | `off` | PASS |
 | SCombZ student read | `live` | PASS |
-| fixture/OpenAI fallback | 設定上無効 | PASS |
+| fixture/provider fallback | 設定上無効 | PASS |
 | `ChatToolName` | 21 enum、SCombZ新4 Toolと`syllabus_read`を含む | PASS |
 | `client_tools`上限 | 32 | PASS |
 | `/v1/chat/capabilities` | OpenAPIへ追加、認証必須契約 | PASS（未認証の直接HTTP確認はネットワーク制限で未実行） |

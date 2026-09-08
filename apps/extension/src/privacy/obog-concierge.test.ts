@@ -248,6 +248,36 @@ describe("OBOG concierge", () => {
     expect(await memos.list()).toEqual([]);
     await vault.lock();
   });
+
+  it("keeps concurrent meeting memos indexed across store instances", async () => {
+    const { vault } = createVault();
+    await vault.create(PASSPHRASE);
+    const firstStore = new ObogMeetingMemoStore(vault);
+    const secondStore = new ObogMeetingMemoStore(vault);
+
+    const [first, second] = await Promise.all([
+      firstStore.save({
+        candidate_alias: fixedCandidate.alias,
+        purpose: "研究開発職の面談",
+        notes: ["制御系の配属例を確認した"],
+        insights: ["面接では設計判断の説明が必要"],
+        next_steps: ["求人票の締切を確認する"],
+      }),
+      secondStore.save({
+        candidate_alias: fixedCandidate.alias,
+        purpose: "研究開発職の準備",
+        notes: ["研究内容の説明を整理した"],
+        insights: ["質問を事前に用意する"],
+        next_steps: ["面談候補日を確認する"],
+      }),
+    ]);
+
+    expect((await firstStore.list()).map((record) => record.memo_id)).toEqual([
+      first.memo_id,
+      second.memo_id,
+    ]);
+    await vault.lock();
+  });
 });
 
 describe("OBOG support resource projection", () => {

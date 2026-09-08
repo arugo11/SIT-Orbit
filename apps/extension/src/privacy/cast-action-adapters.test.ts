@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CastActionAdapter,
+  type CastActionExecutionResult,
   type CastActionExecutor,
   createCastActionExecutionRef,
 } from "./cast-action-adapters";
@@ -93,6 +94,12 @@ describe("CAST action adapters", () => {
         phrase: "実行を確認",
       }).status,
     ).toBe("awaiting_red_confirmation");
+    expect(() =>
+      adapter.confirm(preview.preview_id, {
+        phase: "primary",
+        phrase: "実行を確認",
+      }),
+    ).toThrow("not expected");
     expect(await adapter.execute(preview.preview_id)).toEqual({
       status: "blocked",
       reason_code: "explicit_confirmation_required",
@@ -104,8 +111,65 @@ describe("CAST action adapters", () => {
       phrase: "推薦応募を実行する",
     });
     expect(confirmed.status).toBe("confirmed");
+    expect(() =>
+      adapter.confirm(preview.preview_id, {
+        phase: "red",
+        phrase: "推薦応募を実行する",
+      }),
+    ).toThrow("not expected");
     await adapter.execute(preview.preview_id);
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks execution in flight before awaiting and prevents duplicate executor calls", async () => {
+    let release!: (result: CastActionExecutionResult) => void;
+    const execute = vi.fn(
+      () =>
+        new Promise<CastActionExecutionResult>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const adapter = new CastActionAdapter({ execute });
+    const preview = adapter.preview(applicationInput);
+    adapter.confirm(preview.preview_id, {
+      phase: "primary",
+      phrase: "実行を確認",
+    });
+
+    const first = adapter.execute(preview.preview_id);
+    await Promise.resolve();
+    expect(adapter.get(preview.preview_id)?.status).toBe("executing");
+    const second = adapter.execute(preview.preview_id);
+    release({
+      status: "executed",
+      execution_ref: createCastActionExecutionRef(),
+    });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      { status: "executed", execution_ref: expect.any(String) },
+      { status: "blocked", reason_code: "execution_in_progress" },
+    ]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(adapter.get(preview.preview_id)?.status).toBe("executed");
+  });
+
+  it("fails closed when an executor throws", async () => {
+    const adapter = new CastActionAdapter({
+      execute: vi.fn(async () => {
+        throw new Error("provider failure");
+      }),
+    });
+    const preview = adapter.preview(applicationInput);
+    adapter.confirm(preview.preview_id, {
+      phase: "primary",
+      phrase: "実行を確認",
+    });
+
+    await expect(adapter.execute(preview.preview_id)).resolves.toEqual({
+      status: "blocked",
+      reason_code: "executor_failed",
+    });
+    expect(adapter.get(preview.preview_id)?.status).toBe("blocked");
   });
 
   it("previews counseling, attachment metadata, and calendar without file bytes or tokens", () => {

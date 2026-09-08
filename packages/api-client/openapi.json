@@ -702,6 +702,7 @@
             "title": "Operation"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "action_id",
@@ -720,7 +721,6 @@
             "type": "string",
             "enum": [
               "fixture",
-              "openai",
               "azure_openai"
             ],
             "title": "Agent Backend"
@@ -1971,7 +1971,6 @@
             "type": "string",
             "enum": [
               "fixture",
-              "openai",
               "azure_openai"
             ],
             "title": "Agent Backend"
@@ -2601,6 +2600,7 @@
             "default": "synthetic"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "evidence_id",
@@ -3805,6 +3805,7 @@
             "title": "Payload"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "event_type",
@@ -3828,6 +3829,7 @@
             "title": "Context"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "event",
@@ -5679,6 +5681,7 @@
             "default": ""
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "scenario_id",

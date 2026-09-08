@@ -3,14 +3,30 @@ set -euo pipefail
 
 : "${ORBIT_AZURE_RESOURCE_GROUP:?Set ORBIT_AZURE_RESOURCE_GROUP to the demo resource group.}"
 : "${ORBIT_AZURE_CONTAINER_APP:?Set ORBIT_AZURE_CONTAINER_APP to the Container App name.}"
+: "${ORBIT_AZURE_SUBSCRIPTION:?Set ORBIT_AZURE_SUBSCRIPTION to the Azure for Students subscription ID.}"
 : "${ORBIT_AZURE_API_TOKEN:?Set ORBIT_AZURE_API_TOKEN to a random demo access token.}"
 : "${ORBIT_GOOGLE_OAUTH_CLIENT_ID:?Set ORBIT_GOOGLE_OAUTH_CLIENT_ID to the public Agent Web application OAuth client ID.}"
 : "${ORBIT_GOOGLE_OAUTH_CLIENT_SECRET:?Set ORBIT_GOOGLE_OAUTH_CLIENT_SECRET without writing it to the repository.}"
 : "${ORBIT_GOOGLE_OAUTH_REDIRECT_URI:?Set ORBIT_GOOGLE_OAUTH_REDIRECT_URI to the exact chromiumapp.org Agent callback.}"
 
-subscription_args=()
-if [[ -n "${ORBIT_AZURE_SUBSCRIPTION:-}" ]]; then
-  subscription_args+=(--subscription "${ORBIT_AZURE_SUBSCRIPTION}")
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${project_root}/scripts/azure/_students_guard.sh"
+require_azure_for_students_subscription
+subscription_args=(--subscription "${ORBIT_AZURE_SUBSCRIPTION}")
+
+IFS='|' read -r container_app_id container_app_state <<< "$(az containerapp show \
+  --name "${ORBIT_AZURE_CONTAINER_APP}" \
+  --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
+  "${subscription_args[@]}" \
+  --query "join('|',[id,properties.provisioningState])" \
+  --output tsv)"
+if [[ "${container_app_id,,}" != "/subscriptions/${AZURE_STUDENTS_SUBSCRIPTION_ID,,}"/* ]]; then
+  printf 'Container App is outside the selected subscription.\n' >&2
+  exit 1
+fi
+if [[ "${container_app_state}" != "Succeeded" ]]; then
+  printf 'Container App must be in Succeeded state.\n' >&2
+  exit 1
 fi
 
 secret_name="${ORBIT_AZURE_API_TOKEN_SECRET_NAME:-orbit-api-token}"
@@ -80,6 +96,7 @@ fi
 google_client_readback="$(az containerapp show \
   --name "${ORBIT_AZURE_CONTAINER_APP}" \
   --resource-group "${ORBIT_AZURE_RESOURCE_GROUP}" \
+  "${subscription_args[@]}" \
   --query "properties.template.containers[0].env[?name=='ORBIT_GOOGLE_OAUTH_CLIENT_ID'].value | [0]" \
   --output tsv)"
 if [[ "${google_client_readback}" != "${ORBIT_GOOGLE_OAUTH_CLIENT_ID}" ]]; then

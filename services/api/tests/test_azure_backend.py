@@ -34,6 +34,7 @@ def make_evidence(*, data_classification: DataClassification = "synthetic") -> E
         ("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_API_KEY"),
         ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_ENDPOINT"),
         ("AZURE_OPENAI_MODEL", "AZURE_OPENAI_MODEL"),
+        ("AZURE_OPENAI_BASE_MODEL", "AZURE_OPENAI_BASE_MODEL"),
     ],
 )
 def test_azure_backend_missing_configuration_fails_closed(
@@ -44,7 +45,8 @@ def test_azure_backend_missing_configuration_fails_closed(
     monkeypatch.setenv("ORBIT_AGENT_BACKEND", "azure_openai")
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "synthetic-test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
-    monkeypatch.setenv("AZURE_OPENAI_MODEL", "demo-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_MODEL", "gpt-5-6-terra")
+    monkeypatch.setenv("AZURE_OPENAI_BASE_MODEL", "gpt-5.6-terra")
     monkeypatch.delenv(missing_variable)
 
     with pytest.raises(RuntimeError, match=message):
@@ -68,8 +70,9 @@ async def test_azure_backend_rejects_non_demo_data_before_network(
 ) -> None:
     agent = AzureOpenAIAgent(
         api_key="synthetic-test-key",
-        model="demo-deployment",
+        model="gpt-5-6-terra",
         endpoint="https://example.openai.azure.com",
+        base_model="gpt-5.6-terra",
     )
     event = make_event(data_classification="personal" if location == "event" else "synthetic")
     context = [
@@ -84,8 +87,9 @@ async def test_azure_backend_rejects_non_demo_data_before_network(
 async def test_azure_backend_preserves_structured_action_boundary(monkeypatch) -> None:
     agent = AzureOpenAIAgent(
         api_key="synthetic-test-key",
-        model="demo-deployment",
+        model="gpt-5-6-terra",
         endpoint="https://example.openai.azure.com",
+        base_model="gpt-5.6-terra",
     )
     evidence = make_evidence()
     model = TestModel(
@@ -121,8 +125,9 @@ async def test_azure_backend_preserves_structured_action_boundary(monkeypatch) -
 async def test_azure_backend_rejects_unstructured_output(monkeypatch) -> None:
     agent = AzureOpenAIAgent(
         api_key="synthetic-test-key",
-        model="demo-deployment",
+        model="gpt-5-6-terra",
         endpoint="https://example.openai.azure.com",
+        base_model="gpt-5.6-terra",
     )
     model = TestModel(custom_output_text="not a structured action")
     agent_instance = Agent(
