@@ -1687,8 +1687,10 @@ export function App({
         clientTools.push({ name: "google_calendar_availability", version: 1 });
       }
 
+      const eventForNewProposal = { ...B1_OMIYA_EVENT };
+      delete eventForNewProposal.event_id;
       let runResponse: AgentRunResponse = await agentApiClient.startRun({
-        event: B1_OMIYA_EVENT,
+        event: eventForNewProposal,
         context: [...B1_OMIYA_CONTEXT, ...fixtureEvidence],
         client_tools: clientTools,
       });

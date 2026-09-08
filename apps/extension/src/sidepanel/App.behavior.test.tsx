@@ -283,6 +283,7 @@ describe("Side Panel B1 agent loop behavior", () => {
       },
       client_tools: [],
     });
+    expect(requestBody(fetcher, 0).event).not.toHaveProperty("event_id");
     expect(
       (requestBody(fetcher, 0).context as Array<Record<string, unknown>>).every(
         (evidence) =>
