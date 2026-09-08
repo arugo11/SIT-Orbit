@@ -209,6 +209,9 @@ export class WorkspaceSessionController {
     ) {
       try {
         const workspaceTab = await chrome.tabs.get(existing.workspaceTabId);
+        if (!isWorkspaceTabForSession(workspaceTab, existing.sessionId)) {
+          throw new Error("保存済みworkspaceタブのURLが一致しません。");
+        }
         const refreshed = {
           ...existing,
           pageContext,

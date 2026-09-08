@@ -90,6 +90,14 @@ describe("SCombZ student disclosure consent", () => {
     expect(await hasScombzStudentSessionConsent()).toBe(true);
   });
 
+  it("reports revoke failure when the post-remove read-back is unavailable", async () => {
+    localValues[SCOMBZ_STUDENT_SESSION_CONSENT_KEY] = {
+      granted_at: new Date().toISOString(),
+    };
+    localGet.mockRejectedValueOnce(new Error("storage read rejected"));
+    await expect(clearScombzStudentSessionConsent()).resolves.toBe(false);
+  });
+
   it("rejects malformed or expanded consent records", async () => {
     localValues[SCOMBZ_STUDENT_SESSION_CONSENT_KEY] = {
       granted_at: "not-a-timestamp",

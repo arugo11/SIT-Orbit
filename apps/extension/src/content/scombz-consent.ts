@@ -63,7 +63,10 @@ export async function clearScombzStudentSessionConsent(): Promise<boolean> {
   if (!canClear()) return false;
   try {
     await chrome.storage.local.remove(SCOMBZ_STUDENT_SESSION_CONSENT_KEY);
-    return !(await hasScombzStudentSessionConsent());
+    const stored = await chrome.storage.local.get(
+      SCOMBZ_STUDENT_SESSION_CONSENT_KEY,
+    );
+    return !isConsentRecord(stored[SCOMBZ_STUDENT_SESSION_CONSENT_KEY]);
   } catch {
     return false;
   }
