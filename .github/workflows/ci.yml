@@ -46,7 +46,10 @@ jobs:
           uv run python scripts/check_secrets.py
 
       - name: Azure script syntax
-        run: bash -n scripts/azure/*.sh
+        run: |
+          for script in scripts/azure/*.sh; do
+            bash -n "$script"
+          done
 
       - name: Generate API client
         run: pnpm generate:api
