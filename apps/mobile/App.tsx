@@ -38,9 +38,9 @@ function describeError(
     if (error instanceof Error && error.message.includes("action_completed")) {
       return "完了を記録できませんでした。返された完了情報を確認できません。";
     }
-    return "完了を記録できませんでした。APIが利用できるか確認してください。";
+    return "完了を記録できませんでした。接続を確認して、もう一度お試しください。";
   }
-  return "提案を読み込めませんでした。APIが利用できるか確認してください。";
+  return "提案を読み込めませんでした。接続を確認して、もう一度お試しください。";
 }
 
 function isCompletionEvent(
@@ -271,7 +271,7 @@ export default function App() {
             <ActivityIndicator color="#7df9ff" size="large" />
             <Text style={styles.stateTitle}>提案を準備しています</Text>
             <Text style={styles.stateText}>
-              合成イベントと根拠をAPIで確認中です。
+              合成データのイベントと根拠を確認しています。
             </Text>
           </View>
         ) : null}
@@ -387,9 +387,7 @@ export default function App() {
                     onPress={rejectProposal}
                     disabled={interactionLocked}
                   >
-                    <Text style={styles.secondaryText}>
-                      却下（APIに送信しない）
-                    </Text>
+                    <Text style={styles.secondaryText}>提案を却下する</Text>
                   </Pressable>
                 </View>
               </View>
@@ -399,7 +397,7 @@ export default function App() {
               <View style={styles.controlCard}>
                 <Text style={styles.controlTitle}>承認済み</Text>
                 <Text style={styles.controlText}>
-                  行動が完了したら、実際の完了イベントをAPIへ記録します。
+                  行動が完了したら、下のボタンで記録できます。
                 </Text>
                 {durationWasChanged ? (
                   <Text style={styles.changeNote}>
@@ -431,9 +429,6 @@ export default function App() {
             {phase === "rejected" ? (
               <View style={styles.stateCard}>
                 <Text style={styles.stateTitle}>提案を却下しました</Text>
-                <Text style={styles.stateText}>
-                  却下はAPIへ送信していません。
-                </Text>
               </View>
             ) : null}
           </View>
@@ -441,10 +436,10 @@ export default function App() {
 
         {phase === "completed" && completionEvent && proposal ? (
           <View style={styles.completionCard}>
-            <Text style={styles.completionTitle}>
-              完了イベントを受信しました
+            <Text style={styles.completionTitle}>完了を記録しました</Text>
+            <Text style={styles.completionText}>
+              大学の公式記録ではない合成イベントです。
             </Text>
-            <Text style={styles.completionText}>APIが返した完了情報です。</Text>
             <View style={styles.eventDetails}>
               <Text style={styles.eventLabel}>行動</Text>
               <Text style={styles.eventValue}>{proposal.title}</Text>
