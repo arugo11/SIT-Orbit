@@ -720,3 +720,41 @@ export class CareerVault {
     }, this.autoLockMs);
   }
 }
+
+const careerVaultMutationQueues = new WeakMap<
+  CareerVault,
+  Map<string, Promise<unknown>>
+>();
+
+/**
+ * Serialize a read-modify-write mutation for one Career Vault and key.
+ *
+ * IndexedDB transactions are atomic per operation, but a vault index update
+ * spans a read and a write.  Keeping the queue outside the individual stores
+ * also makes two store instances sharing one vault coordinate correctly.
+ */
+export function serializeCareerVaultMutation<T>(
+  vault: CareerVault,
+  key: string,
+  mutation: () => Promise<T>,
+): Promise<T> {
+  let queue = careerVaultMutationQueues.get(vault);
+  if (!queue) {
+    queue = new Map<string, Promise<unknown>>();
+    careerVaultMutationQueues.set(vault, queue);
+  }
+  const previous = queue.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(mutation);
+  queue.set(key, current);
+  void current
+    .finally(() => {
+      if (queue?.get(key) === current) {
+        queue.delete(key);
+      }
+      if (queue?.size === 0) {
+        careerVaultMutationQueues.delete(vault);
+      }
+    })
+    .catch(() => undefined);
+  return current;
+}

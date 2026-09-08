@@ -1,7 +1,7 @@
 import type { CastHistoryLocalSnapshot } from "../content/cast-history-reports-reader";
 import type { CastSupportLocalSnapshot } from "../content/cast-support-resources-reader";
 import { type LocalPromptRequest, runLocalPrompt } from "./career-prompt";
-import type { CareerVault } from "./career-vault";
+import { type CareerVault, serializeCareerVaultMutation } from "./career-vault";
 import type {
   CastPersonInput,
   PseudonymizationMission,
@@ -77,6 +77,7 @@ export interface ObogMeetingMemoRecord extends ObogMeetingMemoInput {
 
 const OBOG_MEMO_INDEX = "obog-concierge-memo-index:v1";
 const OBOG_MEMO_PREFIX = "obog-concierge-memo:v1:";
+const OBOG_MEMO_MUTATION_KEY = "obog-concierge:memo-index";
 const MAX_CANDIDATES = 64;
 const MAX_RESOURCES = 48;
 const MAX_QUESTIONS = 8;
@@ -595,33 +596,57 @@ export class ObogMeetingMemoStore {
       created_at: now,
       updated_at: now,
     };
-    await this.vault.put(record.memo_id, record);
-    await this.saveIndex([...(await this.index()), record.memo_id]);
-    return record;
+    return serializeCareerVaultMutation(
+      this.vault,
+      OBOG_MEMO_MUTATION_KEY,
+      async () => {
+        await this.vault.put(record.memo_id, record);
+        await this.saveIndex([...(await this.index()), record.memo_id]);
+        return record;
+      },
+    );
   }
 
   async list(): Promise<ObogMeetingMemoRecord[]> {
-    const records: ObogMeetingMemoRecord[] = [];
-    for (const id of await this.index()) {
-      const record = await this.vault.get<ObogMeetingMemoRecord>(id);
-      if (record?.schema_version === "v1") records.push(record);
-    }
-    return records;
+    return serializeCareerVaultMutation(
+      this.vault,
+      OBOG_MEMO_MUTATION_KEY,
+      async () => {
+        const records: ObogMeetingMemoRecord[] = [];
+        for (const id of await this.index()) {
+          const record = await this.vault.get<ObogMeetingMemoRecord>(id);
+          if (record?.schema_version === "v1") records.push(record);
+        }
+        return records;
+      },
+    );
   }
 
   async remove(memoIdValue: string): Promise<void> {
     if (!memoIdValue.startsWith(OBOG_MEMO_PREFIX)) {
       throw new Error("Invalid OBOG memo ID.");
     }
-    await this.vault.delete(memoIdValue);
-    await this.saveIndex(
-      (await this.index()).filter((id) => id !== memoIdValue),
+    await serializeCareerVaultMutation(
+      this.vault,
+      OBOG_MEMO_MUTATION_KEY,
+      async () => {
+        await this.vault.delete(memoIdValue);
+        await this.saveIndex(
+          (await this.index()).filter((id) => id !== memoIdValue),
+        );
+      },
     );
   }
 
   async clear(): Promise<void> {
-    for (const id of await this.index()) await this.vault.delete(id);
-    await this.saveIndex([]);
+    await serializeCareerVaultMutation(
+      this.vault,
+      OBOG_MEMO_MUTATION_KEY,
+      async () => {
+        for (const id of await this.index()) await this.vault.delete(id);
+        await this.saveIndex([]);
+      },
+    );
   }
 }
 

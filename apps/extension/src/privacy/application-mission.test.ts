@@ -243,4 +243,29 @@ describe("application mission", () => {
     await missions.clear();
     await vault.lock();
   });
+
+  it("keeps concurrent mission creates indexed across store instances", async () => {
+    const { vault } = createVault();
+    await vault.create(PASSPHRASE);
+    const firstStore = new ApplicationMissionStore(vault);
+    const secondStore = new ApplicationMissionStore(vault);
+
+    const [first, second] = await Promise.all([
+      firstStore.create({
+        target_local_id: "job:toyosu-robotics-2026",
+        target_kind: "job",
+        display_label: "合成ロボティクス株式会社",
+      }),
+      secondStore.create({
+        target_local_id: "internship:toyosu-robotics-2026",
+        target_kind: "internship",
+        display_label: "合成ロボティクス株式会社 インターン",
+      }),
+    ]);
+
+    expect(
+      (await firstStore.list()).map((record) => record.mission_id),
+    ).toEqual([first.mission_id, second.mission_id]);
+    await vault.lock();
+  });
 });
