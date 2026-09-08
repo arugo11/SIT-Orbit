@@ -227,7 +227,7 @@ export class ChatRunner {
       input.signal,
     );
     throwIfAborted(input.signal);
-    let runId: string | null =
+    const runId: string | null =
       response.status === "tool_required" ? response.run_id : null;
     const calls: ChatRunnerResult["calls"] = [];
     const receipts: ChatToolReceipt[] = [];
@@ -249,7 +249,7 @@ export class ChatRunner {
         throw protocolError("Chatは一度に1件のTool callだけを要求できます。");
       }
       const call = response.calls[0];
-      if (!call || call.version !== 1) {
+      if (call?.version !== 1) {
         throw protocolError("Chat Tool callのversionは1である必要があります。");
       }
       if (seen.has(call.tool_call_id)) {

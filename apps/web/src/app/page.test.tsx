@@ -201,7 +201,7 @@ describe("foundation web loop", () => {
     await click(container, "提案を却下する");
 
     expect(container.textContent).toContain("提案を却下しました");
-    expect(container.textContent).toContain("APIには送信していません");
+    expect(container.textContent).toContain("提案を却下しました。");
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 

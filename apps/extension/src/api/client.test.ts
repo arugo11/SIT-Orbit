@@ -5,6 +5,7 @@ import { B1_OMIYA_CONTEXT, B1_OMIYA_EVENT } from "../sidepanel/b1-fixture";
 import {
   AgentApiClient,
   AgentApiError,
+  type ChatToolResultRequest,
   classifyAgentApiError,
   type Fetcher,
   isActionProposal,
@@ -24,7 +25,6 @@ import {
   isScombzPortalReadResult,
   isSitrusGradeResult,
   isSyllabusReadResult,
-  type ChatToolResultRequest,
 } from "./client";
 
 const proposal = {
@@ -868,7 +868,9 @@ describe("AgentApiClient", () => {
       execution_mode: "sync" as const,
     };
 
-    await expect(client.startChat(request, controller.signal)).rejects.toMatchObject({
+    await expect(
+      client.startChat(request, controller.signal),
+    ).rejects.toMatchObject({
       name: "AbortError",
     });
     expect(fetcher).toHaveBeenCalledTimes(1);

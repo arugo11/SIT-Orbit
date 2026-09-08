@@ -310,7 +310,7 @@ export default function Home() {
 
               {status === "rejected" ? (
                 <p className="state-message">
-                  提案を却下しました（APIには送信していません）。
+                  提案を却下しました。
                 </p>
               ) : null}
 
